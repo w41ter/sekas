@@ -31,7 +31,7 @@ pub use app_client::{Client as EngulaClient, ClientOptions, Collection, Database
 pub use conn_manager::ConnManager;
 pub use discovery::{ServiceDiscovery, StaticServiceDiscovery};
 pub use error::{AppError, AppResult, Error, Result};
-pub use group_client::{GroupClient, RetryableShardChunkStreaming};
+pub use group_client::GroupClient;
 pub use migrate_client::MigrateClient;
 pub use node_client::{Client as NodeClient, RequestBatchBuilder, RpcTimeout};
 pub use retry::RetryState;

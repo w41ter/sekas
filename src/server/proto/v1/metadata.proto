@@ -108,7 +108,7 @@ message MigrationState {
 
   /// For dest group, this field saves the last key migrated by background
   /// pulling.
-  bytes last_migrated_key = 7;
+  optional bytes last_migrated_key = 7;
 
   /// The step of migration progress.
   MigrationStep step = 8;

@@ -152,7 +152,7 @@ fn is_executable(descriptor: &GroupDesc, request: &Request) -> bool {
             Request::Delete(req) => {
                 is_target_shard_exists(descriptor, req.shard_id, &req.delete.as_ref().unwrap().key)
             }
-            Request::Scan(_) => false,
+            Request::Scan(req) => is_scan_retryable(descriptor, req),
             Request::BatchWrite(req) => {
                 for delete in &req.deletes {
                     if !is_target_shard_exists(
@@ -188,4 +188,12 @@ fn is_target_shard_exists(desc: &GroupDesc, shard_id: u64, key: &[u8]) -> bool {
         .find(|s| s.id == shard_id)
         .map(|s| shard::belong_to(s, key))
         .unwrap_or_default()
+}
+
+fn is_scan_retryable(desc: &GroupDesc, req: &ShardScanRequest) -> bool {
+    if let Some(prefix) = &req.prefix {
+        return is_target_shard_exists(desc, req.shard_id, prefix);
+    }
+    // Now don't support retry range scan.
+    false
 }

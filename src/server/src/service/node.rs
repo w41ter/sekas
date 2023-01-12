@@ -17,7 +17,6 @@ use tonic::{Request, Response, Status};
 
 use super::metrics::*;
 use crate::{
-    node::migrate::ShardChunkStream,
     record_latency, record_latency_opt,
     runtime::{DispatchHandle, TaskPriority},
     Error, Server,
@@ -25,8 +24,6 @@ use crate::{
 
 #[tonic::async_trait]
 impl node_server::Node for Server {
-    type PullStream = ShardChunkStream;
-
     async fn batch(
         &self,
         request: Request<BatchRequest>,
@@ -146,16 +143,6 @@ impl node_server::Node for Server {
         let req = request.into_inner();
         let resp = self.node.migrate(req).await?;
         Ok(Response::new(resp))
-    }
-
-    async fn pull(
-        &self,
-        request: Request<PullRequest>,
-    ) -> Result<Response<Self::PullStream>, Status> {
-        record_latency!(take_pull_request_metrics());
-        let request = request.into_inner();
-        let stream = self.node.pull_shard_chunks(request).await?;
-        Ok(Response::new(stream))
     }
 
     async fn forward(

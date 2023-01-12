@@ -91,15 +91,6 @@ impl Client {
         Ok(res.into_inner())
     }
 
-    pub async fn pull(
-        &self,
-        req: PullRequest,
-    ) -> Result<tonic::Streaming<ShardChunk>, tonic::Status> {
-        let mut client = self.client.clone();
-        let res = client.pull(req).await?;
-        Ok(res.into_inner())
-    }
-
     pub async fn forward(&self, req: ForwardRequest) -> Result<ForwardResponse, tonic::Status> {
         let mut client = self.client.clone();
         let res = client.forward(req).await?;

@@ -35,7 +35,6 @@ service Node {
   rpc RootHeartbeat(HeartbeatRequest) returns (HeartbeatResponse) {}
 
   rpc Migrate(MigrateRequest) returns (MigrateResponse) {}
-  rpc Pull(PullRequest) returns (stream ShardChunk) {}
   rpc Forward(ForwardRequest) returns (ForwardResponse) {}
 }
 
@@ -327,10 +326,6 @@ message ShardData {
   bytes key = 1;
   bytes value = 2;
   uint64 version = 3;
-}
-
-message ShardChunk {
-  repeated ShardData data = 1;
 }
 
 message ForwardRequest {

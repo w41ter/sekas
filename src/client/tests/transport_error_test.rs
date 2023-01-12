@@ -17,10 +17,7 @@ use std::{
     io::ErrorKind,
     net::SocketAddr,
     os::unix::prelude::{FromRawFd, IntoRawFd},
-    panic,
-    pin::Pin,
-    process,
-    task::{Context, Poll},
+    panic, process,
     time::Duration,
 };
 
@@ -49,24 +46,11 @@ fn init() {
     setup_panic_hook();
 }
 
-struct ShardChunkStream {}
-
-#[allow(unused)]
-impl futures::Stream for ShardChunkStream {
-    type Item = std::result::Result<ShardChunk, tonic::Status>;
-
-    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        todo!()
-    }
-}
-
 struct MockedServer {}
 
 #[allow(unused)]
 #[tonic::async_trait]
 impl node_server::Node for MockedServer {
-    type PullStream = ShardChunkStream;
-
     async fn batch(
         &self,
         request: tonic::Request<engula_api::server::v1::BatchRequest>,
@@ -109,13 +93,6 @@ impl node_server::Node for MockedServer {
         &self,
         request: tonic::Request<engula_api::server::v1::MigrateRequest>,
     ) -> Result<tonic::Response<engula_api::server::v1::MigrateResponse>, tonic::Status> {
-        todo!()
-    }
-
-    async fn pull(
-        &self,
-        request: tonic::Request<engula_api::server::v1::PullRequest>,
-    ) -> Result<tonic::Response<Self::PullStream>, tonic::Status> {
         todo!()
     }
 

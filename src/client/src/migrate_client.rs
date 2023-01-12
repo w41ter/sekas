@@ -14,9 +14,7 @@
 
 use engula_api::server::v1::*;
 
-use crate::{
-    ConnManager, Error, GroupClient, Result, RetryState, RetryableShardChunkStreaming, Router,
-};
+use crate::{ConnManager, Error, GroupClient, Result, RetryState, Router, ShardClient};
 
 /// `MigrateClient` wraps `GroupClient` and provides retry for migration-related functions.
 pub struct MigrateClient {
@@ -62,16 +60,21 @@ impl MigrateClient {
         }
     }
 
-    pub async fn retryable_pull(
-        &mut self,
+    pub async fn pull_shard_chunk(
+        &self,
         shard_id: u64,
-        last_key: Vec<u8>,
-    ) -> Result<RetryableShardChunkStreaming> {
+        last_key: Option<Vec<u8>>,
+    ) -> Result<Vec<ShardData>> {
         let mut retry_state = RetryState::new(None);
 
         loop {
-            let client = self.group_client();
-            match client.retryable_pull(shard_id, last_key.clone()).await {
+            let client = ShardClient::new(
+                self.group_id,
+                shard_id,
+                self.router.clone(),
+                self.conn_manager.clone(),
+            );
+            match client.pull(last_key.clone()).await {
                 Ok(resp) => return Ok(resp),
                 Err(err) => {
                     retry_state.retry(err).await?;

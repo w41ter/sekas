@@ -20,7 +20,11 @@ use futures::{channel::mpsc, StreamExt};
 use tracing::{debug, error, info, warn};
 
 use crate::{
-    node::Replica, runtime::sync::WaitGroup, serverpb::v1::*, transport::TransportManager,
+    node::{metrics::*, Replica},
+    record_latency,
+    runtime::sync::WaitGroup,
+    serverpb::v1::*,
+    transport::TransportManager,
     NodeConfig, Result,
 };
 
@@ -296,9 +300,9 @@ impl MigrationCoordinator {
         self.clean_migration_state().await;
     }
 
-    async fn pull(&mut self, last_migrated_key: Vec<u8>) {
-        if let Err(e) = super::pull_shard(
-            &mut self.client,
+    async fn pull(&mut self, last_migrated_key: Option<Vec<u8>>) {
+        if let Err(e) = pull_shard(
+            &self.client,
             self.replica.as_ref(),
             &self.desc,
             last_migrated_key,
@@ -319,4 +323,29 @@ impl MigrationCoordinator {
     fn is_dest_group(&self) -> bool {
         self.group_id == self.desc.dest_group_id
     }
+}
+
+pub async fn pull_shard(
+    client: &MigrateClient,
+    replica: &Replica,
+    desc: &MigrationDesc,
+    last_migrated_key: Option<Vec<u8>>,
+) -> Result<()> {
+    record_latency!(take_pull_shard_metrics());
+    let shard_id = desc.get_shard_id();
+    let mut finished = false;
+    let mut last_key = last_migrated_key;
+    while !finished {
+        info!("pull shard chunk with last key {last_key:?}");
+        let shard_chunk = client.pull_shard_chunk(shard_id, last_key.clone()).await?;
+        info!("pull shard chunk with {} data", shard_chunk.len());
+        if shard_chunk.is_empty() {
+            finished = true;
+        } else {
+            last_key = Some(shard_chunk.last().unwrap().key.clone());
+        }
+        NODE_INGEST_CHUNK_TOTAL.inc();
+        replica.ingest(shard_id, shard_chunk, false).await?;
+    }
+    Ok(())
 }

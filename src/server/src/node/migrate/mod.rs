@@ -14,9 +14,5 @@
 
 mod ctrl;
 mod gc;
-mod pull;
 
-pub(crate) use self::{
-    ctrl::{ForwardCtx, MigrateController},
-    pull::{pull_shard, ShardChunkStream},
-};
+pub(crate) use self::ctrl::{ForwardCtx, MigrateController};

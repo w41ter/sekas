@@ -92,6 +92,36 @@ async fn move_shard(
     panic!("move shard is failed after 16 retries");
 }
 
+async fn validate(c: &ClusterClient, group_id: u64, shard_id: u64, range: std::ops::Range<u64>) {
+    let mut c = c.group(group_id);
+    for i in range {
+        let key = format!("key-{i}");
+        let expected_value = format!("value-{i}").as_bytes().to_vec();
+        let get = GetRequest {
+            key: key.as_bytes().to_vec(),
+        };
+        let req = Request::Get(ShardGetRequest {
+            shard_id,
+            get: Some(get),
+        });
+
+        let mut retry_state = RetryState::default();
+        loop {
+            match c.request(&req).await {
+                Ok(resp) => {
+                    let Response::Get(resp) = resp else { panic!("Invalid response type") };
+                    assert!(matches!(resp.value,
+                            Some(v) if v == expected_value));
+                    break;
+                }
+                Err(err) => {
+                    retry_state.retry(err).await.unwrap();
+                }
+            }
+        }
+    }
+}
+
 async fn insert(c: &ClusterClient, group_id: u64, shard_id: u64, range: std::ops::Range<u64>) {
     let mut c = c.group(group_id);
     for i in range {
@@ -262,6 +292,7 @@ fn single_replica_migration() {
         );
 
         move_shard(&c, &shard_desc, group_id_2, group_id_1).await;
+        validate(&c, group_id_2, shard_id, 0..1000).await;
     });
 }
 
@@ -366,7 +397,7 @@ fn abort_migration() {
 
         let mut group_client = c.group(group_id_2);
         // It will be reject by service busy?
-        // Ensure issue at least one shard migartion.
+        // Ensure issue at least one shard migration.
         while let Err(e) = group_client
             .accept_shard(group_id_1, src_epoch, &shard_desc)
             .await
@@ -374,7 +405,7 @@ fn abort_migration() {
             error!("accept shard: {e:?}");
             ctx.wait_election_timeout().await;
         }
-        // Ensure the formar shard migration is aborted by epoch not match.
+        // Ensure the former shard migration is aborted by epoch not match.
         while group_client
             .accept_shard(group_id_1, src_epoch, &shard_desc)
             .await
@@ -452,7 +483,7 @@ fn source_group_receive_duplicate_accepting_shard_request() {
 #[test]
 fn source_group_receive_many_accepting_shard_request() {
     block_on_current(async {
-        let mut ctx = TestContext::new("source-group-receive-many-accpeting-shard-request");
+        let mut ctx = TestContext::new("source-group-receive-many-accepting-shard-request");
         ctx.disable_all_balance();
         let nodes = ctx.bootstrap_servers(3).await;
         let node_ids = nodes.keys().cloned().collect::<Vec<_>>();

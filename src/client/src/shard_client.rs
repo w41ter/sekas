@@ -66,6 +66,30 @@ impl ShardClient {
         }
     }
 
+    pub async fn pull(&self, last_key: Option<Vec<u8>>) -> Result<Vec<ShardData>> {
+        let req = Request::Scan(ShardScanRequest {
+            shard_id: self.shard_id,
+            prefix: None,
+            limit: 0,
+            limit_bytes: 64 * 1024, // 64KB
+            exclude_start_key: true,
+            exclude_end_key: false,
+            start_key: last_key,
+            end_key: None,
+        });
+        let mut client = GroupClient::lazy(
+            self.group_id,
+            self.router.clone(),
+            self.conn_manager.clone(),
+        );
+        match client.request(&req).await? {
+            Response::Scan(ShardScanResponse { data }) => Ok(data),
+            _ => Err(Error::Internal(
+                "invalid response type, `ShardScanResponse` is required".into(),
+            )),
+        }
+    }
+
     async fn prefix_list_inner(&self, prefix: &[u8]) -> Result<Vec<Vec<u8>>> {
         let req = Request::Scan(ShardScanRequest {
             shard_id: self.shard_id,

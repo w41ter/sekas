@@ -16,66 +16,16 @@ use engula_api::server::v1::*;
 use tracing::{debug, info};
 
 use super::{LeaseState, Replica, ReplicaInfo};
-use crate::{
-    engine::{SnapshotMode, WriteBatch},
-    serverpb::v1::*,
-    Error, Result,
-};
+use crate::{engine::WriteBatch, serverpb::v1::*, Error, Result};
 
 impl Replica {
-    pub async fn fetch_shard_chunk(
+    pub async fn ingest(
         &self,
         shard_id: u64,
-        last_key: &[u8],
-        chunk_size: usize,
-    ) -> Result<ShardChunk> {
-        let _acl_guard = self.take_read_acl_guard().await;
-        self.check_migrating_request_early(shard_id)?;
-
-        let mut kvs = vec![];
-        let mut size = 0;
-
-        let snapshot_mode = SnapshotMode::Start {
-            start_key: if last_key.is_empty() {
-                None
-            } else {
-                Some(last_key)
-            },
-        };
-        let mut snapshot = self.group_engine.snapshot(shard_id, snapshot_mode)?;
-        for key_iter in snapshot.iter() {
-            let mut key_iter = key_iter?;
-            // NOTICE: Only migrate the first version.
-            if let Some(entry) = key_iter.next() {
-                let entry = entry?;
-                if entry.user_key() == last_key {
-                    continue;
-                }
-                let key: Vec<_> = entry.user_key().to_owned();
-                let value: Vec<_> = match entry.value() {
-                    Some(v) => v.to_owned(),
-                    None => {
-                        // Skip tombstone.
-                        continue;
-                    }
-                };
-                size += key.len() + value.len();
-                kvs.push(ShardData {
-                    key,
-                    value,
-                    version: super::eval::MIGRATING_KEY_VERSION,
-                });
-                if size > chunk_size {
-                    break;
-                }
-            }
-        }
-
-        Ok(ShardChunk { data: kvs })
-    }
-
-    pub async fn ingest(&self, shard_id: u64, chunk: ShardChunk, forwarded: bool) -> Result<()> {
-        if chunk.data.is_empty() {
+        chunk: Vec<ShardData>,
+        forwarded: bool,
+    ) -> Result<()> {
+        if chunk.is_empty() {
             return Ok(());
         }
 
@@ -83,15 +33,18 @@ impl Replica {
         self.check_migrating_request_early(shard_id)?;
 
         let mut wb = WriteBatch::default();
-        for data in &chunk.data {
-            self.group_engine
-                .put(&mut wb, shard_id, &data.key, &data.value, data.version)?;
+        for data in &chunk {
+            self.group_engine.put(
+                &mut wb,
+                shard_id,
+                &data.key,
+                &data.value,
+                super::eval::MIGRATING_KEY_VERSION,
+            )?;
         }
 
         let sync_op = if !forwarded {
-            Some(SyncOp::ingest(
-                chunk.data.last().as_ref().unwrap().key.clone(),
-            ))
+            Some(SyncOp::ingest(chunk.last().as_ref().unwrap().key.clone()))
         } else {
             None
         };

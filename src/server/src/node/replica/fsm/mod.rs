@@ -169,7 +169,7 @@ impl GroupStateMachine {
 
                 let state = MigrationState {
                     migration_desc: migration.migration_desc,
-                    last_migrated_key: vec![],
+                    last_migrated_key: None,
                     step: MigrationStep::Prepare as i32,
                 };
                 debug_assert!(state.migration_desc.is_some());
@@ -187,7 +187,7 @@ impl GroupStateMachine {
                 }
 
                 debug_assert!(state.step == MigrationStep::Migrating as i32);
-                state.last_migrated_key = migration.last_ingested_key;
+                state.last_migrated_key = Some(migration.last_ingested_key);
 
                 self.plugged_write_states.migration_state = Some(state);
             }

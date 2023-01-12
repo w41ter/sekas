@@ -174,7 +174,6 @@ simple_node_method!(create_replica);
 simple_node_method!(remove_replica);
 simple_node_method!(root_heartbeat);
 simple_node_method!(migrate);
-simple_node_method!(pull);
 simple_node_method!(forward);
 
 macro_rules! simple_root_method {

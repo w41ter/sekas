@@ -15,8 +15,6 @@
 use std::{
     collections::HashMap,
     future::Future,
-    pin::Pin,
-    task::Poll,
     time::{Duration, Instant},
 };
 
@@ -24,7 +22,6 @@ use engula_api::{
     server::v1::{group_request_union::Request, group_response_union::Response, *},
     shard,
 };
-use futures::StreamExt;
 use tonic::{Code, Status};
 use tracing::{debug, trace, warn};
 
@@ -32,10 +29,6 @@ use crate::{
     metrics::*, node_client::RpcTimeout, record_latency_opt, ConnManager, Error, NodeClient,
     RequestBatchBuilder, Result, Router, RouterGroupState,
 };
-
-pub struct RetryableShardChunkStreaming {
-    inner: Pin<Box<dyn futures::Stream<Item = Result<ShardChunk>> + Send + 'static>>,
-}
 
 #[derive(Clone, Debug, Default)]
 struct InvokeOpt<'a> {
@@ -643,104 +636,6 @@ impl GroupClient {
             ..Default::default()
         };
         self.invoke_with_opt(op, opt).await
-    }
-
-    pub async fn retryable_pull(
-        mut self,
-        shard_id: u64,
-        last_key: Vec<u8>,
-    ) -> Result<RetryableShardChunkStreaming> {
-        let streaming = self.pull(shard_id, &last_key).await?;
-        let retryable_streaming =
-            RetryableShardChunkStreaming::new(shard_id, last_key, self, streaming);
-        Ok(retryable_streaming)
-    }
-
-    async fn pull(
-        &mut self,
-        shard_id: u64,
-        last_key: &[u8],
-    ) -> Result<tonic::Streaming<ShardChunk>> {
-        let group_id = self.group_id;
-        let op = |_: InvokeContext, client: NodeClient| {
-            let request = PullRequest {
-                group_id,
-                shard_id,
-                last_key: last_key.to_owned(),
-            };
-            async move { client.pull(request).await }
-        };
-        let opt = InvokeOpt {
-            ignore_transport_error: true,
-            ..Default::default()
-        };
-        self.invoke_with_opt(op, opt).await
-    }
-}
-
-impl RetryableShardChunkStreaming {
-    pub fn new(
-        shard_id: u64,
-        last_key: Vec<u8>,
-        client: GroupClient,
-        streaming: tonic::Streaming<ShardChunk>,
-    ) -> Self {
-        let inner = retryable_chunk_stream(shard_id, last_key, client, streaming);
-        Self {
-            inner: Box::pin(inner),
-        }
-    }
-}
-
-fn retryable_chunk_stream(
-    shard_id: u64,
-    mut last_key: Vec<u8>,
-    mut client: GroupClient,
-    mut streaming: tonic::Streaming<ShardChunk>,
-) -> impl futures::Stream<Item = Result<ShardChunk>> {
-    async_stream::try_stream! {
-        loop {
-            match streaming.next().await {
-                None => break,
-                Some(Ok(item)) => {
-                    debug_assert!(!item.data.is_empty());
-                    last_key = item.data.last().unwrap().key.clone();
-                    yield item;
-                }
-                Some(Err(status)) => {
-                    if let Err(e) = client.apply_status(status, &InvokeOpt::default()) {
-                        warn!("shard {shard_id} fetch shard meet unretryable error: {e:?}");
-                        // TODO(walter) we can replace it with `Result::inspect_err` once `result_option_inspect` is stabled.
-                        Err(e)?;
-                        unreachable!();
-                    }
-
-                    // retry, by recreate new stream.
-                    GROUP_CLIENT_RETRY_TOTAL.inc();
-                    match client.pull(shard_id, &last_key).await {
-                        Ok(new_stream) => streaming = new_stream,
-                        Err(e) => {
-                            warn!("shard {shard_id} fetch shard recreate steam meet error: {e:?}");
-                            Err(e)?;
-                            unreachable!();
-                        },
-                    }
-                    debug!("recreated shard {shard_id} fetch shard stream");
-                }
-            }
-        }
-    }
-}
-
-impl futures::Stream for RetryableShardChunkStreaming {
-    type Item = Result<ShardChunk>;
-
-    fn poll_next(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> Poll<Option<Self::Item>> {
-        let me = self.get_mut();
-        Pin::new(&mut me.inner).poll_next(cx)
     }
 }
 

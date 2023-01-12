@@ -28,10 +28,7 @@ use engula_api::server::v1::*;
 use futures::{channel::mpsc, lock::Mutex};
 use tracing::{debug, info, warn};
 
-use self::{
-    job::StateChannel,
-    migrate::{MigrateController, ShardChunkStream},
-};
+use self::{job::StateChannel, migrate::MigrateController};
 pub use self::{
     replica::Replica,
     route_table::{RaftRouteTable, ReplicaRouteTable},
@@ -416,22 +413,6 @@ impl Node {
         forwardable_execute(&self.migrate_ctrl, &replica, &ExecCtx::default(), request).await
     }
 
-    pub async fn pull_shard_chunks(&self, request: PullRequest) -> Result<ShardChunkStream> {
-        let replica = match self.replica_route_table.find(request.group_id) {
-            Some(replica) => replica,
-            None => {
-                return Err(Error::GroupNotFound(request.group_id));
-            }
-        };
-        replica.check_migrating_request_early(request.shard_id)?;
-        Ok(ShardChunkStream::new(
-            request.shard_id,
-            self.cfg.shard_chunk_size,
-            request.last_key,
-            replica,
-        ))
-    }
-
     pub async fn forward(&self, request: ForwardRequest) -> Result<ForwardResponse> {
         use self::replica::retry::execute;
 
@@ -442,10 +423,7 @@ impl Node {
             }
         };
 
-        let ingest_chunk = ShardChunk {
-            data: request.forward_data,
-        };
-        // replica.ingest(request.shard_id, ingest_chunk, true).await?;
+        let ingest_chunk = request.forward_data;
         match replica.ingest(request.shard_id, ingest_chunk, true).await {
             Ok(_) | Err(Error::ShardNotFound(_)) => {
                 // Ingest success or shard is migrated.

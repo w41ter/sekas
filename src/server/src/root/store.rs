@@ -103,10 +103,9 @@ impl RootStore {
     async fn submit_request(&self, req: Request) -> Result<GroupResponse> {
         use crate::node::replica::{retry::execute, ExecCtx};
 
-        let epoch = self.replica.epoch();
         let request = GroupRequest {
             group_id: ROOT_GROUP_ID,
-            epoch,
+            epoch: self.replica.epoch(),
             request: Some(GroupRequestUnion { request: Some(req) }),
         };
 
