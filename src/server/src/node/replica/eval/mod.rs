@@ -17,14 +17,14 @@ mod cmd_batch_write;
 mod cmd_delete;
 mod cmd_get;
 mod cmd_move_replicas;
-mod cmd_prefix_list;
 mod cmd_put;
+mod cmd_scan;
 
 use engula_api::server::v1::ShardDesc;
 
 pub(crate) use self::{
     cmd_accept_shard::accept_shard, cmd_batch_write::batch_write, cmd_delete::delete, cmd_get::get,
-    cmd_move_replicas::move_replicas, cmd_prefix_list::prefix_list, cmd_put::put,
+    cmd_move_replicas::move_replicas, cmd_put::put, cmd_scan::scan,
 };
 use crate::serverpb::v1::EvalResult;
 

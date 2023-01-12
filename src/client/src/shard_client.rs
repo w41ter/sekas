@@ -67,9 +67,10 @@ impl ShardClient {
     }
 
     async fn prefix_list_inner(&self, prefix: &[u8]) -> Result<Vec<Vec<u8>>> {
-        let req = Request::PrefixList(ShardPrefixListRequest {
+        let req = Request::Scan(ShardScanRequest {
             shard_id: self.shard_id,
-            prefix: prefix.to_owned(),
+            prefix: Some(prefix.to_owned()),
+            ..Default::default()
         });
         let mut client = GroupClient::lazy(
             self.group_id,
@@ -77,9 +78,11 @@ impl ShardClient {
             self.conn_manager.clone(),
         );
         match client.request(&req).await? {
-            Response::PrefixList(ShardPrefixListResponse { values }) => Ok(values),
+            Response::Scan(ShardScanResponse { data }) => {
+                Ok(data.into_iter().map(|v| v.value).collect())
+            }
             _ => Err(Error::Internal(
-                "invalid response type, `SharedPrefixListResponse` is required".into(),
+                "invalid response type, `ShardScanResponse` is required".into(),
             )),
         }
     }

@@ -64,7 +64,7 @@ message GroupRequestUnion {
     ShardGetRequest get = 1;
     ShardPutRequest put = 2;
     ShardDeleteRequest delete = 3;
-    ShardPrefixListRequest prefix_list = 4;
+    ShardScanRequest scan = 4;
     BatchWriteRequest batch_write = 5;
 
     /// Add a new shard to an existing group.
@@ -93,7 +93,7 @@ message GroupResponseUnion {
     engula.v1.GetResponse get = 1;
     engula.v1.PutResponse put = 2;
     engula.v1.DeleteResponse delete = 3;
-    ShardPrefixListResponse prefix_list = 4;
+    ShardScanResponse scan = 4;
     BatchWriteResponse batch_write = 5;
     CreateShardResponse create_shard = 6;
     ChangeReplicasResponse change_replicas = 7;
@@ -128,6 +128,23 @@ message ShardGetRequest {
   uint64 shard_id = 1;
   engula.v1.GetRequest get = 2;
 }
+
+message ShardScanRequest {
+  /// The id of target shard.
+  uint64 shard_id = 1;
+  /// The maxminum number of key-values to fetch.
+  uint64 limit = 2;
+  /// Shoud include start key in result?
+  bool exclude_start_key = 3;
+  /// Shoud include end key in result?
+  bool exclude_end_key = 4;
+  /// Scan with prefix, if set then `start_key` and `end_key` will be ignored.
+  optional bytes prefix = 5;
+  optional bytes start_key = 6;
+  optional bytes end_key = 7;
+}
+
+message ShardScanResponse { repeated ShardData data = 1; }
 
 message ShardPrefixListRequest {
   uint64 shard_id = 1;

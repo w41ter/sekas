@@ -22,7 +22,7 @@ make_static_metric! {
             get,
             put,
             delete,
-            list,
+            scan,
             transfer,
             batch_write,
             accept_shard,
@@ -36,7 +36,7 @@ make_static_metric! {
             get,
             put,
             delete,
-            list,
+            scan,
             transfer,
             batch_write,
             accept_shard,
@@ -85,9 +85,9 @@ pub fn take_group_request_metrics(request: &GroupRequest) -> Option<&'static His
             NODE_SERVICE_GROUP_REQUEST_TOTAL.delete.inc();
             Some(&NODE_SERVICE_GROUP_REQUEST_DURATION_SECONDS.delete)
         }
-        Some(Request::PrefixList(_)) => {
-            NODE_SERVICE_GROUP_REQUEST_TOTAL.list.inc();
-            Some(&NODE_SERVICE_GROUP_REQUEST_DURATION_SECONDS.list)
+        Some(Request::Scan(_)) => {
+            NODE_SERVICE_GROUP_REQUEST_TOTAL.scan.inc();
+            Some(&NODE_SERVICE_GROUP_REQUEST_DURATION_SECONDS.scan)
         }
         Some(Request::BatchWrite(_)) => {
             NODE_SERVICE_GROUP_REQUEST_TOTAL.batch_write.inc();

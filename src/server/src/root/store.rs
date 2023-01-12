@@ -81,9 +81,10 @@ impl RootStore {
 
     pub async fn list(&self, shard_id: u64, prefix: &[u8]) -> Result<Vec<Vec<u8>>> {
         let resp = self
-            .submit_request(PrefixList(ShardPrefixListRequest {
+            .submit_request(Scan(ShardScanRequest {
                 shard_id,
-                prefix: prefix.to_owned(),
+                prefix: Some(prefix.to_owned()),
+                ..Default::default()
             }))
             .await?;
         let resp = resp
@@ -92,8 +93,8 @@ impl RootStore {
             .response
             .ok_or_else(|| Error::InvalidArgument("PrefixListUnionResponse".into()))?;
 
-        if let group_response_union::Response::PrefixList(resp) = resp {
-            Ok(resp.values)
+        if let group_response_union::Response::Scan(resp) = resp {
+            Ok(resp.data.into_iter().map(|v| v.value).collect())
         } else {
             Err(Error::InvalidArgument("PrefixListResponse".into()))
         }

@@ -746,7 +746,7 @@ impl futures::Stream for RetryableShardChunkStreaming {
 
 #[inline]
 fn is_read_only_request(request: &Request) -> bool {
-    matches!(request, Request::Get(_) | Request::PrefixList(_))
+    matches!(request, Request::Get(_) | Request::Scan(_))
 }
 
 fn is_executable(descriptor: &GroupDesc, request: &Request) -> bool {
@@ -760,7 +760,6 @@ fn is_executable(descriptor: &GroupDesc, request: &Request) -> bool {
         Request::Delete(req) => {
             is_target_shard_exists(descriptor, req.shard_id, &req.delete.as_ref().unwrap().key)
         }
-        Request::PrefixList(req) => is_target_shard_exists(descriptor, req.shard_id, &req.prefix),
         _ => false,
     }
 }

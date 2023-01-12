@@ -302,12 +302,41 @@ impl RequestBatchBuilder {
             group_id,
             epoch,
             request: Some(GroupRequestUnion {
-                request: Some(group_request_union::Request::PrefixList(
-                    ShardPrefixListRequest {
-                        shard_id,
-                        prefix: prefix.to_owned(),
-                    },
-                )),
+                request: Some(group_request_union::Request::Scan(ShardScanRequest {
+                    shard_id,
+                    prefix: Some(prefix.to_owned()),
+                    ..Default::default()
+                })),
+            }),
+        });
+        self
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn shard_scan(
+        mut self,
+        group_id: u64,
+        epoch: u64,
+        shard_id: u64,
+        limit: u64,
+        exclude_start_key: bool,
+        exclude_end_key: bool,
+        start_key: Option<Vec<u8>>,
+        end_key: Option<Vec<u8>>,
+    ) -> Self {
+        self.requests.push(GroupRequest {
+            group_id,
+            epoch,
+            request: Some(GroupRequestUnion {
+                request: Some(group_request_union::Request::Scan(ShardScanRequest {
+                    shard_id,
+                    limit,
+                    exclude_start_key,
+                    exclude_end_key,
+                    prefix: None,
+                    start_key,
+                    end_key,
+                })),
             }),
         });
         self

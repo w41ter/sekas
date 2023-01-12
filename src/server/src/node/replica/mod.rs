@@ -314,9 +314,9 @@ impl Replica {
                 let eval_result = eval::delete(exec_ctx, &self.group_engine, req).await?;
                 (Some(eval_result), Response::Delete(DeleteResponse {}))
             }
-            Request::PrefixList(req) => {
-                let eval_result = eval::prefix_list(&self.group_engine, req).await?;
-                (None, Response::PrefixList(eval_result))
+            Request::Scan(req) => {
+                let eval_result = eval::scan(&self.group_engine, req).await?;
+                (None, Response::Scan(eval_result))
             }
             Request::BatchWrite(req) => {
                 let eval_result = eval::batch_write(exec_ctx, &self.group_engine, req).await?;
@@ -511,6 +511,6 @@ pub(self) fn is_change_meta_request(request: &Request) -> bool {
         | Request::Put(_)
         | Request::Delete(_)
         | Request::BatchWrite(_)
-        | Request::PrefixList(_) => false,
+        | Request::Scan(_) => false,
     }
 }
