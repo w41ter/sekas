@@ -63,6 +63,7 @@ async fn scan_range(engine: &GroupEngine, req: &ShardScanRequest) -> Result<Shar
     };
     let mut snapshot = engine.snapshot(req.shard_id, snapshot_mode)?;
     let mut data = Vec::new();
+    let mut total_bytes = 0;
     for mvcc_iter in snapshot.iter() {
         let mut mvcc_iter = mvcc_iter?;
         if let Some(entry) = mvcc_iter.next() {
@@ -81,14 +82,19 @@ async fn scan_range(engine: &GroupEngine, req: &ShardScanRequest) -> Result<Shar
             }
 
             if let Some(value) = entry.value().map(ToOwned::to_owned) {
+                let key = entry.user_key().to_owned();
+                let version = entry.version();
+                total_bytes += value.len() + key.len();
                 data.push(ShardData {
-                    key: entry.user_key().to_owned(),
+                    key,
                     value,
-                    version: entry.version(),
+                    version,
                 });
             }
 
-            if req.limit != 0 && req.limit as usize == data.len() {
+            if (req.limit != 0 && req.limit as usize == data.len())
+                || (req.limit_bytes != 0 && req.limit_bytes as usize <= total_bytes)
+            {
                 break;
             }
         }

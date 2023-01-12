@@ -132,26 +132,21 @@ message ShardGetRequest {
 message ShardScanRequest {
   /// The id of target shard.
   uint64 shard_id = 1;
-  /// The maxminum number of key-values to fetch.
+  /// The maxminum key-values pairs to fetch, 0 means no limit.
   uint64 limit = 2;
+  /// The maxminum key-value bytes to fetch, 0 means no limit.
+  uint64 limit_bytes = 3;
   /// Shoud include start key in result?
-  bool exclude_start_key = 3;
+  bool exclude_start_key = 4;
   /// Shoud include end key in result?
-  bool exclude_end_key = 4;
+  bool exclude_end_key = 5;
   /// Scan with prefix, if set then `start_key` and `end_key` will be ignored.
-  optional bytes prefix = 5;
-  optional bytes start_key = 6;
-  optional bytes end_key = 7;
+  optional bytes prefix = 6;
+  optional bytes start_key = 7;
+  optional bytes end_key = 8;
 }
 
 message ShardScanResponse { repeated ShardData data = 1; }
-
-message ShardPrefixListRequest {
-  uint64 shard_id = 1;
-  bytes prefix = 2;
-}
-
-message ShardPrefixListResponse { repeated bytes values = 1; }
 
 message GetRootRequest {}
 

@@ -319,6 +319,7 @@ impl RequestBatchBuilder {
         epoch: u64,
         shard_id: u64,
         limit: u64,
+        limit_bytes: u64,
         exclude_start_key: bool,
         exclude_end_key: bool,
         start_key: Option<Vec<u8>>,
@@ -331,6 +332,7 @@ impl RequestBatchBuilder {
                 request: Some(group_request_union::Request::Scan(ShardScanRequest {
                     shard_id,
                     limit,
+                    limit_bytes,
                     exclude_start_key,
                     exclude_end_key,
                     prefix: None,
