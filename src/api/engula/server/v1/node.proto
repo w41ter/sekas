@@ -23,16 +23,7 @@ import "google/protobuf/field_mask.proto";
 
 service Node {
   rpc Batch(BatchRequest) returns (BatchResponse) {}
-  rpc GetRoot(GetRootRequest) returns (GetRootResponse) {}
-  rpc CreateReplica(CreateReplicaRequest) returns (CreateReplicaResponse) {}
-
-  /// RemoveReplica allows shuts down and deletes an orphan replica from the
-  /// specified node.
-  ///
-  /// It is only executed when the user specifies a newer `GroupDesc` and the
-  /// replica no longer belongs to the group.
-  rpc RemoveReplica(RemoveReplicaRequest) returns (RemoveReplicaResponse) {}
-  rpc RootHeartbeat(HeartbeatRequest) returns (HeartbeatResponse) {}
+  rpc Admin(NodeAdminRequest) returns (NodeAdminResponse) {}
 
   rpc Migrate(MigrateRequest) returns (MigrateResponse) {}
   rpc Forward(ForwardRequest) returns (ForwardResponse) {}
@@ -146,6 +137,30 @@ message ShardScanRequest {
 }
 
 message ShardScanResponse { repeated ShardData data = 1; }
+
+message NodeAdminRequest {
+  oneof request {
+    GetRootRequest get_root = 1;
+    CreateReplicaRequest create_replica = 2;
+
+    /// RemoveReplica allows shuts down and deletes an orphan replica from the
+    /// specified node.
+    ///
+    /// It is only executed when the user specifies a newer `GroupDesc` and the
+    /// replica no longer belongs to the group.
+    RemoveReplicaRequest remove_replica = 3;
+    HeartbeatRequest heartbeat = 4;
+  }
+}
+
+message NodeAdminResponse {
+  oneof response {
+    GetRootResponse get_root = 1;
+    CreateReplicaResponse create_replica = 2;
+    RemoveReplicaResponse remove_replica = 3;
+    HeartbeatResponse heartbeat = 4;
+  }
+}
 
 message GetRootRequest {}
 

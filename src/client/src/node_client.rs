@@ -38,9 +38,19 @@ impl Client {
 
     pub async fn get_root(&self) -> Result<RootDesc, tonic::Status> {
         let mut client = self.client.clone();
-        let req = GetRootRequest::default();
-        let res = client.get_root(req).await?;
-        Ok(res.into_inner().root.unwrap_or_default())
+        let resp = client
+            .admin(NodeAdminRequest {
+                request: Some(node_admin_request::Request::GetRoot(
+                    GetRootRequest::default(),
+                )),
+            })
+            .await?;
+        match resp.into_inner().response {
+            Some(node_admin_response::Response::GetRoot(resp)) => Ok(resp.root.unwrap_or_default()),
+            _ => Err(tonic::Status::internal(
+                "Invalid response type, `GetRootResponse` is required".to_owned(),
+            )),
+        }
     }
 
     // NOTE: This method is always called by the root group.
@@ -54,8 +64,17 @@ impl Client {
             replica_id,
             group: Some(group_desc),
         };
-        client.create_replica(req).await?;
-        Ok(())
+        let resp = client
+            .admin(NodeAdminRequest {
+                request: Some(node_admin_request::Request::CreateReplica(req)),
+            })
+            .await?;
+        match resp.into_inner().response {
+            Some(node_admin_response::Response::CreateReplica(_)) => Ok(()),
+            _ => Err(tonic::Status::internal(
+                "Invalid response type, `CreateReplicaResponse` is required".to_owned(),
+            )),
+        }
     }
 
     // NOTE: This method is always called by the root group.
@@ -69,8 +88,17 @@ impl Client {
             replica_id,
             group: Some(group),
         };
-        client.remove_replica(req).await?;
-        Ok(())
+        let resp = client
+            .admin(NodeAdminRequest {
+                request: Some(node_admin_request::Request::RemoveReplica(req)),
+            })
+            .await?;
+        match resp.into_inner().response {
+            Some(node_admin_response::Response::RemoveReplica(_)) => Ok(()),
+            _ => Err(tonic::Status::internal(
+                "Invalid response type, `RemoveReplicaResponse` is required".to_owned(),
+            )),
+        }
     }
 
     pub async fn batch_group_requests(
@@ -87,8 +115,17 @@ impl Client {
         req: HeartbeatRequest,
     ) -> Result<HeartbeatResponse, tonic::Status> {
         let mut client = self.client.clone();
-        let res = client.root_heartbeat(req).await?;
-        Ok(res.into_inner())
+        let resp = client
+            .admin(NodeAdminRequest {
+                request: Some(node_admin_request::Request::Heartbeat(req)),
+            })
+            .await?;
+        match resp.into_inner().response {
+            Some(node_admin_response::Response::Heartbeat(resp)) => Ok(resp),
+            _ => Err(tonic::Status::internal(
+                "Invalid response type, `HeartbeatResponse` is required".to_owned(),
+            )),
+        }
     }
 
     pub async fn forward(&self, req: ForwardRequest) -> Result<ForwardResponse, tonic::Status> {

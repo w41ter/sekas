@@ -22,7 +22,7 @@ use crate::{
     Error, Server,
 };
 
-#[tonic::async_trait]
+#[crate::async_trait]
 impl node_server::Node for Server {
     async fn batch(
         &self,
@@ -53,51 +53,89 @@ impl node_server::Node for Server {
         }
     }
 
-    async fn get_root(
+    async fn admin(
         &self,
-        _request: Request<GetRootRequest>,
-    ) -> Result<Response<GetRootResponse>, Status> {
+        request: Request<NodeAdminRequest>,
+    ) -> Result<Response<NodeAdminResponse>, Status> {
+        let request = request.into_inner();
+        let Some(request) = request.request else {
+            return Err(Status::invalid_argument("AdminRequest::request is empty".to_owned()));
+        };
+        let resp = match request {
+            node_admin_request::Request::GetRoot(_) => {
+                node_admin_response::Response::GetRoot(self.get_root().await?)
+            }
+            node_admin_request::Request::CreateReplica(req) => {
+                node_admin_response::Response::CreateReplica(self.create_replica(req).await?)
+            }
+            node_admin_request::Request::RemoveReplica(req) => {
+                node_admin_response::Response::RemoveReplica(self.remove_replica(req).await?)
+            }
+            node_admin_request::Request::Heartbeat(req) => {
+                node_admin_response::Response::Heartbeat(self.root_heartbeat(req).await?)
+            }
+        };
+        Ok(Response::new(NodeAdminResponse {
+            response: Some(resp),
+        }))
+    }
+
+    async fn migrate(
+        &self,
+        request: Request<MigrateRequest>,
+    ) -> Result<Response<MigrateResponse>, Status> {
+        record_latency!(take_migrate_request_metrics());
+        let req = request.into_inner();
+        let resp = self.node.migrate(req).await?;
+        Ok(Response::new(resp))
+    }
+
+    async fn forward(
+        &self,
+        request: Request<ForwardRequest>,
+    ) -> Result<Response<ForwardResponse>, Status> {
+        record_latency!(take_forward_request_metrics());
+        let req = request.into_inner();
+        let resp = self.node.forward(req).await?;
+        Ok(Response::new(resp))
+    }
+}
+
+impl Server {
+    async fn get_root(&self) -> Result<GetRootResponse, Status> {
         record_latency!(take_get_root_request_metrics());
         let root = self.node.get_root().await;
-        Ok(Response::new(GetRootResponse { root: Some(root) }))
+        Ok(GetRootResponse { root: Some(root) })
     }
 
     async fn create_replica(
         &self,
-        request: Request<CreateReplicaRequest>,
-    ) -> Result<Response<CreateReplicaResponse>, Status> {
+        request: CreateReplicaRequest,
+    ) -> Result<CreateReplicaResponse, Status> {
         record_latency!(take_create_replica_request_metrics());
-        let request = request.into_inner();
         let group_desc = request
             .group
             .ok_or_else(|| Status::invalid_argument("the field `group` is empty"))?;
         let replica_id = request.replica_id;
         self.node.create_replica(replica_id, group_desc).await?;
-        Ok(Response::new(CreateReplicaResponse {}))
+        Ok(CreateReplicaResponse {})
     }
 
     async fn remove_replica(
         &self,
-        request: Request<RemoveReplicaRequest>,
-    ) -> Result<Response<RemoveReplicaResponse>, Status> {
+        request: RemoveReplicaRequest,
+    ) -> Result<RemoveReplicaResponse, Status> {
         record_latency!(take_remove_replica_request_metrics());
-        let request = request.into_inner();
         let group_desc = request
             .group
             .ok_or_else(|| Status::invalid_argument("the field `group` is empty"))?;
         let replica_id = request.replica_id;
         self.node.remove_replica(replica_id, &group_desc).await?;
-        Ok(Response::new(RemoveReplicaResponse {}))
+        Ok(RemoveReplicaResponse {})
     }
 
-    async fn root_heartbeat(
-        &self,
-        request: Request<HeartbeatRequest>,
-    ) -> Result<Response<HeartbeatResponse>, Status> {
-        use engula_api::server::v1::{piggyback_request, piggyback_response};
-
+    async fn root_heartbeat(&self, request: HeartbeatRequest) -> Result<HeartbeatResponse, Status> {
         record_latency!(take_root_heartbeat_request_metrics());
-        let request = request.into_inner();
         let mut piggybacks_resps = Vec::with_capacity(request.piggybacks.len());
 
         for req in request.piggybacks {
@@ -128,35 +166,13 @@ impl node_server::Node for Server {
         }
 
         let root = self.node.get_root().await;
-        Ok(Response::new(HeartbeatResponse {
+        Ok(HeartbeatResponse {
             timestamp: request.timestamp,
             root_epoch: root.epoch,
             piggybacks: piggybacks_resps,
-        }))
+        })
     }
 
-    async fn migrate(
-        &self,
-        request: Request<MigrateRequest>,
-    ) -> Result<Response<MigrateResponse>, Status> {
-        record_latency!(take_migrate_request_metrics());
-        let req = request.into_inner();
-        let resp = self.node.migrate(req).await?;
-        Ok(Response::new(resp))
-    }
-
-    async fn forward(
-        &self,
-        request: Request<ForwardRequest>,
-    ) -> Result<Response<ForwardResponse>, Status> {
-        record_latency!(take_forward_request_metrics());
-        let req = request.into_inner();
-        let resp = self.node.forward(req).await?;
-        Ok(Response::new(resp))
-    }
-}
-
-impl Server {
     async fn update_root(&self, req: SyncRootRequest) -> crate::Result<SyncRootResponse> {
         if let Some(root) = req.root {
             self.node.update_root(root).await?;

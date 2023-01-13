@@ -28,7 +28,7 @@ use engula_client::{
 };
 use socket2::{Domain, Socket, Type};
 use tokio::sync::oneshot;
-use tonic::{transport::Endpoint, Response};
+use tonic::transport::Endpoint;
 use tracing::info;
 
 pub fn setup_panic_hook() {
@@ -58,34 +58,10 @@ impl node_server::Node for MockedServer {
         todo!()
     }
 
-    async fn get_root(
+    async fn admin(
         &self,
-        request: tonic::Request<engula_api::server::v1::GetRootRequest>,
-    ) -> Result<tonic::Response<engula_api::server::v1::GetRootResponse>, tonic::Status> {
-        info!("receive get root");
-        Ok(Response::new(GetRootResponse {
-            root: Some(RootDesc::default()),
-        }))
-    }
-
-    async fn create_replica(
-        &self,
-        request: tonic::Request<engula_api::server::v1::CreateReplicaRequest>,
-    ) -> Result<tonic::Response<engula_api::server::v1::CreateReplicaResponse>, tonic::Status> {
-        todo!()
-    }
-
-    async fn remove_replica(
-        &self,
-        request: tonic::Request<engula_api::server::v1::RemoveReplicaRequest>,
-    ) -> Result<tonic::Response<engula_api::server::v1::RemoveReplicaResponse>, tonic::Status> {
-        todo!()
-    }
-
-    async fn root_heartbeat(
-        &self,
-        request: tonic::Request<engula_api::server::v1::HeartbeatRequest>,
-    ) -> Result<tonic::Response<engula_api::server::v1::HeartbeatResponse>, tonic::Status> {
+        request: tonic::Request<engula_api::server::v1::NodeAdminRequest>,
+    ) -> Result<tonic::Response<engula_api::server::v1::NodeAdminResponse>, tonic::Status> {
         todo!()
     }
 
