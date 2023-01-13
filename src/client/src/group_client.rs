@@ -595,13 +595,9 @@ impl GroupClient {
 // Migration related functions, which will be retried at:
 // `engula-client::migrate_client::MigrateClient`.
 impl GroupClient {
-    pub async fn setup_migration(&mut self, desc: &MigrationDesc) -> Result<MigrateResponse> {
-        let op = |_: InvokeContext, client: NodeClient| {
-            let req = MigrateRequest {
-                desc: Some(desc.clone()),
-                action: MigrateAction::Setup as i32,
-            };
-            async move { client.migrate(req).await }
+    pub async fn setup_migration(&mut self, desc: &MigrationDesc) -> Result<()> {
+        let op = |_: InvokeContext, client: NodeClient| async move {
+            client.setup_migration(desc.clone()).await
         };
         let opt = InvokeOpt {
             accurate_epoch: true,
@@ -611,13 +607,9 @@ impl GroupClient {
         self.invoke_with_opt(op, opt).await
     }
 
-    pub async fn commit_migration(&mut self, desc: &MigrationDesc) -> Result<MigrateResponse> {
-        let op = |_: InvokeContext, client: NodeClient| {
-            let req = MigrateRequest {
-                desc: Some(desc.clone()),
-                action: MigrateAction::Commit as i32,
-            };
-            async move { client.migrate(req).await }
+    pub async fn commit_migration(&mut self, desc: &MigrationDesc) -> Result<()> {
+        let op = |_: InvokeContext, client: NodeClient| async move {
+            client.commit_migration(desc.clone()).await
         };
         let opt = InvokeOpt {
             ignore_transport_error: true,

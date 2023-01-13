@@ -447,12 +447,8 @@ impl Node {
     }
 
     // This request is issued by dest group.
-    pub async fn migrate(&self, request: MigrateRequest) -> Result<MigrateResponse> {
+    pub async fn migrate(&self, event: MigrationEvent, desc: MigrationDesc) -> Result<()> {
         use self::replica::retry::do_migration;
-
-        let desc = request
-            .desc
-            .ok_or_else(|| Error::InvalidArgument("MigrateRequest::desc".to_owned()))?;
 
         if desc.shard_desc.is_none() {
             return Err(Error::InvalidArgument(
@@ -468,12 +464,8 @@ impl Node {
             }
         };
 
-        let Some(action) = MigrateAction::from_i32(request.action) else {
-            return Err(Error::InvalidArgument("unknown action".to_owned()));
-        };
-
-        do_migration(&replica, action, &desc).await?;
-        Ok(MigrateResponse {})
+        do_migration(&replica, event, &desc).await?;
+        Ok(())
     }
 
     #[inline]

@@ -31,13 +31,13 @@ impl MigrateClient {
             conn_manager,
         }
     }
-    pub async fn setup_migration(&mut self, desc: &MigrationDesc) -> Result<MigrateResponse> {
+    pub async fn setup_migration(&mut self, desc: &MigrationDesc) -> Result<()> {
         let mut retry_state = RetryState::new(None);
 
         loop {
             let mut client = self.group_client();
             match client.setup_migration(desc).await {
-                Ok(resp) => return Ok(resp),
+                Ok(()) => return Ok(()),
                 e @ Err(Error::EpochNotMatch(..)) => return e,
                 Err(err) => {
                     retry_state.retry(err).await?;
@@ -46,13 +46,13 @@ impl MigrateClient {
         }
     }
 
-    pub async fn commit_migration(&mut self, desc: &MigrationDesc) -> Result<MigrateResponse> {
+    pub async fn commit_migration(&mut self, desc: &MigrationDesc) -> Result<()> {
         let mut retry_state = RetryState::new(None);
 
         loop {
             let mut client = self.group_client();
             match client.commit_migration(desc).await {
-                Ok(resp) => return Ok(resp),
+                Ok(()) => return Ok(()),
                 Err(err) => {
                     retry_state.retry(err).await?;
                 }

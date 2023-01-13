@@ -130,14 +130,51 @@ impl Client {
 
     pub async fn forward(&self, req: ForwardRequest) -> Result<ForwardResponse, tonic::Status> {
         let mut client = self.client.clone();
-        let res = client.forward(req).await?;
-        Ok(res.into_inner())
+        let resp = client
+            .migrate(MigrateRequest {
+                request: Some(migrate_request::Request::Forward(req)),
+            })
+            .await?;
+        match resp.into_inner().response {
+            Some(migrate_response::Response::Forward(resp)) => Ok(resp),
+            _ => Err(tonic::Status::internal(
+                "Invalid response type, `ForwardResponse` is required".to_owned(),
+            )),
+        }
     }
 
-    pub async fn migrate(&self, req: MigrateRequest) -> Result<MigrateResponse, tonic::Status> {
+    pub async fn setup_migration(&self, desc: MigrationDesc) -> Result<(), tonic::Status> {
         let mut client = self.client.clone();
-        let res = client.migrate(req).await?;
-        Ok(res.into_inner())
+        let resp = client
+            .migrate(MigrateRequest {
+                request: Some(migrate_request::Request::Setup(SetupMigrationRequest {
+                    desc: Some(desc),
+                })),
+            })
+            .await?;
+        match resp.into_inner().response {
+            Some(migrate_response::Response::Setup(_)) => Ok(()),
+            _ => Err(tonic::Status::internal(
+                "Invalid response type, `SetupMigrationDesc` is required".to_owned(),
+            )),
+        }
+    }
+
+    pub async fn commit_migration(&self, desc: MigrationDesc) -> Result<(), tonic::Status> {
+        let mut client = self.client.clone();
+        let resp = client
+            .migrate(MigrateRequest {
+                request: Some(migrate_request::Request::Commit(CommitMigrationRequest {
+                    desc: Some(desc),
+                })),
+            })
+            .await?;
+        match resp.into_inner().response {
+            Some(migrate_response::Response::Commit(_)) => Ok(()),
+            _ => Err(tonic::Status::internal(
+                "Invalid response type, `CommitMigrationDesc` is required".to_owned(),
+            )),
+        }
     }
 }
 

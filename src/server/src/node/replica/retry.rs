@@ -22,18 +22,20 @@ use engula_api::{
 use super::{ExecCtx, Replica};
 use crate::{
     node::{metrics::NODE_RETRY_TOTAL, migrate::MigrateController},
+    serverpb::v1::MigrationEvent,
     Error, Result,
 };
 
 pub async fn do_migration(
     replica: &Replica,
-    action: MigrateAction,
+    event: MigrationEvent,
     desc: &MigrationDesc,
 ) -> Result<()> {
     loop {
-        let resp = match action {
-            MigrateAction::Setup => replica.setup_migration(desc).await,
-            MigrateAction::Commit => replica.commit_migration(desc).await,
+        let resp = match event {
+            MigrationEvent::Setup => replica.setup_migration(desc).await,
+            MigrationEvent::Commit => replica.commit_migration(desc).await,
+            _ => panic!("Unexpected migration event"),
         };
         match resp {
             Ok(()) => return Ok(()),

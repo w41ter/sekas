@@ -19,6 +19,7 @@ use super::metrics::*;
 use crate::{
     record_latency, record_latency_opt,
     runtime::{DispatchHandle, TaskPriority},
+    serverpb::v1::MigrationEvent,
     Error, Server,
 };
 
@@ -84,24 +85,43 @@ impl node_server::Node for Server {
         &self,
         request: Request<MigrateRequest>,
     ) -> Result<Response<MigrateResponse>, Status> {
-        record_latency!(take_migrate_request_metrics());
         let req = request.into_inner();
-        let resp = self.node.migrate(req).await?;
-        Ok(Response::new(resp))
-    }
-
-    async fn forward(
-        &self,
-        request: Request<ForwardRequest>,
-    ) -> Result<Response<ForwardResponse>, Status> {
-        record_latency!(take_forward_request_metrics());
-        let req = request.into_inner();
-        let resp = self.node.forward(req).await?;
-        Ok(Response::new(resp))
+        let Some(req) = req.request else {
+            return Err(Status::invalid_argument("MigrateRequest::request is empty"));
+        };
+        let resp = match req {
+            migrate_request::Request::Forward(req) => {
+                migrate_response::Response::Forward(self.forward(req).await?)
+            }
+            migrate_request::Request::Setup(req) => {
+                let Some(desc) = req.desc else {
+                    return Err(Status::invalid_argument("SetupMigrationRequest::desc is empty".to_owned()));
+                };
+                record_latency!(take_migrate_request_metrics());
+                self.node.migrate(MigrationEvent::Setup, desc).await?;
+                migrate_response::Response::Setup(SetupMigrationResponse::default())
+            }
+            migrate_request::Request::Commit(req) => {
+                let Some(desc) = req.desc else {
+                    return Err(Status::invalid_argument("CommitMigrationRequest::desc is empty".to_owned()));
+                };
+                record_latency!(take_migrate_request_metrics());
+                self.node.migrate(MigrationEvent::Commit, desc).await?;
+                migrate_response::Response::Commit(CommitMigrationResponse::default())
+            }
+        };
+        Ok(Response::new(MigrateResponse {
+            response: Some(resp),
+        }))
     }
 }
 
 impl Server {
+    async fn forward(&self, request: ForwardRequest) -> Result<ForwardResponse, Status> {
+        record_latency!(take_forward_request_metrics());
+        Ok(self.node.forward(request).await?)
+    }
+
     async fn get_root(&self) -> Result<GetRootResponse, Status> {
         record_latency!(take_get_root_request_metrics());
         let root = self.node.get_root().await;

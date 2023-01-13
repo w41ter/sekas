@@ -71,13 +71,6 @@ impl node_server::Node for MockedServer {
     ) -> Result<tonic::Response<engula_api::server::v1::MigrateResponse>, tonic::Status> {
         todo!()
     }
-
-    async fn forward(
-        &self,
-        request: tonic::Request<engula_api::server::v1::ForwardRequest>,
-    ) -> Result<tonic::Response<engula_api::server::v1::ForwardResponse>, tonic::Status> {
-        todo!()
-    }
 }
 
 #[tokio::test]

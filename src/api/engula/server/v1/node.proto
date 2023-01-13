@@ -23,10 +23,10 @@ import "google/protobuf/field_mask.proto";
 
 service Node {
   rpc Batch(BatchRequest) returns (BatchResponse) {}
+  /// A set methods to manipulate node.
   rpc Admin(NodeAdminRequest) returns (NodeAdminResponse) {}
-
+  /// A set methods about shard migration.
   rpc Migrate(MigrateRequest) returns (MigrateResponse) {}
-  rpc Forward(ForwardRequest) returns (ForwardResponse) {}
 }
 
 message BatchRequest {
@@ -330,17 +330,27 @@ message MoveReplicasResponse {
   ScheduleState schedule_state = 1;
 }
 
-message PullRequest {
-  uint64 group_id = 1;
-  uint64 shard_id = 2;
-  bytes last_key = 3;
-}
-
 message ShardData {
   /// The user key.
   bytes key = 1;
   bytes value = 2;
   uint64 version = 3;
+}
+
+message MigrateRequest {
+  oneof request {
+    ForwardRequest forward = 1;
+    SetupMigrationRequest setup = 2;
+    CommitMigrationRequest commit = 3;
+  }
+}
+
+message MigrateResponse {
+  oneof response {
+    ForwardResponse forward = 1;
+    SetupMigrationResponse setup = 2;
+    CommitMigrationResponse commit = 3;
+  }
 }
 
 message ForwardRequest {
@@ -354,15 +364,14 @@ message ForwardResponse {
   GroupResponseUnion response = 1;
 }
 
-message MigrateRequest {
+message SetupMigrationRequest {
   MigrationDesc desc = 1;
-
-  enum Action {
-    SETUP = 0;
-    COMMIT = 1;
-  }
-
-  Action action = 2;
 }
 
-message MigrateResponse {}
+message SetupMigrationResponse {}
+
+message CommitMigrationRequest {
+  MigrationDesc desc = 1;
+}
+
+message CommitMigrationResponse {}
