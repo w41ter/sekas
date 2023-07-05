@@ -1033,7 +1033,11 @@ impl PutBatchBuilder {
             .cloned()
             .map(|(shard_id, key, value)| ShardPutRequest {
                 shard_id,
-                put: Some(PutRequest { key, value }),
+                put: Some(PutRequest {
+                    key,
+                    value,
+                    ..Default::default()
+                }),
             })
             .collect::<Vec<_>>();
         BatchWriteRequest {

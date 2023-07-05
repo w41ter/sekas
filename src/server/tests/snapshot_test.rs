@@ -61,6 +61,7 @@ async fn insert(c: &ClusterClient, group_id: u64, shard_id: u64, range: std::ops
         let put = PutRequest {
             key: key.as_bytes().to_vec(),
             value: value.as_bytes().to_vec(),
+            ..Default::default()
         };
         let req = Request::Put(ShardPutRequest {
             shard_id,
