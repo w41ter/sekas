@@ -94,6 +94,7 @@ impl engula_server::Engula for ProxyServer {
             Request::Get(req) => Response::Get(self.handle_get(collection, req).await?),
             Request::Put(req) => Response::Put(self.handle_put(collection, req).await?),
             Request::Delete(req) => Response::Delete(self.handle_delete(collection, req).await?),
+            Request::Batch(req) => Response::Batch(self.handle_batch(collection, req).await?),
         };
         Ok(tonic::Response::new(DatabaseResponse {
             response: Some(CollectionResponse {
@@ -254,5 +255,14 @@ impl ProxyServer {
         let collection = Collection::new(self.client.clone(), desc, None);
         collection.delete(req.key).await?;
         Ok(DeleteResponse {})
+    }
+
+    async fn handle_batch(
+        &self,
+        desc: CollectionDesc,
+        req: WriteBatchRequest,
+    ) -> Result<WriteBatchResponse, Status> {
+        let collection = Collection::new(self.client.clone(), desc, None);
+        Ok(collection.write_batch(req).await?)
     }
 }

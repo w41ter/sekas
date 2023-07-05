@@ -116,6 +116,7 @@ impl ShardClient {
             shard_id: self.shard_id,
             delete: Some(DeleteRequest {
                 key: key.to_owned(),
+                ..Default::default()
             }),
         });
         let mut client = GroupClient::lazy(

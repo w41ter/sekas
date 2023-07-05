@@ -220,7 +220,11 @@ impl RequestBatchBuilder {
             request: Some(GroupRequestUnion {
                 request: Some(group_request_union::Request::Put(ShardPutRequest {
                     shard_id,
-                    put: Some(PutRequest { key, value }),
+                    put: Some(PutRequest {
+                        key,
+                        value,
+                        ..Default::default()
+                    }),
                 })),
             }),
         });
@@ -234,7 +238,10 @@ impl RequestBatchBuilder {
             request: Some(GroupRequestUnion {
                 request: Some(group_request_union::Request::Delete(ShardDeleteRequest {
                     shard_id,
-                    delete: Some(DeleteRequest { key }),
+                    delete: Some(DeleteRequest {
+                        key,
+                        ..Default::default()
+                    }),
                 })),
             }),
         });
