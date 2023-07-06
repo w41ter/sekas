@@ -41,7 +41,11 @@ impl RootStore {
     pub async fn put(&self, shard_id: u64, key: Vec<u8>, value: Vec<u8>) -> Result<()> {
         self.submit_request(Put(ShardPutRequest {
             shard_id,
-            put: Some(PutRequest { key, value, ..Default::default() }),
+            put: Some(PutRequest {
+                key,
+                value,
+                ..Default::default()
+            }),
         }))
         .await?;
         Ok(())
