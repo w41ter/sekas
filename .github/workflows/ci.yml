@@ -22,7 +22,6 @@ env:
   CI: 1
 
 on:
-  push:
   pull_request:
     paths-ignore:
       - "docs/**"
