@@ -233,6 +233,7 @@ make_static_metric! {
             get,
             put,
             delete,
+            batch,
         }
     }
     pub struct DatabaseRequestDuration: Histogram {
@@ -240,6 +241,7 @@ make_static_metric! {
             get,
             put,
             delete,
+            batch,
         }
     }
 }
@@ -283,6 +285,10 @@ pub fn take_database_request_metrics(
         Request::Delete(_) => {
             PROXY_SERVICE_DATABASE_REQUEST_TOTAL.delete.inc();
             &PROXY_SERVICE_DATABASE_REQUEST_DURATION_SECONDS.delete
+        }
+        Request::Batch(_) => {
+            PROXY_SERVICE_DATABASE_REQUEST_TOTAL.batch.inc();
+            &PROXY_SERVICE_DATABASE_REQUEST_DURATION_SECONDS.batch
         }
     }
 }

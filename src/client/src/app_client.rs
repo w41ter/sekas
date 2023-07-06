@@ -345,6 +345,10 @@ impl Collection {
         }
     }
 
+    pub async fn write_batch(&self, _req: WriteBatchRequest) -> AppResult<WriteBatchResponse> {
+        todo!()
+    }
+
     async fn delete_inner(&self, key: &[u8], timeout: Option<Duration>) -> crate::Result<()> {
         let router = self.client.inner.router.clone();
         let (group, shard) = router.find_shard(self.co_desc.clone(), key)?;
@@ -357,6 +361,7 @@ impl Collection {
             shard_id: shard.id,
             delete: Some(DeleteRequest {
                 key: key.to_owned(),
+                ..Default::default()
             }),
         });
         if let Some(duration) = timeout {
@@ -384,6 +389,7 @@ impl Collection {
             put: Some(PutRequest {
                 key: key.to_owned(),
                 value: value.to_owned(),
+                ..Default::default()
             }),
         });
         if let Some(duration) = timeout {

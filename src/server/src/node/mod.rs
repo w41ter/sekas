@@ -988,6 +988,7 @@ mod tests {
                     put: Some(PutRequest {
                         key: vec![0u8; 10],
                         value: vec![0u8; 10],
+                        ..Default::default()
                     }),
                 });
                 replica.execute(&mut ctx, &request).await.unwrap();
@@ -1066,6 +1067,7 @@ mod tests {
                     put: Some(PutRequest {
                         key: vec![0u8; 10],
                         value: vec![0u8; 10],
+                        ..Default::default()
                     }),
                 });
                 replica.execute(&mut ctx, &request).await.unwrap();

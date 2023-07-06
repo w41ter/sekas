@@ -148,6 +148,7 @@ message CollectionRequestUnion {
     GetRequest get = 1;
     PutRequest put = 2;
     DeleteRequest delete = 3;
+    WriteBatchRequest batch = 4;
   }
 }
 
@@ -156,6 +157,7 @@ message CollectionResponseUnion {
     GetResponse get = 1;
     PutResponse put = 2;
     DeleteResponse delete = 3;
+    WriteBatchResponse batch = 4;
   }
 }
 
@@ -163,13 +165,47 @@ message GetRequest { bytes key = 1; }
 
 message GetResponse { optional bytes value = 1; }
 
+enum WriteConditionType {
+  EXISTS = 0;
+  NOT_EXISTS = 1;
+  EXPECT_VALUE = 2;
+  EXPECT_VERSION = 3;
+}
+
+message WriteCondition {
+  WriteConditionType type = 1;
+  bytes value = 2;
+  uint64 version = 3;
+}
+
 message PutRequest {
   bytes key = 1;
   bytes value = 2;
+
+  // Time to live, in seconds.
+  uint64 ttl = 3;
+
+  // CAS operations
+  repeated WriteCondition conditions = 4;
 }
 
 message PutResponse {}
 
-message DeleteRequest { bytes key = 1; }
+message DeleteRequest {
+  bytes key = 1;
+
+  // CAS operations
+  repeated WriteCondition conditions = 2;
+}
 
 message DeleteResponse {}
+
+message WriteBatchRequest {
+  repeated PutRequest puts = 1;
+  repeated DeleteRequest deletes = 2;
+}
+
+message WriteBatchResponse {
+  repeated PutResponse puts = 1;
+  repeated DeleteResponse deletes = 2;
+}
