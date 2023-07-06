@@ -243,7 +243,9 @@ impl ProxyServer {
         req: PutRequest,
     ) -> Result<PutResponse, Status> {
         let collection = Collection::new(self.client.clone(), desc, None);
-        collection.put(req.key, req.value).await?;
+        collection
+            .put(req.key, req.value, Some(req.ttl), req.conditions)
+            .await?;
         Ok(PutResponse {})
     }
 
@@ -253,7 +255,7 @@ impl ProxyServer {
         req: DeleteRequest,
     ) -> Result<DeleteResponse, Status> {
         let collection = Collection::new(self.client.clone(), desc, None);
-        collection.delete(req.key).await?;
+        collection.delete(req.key, req.conditions).await?;
         Ok(DeleteResponse {})
     }
 

@@ -80,7 +80,9 @@ fn admin_delete() {
                 .create_collection("test_co1".into(), Some(Partition::Hash { slots: 1 }))
                 .await
                 .unwrap();
-            c1.put("k1".into(), "v1".into()).await.unwrap();
+            c1.put("k1".into(), "v1".into(), None, vec![])
+                .await
+                .unwrap();
             db.delete_collection("test_co1".into()).await.unwrap();
             assert!(db.open_collection("test_co1".into()).await.is_err());
             db.create_collection("test_co1".into(), Some(Partition::Hash { slots: 1 }))

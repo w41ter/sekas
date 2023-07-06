@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 use engula_api::server::v1::{GroupDesc, ReplicaDesc, RootDesc};
+use futures::channel::oneshot;
 
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
@@ -93,6 +94,9 @@ pub enum Error {
 
     #[error("abort schedule task, {0}")]
     AbortScheduleTask(&'static str),
+    
+    #[error("row lock is busy")]
+    RowLockBusy(oneshot::Receiver<()>),
 }
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;
@@ -162,6 +166,7 @@ impl From<Error> for tonic::Status {
             Error::Forward(_) => panic!("Forward only used inside node"),
             Error::ServiceIsBusy(_) => panic!("ServiceIsBusy only used inside node"),
             Error::GroupNotReady(_) => panic!("GroupNotReady only used inside node"),
+            Error::RowLockBusy(_) => panic!("RowLockBusy only used inside node"),
 
             err @ (Error::Canceled
             | Error::AbortScheduleTask(_)
@@ -219,6 +224,7 @@ impl From<Error> for engula_api::server::v1::Error {
             Error::ServiceIsBusy(_) => panic!("ServiceIsBusy only used inside node"),
             Error::GroupNotReady(_) => panic!("GroupNotReady only used inside node"),
             Error::AbortScheduleTask(_) => panic!("AbortScheduleTask only used inside node"),
+            Error::RowLockBusy(_) => panic!("RowLockBusy only used inside node"),
             Error::AlreadyExists(msg) => v1::Error::status(Code::AlreadyExists.into(), msg),
 
             err @ (Error::Transport(_)

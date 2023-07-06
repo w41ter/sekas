@@ -290,14 +290,17 @@ impl Collection {
         }
     }
 
-    pub async fn delete(&self, key: Vec<u8>) -> AppResult<()> {
+    pub async fn delete(&self, key: Vec<u8>, conditions: Vec<WriteCondition>) -> AppResult<()> {
         CLIENT_DATABASE_BYTES_TOTAL.rx.inc_by(key.len() as u64);
         CLIENT_DATABASE_REQUEST_TOTAL.delete.inc();
         record_latency!(&CLIENT_DATABASE_REQUEST_DURATION_SECONDS.get);
         let mut retry_state = RetryState::new(self.rpc_timeout);
 
         loop {
-            match self.delete_inner(&key, retry_state.timeout()).await {
+            match self
+                .delete_inner(&key, &conditions, retry_state.timeout())
+                .await
+            {
                 Ok(()) => return Ok(()),
                 Err(err) => {
                     retry_state.retry(err).await?;
@@ -306,7 +309,13 @@ impl Collection {
         }
     }
 
-    pub async fn put(&self, key: Vec<u8>, value: Vec<u8>) -> AppResult<()> {
+    pub async fn put(
+        &self,
+        key: Vec<u8>,
+        value: Vec<u8>,
+        ttl: Option<u64>,
+        conditions: Vec<WriteCondition>,
+    ) -> AppResult<()> {
         CLIENT_DATABASE_BYTES_TOTAL
             .rx
             .inc_by((key.len() + value.len()) as u64);
@@ -315,7 +324,10 @@ impl Collection {
         let mut retry_state = RetryState::new(self.rpc_timeout);
 
         loop {
-            match self.put_inner(&key, &value, retry_state.timeout()).await {
+            match self
+                .put_inner(&key, &value, ttl, &conditions, retry_state.timeout())
+                .await
+            {
                 Ok(()) => return Ok(()),
                 Err(err) => {
                     retry_state.retry(err).await?;
@@ -349,7 +361,12 @@ impl Collection {
         todo!()
     }
 
-    async fn delete_inner(&self, key: &[u8], timeout: Option<Duration>) -> crate::Result<()> {
+    async fn delete_inner(
+        &self,
+        key: &[u8],
+        conditions: &[WriteCondition],
+        timeout: Option<Duration>,
+    ) -> crate::Result<()> {
         let router = self.client.inner.router.clone();
         let (group, shard) = router.find_shard(self.co_desc.clone(), key)?;
         let mut client = GroupClient::new(
@@ -361,7 +378,7 @@ impl Collection {
             shard_id: shard.id,
             delete: Some(DeleteRequest {
                 key: key.to_owned(),
-                ..Default::default()
+                conditions: conditions.to_owned(),
             }),
         });
         if let Some(duration) = timeout {
@@ -375,6 +392,8 @@ impl Collection {
         &self,
         key: &[u8],
         value: &[u8],
+        ttl: Option<u64>,
+        conditions: &[WriteCondition],
         timeout: Option<Duration>,
     ) -> crate::Result<()> {
         let router = self.client.inner.router.clone();
@@ -389,7 +408,8 @@ impl Collection {
             put: Some(PutRequest {
                 key: key.to_owned(),
                 value: value.to_owned(),
-                ..Default::default()
+                ttl: ttl.unwrap_or(u64::MAX),
+                conditions: conditions.to_owned(),
             }),
         });
         if let Some(duration) = timeout {
@@ -436,6 +456,53 @@ impl Collection {
     #[inline]
     pub fn desc(&self) -> CollectionDesc {
         self.co_desc.clone()
+    }
+}
+
+#[derive(Default)]
+pub struct WriteConditionBuilder {
+    conditions: Vec<WriteCondition>,
+    expect_value: u64,
+    expect_version: u64,
+    not_exists: u64,
+    exists: u64,
+}
+
+impl WriteConditionBuilder {
+    pub fn new() -> Self {
+        WriteConditionBuilder::default()
+    }
+
+    pub fn expect_value(mut self, value: Vec<u8>) -> Self {
+        self.expect_value += 1;
+        self.conditions.push(WriteCondition {
+            r#type: WriteConditionType::ExpectValue.into(),
+            value,
+            ..Default::default()
+        });
+        self
+    }
+
+    pub fn not_exists(mut self) -> Self {
+        self.not_exists += 1;
+        self.conditions.push(WriteCondition {
+            r#type: WriteConditionType::NotExists.into(),
+            ..Default::default()
+        });
+        self
+    }
+
+    pub fn exists(mut self) -> Self {
+        self.exists += 1;
+        self.conditions.push(WriteCondition {
+            r#type: WriteConditionType::Exists.into(),
+            ..Default::default()
+        });
+        self
+    }
+
+    pub fn build(self) -> AppResult<Vec<WriteCondition>> {
+        todo!()
     }
 }
 

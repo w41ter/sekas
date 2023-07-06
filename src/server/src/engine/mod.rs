@@ -13,6 +13,7 @@
 // limitations under the License.
 
 mod group;
+// mod group_filter;
 mod state;
 
 use std::{
@@ -20,6 +21,10 @@ use std::{
     sync::Arc,
 };
 
+use rocksdb::{
+    compaction_filter::{CompactionFilter, Decision},
+    compaction_filter_factory::CompactionFilterFactory,
+};
 use tracing::info;
 
 pub(crate) use self::{
@@ -160,7 +165,10 @@ pub(crate) fn open_engine<P: AsRef<Path>>(cfg: &DbConfig, path: P) -> Result<Raw
     use rocksdb::DB;
 
     std::fs::create_dir_all(&path)?;
-    let options = cfg.to_options();
+    let mut options = cfg.to_options();
+
+    // let factory = GroupCompactionFactory {};
+    // options.set_compaction_filter_factory(factory);
 
     // List column families and open database with column families.
     match DB::list_cf(&options, &path) {
