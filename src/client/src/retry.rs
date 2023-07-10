@@ -66,6 +66,7 @@ impl RetryState {
             | Error::DeadlineExceeded(_)
             | Error::ResourceExhausted(_)
             | Error::AlreadyExists(_)
+            | Error::CasFailed(_)
             | Error::Rpc(_)
             | Error::Transport(_)
             | Error::Internal(_) => Err(err),

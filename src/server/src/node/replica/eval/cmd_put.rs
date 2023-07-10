@@ -14,6 +14,7 @@
 
 use engula_api::server::v1::ShardPutRequest;
 
+use super::read_and_eval_conditions;
 use crate::{
     engine::{GroupEngine, WriteBatch},
     node::{migrate::ForwardCtx, replica::ExecCtx},
@@ -42,6 +43,8 @@ pub(crate) async fn put(
             return Err(Error::Forward(forward_ctx));
         }
     }
+
+    read_and_eval_conditions(group_engine, req.shard_id, &put.key, &put.conditions).await?;
 
     let mut wb = WriteBatch::default();
     group_engine.put(

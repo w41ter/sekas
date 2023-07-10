@@ -463,6 +463,7 @@ impl Collection {
 pub struct WriteConditionBuilder {
     conditions: Vec<WriteCondition>,
     expect_value: u64,
+    #[allow(unused)]
     expect_version: u64,
     not_exists: u64,
     exists: u64,
@@ -502,7 +503,8 @@ impl WriteConditionBuilder {
     }
 
     pub fn build(self) -> AppResult<Vec<WriteCondition>> {
-        todo!()
+        // TODO(w41ter) check conditions
+        Ok(self.conditions)
     }
 }
 

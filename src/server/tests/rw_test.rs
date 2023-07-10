@@ -13,11 +13,8 @@
 // limitations under the License.
 mod helper;
 
-use engula_api::{
-    server::v1::ReplicaRole,
-    v1::{WriteCondition, WriteConditionType},
-};
-use engula_client::{ClientOptions, EngulaClient, Partition, WriteConditionBuilder};
+use engula_api::server::v1::ReplicaRole;
+use engula_client::{AppError, ClientOptions, EngulaClient, Partition, WriteConditionBuilder};
 use rand::{prelude::SmallRng, Rng, SeedableRng};
 use tracing::info;
 
@@ -305,15 +302,42 @@ fn cluster_put_with_condition() {
         let k = "book_name".as_bytes().to_vec();
         let v = "rust_in_actions".as_bytes().to_vec();
 
-        // 1. Put if not exists success
+        // 1. Put if exists failed
+        let conds = WriteConditionBuilder::new().exists().build().unwrap();
+        let r = co.put(k.clone(), v.clone(), None, conds).await;
+        assert!(matches!(r, Err(AppError::CasFailed(_))));
+
+        // 2. Put if not exists success
         let conds = WriteConditionBuilder::new().not_exists().build().unwrap();
         co.put(k.clone(), v.clone(), None, conds).await.unwrap();
         let r = co.get(k.clone()).await.unwrap();
         let r = r.map(String::from_utf8);
         assert!(matches!(r, Some(Ok(v)) if v == "rust_in_actions"));
 
-        // 2. Put if not exists failed
+        // 3. Put if not exists failed
         let conds = WriteConditionBuilder::new().not_exists().build().unwrap();
-        co.put(k.clone(), v.clone(), None, conds).await.unwrap();
+        let r = co.put(k.clone(), v.clone(), None, conds).await;
+        assert!(matches!(r, Err(AppError::CasFailed(_))));
+
+        // 4. Put if exists success
+        let conds = WriteConditionBuilder::new().exists().build().unwrap();
+        let r = co.put(k.clone(), v.clone(), None, conds).await;
+        assert!(r.is_ok());
+
+        // 5.Put with expected value failed
+        let conds = WriteConditionBuilder::new()
+            .expect_value(b"rust".to_vec())
+            .build()
+            .unwrap();
+        let r = co.put(k.clone(), v.clone(), None, conds).await;
+        assert!(matches!(r, Err(AppError::CasFailed(_))));
+
+        // 5.Put with expected value success
+        let conds = WriteConditionBuilder::new()
+            .expect_value(b"rust_in_actions".to_vec())
+            .build()
+            .unwrap();
+        let r = co.put(k.clone(), v.clone(), None, conds).await;
+        assert!(r.is_ok());
     });
 }

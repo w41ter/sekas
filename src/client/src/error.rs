@@ -33,6 +33,9 @@ pub enum AppError {
     #[error("deadline exceeded {0}")]
     DeadlineExceeded(String),
 
+    #[error("{0}")]
+    CasFailed(String),
+
     #[error("network: {0}")]
     Network(tonic::Status),
 
@@ -56,6 +59,9 @@ pub enum Error {
 
     #[error("{0} is exhausted")]
     ResourceExhausted(String),
+
+    #[error("{0}")]
+    CasFailed(String),
 
     #[error("group epoch not match")]
     EpochNotMatch(GroupDesc),
@@ -103,6 +109,7 @@ impl From<tonic::Status> for Error {
             }
             Code::AlreadyExists => Error::AlreadyExists(status.message().into()),
             Code::ResourceExhausted => Error::ResourceExhausted(status.message().into()),
+            Code::FailedPrecondition => Error::CasFailed(status.message().into()),
             Code::NotFound => Error::NotFound(status.message().into()),
             Code::Internal => Error::Internal(status.message().into()),
             Code::Unknown => from_source_or_details(status),
@@ -144,6 +151,7 @@ impl From<Error> for AppError {
             Error::DeadlineExceeded(v) => AppError::DeadlineExceeded(v),
             Error::NotFound(v) => AppError::NotFound(v),
             Error::AlreadyExists(v) => AppError::AlreadyExists(v),
+            Error::CasFailed(v) => AppError::CasFailed(v),
             Error::Internal(v) => AppError::Internal(v),
 
             Error::Transport(status) => AppError::Network(status),
@@ -169,6 +177,7 @@ impl From<AppError> for tonic::Status {
             AppError::AlreadyExists(msg) => Status::already_exists(msg),
             AppError::InvalidArgument(msg) => Status::invalid_argument(msg),
             AppError::DeadlineExceeded(msg) => Status::deadline_exceeded(msg),
+            AppError::CasFailed(msg) => Status::failed_precondition(msg),
             AppError::Network(status) => status, // as proxy
             AppError::Internal(err) => Status::internal(err.to_string()),
         }

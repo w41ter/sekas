@@ -23,8 +23,9 @@ mod cmd_scan;
 use std::{collections::VecDeque, sync::Arc, time::Duration};
 
 use dashmap::DashMap;
-use engula_api::server::v1::{
-    group_request_union::Request, ShardDeleteRequest, ShardDesc, ShardPutRequest,
+use engula_api::{
+    server::v1::{group_request_union::Request, ShardDeleteRequest, ShardDesc, ShardPutRequest},
+    v1::{WriteCondition, WriteConditionType},
 };
 use futures::channel::oneshot;
 
@@ -32,7 +33,7 @@ pub(crate) use self::{
     cmd_accept_shard::accept_shard, cmd_batch_write::batch_write, cmd_delete::delete, cmd_get::get,
     cmd_move_replicas::move_replicas, cmd_put::put, cmd_scan::scan,
 };
-use crate::{serverpb::v1::EvalResult, Error, Result};
+use crate::{engine::GroupEngine, serverpb::v1::EvalResult, Error, Result};
 
 const FLAT_KEY_VERSION: u64 = u64::MAX - 1;
 pub const MIGRATING_KEY_VERSION: u64 = 0;
@@ -225,5 +226,105 @@ pub async fn acquire_row_latches(
         | Request::AcceptShard(_)
         | Request::Transfer(_)
         | Request::MoveReplicas(_) => Ok(None),
+    }
+}
+
+async fn read_and_eval_conditions(
+    group_engine: &GroupEngine,
+    shard_id: u64,
+    user_key: &[u8],
+    conditions: &[WriteCondition],
+) -> Result<()> {
+    if conditions.is_empty() {
+        return Ok(());
+    }
+    let value_result = group_engine.get(shard_id, user_key).await?;
+    eval_conditions(value_result, conditions)
+}
+
+fn eval_conditions(value_result: Option<Vec<u8>>, conditions: &[WriteCondition]) -> Result<()> {
+    for cond in conditions {
+        match WriteConditionType::from_i32(cond.r#type) {
+            Some(WriteConditionType::Exists) if value_result.is_none() => {
+                return Err(Error::CasFailed(format!("user key not exists")));
+            }
+            Some(WriteConditionType::NotExists) if value_result.is_some() => {
+                return Err(Error::CasFailed(format!("user key already exists")));
+            }
+            Some(WriteConditionType::ExpectValue)
+                if !value_result
+                    .as_ref()
+                    .map(|v| v == &cond.value)
+                    .unwrap_or_default() =>
+            {
+                return Err(Error::CasFailed(format!("user key is not expected value")));
+            }
+            Some(WriteConditionType::ExpectVersion) => {}
+            None => {
+                return Err(Error::InvalidArgument(format!(
+                    "Invalid WriteConditionType {}",
+                    cond.r#type
+                )))
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use engula_api::v1::{WriteCondition, WriteConditionType};
+
+    use super::eval_conditions;
+    use crate::Error;
+
+    #[test]
+    fn eval_not_exists() {
+        let cond = WriteCondition {
+            r#type: WriteConditionType::NotExists.into(),
+            ..Default::default()
+        };
+        let value_result = Some(vec![b'1']);
+        let r = eval_conditions(value_result, &[cond.clone()]);
+        assert!(matches!(r, Err(Error::CasFailed(_))));
+
+        let r = eval_conditions(None, &[cond]);
+        assert!(r.is_ok());
+    }
+
+    #[test]
+    fn eval_exists() {
+        let cond = WriteCondition {
+            r#type: WriteConditionType::Exists.into(),
+            ..Default::default()
+        };
+        let value_result = Some(vec![b'1']);
+        let r = eval_conditions(value_result, &[cond.clone()]);
+        assert!(r.is_ok());
+
+        let r = eval_conditions(None, &[cond]);
+        assert!(matches!(r, Err(Error::CasFailed(_))));
+    }
+
+    #[test]
+    fn eval_expected_value() {
+        let cond = WriteCondition {
+            r#type: WriteConditionType::ExpectValue.into(),
+            value: vec![b'1'],
+            ..Default::default()
+        };
+
+        let r = eval_conditions(None, &[cond.clone()]);
+        assert!(matches!(r, Err(Error::CasFailed(_))));
+
+        let r = eval_conditions(Some(vec![]), &[cond.clone()]);
+        assert!(matches!(r, Err(Error::CasFailed(_))));
+
+        let r = eval_conditions(Some(vec![b'1', b'1']), &[cond.clone()]);
+        assert!(matches!(r, Err(Error::CasFailed(_))));
+
+        let r = eval_conditions(Some(vec![b'1']), &[cond]);
+        assert!(r.is_ok());
     }
 }

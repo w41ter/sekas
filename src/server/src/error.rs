@@ -34,6 +34,9 @@ pub enum Error {
     #[error("{0} is exhausted")]
     ResourceExhausted(String),
 
+    #[error("{0}")]
+    CasFailed(String),
+
     // internal errors
     #[error("shard {0} not found")]
     ShardNotFound(u64),
@@ -133,6 +136,7 @@ impl From<Error> for tonic::Status {
             err @ Error::DatabaseNotFound(_) => Status::not_found(err.to_string()),
             err @ Error::AlreadyExists(_) => Status::already_exists(err.to_string()),
             Error::ResourceExhausted(msg) => Status::resource_exhausted(msg),
+            Error::CasFailed(msg) => Status::failed_precondition(msg),
 
             Error::GroupNotFound(group_id) => Status::with_details(
                 Code::Unknown,
@@ -214,6 +218,7 @@ impl From<Error> for engula_api::server::v1::Error {
 
             Error::InvalidArgument(msg) => v1::Error::status(Code::InvalidArgument.into(), msg),
             Error::DeadlineExceeded(msg) => v1::Error::status(Code::DeadlineExceeded.into(), msg),
+            Error::CasFailed(msg) => v1::Error::status(Code::FailedPrecondition.into(), msg),
 
             Error::Forward(_) => panic!("Forward only used inside node"),
             Error::ServiceIsBusy(_) => panic!("ServiceIsBusy only used inside node"),
@@ -251,6 +256,7 @@ impl From<engula_client::Error> for Error {
             engula_client::Error::DeadlineExceeded(v) => Error::DeadlineExceeded(v),
             engula_client::Error::AlreadyExists(v) => Error::AlreadyExists(v),
             engula_client::Error::ResourceExhausted(v) => Error::ResourceExhausted(v),
+            engula_client::Error::CasFailed(v) => Error::CasFailed(v),
             engula_client::Error::Rpc(err) => Error::Rpc(err),
             engula_client::Error::Connect(err) => Error::Rpc(err),
             engula_client::Error::Transport(err) => Error::Rpc(err),
