@@ -308,7 +308,7 @@ impl Replica {
     async fn evaluate_command(&self, exec_ctx: &ExecCtx, request: &Request) -> Result<Response> {
         // Acquire row latches one by one. The implementation guarantees that there will be no
         // deadlock, so waiting while holding `read/write_acl_guard` will not affect other requests.
-        let _latches = acquire_row_latches(&self.latch_mgr, &request, None).await?;
+        let _latches = acquire_row_latches(&self.latch_mgr, request, None).await?;
         let (eval_result_opt, resp) = match &request {
             Request::Get(req) => {
                 let value = eval::get(exec_ctx, &self.group_engine, req).await?;

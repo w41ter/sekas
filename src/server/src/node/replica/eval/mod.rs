@@ -246,10 +246,10 @@ fn eval_conditions(value_result: Option<Vec<u8>>, conditions: &[WriteCondition])
     for cond in conditions {
         match WriteConditionType::from_i32(cond.r#type) {
             Some(WriteConditionType::Exists) if value_result.is_none() => {
-                return Err(Error::CasFailed(format!("user key not exists")));
+                return Err(Error::CasFailed("user key not exists".into()));
             }
             Some(WriteConditionType::NotExists) if value_result.is_some() => {
-                return Err(Error::CasFailed(format!("user key already exists")));
+                return Err(Error::CasFailed("user key already exists".into()));
             }
             Some(WriteConditionType::ExpectValue)
                 if !value_result
@@ -257,7 +257,7 @@ fn eval_conditions(value_result: Option<Vec<u8>>, conditions: &[WriteCondition])
                     .map(|v| v == &cond.value)
                     .unwrap_or_default() =>
             {
-                return Err(Error::CasFailed(format!("user key is not expected value")));
+                return Err(Error::CasFailed("user key is not expected value".into()));
             }
             Some(WriteConditionType::ExpectVersion) => {}
             None => {
