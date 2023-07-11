@@ -23,7 +23,15 @@ mod schema;
 mod store;
 mod watch;
 
-use std::{collections::*, sync::*, task::Poll, time::Duration};
+use std::{
+    collections::*,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        *,
+    },
+    task::Poll,
+    time::Duration,
+};
 
 use engula_api::{
     server::v1::{report_request::GroupUpdates, watch_response::*, *},
@@ -48,7 +56,7 @@ pub use self::{
 use crate::{
     constants::{ROOT_GROUP_ID, SHARD_MAX, SHARD_MIN},
     node::{Node, Replica, ReplicaRouteTable},
-    runtime::{self, TaskPriority},
+    runtime::{self, time::timestamp_nanos, TaskPriority},
     serverpb::v1::{background_job::Job, reconcile_task, *},
     transport::TransportManager,
     Config, Error, Result, RootConfig,
@@ -82,10 +90,32 @@ impl RootShared {
             .map(|c| c.schema.clone())
             .ok_or_else(|| Error::NotRootLeader(RootDesc::default(), 0, None))
     }
+
+    fn root_core(&self) -> Result<RootCore> {
+        self.core
+            .lock()
+            .expect("Poisoned")
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| Error::NotRootLeader(RootDesc::default(), 0, None))
+    }
 }
 
+#[derive(Clone)]
 struct RootCore {
     schema: Arc<Schema>,
+    next_txn_id: Arc<AtomicU64>,
+    max_txn_id: Arc<AtomicU64>,
+}
+
+impl RootCore {
+    async fn bump_txn_id(&self) -> Result<()> {
+        let txn_id = std::cmp::max(self.max_txn_id.load(Ordering::Relaxed), timestamp_nanos());
+        let next_txn_id = txn_id + 5000000000;
+        self.schema.set_txn_id(next_txn_id).await?;
+        self.max_txn_id.store(next_txn_id, Ordering::Release);
+        Ok(())
+    }
 }
 
 impl Root {
@@ -274,11 +304,30 @@ impl Root {
             *bootstrapped = true;
         }
 
+        let max_txn_id = schema.max_txn_id().await?;
+        let root_core = RootCore {
+            schema: Arc::new(schema.to_owned()),
+            next_txn_id: Arc::new(AtomicU64::new(max_txn_id)),
+            max_txn_id: Arc::new(AtomicU64::new(max_txn_id)),
+        };
+        root_core.bump_txn_id().await?;
+
+        let executor = crate::runtime::current();
+        let cloned_root_core = root_core.clone();
+        let txn_bumper_handle = executor.spawn(None, TaskPriority::High, async move {
+            const INTERVAL: Duration = Duration::from_secs(30);
+            loop {
+                crate::runtime::time::sleep(INTERVAL).await;
+                if let Err(err) = cloned_root_core.bump_txn_id().await {
+                    warn!("bump txn id: {err:?}");
+                    break;
+                }
+            }
+        });
+
         {
             let mut core = self.shared.core.lock().unwrap();
-            *core = Some(RootCore {
-                schema: Arc::new(schema.to_owned()),
-            });
+            *core = Some(root_core.clone());
         }
         self::metrics::LEADER_STATE_INFO.set(1);
 
@@ -313,6 +362,9 @@ impl Root {
         info!("node {node_id} current root node drop leader");
 
         // After that, RootCore needs to be set to None before returning.
+        txn_bumper_handle.abort();
+        // Notify txn allocators to exit.
+        root_core.max_txn_id.store(0, Ordering::Release);
         self.heartbeat_queue.enable(false).await;
         self.jobs.on_drop_leader();
         self.ongoing_stats.reset();
@@ -1046,6 +1098,35 @@ impl Root {
             replicas.iter().map(|r| r.node_id).collect::<Vec<_>>()
         );
         Ok(replicas)
+    }
+
+    pub async fn alloc_txn_id(&self, num_required: u64) -> Result<u64> {
+        let root_core = self.shared.root_core()?;
+        loop {
+            let next_txn_id = root_core.next_txn_id.load(Ordering::Relaxed);
+            let max_txn_id = root_core.max_txn_id.load(Ordering::Acquire);
+            if max_txn_id == 0 {
+                return Err(Error::NotLeader(0, 0, None));
+            }
+
+            if next_txn_id + num_required > max_txn_id {
+                crate::runtime::yield_now().await;
+                continue;
+            }
+            if root_core
+                .next_txn_id
+                .compare_exchange(
+                    next_txn_id,
+                    next_txn_id + num_required,
+                    Ordering::AcqRel,
+                    Ordering::Relaxed,
+                )
+                .is_ok()
+            {
+                // TODO(walter) ensure leadership before return.
+                return Ok(next_txn_id);
+            }
+        }
     }
 }
 
