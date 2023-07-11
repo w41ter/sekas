@@ -379,21 +379,22 @@ fn cluster_concurrent_inc() {
                     .unwrap();
             }
         });
-        
+
         let cloned_co = co.clone();
         let handle_2 = spawn(async move {
             let k = "book_name".as_bytes().to_vec();
             let value = 1i64.to_le_bytes().to_vec();
             for _ in 0..1000 {
-                cloned_co.put(
-                    k.clone(),
-                    value.clone(),
-                    None,
-                    Some(PutOperation::Add),
-                    vec![],
-                )
-                .await
-                .unwrap();
+                cloned_co
+                    .put(
+                        k.clone(),
+                        value.clone(),
+                        None,
+                        Some(PutOperation::Add),
+                        vec![],
+                    )
+                    .await
+                    .unwrap();
             }
         });
 
