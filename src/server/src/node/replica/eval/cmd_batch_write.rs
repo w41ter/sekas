@@ -35,6 +35,9 @@ pub(crate) async fn batch_write(
             .delete
             .as_ref()
             .ok_or_else(|| Error::InvalidArgument("ShardDeleteRequest::delete is None".into()))?;
+        if !del.conditions.is_empty() {
+            panic!("BatchWrite does not support write conditions");
+        }
         if exec_ctx.is_migrating_shard(req.shard_id) {
             panic!("BatchWrite does not support migrating shard");
         }
@@ -45,6 +48,9 @@ pub(crate) async fn batch_write(
             .put
             .as_ref()
             .ok_or_else(|| Error::InvalidArgument("ShardPutRequest::put is None".into()))?;
+        if !put.conditions.is_empty() {
+            panic!("BatchWrite does not support write conditions");
+        }
         if exec_ctx.is_migrating_shard(req.shard_id) {
             panic!("BatchWrite does not support migrating shard");
         }

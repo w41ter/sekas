@@ -30,7 +30,11 @@ use engula_api::{
 use serde::Serialize;
 use tracing::info;
 
-pub use self::state::{LeaseState, LeaseStateObserver};
+use self::eval::{acquire_row_latches, RowLatchManager};
+pub use self::{
+    eval::LatchGuard,
+    state::{LeaseState, LeaseStateObserver},
+};
 pub use crate::raftgroup::RaftNodeFacade as RaftSender;
 use crate::{
     engine::GroupEngine,
@@ -88,6 +92,7 @@ where
     lease_state: Arc<Mutex<LeaseState>>,
     move_replicas_provider: Arc<MoveReplicasProvider>,
     meta_acl: Arc<tokio::sync::RwLock<()>>,
+    latch_mgr: RowLatchManager,
 }
 
 impl Replica {
@@ -129,6 +134,7 @@ impl Replica {
             lease_state,
             move_replicas_provider,
             meta_acl: Arc::default(),
+            latch_mgr: RowLatchManager::new(),
         }
     }
 
@@ -300,6 +306,9 @@ impl Replica {
 
     /// Delegates the eval method for the given `Request`.
     async fn evaluate_command(&self, exec_ctx: &ExecCtx, request: &Request) -> Result<Response> {
+        // Acquire row latches one by one. The implementation guarantees that there will be no
+        // deadlock, so waiting while holding `read/write_acl_guard` will not affect other requests.
+        let _latches = acquire_row_latches(&self.latch_mgr, request, None).await?;
         let (eval_result_opt, resp) = match &request {
             Request::Get(req) => {
                 let value = eval::get(exec_ctx, &self.group_engine, req).await?;

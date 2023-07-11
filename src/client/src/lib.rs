@@ -27,7 +27,9 @@ mod root_client;
 mod router;
 mod shard_client;
 
-pub use app_client::{Client as EngulaClient, ClientOptions, Collection, Database, Partition};
+pub use app_client::{
+    Client as EngulaClient, ClientOptions, Collection, Database, Partition, WriteConditionBuilder,
+};
 pub use conn_manager::ConnManager;
 pub use discovery::{ServiceDiscovery, StaticServiceDiscovery};
 pub use error::{AppError, AppResult, Error, Result};

@@ -28,6 +28,7 @@ rand.workspace = true
 serde.workspace = true
 
 const-str = "0.4"
+dashmap = "5.4"
 http-body = "0.4"
 hyper = "0.14"
 libc = "0.2"
