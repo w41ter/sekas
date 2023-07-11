@@ -14,7 +14,7 @@
 
 use engula_api::server::v1::ShardDeleteRequest;
 
-use super::read_and_eval_conditions;
+use super::eval_conditions;
 use crate::{
     engine::{GroupEngine, SnapshotMode, WriteBatch},
     node::{migrate::ForwardCtx, replica::ExecCtx},
@@ -44,7 +44,10 @@ pub(crate) async fn delete(
         }
     }
 
-    read_and_eval_conditions(group_engine, req.shard_id, &delete.key, &delete.conditions).await?;
+    if !delete.conditions.is_empty() {
+        let value_result = group_engine.get(req.shard_id, &delete.key).await?;
+        eval_conditions(value_result.as_deref(), &delete.conditions)?;
+    }
 
     let mut wb = WriteBatch::default();
     if exec_ctx.forward_shard_id.is_some() {

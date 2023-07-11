@@ -33,7 +33,7 @@ pub(crate) use self::{
     cmd_accept_shard::accept_shard, cmd_batch_write::batch_write, cmd_delete::delete, cmd_get::get,
     cmd_move_replicas::move_replicas, cmd_put::put, cmd_scan::scan,
 };
-use crate::{engine::GroupEngine, serverpb::v1::EvalResult, Error, Result};
+use crate::{serverpb::v1::EvalResult, Error, Result};
 
 const FLAT_KEY_VERSION: u64 = u64::MAX - 1;
 pub const MIGRATING_KEY_VERSION: u64 = 0;
@@ -229,20 +229,7 @@ pub async fn acquire_row_latches(
     }
 }
 
-async fn read_and_eval_conditions(
-    group_engine: &GroupEngine,
-    shard_id: u64,
-    user_key: &[u8],
-    conditions: &[WriteCondition],
-) -> Result<()> {
-    if conditions.is_empty() {
-        return Ok(());
-    }
-    let value_result = group_engine.get(shard_id, user_key).await?;
-    eval_conditions(value_result, conditions)
-}
-
-fn eval_conditions(value_result: Option<Vec<u8>>, conditions: &[WriteCondition]) -> Result<()> {
+fn eval_conditions(value_result: Option<&[u8]>, conditions: &[WriteCondition]) -> Result<()> {
     for cond in conditions {
         match WriteConditionType::from_i32(cond.r#type) {
             Some(WriteConditionType::Exists) if value_result.is_none() => {
@@ -252,10 +239,7 @@ fn eval_conditions(value_result: Option<Vec<u8>>, conditions: &[WriteCondition])
                 return Err(Error::CasFailed("user key already exists".into()));
             }
             Some(WriteConditionType::ExpectValue)
-                if !value_result
-                    .as_ref()
-                    .map(|v| v == &cond.value)
-                    .unwrap_or_default() =>
+                if !value_result.map(|v| v == &cond.value).unwrap_or_default() =>
             {
                 return Err(Error::CasFailed("user key is not expected value".into()));
             }
@@ -286,7 +270,7 @@ mod tests {
             ..Default::default()
         };
         let value_result = Some(vec![b'1']);
-        let r = eval_conditions(value_result, &[cond.clone()]);
+        let r = eval_conditions(value_result.as_deref(), &[cond.clone()]);
         assert!(matches!(r, Err(Error::CasFailed(_))));
 
         let r = eval_conditions(None, &[cond]);
@@ -300,7 +284,7 @@ mod tests {
             ..Default::default()
         };
         let value_result = Some(vec![b'1']);
-        let r = eval_conditions(value_result, &[cond.clone()]);
+        let r = eval_conditions(value_result.as_deref(), &[cond.clone()]);
         assert!(r.is_ok());
 
         let r = eval_conditions(None, &[cond]);
@@ -318,13 +302,13 @@ mod tests {
         let r = eval_conditions(None, &[cond.clone()]);
         assert!(matches!(r, Err(Error::CasFailed(_))));
 
-        let r = eval_conditions(Some(vec![]), &[cond.clone()]);
+        let r = eval_conditions(Some(&[]), &[cond.clone()]);
         assert!(matches!(r, Err(Error::CasFailed(_))));
 
-        let r = eval_conditions(Some(vec![b'1', b'1']), &[cond.clone()]);
+        let r = eval_conditions(Some(&[b'1', b'1']), &[cond.clone()]);
         assert!(matches!(r, Err(Error::CasFailed(_))));
 
-        let r = eval_conditions(Some(vec![b'1']), &[cond]);
+        let r = eval_conditions(Some(&[b'1']), &[cond]);
         assert!(r.is_ok());
     }
 }

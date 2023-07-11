@@ -119,7 +119,7 @@ impl Session {
             } => {
                 let db = self.open_database(&db).await?;
                 let coll = self.open_collection(&db, &coll).await?;
-                coll.put(key, value, None, vec![]).await?;
+                coll.put(key, value, None, None, vec![]).await?;
                 Ok(())
             }
             Request::Delete { key, db, coll } => {

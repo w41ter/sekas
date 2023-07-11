@@ -314,6 +314,7 @@ impl Collection {
         key: Vec<u8>,
         value: Vec<u8>,
         ttl: Option<u64>,
+        operation: Option<PutOperation>,
         conditions: Vec<WriteCondition>,
     ) -> AppResult<()> {
         CLIENT_DATABASE_BYTES_TOTAL
@@ -325,7 +326,14 @@ impl Collection {
 
         loop {
             match self
-                .put_inner(&key, &value, ttl, &conditions, retry_state.timeout())
+                .put_inner(
+                    &key,
+                    &value,
+                    ttl,
+                    operation,
+                    &conditions,
+                    retry_state.timeout(),
+                )
                 .await
             {
                 Ok(()) => return Ok(()),
@@ -393,6 +401,7 @@ impl Collection {
         key: &[u8],
         value: &[u8],
         ttl: Option<u64>,
+        operation: Option<PutOperation>,
         conditions: &[WriteCondition],
         timeout: Option<Duration>,
     ) -> crate::Result<()> {
@@ -410,6 +419,7 @@ impl Collection {
                 value: value.to_owned(),
                 ttl: ttl.unwrap_or(u64::MAX),
                 conditions: conditions.to_owned(),
+                op: operation.unwrap_or(PutOperation::None).into(),
             }),
         });
         if let Some(duration) = timeout {

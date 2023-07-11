@@ -11,7 +11,7 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-use engula_api::server::v1::BatchWriteRequest;
+use engula_api::{server::v1::BatchWriteRequest, v1::PutOperation};
 
 use crate::{
     engine::{GroupEngine, WriteBatch},
@@ -50,6 +50,9 @@ pub(crate) async fn batch_write(
             .ok_or_else(|| Error::InvalidArgument("ShardPutRequest::put is None".into()))?;
         if !put.conditions.is_empty() {
             panic!("BatchWrite does not support write conditions");
+        }
+        if put.op != PutOperation::None as i32 {
+            panic!("BatchWrite does not support put operation");
         }
         if exec_ctx.is_migrating_shard(req.shard_id) {
             panic!("BatchWrite does not support migrating shard");

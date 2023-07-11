@@ -244,7 +244,13 @@ impl ProxyServer {
     ) -> Result<PutResponse, Status> {
         let collection = Collection::new(self.client.clone(), desc, None);
         collection
-            .put(req.key, req.value, Some(req.ttl), req.conditions)
+            .put(
+                req.key,
+                req.value,
+                Some(req.ttl),
+                PutOperation::from_i32(req.op),
+                req.conditions,
+            )
             .await?;
         Ok(PutResponse {})
     }
