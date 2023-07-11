@@ -143,7 +143,7 @@ async fn get(co: &Collection, key: Vec<u8>) {
 async fn put(co: &Collection, key: Vec<u8>, value: Vec<u8>) {
     trace!("send put request");
     let start = Instant::now();
-    match co.put(key, value, None, vec![]).await {
+    match co.put(key, value, None, None, vec![]).await {
         Ok(_) => {
             PUT_SUCCESS_REQUEST_TOTAL.inc();
             PUT_SUCCESS_REQUEST_DURATION_SECONDS.observe(saturating_elapsed_seconds(start));

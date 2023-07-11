@@ -12,15 +12,23 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use engula_api::server::v1::ShardPutRequest;
+use engula_api::{
+    server::v1::ShardPutRequest,
+    v1::{PutOperation, PutRequest},
+};
 
-use super::read_and_eval_conditions;
+use super::eval_conditions;
 use crate::{
     engine::{GroupEngine, WriteBatch},
     node::{migrate::ForwardCtx, replica::ExecCtx},
     serverpb::v1::{EvalResult, WriteBatchRep},
     Error, Result,
 };
+
+enum Op {
+    Add,
+    Sub,
+}
 
 pub(crate) async fn put(
     exec_ctx: &ExecCtx,
@@ -44,14 +52,22 @@ pub(crate) async fn put(
         }
     }
 
-    read_and_eval_conditions(group_engine, req.shard_id, &put.key, &put.conditions).await?;
+    let value_result = if !put.conditions.is_empty() || put.op != PutOperation::None as i32 {
+        group_engine.get(req.shard_id, &put.key).await?
+    } else {
+        None
+    };
+    if !put.conditions.is_empty() {
+        eval_conditions(value_result.as_deref(), &put.conditions)?;
+    }
 
+    let value = eval_put_op(put, value_result.as_deref())?;
     let mut wb = WriteBatch::default();
     group_engine.put(
         &mut wb,
         req.shard_id,
         &put.key,
-        &put.value,
+        &value,
         super::FLAT_KEY_VERSION,
     )?;
     Ok(EvalResult {
@@ -60,4 +76,76 @@ pub(crate) async fn put(
         }),
         ..Default::default()
     })
+}
+
+fn eval_put_op(put: &PutRequest, value_result: Option<&[u8]>) -> Result<Vec<u8>> {
+    match PutOperation::from_i32(put.op) {
+        Some(PutOperation::None) => Ok(put.value.clone()),
+        Some(PutOperation::Add) => do_op(Op::Add, value_result, &put.value),
+        Some(PutOperation::Sub) => do_op(Op::Sub, value_result, &put.value),
+        None => Err(Error::InvalidArgument(format!(
+            "Invalid PutOperation {}",
+            put.op
+        ))),
+    }
+}
+
+fn do_op(op: Op, value: Option<&[u8]>, input: &[u8]) -> Result<Vec<u8>> {
+    let default = [0u8; 8];
+    let input = i64_from_le_bytes(input).ok_or_else(|| {
+        Error::InvalidArgument(format!(
+            "PutOperation require value be a number (8 bytes), but got {} bytes",
+            input.len()
+        ))
+    })?;
+    let value = i64_from_le_bytes(value.unwrap_or(&default)).ok_or_else(|| {
+        Error::InvalidArgument("PutOperation require exists value be a number(8 bytes)".to_owned())
+    })?;
+
+    let value = match op {
+        Op::Add => value.wrapping_add(input),
+        Op::Sub => value.wrapping_sub(input),
+    };
+    Ok(value.to_le_bytes().to_vec())
+}
+
+fn i64_from_le_bytes(bytes: &[u8]) -> Option<i64> {
+    let mut buf = [0u8; 8];
+    if buf.len() == bytes.len() {
+        buf.copy_from_slice(bytes);
+        Some(i64::from_le_bytes(buf))
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn op_add_not_exists() {
+        let value = (-1i64).to_le_bytes().to_vec();
+        let result = do_op(Op::Add, None, &value).unwrap();
+        assert_eq!(value, result);
+    }
+
+    #[test]
+    fn op_wrapping_add() {
+        let value = (i64::MAX).to_le_bytes().to_vec();
+        let input = (1i64).to_le_bytes().to_vec();
+        let result = do_op(Op::Add, Some(value).as_deref(), &input).unwrap();
+        let expect = (i64::MIN).to_le_bytes().to_vec();
+        assert_eq!(result, expect);
+    }
+
+    #[test]
+    fn op_invalid_input() {
+        let value = (i64::MAX).to_le_bytes().to_vec();
+        let result = do_op(Op::Add, Some(&[0u8]), &value);
+        assert!(matches!(result, Err(Error::InvalidArgument(_))));
+
+        let result = do_op(Op::Add, None, &[0u8, 0u8, 0u8]);
+        assert!(matches!(result, Err(Error::InvalidArgument(_))));
+    }
 }

@@ -178,6 +178,12 @@ message WriteCondition {
   uint64 version = 3;
 }
 
+enum PutOperation {
+  NONE = 0;
+  ADD = 1;
+  SUB = 2;
+}
+
 message PutRequest {
   bytes key = 1;
   bytes value = 2;
@@ -187,6 +193,9 @@ message PutRequest {
 
   // CAS operations
   repeated WriteCondition conditions = 4;
+  
+  // Put operations
+  PutOperation op = 5;
 }
 
 message PutResponse {}
