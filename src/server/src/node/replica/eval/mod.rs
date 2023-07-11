@@ -239,7 +239,7 @@ fn eval_conditions(value_result: Option<&[u8]>, conditions: &[WriteCondition]) -
                 return Err(Error::CasFailed("user key already exists".into()));
             }
             Some(WriteConditionType::ExpectValue)
-                if !value_result.map(|v| v == &cond.value).unwrap_or_default() =>
+                if !value_result.map(|v| v == cond.value).unwrap_or_default() =>
             {
                 return Err(Error::CasFailed("user key is not expected value".into()));
             }

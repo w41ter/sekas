@@ -112,7 +112,7 @@ fn do_op(op: Op, value: Option<&[u8]>, input: &[u8]) -> Result<Vec<u8>> {
 fn i64_from_le_bytes(bytes: &[u8]) -> Option<i64> {
     let mut buf = [0u8; 8];
     if buf.len() == bytes.len() {
-        buf.copy_from_slice(&bytes[..]);
+        buf.copy_from_slice(bytes);
         Some(i64::from_le_bytes(buf))
     } else {
         None
