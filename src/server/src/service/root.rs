@@ -85,6 +85,21 @@ impl root_server::Root for Server {
             .await?;
         Ok(Response::new(AllocReplicaResponse { replicas }))
     }
+
+    async fn alloc_txn_id(
+        &self,
+        request: Request<AllocTxnIdRequest>,
+    ) -> Result<Response<AllocTxnIdResponse>, Status> {
+        let req = request.into_inner();
+
+        let base_txn_id = self
+            .wrap(self.root.alloc_txn_id(req.num_required).await)
+            .await?;
+        Ok(Response::new(AllocTxnIdResponse {
+            base_txn_id,
+            num: req.num_required,
+        }))
+    }
 }
 
 impl Server {

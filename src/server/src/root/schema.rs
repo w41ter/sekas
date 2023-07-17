@@ -33,6 +33,7 @@ use super::store::RootStore;
 use crate::{
     constants::*,
     engine::{GroupEngine, SnapshotMode},
+    runtime::time::timestamp_nanos,
     serverpb::v1::BackgroundJob,
     transport::TransportManager,
     Error, Result,
@@ -75,6 +76,7 @@ const META_NODE_ID_KEY: &str = "node_id";
 const META_REPLICA_ID_KEY: &str = "replica_id";
 const META_SHARD_ID_KEY: &str = "shard_id";
 const META_JOB_ID_KEY: &str = "job_id";
+const META_TXN_ID_KEY: &str = "txn_id";
 
 lazy_static::lazy_static! {
     pub static ref SYSTEM_COLLECTION_SHARD: BTreeMap<u64, u64> = BTreeMap::from([
@@ -659,6 +661,32 @@ impl Schema {
             .map_err(|_| Error::InvalidData("backgroud job".into()))?;
         Ok(Some(job))
     }
+
+    pub async fn max_txn_id(&self) -> Result<u64> {
+        let txn_id = self
+            .get_meta(META_TXN_ID_KEY.as_bytes())
+            .await?
+            .ok_or_else(|| Error::InvalidData("txn id".to_owned()))?;
+        Ok(u64::from_le_bytes(
+            txn_id
+                .try_into()
+                .map_err(|_| Error::InvalidData("txn id".to_owned()))?,
+        ))
+    }
+
+    pub async fn set_txn_id(&self, next_txn_id: u64) -> Result<()> {
+        // TODO(walter) how about add a write condition here?
+        self.batch_write(
+            PutBatchBuilder::default()
+                .put_meta(
+                    META_TXN_ID_KEY.as_bytes().to_vec(),
+                    next_txn_id.to_le_bytes().to_vec(),
+                )
+                .build(),
+        )
+        .await?;
+        Ok(())
+    }
 }
 
 pub struct ReplicaNodes(pub Vec<NodeDesc>);
@@ -916,6 +944,10 @@ impl Schema {
         batch.put_meta(
             META_JOB_ID_KEY.into(),
             INITIAL_JOB_ID.to_le_bytes().to_vec(),
+        );
+        batch.put_meta(
+            META_TXN_ID_KEY.into(),
+            timestamp_nanos().to_le_bytes().to_vec(),
         );
     }
 }

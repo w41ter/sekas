@@ -33,6 +33,9 @@ service Root {
 
   /// Alloc replica id and node for the corresponding group.
   rpc AllocReplica(AllocReplicaRequest) returns (AllocReplicaResponse) {}
+
+  /// Alloc txn id.
+  rpc AllocTxnId(AllocTxnIdRequest) returns (AllocTxnIdResponse) {}
 }
 
 message WatchRequest {
@@ -107,4 +110,13 @@ message AllocReplicaRequest {
 
 message AllocReplicaResponse {
   repeated ReplicaDesc replicas = 1;
+}
+
+message AllocTxnIdRequest {
+  uint64 num_required = 1;
+}
+
+message AllocTxnIdResponse {
+  uint64 base_txn_id = 1;
+  uint64 num = 2;
 }
