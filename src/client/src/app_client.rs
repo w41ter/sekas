@@ -21,8 +21,8 @@ use engula_api::{
 
 use crate::{
     conn_manager::ConnManager, discovery::StaticServiceDiscovery, group_client::GroupClient,
-    metrics::*, record_latency, AdminRequestBuilder, AdminResponseExtractor, AppError, AppResult,
-    RetryState, RootClient, Router,
+    metrics::*, record_latency, txn_client::TxnClient, AdminRequestBuilder, AdminResponseExtractor,
+    AppError, AppResult, RetryState, RootClient, Router,
 };
 
 #[derive(Debug, Clone, Default)]
@@ -139,6 +139,14 @@ impl Client {
                 client: self.clone(),
             }),
         }
+    }
+
+    pub fn txn_client(&self) -> TxnClient {
+        TxnClient::new(
+            self.inner.root_client.clone(),
+            self.inner.router.clone(),
+            self.inner.conn_manager.clone(),
+        )
     }
 }
 
@@ -365,8 +373,13 @@ impl Collection {
         }
     }
 
-    pub async fn write_batch(&self, _req: WriteBatchRequest) -> AppResult<WriteBatchResponse> {
-        todo!()
+    pub async fn write_batch(&self, req: WriteBatchRequest) -> AppResult<WriteBatchResponse> {
+        let mut client = TxnClient::new(
+            self.client.inner.root_client.clone(),
+            self.client.inner.router.clone(),
+            self.client.inner.conn_manager.clone(),
+        );
+        client.write(req).await
     }
 
     async fn delete_inner(

@@ -26,6 +26,7 @@ mod retry;
 mod root_client;
 mod router;
 mod shard_client;
+mod txn_client;
 
 pub use app_client::{
     Client as EngulaClient, ClientOptions, Collection, Database, Partition, WriteConditionBuilder,
@@ -41,3 +42,4 @@ pub use root_client::{AdminRequestBuilder, AdminResponseExtractor, Client as Roo
 pub use router::{Router, RouterGroupState};
 pub use shard_client::ShardClient;
 use tonic::async_trait;
+pub use txn_client::TxnClient;

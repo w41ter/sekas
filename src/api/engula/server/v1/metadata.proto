@@ -140,3 +140,9 @@ message ScheduleState {
   repeated ReplicaDesc incoming_replicas = 3;
   repeated ReplicaDesc outgoing_replicas = 4;
 }
+
+enum TxnState {
+  RUNNING = 0;
+  ABORTED = 1;
+  COMMITTED = 2;
+}

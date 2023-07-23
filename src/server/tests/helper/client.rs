@@ -18,7 +18,10 @@ use std::{
     time::Duration,
 };
 
-use engula_api::{server::v1::*, v1::CollectionDesc};
+use engula_api::{
+    server::v1::*,
+    v1::{collection_desc, CollectionDesc},
+};
 use engula_client::{
     ClientOptions, ConnManager, EngulaClient, GroupClient, NodeClient, RootClient, Router,
     RouterGroupState, StaticServiceDiscovery,
@@ -386,6 +389,38 @@ impl ClusterClient {
                 };
                 if ready_group.insert(state.id) {
                     self.assert_num_group_voters(state.id, 3).await;
+                    break;
+                }
+            }
+        }
+    }
+
+    pub async fn assert_system_collection_ready(&self, required_voters: usize) {
+        // FIXME(walter) remove the collection desc definations.
+        let co_desc = CollectionDesc {
+            id: 1,
+            name: "txn".to_owned(),
+            db: 1,
+            partition: Some(collection_desc::Partition::Hash(
+                collection_desc::HashPartition { slots: 256 },
+            )),
+        };
+        let mut ready_group: HashSet<u64> = HashSet::default();
+        for i in 0..256u64 {
+            for _ in 0..1000 {
+                // tracing::info!("access by {i}");
+                let key = i.to_be_bytes().to_vec();
+                let state = match self.find_router_group_state_by_key(&co_desc, &key).await {
+                    Some(state) => state,
+                    None => {
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                        continue;
+                    }
+                };
+                if ready_group.insert(state.id) {
+                    self.assert_num_group_voters(state.id, required_voters)
+                        .await;
+                    break;
                 }
             }
         }
