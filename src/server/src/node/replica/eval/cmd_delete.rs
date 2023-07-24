@@ -14,7 +14,7 @@
 
 use engula_api::server::v1::ShardDeleteRequest;
 
-use super::eval_conditions;
+use super::cas::eval_conditions;
 use crate::{
     engine::{GroupEngine, SnapshotMode, WriteBatch},
     node::{migrate::ForwardCtx, replica::ExecCtx},

@@ -13,6 +13,7 @@
 // limitations under the License.
 use engula_api::{server::v1::BatchWriteRequest, v1::PutOperation};
 
+use super::cas::eval_conditions;
 use crate::{
     engine::{GroupEngine, WriteBatch},
     node::replica::ExecCtx,
@@ -36,7 +37,9 @@ pub(crate) async fn batch_write(
             .as_ref()
             .ok_or_else(|| Error::InvalidArgument("ShardDeleteRequest::delete is None".into()))?;
         if !del.conditions.is_empty() {
-            panic!("BatchWrite does not support write conditions");
+            // TODO(walter) support get value in parallel.
+            let value_result = group_engine.get(req.shard_id, &del.key).await?;
+            eval_conditions(value_result.as_deref(), &del.conditions)?;
         }
         if exec_ctx.is_migrating_shard(req.shard_id) {
             panic!("BatchWrite does not support migrating shard");
@@ -49,7 +52,9 @@ pub(crate) async fn batch_write(
             .as_ref()
             .ok_or_else(|| Error::InvalidArgument("ShardPutRequest::put is None".into()))?;
         if !put.conditions.is_empty() {
-            panic!("BatchWrite does not support write conditions");
+            // TODO(walter) support get value in parallel.
+            let value_result = group_engine.get(req.shard_id, &put.key).await?;
+            eval_conditions(value_result.as_deref(), &put.conditions)?;
         }
         if put.op != PutOperation::None as i32 {
             panic!("BatchWrite does not support put operation");

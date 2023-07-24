@@ -56,6 +56,8 @@ impl TxnClient {
         let (group, shard) = self.router.find_shard(desc, &txn_key_prefix(txn_id))?;
         let mut client = GroupClient::new(group, self.router.clone(), self.conn_manager.clone());
 
+        let timeout = timestamp_millis() + 5000; // for 5 seconds
+
         // TODO(walter): extract common codes.
         let req = Request::BatchWrite(BatchWriteRequest {
             puts: vec![
@@ -76,7 +78,7 @@ impl TxnClient {
                     shard_id: shard.id,
                     put: Some(PutRequest {
                         key: txn_timeout_key(txn_id),
-                        value: 500u32.to_le_bytes().to_vec(),
+                        value: timeout.to_le_bytes().to_vec(),
                         ttl: u64::MAX,
                         ..Default::default()
                     }),
@@ -171,11 +173,7 @@ impl TxnClient {
                     shard_id: shard.id,
                     delete: Some(DeleteRequest {
                         key: txn_state_key(txn_id),
-                        conditions: vec![WriteCondition {
-                            r#type: WriteConditionType::ExpectValue.into(),
-                            value: (TxnState::Running as i32).to_le_bytes().to_vec(),
-                            ..Default::default()
-                        }],
+                        ..Default::default()
                     }),
                 },
                 ShardDeleteRequest {
@@ -325,4 +323,14 @@ fn to_fixed_bytes<const V: usize>(bytes: &[u8]) -> Option<[u8; V]> {
         buf[..].copy_from_slice(bytes);
         Some(buf)
     }
+}
+
+#[inline]
+pub fn timestamp_millis() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64
 }

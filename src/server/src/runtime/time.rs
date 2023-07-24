@@ -36,3 +36,18 @@ pub fn timestamp_nanos() -> u64 {
             .as_nanos() as u64
     }
 }
+
+#[inline]
+pub fn timestamp_micros() -> u64 {
+    timestamp_nanos() / 1000
+}
+
+#[inline]
+pub fn timestamp_millis() -> u64 {
+    timestamp_micros() / 1000
+}
+
+#[inline]
+pub fn timestamp() -> u64 {
+    timestamp_millis() / 1000
+}

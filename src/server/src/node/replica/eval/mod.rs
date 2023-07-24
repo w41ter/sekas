@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+mod cas;
 mod cmd_accept_shard;
 mod cmd_batch_write;
 mod cmd_delete;
@@ -23,9 +24,8 @@ mod cmd_scan;
 use std::{collections::VecDeque, sync::Arc, time::Duration};
 
 use dashmap::DashMap;
-use engula_api::{
-    server::v1::{group_request_union::Request, ShardDeleteRequest, ShardDesc, ShardPutRequest},
-    v1::{WriteCondition, WriteConditionType},
+use engula_api::server::v1::{
+    group_request_union::Request, ShardDeleteRequest, ShardDesc, ShardPutRequest,
 };
 use futures::channel::oneshot;
 
@@ -226,89 +226,5 @@ pub async fn acquire_row_latches(
         | Request::AcceptShard(_)
         | Request::Transfer(_)
         | Request::MoveReplicas(_) => Ok(None),
-    }
-}
-
-fn eval_conditions(value_result: Option<&[u8]>, conditions: &[WriteCondition]) -> Result<()> {
-    for cond in conditions {
-        match WriteConditionType::from_i32(cond.r#type) {
-            Some(WriteConditionType::Exists) if value_result.is_none() => {
-                return Err(Error::CasFailed("user key not exists".into()));
-            }
-            Some(WriteConditionType::NotExists) if value_result.is_some() => {
-                return Err(Error::CasFailed("user key already exists".into()));
-            }
-            Some(WriteConditionType::ExpectValue)
-                if !value_result.map(|v| v == cond.value).unwrap_or_default() =>
-            {
-                return Err(Error::CasFailed("user key is not expected value".into()));
-            }
-            Some(WriteConditionType::ExpectVersion) => {}
-            None => {
-                return Err(Error::InvalidArgument(format!(
-                    "Invalid WriteConditionType {}",
-                    cond.r#type
-                )))
-            }
-            _ => {}
-        }
-    }
-    Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use engula_api::v1::{WriteCondition, WriteConditionType};
-
-    use super::eval_conditions;
-    use crate::Error;
-
-    #[test]
-    fn eval_not_exists() {
-        let cond = WriteCondition {
-            r#type: WriteConditionType::NotExists.into(),
-            ..Default::default()
-        };
-        let value_result = Some(vec![b'1']);
-        let r = eval_conditions(value_result.as_deref(), &[cond.clone()]);
-        assert!(matches!(r, Err(Error::CasFailed(_))));
-
-        let r = eval_conditions(None, &[cond]);
-        assert!(r.is_ok());
-    }
-
-    #[test]
-    fn eval_exists() {
-        let cond = WriteCondition {
-            r#type: WriteConditionType::Exists.into(),
-            ..Default::default()
-        };
-        let value_result = Some(vec![b'1']);
-        let r = eval_conditions(value_result.as_deref(), &[cond.clone()]);
-        assert!(r.is_ok());
-
-        let r = eval_conditions(None, &[cond]);
-        assert!(matches!(r, Err(Error::CasFailed(_))));
-    }
-
-    #[test]
-    fn eval_expected_value() {
-        let cond = WriteCondition {
-            r#type: WriteConditionType::ExpectValue.into(),
-            value: vec![b'1'],
-            ..Default::default()
-        };
-
-        let r = eval_conditions(None, &[cond.clone()]);
-        assert!(matches!(r, Err(Error::CasFailed(_))));
-
-        let r = eval_conditions(Some(&[]), &[cond.clone()]);
-        assert!(matches!(r, Err(Error::CasFailed(_))));
-
-        let r = eval_conditions(Some(&[b'1', b'1']), &[cond.clone()]);
-        assert!(matches!(r, Err(Error::CasFailed(_))));
-
-        let r = eval_conditions(Some(&[b'1']), &[cond]);
-        assert!(r.is_ok());
     }
 }

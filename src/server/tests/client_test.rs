@@ -184,8 +184,6 @@ fn request_to_offline_leader() {
     })
 }
 
-// FIXME(walter) batch write support CAS
-#[ignore]
 #[test]
 fn txn_op() {
     block_on_current(async {
