@@ -56,6 +56,9 @@ message GroupRequestUnion {
     ShardDeleteRequest delete = 3;
     ShardScanRequest scan = 4;
     BatchWriteRequest batch_write = 5;
+    // WriteIntentRequest write_intent = 6;
+    // CommitIntentRequest commit_intent = 7;
+    // ClearIntentRequest clear_intent = 8;
 
     /// Add a new shard to an existing group.
     CreateShardRequest create_shard = 6;
