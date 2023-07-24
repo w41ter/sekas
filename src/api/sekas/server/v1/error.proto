@@ -1,0 +1,89 @@
+// Copyright 2022 The Engula Authors.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+syntax = "proto3";
+
+package sekas.server.v1;
+
+import "sekas/server/v1/metadata.proto";
+
+/// This file complements some errors that cannot be expressed by grpc status code,
+/// which is usually used with Status::unknown.
+///
+/// These are some errors require retry, and are generally divided into two categories:
+/// 1. Metadata expires, includes `NotLeader`, `EpochNotMatch`, `GroupNotFound`, `NotRoot`.
+///    It needs to retry after updating the metadata.
+/// 2. `ServerIsBusy`: It needs to wait for a period of time and try again.
+
+
+/// A structured error for passing detailed error information over RPC. It
+/// is usually used with 'grpc-status-details-bin'.
+///
+/// NOTES: The user needs to ensure that if there is an error, then details
+/// must not be empty.
+message Error {
+    repeated ErrorDetail details = 1;
+}
+
+message ErrorDetail {
+    string message = 1;
+
+    ErrorDetailUnion detail = 2;
+}
+
+message ErrorDetailUnion {
+    oneof value {
+        NotLeader not_leader = 1;
+        EpochNotMatch not_match = 2;
+        ServerIsBusy server_is_busy = 3;
+        GroupNotFound group_not_found = 4;
+        NotRoot not_root = 5;
+        int32 status_code = 6;
+    }
+}
+
+/// This request can only be processed by the group leader, and the target replica is not
+/// the leader of the current group.
+message NotLeader {
+    uint64 group_id = 1;
+    uint64 term = 2;
+    /// The leader of the requested group. `None` means that the target replica does not known
+    /// who the current leader is.
+    ReplicaDesc leader = 3;
+}
+
+/// This request can only be processed by the root (or root leader), and the target node is
+/// not the replica of root group (or root group leader).
+message NotRoot {
+    /// `root` contains the known root members of the node, the first most likely being the leader.
+    RootDesc root = 1;
+    uint64 term = 2;
+    /// The leader of root group. `None` means that the target replica does not known who
+    /// the current leader is.
+    ReplicaDesc leader = 3;
+}
+
+/// The epoch of metadata carried by the request does not match the epoch of target replica.
+message EpochNotMatch {
+    /// The saved GroupDesc of target replica.
+    GroupDesc descriptor = 1;
+}
+
+/// The current node is busy and needs to retry after a period of time.
+message ServerIsBusy {}
+
+/// The target group was not found, it may have been removed.
+message GroupNotFound {
+    uint64 group_id = 1;
+}
