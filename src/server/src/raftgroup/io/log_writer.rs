@@ -12,16 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::{
-    sync::Arc,
-    thread::{Builder, JoinHandle},
-};
+use std::sync::Arc;
+use std::thread::{Builder, JoinHandle};
 
-use futures::{
-    channel::{mpsc, oneshot},
-    stream::FusedStream,
-    StreamExt,
-};
+use futures::channel::{mpsc, oneshot};
+use futures::stream::FusedStream;
+use futures::StreamExt;
 
 use crate::Result;
 
@@ -45,12 +41,7 @@ type LogResponse = Result<(), String>;
 impl LogWriter {
     pub fn new(max_io_batch_size: u64, engine: Arc<raft_engine::Engine>) -> LogWriter {
         let (join_handle, sender) = start_log_writer(max_io_batch_size, engine);
-        LogWriter {
-            sender,
-            _inner: Arc::new(WriterInner {
-                handle: Some(join_handle),
-            }),
-        }
+        LogWriter { sender, _inner: Arc::new(WriterInner { handle: Some(join_handle) }) }
     }
 
     pub fn submit(&mut self, batch: raft_engine::LogBatch) -> oneshot::Receiver<LogResponse> {
@@ -115,9 +106,7 @@ async fn log_writer_main(
                 break;
             };
             estimated_size = estimate_size(estimated_size, req.batch.approximate_size());
-            log_batch
-                .merge(&mut req.batch)
-                .expect("size wont exceeds u32::MAX");
+            log_batch.merge(&mut req.batch).expect("size wont exceeds u32::MAX");
             senders.push(req.sender);
         }
 

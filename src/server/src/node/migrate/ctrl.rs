@@ -14,19 +14,20 @@
 
 use std::sync::Arc;
 
-use sekas_api::server::v1::{group_request_union::Request, group_response_union::Response, *};
+use futures::channel::mpsc;
+use futures::StreamExt;
+use sekas_api::server::v1::group_request_union::Request;
+use sekas_api::server::v1::group_response_union::Response;
+use sekas_api::server::v1::*;
 use sekas_client::{MigrateClient, Router};
-use futures::{channel::mpsc, StreamExt};
 use tracing::{debug, error, info, warn};
 
-use crate::{
-    node::{metrics::*, Replica},
-    record_latency,
-    runtime::sync::WaitGroup,
-    serverpb::v1::*,
-    transport::TransportManager,
-    NodeConfig, Result,
-};
+use crate::node::metrics::*;
+use crate::node::Replica;
+use crate::runtime::sync::WaitGroup;
+use crate::serverpb::v1::*;
+use crate::transport::TransportManager;
+use crate::{record_latency, NodeConfig, Result};
 
 #[derive(Debug)]
 pub struct ForwardCtx {
@@ -59,12 +60,7 @@ struct MigrateControllerShared {
 
 impl MigrateController {
     pub(crate) fn new(cfg: NodeConfig, transport_manager: TransportManager) -> Self {
-        MigrateController {
-            shared: Arc::new(MigrateControllerShared {
-                cfg,
-                transport_manager,
-            }),
-        }
+        MigrateController { shared: Arc::new(MigrateControllerShared { cfg, transport_manager }) }
     }
 
     pub fn router(&self) -> Router {
@@ -101,10 +97,8 @@ impl MigrateController {
                     } else {
                         desc.src_group_id
                     };
-                    let client = ctrl
-                        .shared
-                        .transport_manager
-                        .build_migrate_client(target_group_id);
+                    let client =
+                        ctrl.shared.transport_manager.build_migrate_client(target_group_id);
                     coord = Some(MigrationCoordinator {
                         cfg: ctrl.shared.cfg.clone(),
                         replica_id,
@@ -116,11 +110,7 @@ impl MigrateController {
                 }
                 coord.as_mut().unwrap().next_step(state).await;
             }
-            debug!(
-                replica = replica_id,
-                group = group_id,
-                "migration state watcher is stopped",
-            );
+            debug!(replica = replica_id, group = group_id, "migration state watcher is stopped",);
             drop(wait_group);
         });
     }
@@ -132,9 +122,7 @@ impl MigrateController {
             shard_id: forward_ctx.shard_id,
             group_id,
             forward_data: forward_ctx.payloads.clone(),
-            request: Some(GroupRequestUnion {
-                request: Some(request.clone()),
-            }),
+            request: Some(GroupRequestUnion { request: Some(request.clone()) }),
         };
         let resp = client.forward(&req).await?;
         let resp = resp.response.and_then(|resp| resp.response);
@@ -282,13 +270,9 @@ impl MigrationCoordinator {
         use super::gc::remove_shard;
 
         let group_engine = self.replica.group_engine();
-        if let Err(e) = remove_shard(
-            &self.cfg,
-            self.replica.as_ref(),
-            group_engine,
-            self.desc.get_shard_id(),
-        )
-        .await
+        if let Err(e) =
+            remove_shard(&self.cfg, self.replica.as_ref(), group_engine, self.desc.get_shard_id())
+                .await
         {
             error!(replica = self.replica_id,
                 group = self.group_id,
@@ -301,13 +285,8 @@ impl MigrationCoordinator {
     }
 
     async fn pull(&mut self, last_migrated_key: Option<Vec<u8>>) {
-        if let Err(e) = pull_shard(
-            &self.client,
-            self.replica.as_ref(),
-            &self.desc,
-            last_migrated_key,
-        )
-        .await
+        if let Err(e) =
+            pull_shard(&self.client, self.replica.as_ref(), &self.desc, last_migrated_key).await
         {
             error!(replica = self.replica_id,
                 group = self.group_id,

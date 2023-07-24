@@ -16,12 +16,9 @@ use sekas_api::server::v1::*;
 use tonic::{Request, Response, Status};
 
 use super::metrics::*;
-use crate::{
-    record_latency, record_latency_opt,
-    runtime::{DispatchHandle, TaskPriority},
-    serverpb::v1::MigrationEvent,
-    Error, Server,
-};
+use crate::runtime::{DispatchHandle, TaskPriority};
+use crate::serverpb::v1::MigrationEvent;
+use crate::{record_latency, record_latency_opt, Error, Server};
 
 #[crate::async_trait]
 impl node_server::Node for Server {
@@ -32,17 +29,11 @@ impl node_server::Node for Server {
         let batch_request = request.into_inner();
         record_latency!(take_batch_request_metrics(&batch_request));
         if batch_request.requests.len() == 1 {
-            let request = batch_request
-                .requests
-                .into_iter()
-                .next()
-                .expect("already checked");
+            let request = batch_request.requests.into_iter().next().expect("already checked");
             let server = self.clone();
             let response =
                 Box::pin(async move { server.submit_group_request(&request).await }).await;
-            Ok(Response::new(BatchResponse {
-                responses: vec![response],
-            }))
+            Ok(Response::new(BatchResponse { responses: vec![response] }))
         } else {
             let handles = self.submit_group_requests(batch_request.requests);
             let mut responses = Vec::with_capacity(handles.len());
@@ -76,9 +67,7 @@ impl node_server::Node for Server {
                 node_admin_response::Response::Heartbeat(self.root_heartbeat(req).await?)
             }
         };
-        Ok(Response::new(NodeAdminResponse {
-            response: Some(resp),
-        }))
+        Ok(Response::new(NodeAdminResponse { response: Some(resp) }))
     }
 
     async fn migrate(
@@ -110,9 +99,7 @@ impl node_server::Node for Server {
                 migrate_response::Response::Commit(CommitMigrationResponse::default())
             }
         };
-        Ok(Response::new(MigrateResponse {
-            response: Some(resp),
-        }))
+        Ok(Response::new(MigrateResponse { response: Some(resp) }))
     }
 }
 
@@ -133,9 +120,8 @@ impl Server {
         request: CreateReplicaRequest,
     ) -> Result<CreateReplicaResponse, Status> {
         record_latency!(take_create_replica_request_metrics());
-        let group_desc = request
-            .group
-            .ok_or_else(|| Status::invalid_argument("the field `group` is empty"))?;
+        let group_desc =
+            request.group.ok_or_else(|| Status::invalid_argument("the field `group` is empty"))?;
         let replica_id = request.replica_id;
         self.node.create_replica(replica_id, group_desc).await?;
         Ok(CreateReplicaResponse {})
@@ -146,9 +132,8 @@ impl Server {
         request: RemoveReplicaRequest,
     ) -> Result<RemoveReplicaResponse, Status> {
         record_latency!(take_remove_replica_request_metrics());
-        let group_desc = request
-            .group
-            .ok_or_else(|| Status::invalid_argument("the field `group` is empty"))?;
+        let group_desc =
+            request.group.ok_or_else(|| Status::invalid_argument("the field `group` is empty"))?;
         let replica_id = request.replica_id;
         self.node.remove_replica(replica_id, &group_desc).await?;
         Ok(RemoveReplicaResponse {})
@@ -202,10 +187,7 @@ impl Server {
 
     async fn submit_group_request(&self, request: &GroupRequest) -> GroupResponse {
         record_latency_opt!(take_group_request_metrics(request));
-        self.node
-            .execute_request(request)
-            .await
-            .unwrap_or_else(error_to_response)
+        self.node.execute_request(request).await.unwrap_or_else(error_to_response)
     }
 
     fn submit_group_requests(
@@ -228,8 +210,5 @@ impl Server {
 }
 
 fn error_to_response(err: Error) -> GroupResponse {
-    GroupResponse {
-        response: None,
-        error: Some(err.into()),
-    }
+    GroupResponse { response: None, error: Some(err.into()) }
 }

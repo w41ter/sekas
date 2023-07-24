@@ -12,7 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::{error::Error, result::Result};
+use std::error::Error;
+use std::result::Result;
 
 fn main() -> Result<(), Box<dyn Error>> {
     std::env::set_var("PROTOC", protoc_build::PROTOC);
@@ -24,11 +25,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     config.extern_path(".eraftpb", "::raft::eraftpb");
     tonic_build::configure().compile_with_config(
         config,
-        &[
-            "proto/v1/metadata.proto",
-            "proto/v1/raft.proto",
-            "proto/v1/schedule.proto",
-        ],
+        &["proto/v1/metadata.proto", "proto/v1/raft.proto", "proto/v1/schedule.proto"],
         &["proto", "proto/include", "../api/"],
     )?;
     Ok(())

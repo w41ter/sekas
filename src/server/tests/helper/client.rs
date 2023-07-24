@@ -12,19 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::{
-    collections::{HashMap, HashSet},
-    sync::Arc,
-    time::Duration,
-};
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
+use std::time::Duration;
 
-use sekas_api::{
-    server::v1::*,
-    v1::{collection_desc, CollectionDesc},
-};
+use sekas_api::server::v1::*;
+use sekas_api::v1::{collection_desc, CollectionDesc};
 use sekas_client::{
-    ClientOptions, ConnManager, SekasClient, GroupClient, NodeClient, RootClient, Router,
-    RouterGroupState, StaticServiceDiscovery,
+    ClientOptions, ConnManager, GroupClient, NodeClient, RootClient, Router, RouterGroupState,
+    SekasClient, StaticServiceDiscovery,
 };
 use sekas_server::{runtime, Result};
 
@@ -51,16 +47,10 @@ pub struct ClusterClient {
 impl ClusterClient {
     pub async fn new(nodes: HashMap<u64, String>) -> Self {
         let conn_manager = ConnManager::new();
-        let discovery = Arc::new(StaticServiceDiscovery::new(
-            nodes.values().cloned().collect(),
-        ));
+        let discovery = Arc::new(StaticServiceDiscovery::new(nodes.values().cloned().collect()));
         let root_client = RootClient::new(discovery, conn_manager.clone());
         let router = Router::new(root_client).await;
-        ClusterClient {
-            nodes,
-            router,
-            conn_manager,
-        }
+        ClusterClient { nodes, router, conn_manager }
     }
 
     pub async fn create_replica(&self, node_id: u64, replica_id: u64, desc: GroupDesc) {
@@ -75,9 +65,7 @@ impl ClusterClient {
 
     pub async fn app_client(&self) -> SekasClient {
         let addrs = self.nodes.values().cloned().collect::<Vec<_>>();
-        SekasClient::new(ClientOptions::default(), addrs)
-            .await
-            .unwrap()
+        SekasClient::new(ClientOptions::default(), addrs).await.unwrap()
     }
 
     pub async fn app_client_with_options(&self, opts: ClientOptions) -> SekasClient {
@@ -87,11 +75,7 @@ impl ClusterClient {
 
     pub async fn group_members(&self, group_id: u64) -> Vec<(u64, i32)> {
         if let Ok(state) = self.router.find_group(group_id) {
-            let mut current = state
-                .replicas
-                .iter()
-                .map(|(k, v)| (*k, v.role))
-                .collect::<Vec<_>>();
+            let mut current = state.replicas.iter().map(|(k, v)| (*k, v.role)).collect::<Vec<_>>();
             current.sort_unstable();
             current
         } else {
@@ -121,11 +105,7 @@ impl ClusterClient {
     pub async fn assert_num_group_voters(&self, group_id: u64, size: usize) {
         for _ in 0..10000 {
             let members = self.group_members(group_id).await;
-            if members
-                .into_iter()
-                .filter(|(_, v)| *v == ReplicaRole::Voter as i32)
-                .count()
-                == size
+            if members.into_iter().filter(|(_, v)| *v == ReplicaRole::Voter as i32).count() == size
             {
                 return;
             }
@@ -174,11 +154,7 @@ impl ClusterClient {
     }
 
     pub async fn get_group_leader(&self, group_id: u64) -> Option<u64> {
-        self.router
-            .find_group(group_id)
-            .ok()
-            .and_then(|s| s.leader_state)
-            .map(|s| s.0)
+        self.router.find_group(group_id).ok().and_then(|s| s.leader_state).map(|s| s.0)
     }
 
     pub async fn get_group_leader_node_id(&self, group_id: u64) -> Option<u64> {
@@ -330,9 +306,7 @@ impl ClusterClient {
                 timestamp: 0,
                 piggybacks: vec![PiggybackRequest {
                     info: Some(piggyback_request::Info::CollectGroupDetail(
-                        CollectGroupDetailRequest {
-                            groups: vec![group_id],
-                        },
+                        CollectGroupDetailRequest { groups: vec![group_id] },
                     )),
                 }],
             })
@@ -357,10 +331,7 @@ impl ClusterClient {
     }
 
     pub async fn get_shard_desc(&self, co_desc: &CollectionDesc, key: &[u8]) -> Option<ShardDesc> {
-        self.router
-            .find_shard(co_desc.clone(), key)
-            .ok()
-            .map(|(_, shard)| shard)
+        self.router.find_shard(co_desc.clone(), key).ok().map(|(_, shard)| shard)
     }
 
     pub async fn get_router_group_state(&self, group_id: u64) -> Option<RouterGroupState> {
@@ -401,9 +372,9 @@ impl ClusterClient {
             id: 1,
             name: "txn".to_owned(),
             db: 1,
-            partition: Some(collection_desc::Partition::Hash(
-                collection_desc::HashPartition { slots: 256 },
-            )),
+            partition: Some(collection_desc::Partition::Hash(collection_desc::HashPartition {
+                slots: 256,
+            })),
         };
         let mut ready_group: HashSet<u64> = HashSet::default();
         for i in 0..256u64 {
@@ -418,16 +389,16 @@ impl ClusterClient {
                     }
                 };
                 if ready_group.insert(state.id) {
-                    self.assert_num_group_voters(state.id, required_voters)
-                        .await;
+                    self.assert_num_group_voters(state.id, required_voters).await;
                     break;
                 }
             }
         }
     }
 
-    /// Some tests may shut down a server, if root happens to be on that server, and there is only
-    /// one replica in root group, then the test will not continue because root group is lost.
+    /// Some tests may shut down a server, if root happens to be on that server,
+    /// and there is only one replica in root group, then the test will not
+    /// continue because root group is lost.
     pub async fn assert_root_group_has_promoted(&self) {
         self.assert_num_group_voters(0, 3).await;
     }

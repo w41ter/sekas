@@ -12,23 +12,22 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::{
-    collections::HashMap,
-    sync::{Arc, Mutex},
-    task::Waker,
-};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+use std::task::Waker;
 
+use futures::channel::mpsc;
 use sekas_api::server::v1::{
     GroupDesc, MigrationDesc, RaftRole, ReplicaDesc, ReplicaState, ScheduleState,
 };
-use futures::channel::mpsc;
 use tracing::info;
 
-use super::{fsm::StateMachineObserver, ReplicaInfo};
-use crate::{
-    node::job::StateChannel, raftgroup::StateObserver, schedule::ScheduleStateObserver,
-    serverpb::v1::MigrationState,
-};
+use super::fsm::StateMachineObserver;
+use super::ReplicaInfo;
+use crate::node::job::StateChannel;
+use crate::raftgroup::StateObserver;
+use crate::schedule::ScheduleStateObserver;
+use crate::serverpb::v1::MigrationState;
 
 pub struct LeaseState {
     pub leader_id: u64,
@@ -42,8 +41,8 @@ pub struct LeaseState {
     pub leader_subscribers: HashMap<&'static str, Waker>,
 }
 
-/// A struct that observes changes to `GroupDesc` and `ReplicaState` , and broadcasts those changes
-/// while saving them to `LeaseState`.
+/// A struct that observes changes to `GroupDesc` and `ReplicaState` , and
+/// broadcasts those changes while saving them to `LeaseState`.
 #[derive(Clone)]
 pub struct LeaseStateObserver {
     info: Arc<ReplicaInfo>,
@@ -92,10 +91,7 @@ impl LeaseState {
 
     #[inline]
     pub fn is_migrating_shard(&self, shard_id: u64) -> bool {
-        self.migration_state
-            .as_ref()
-            .map(|s| s.get_shard_id() == shard_id)
-            .unwrap_or_default()
+        self.migration_state.as_ref().map(|s| s.get_shard_id() == shard_id).unwrap_or_default()
     }
 
     #[inline]
@@ -112,11 +108,7 @@ impl LeaseState {
 
     #[inline]
     pub fn leader_descriptor(&self) -> Option<ReplicaDesc> {
-        self.descriptor
-            .replicas
-            .iter()
-            .find(|r| r.id == self.leader_id)
-            .cloned()
+        self.descriptor.replicas.iter().find(|r| r.id == self.leader_id).cloned()
     }
 
     #[inline]
@@ -132,11 +124,7 @@ impl LeaseStateObserver {
         lease_state: Arc<Mutex<LeaseState>>,
         state_channel: StateChannel,
     ) -> Self {
-        LeaseStateObserver {
-            info,
-            lease_state,
-            state_channel,
-        }
+        LeaseStateObserver { info, lease_state, state_channel }
     }
 
     fn update_replica_state(
@@ -187,11 +175,9 @@ impl LeaseStateObserver {
 impl StateObserver for LeaseStateObserver {
     fn on_state_updated(&mut self, leader_id: u64, voted_for: u64, term: u64, role: RaftRole) {
         let (state, desc) = self.update_replica_state(leader_id, voted_for, term, role);
-        self.state_channel
-            .broadcast_replica_state(self.info.group_id, state);
+        self.state_channel.broadcast_replica_state(self.info.group_id, state);
         if let Some(desc) = desc {
-            self.state_channel
-                .broadcast_group_descriptor(self.info.group_id, desc);
+            self.state_channel.broadcast_group_descriptor(self.info.group_id, desc);
         }
     }
 }
@@ -199,8 +185,7 @@ impl StateObserver for LeaseStateObserver {
 impl StateMachineObserver for LeaseStateObserver {
     fn on_descriptor_updated(&mut self, descriptor: GroupDesc) {
         if self.update_descriptor(descriptor.clone()) {
-            self.state_channel
-                .broadcast_group_descriptor(self.info.group_id, descriptor);
+            self.state_channel.broadcast_group_descriptor(self.info.group_id, descriptor);
         }
     }
 
@@ -241,7 +226,6 @@ impl ScheduleStateObserver for LeaseStateObserver {
         let cloned_schedule_state = schedule_state.clone();
         let mut lease_state = self.lease_state.lock().unwrap();
         lease_state.schedule_state = schedule_state;
-        self.state_channel
-            .broadcast_schedule_state(self.info.group_id, cloned_schedule_state);
+        self.state_channel.broadcast_schedule_state(self.info.group_id, cloned_schedule_state);
     }
 }

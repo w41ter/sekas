@@ -12,10 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::{
-    sync::{Arc, Mutex},
-    task::{Poll, Waker},
-};
+use std::sync::{Arc, Mutex};
+use std::task::{Poll, Waker};
 
 #[derive(Default)]
 pub struct WaitGroup {
@@ -64,9 +62,7 @@ impl Clone for WaitGroup {
         let mut inner = self.inner.lock().unwrap();
         inner.count += 1;
 
-        WaitGroup {
-            inner: self.inner.clone(),
-        }
+        WaitGroup { inner: self.inner.clone() }
     }
 }
 
@@ -85,9 +81,6 @@ impl Drop for WaitGroup {
 
 impl Default for Inner {
     fn default() -> Self {
-        Inner {
-            wakers: vec![],
-            count: 1,
-        }
+        Inner { wakers: vec![], count: 1 }
     }
 }

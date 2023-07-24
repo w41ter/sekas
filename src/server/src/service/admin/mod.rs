@@ -26,29 +26,14 @@ use crate::Server;
 
 pub fn make_admin_service(server: Server) -> AdminService {
     let router = Router::empty()
-        .route(
-            "/metrics",
-            self::metrics::MetricsHandle::new(server.to_owned()),
-        )
+        .route("/metrics", self::metrics::MetricsHandle::new(server.to_owned()))
         .route("/job", self::job::JobHandle::new(server.to_owned()))
-        .route(
-            "/metadata",
-            self::metadata::MetadataHandle::new(server.to_owned()),
-        )
+        .route("/metadata", self::metadata::MetadataHandle::new(server.to_owned()))
         .route("/health", self::health::HealthHandle)
-        .route(
-            "/cordon",
-            self::cluster::CordonHandle::new(server.to_owned()),
-        )
-        .route(
-            "/uncordon",
-            self::cluster::UncordonHandle::new(server.to_owned()),
-        )
+        .route("/cordon", self::cluster::CordonHandle::new(server.to_owned()))
+        .route("/uncordon", self::cluster::UncordonHandle::new(server.to_owned()))
         .route("/drain", self::cluster::DrainHandle::new(server.to_owned()))
-        .route(
-            "/node_status",
-            self::cluster::StatusHandle::new(server.to_owned()),
-        )
+        .route("/node_status", self::cluster::StatusHandle::new(server.to_owned()))
         .route("/monitor", self::monitor::MonitorHandle::new(server));
     let api = Router::nest("/admin", router);
     AdminService::new(api)

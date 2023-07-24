@@ -17,10 +17,10 @@ use std::collections::HashMap;
 use serde::Serialize;
 use tonic::codegen::*;
 
-use crate::{
-    node::replica::ReplicaPerfContext, raftgroup::perf_point_micros, runtime::TaskPriority, Error,
-    Result, Server,
-};
+use crate::node::replica::ReplicaPerfContext;
+use crate::raftgroup::perf_point_micros;
+use crate::runtime::TaskPriority;
+use crate::{Error, Result, Server};
 
 #[derive(Default, Debug, Clone, Serialize)]
 pub struct PerfContext {
@@ -63,18 +63,10 @@ impl super::service::HttpHandle for MonitorHandle {
 
         // We also need to record the delay from task spawn to execute.
         let replica_perf_ctx = crate::runtime::current()
-            .dispatch(
-                None,
-                TaskPriority::Low,
-                async move { replica.monitor().await },
-            )
+            .dispatch(None, TaskPriority::Low, async move { replica.monitor().await })
             .await?;
 
-        let monitor = PerfContext {
-            start,
-            replica: replica_perf_ctx,
-            end: perf_point_micros(),
-        };
+        let monitor = PerfContext { start, replica: replica_perf_ctx, end: perf_point_micros() };
         Ok(http::Response::builder()
             .status(http::StatusCode::OK)
             .body(serde_json::to_string(&monitor).unwrap_or_else(|e| e.to_string()))

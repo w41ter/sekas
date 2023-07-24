@@ -12,13 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::{cmp::Ordering, sync::Arc};
+use std::cmp::Ordering;
+use std::sync::Arc;
 
 use sekas_api::server::v1::{GroupDesc, ShardDesc};
 use tracing::debug;
 
 use super::{AllocSource, ReallocateShard, ShardAction};
-use crate::{constants::ROOT_GROUP_ID, root::allocator::BalanceStatus, Result};
+use crate::constants::ROOT_GROUP_ID;
+use crate::root::allocator::BalanceStatus;
+use crate::Result;
 
 pub struct ShardCountPolicy<T: AllocSource> {
     alloc_source: Arc<T>,
@@ -122,10 +125,7 @@ impl<T: AllocSource> ShardCountPolicy<T> {
                 target_group: target.id,
             }));
         }
-        debug!(
-            "skip balance group:{} due to no suitable target",
-            source_group.id
-        );
+        debug!("skip balance group:{} due to no suitable target", source_group.id);
         None
     }
 
@@ -141,10 +141,6 @@ impl<T: AllocSource> ShardCountPolicy<T> {
 
     fn current_user_groups(&self) -> Vec<GroupDesc> {
         let groups = self.alloc_source.groups();
-        groups
-            .values()
-            .filter(|g| g.id != ROOT_GROUP_ID)
-            .map(ToOwned::to_owned)
-            .collect()
+        groups.values().filter(|g| g.id != ROOT_GROUP_ID).map(ToOwned::to_owned).collect()
     }
 }

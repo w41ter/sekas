@@ -24,26 +24,24 @@ mod worker;
 
 use std::sync::Arc;
 
-use sekas_api::server::v1::*;
 use raft::prelude::{
     ConfChangeSingle, ConfChangeTransition, ConfChangeType, ConfChangeV2, ConfState,
 };
+use sekas_api::server::v1::*;
 
-pub use self::{
-    facade::RaftNodeFacade,
-    fsm::{ApplyEntry, SnapshotBuilder, StateMachine},
-    io::{retrive_snapshot, AddressResolver, ChannelManager},
-    monitor::*,
-    snap::SnapManager,
-    storage::{destory as destory_storage, write_initial_state},
-    worker::{RaftGroupState, StateObserver},
-};
-use self::{io::LogWriter, worker::RaftWorker};
-use crate::{
-    raftgroup::io::start_purging_expired_files,
-    runtime::{sync::WaitGroup, TaskPriority},
-    RaftConfig, Result,
-};
+pub use self::facade::RaftNodeFacade;
+pub use self::fsm::{ApplyEntry, SnapshotBuilder, StateMachine};
+use self::io::LogWriter;
+pub use self::io::{retrive_snapshot, AddressResolver, ChannelManager};
+pub use self::monitor::*;
+pub use self::snap::SnapManager;
+pub use self::storage::{destory as destory_storage, write_initial_state};
+use self::worker::RaftWorker;
+pub use self::worker::{RaftGroupState, StateObserver};
+use crate::raftgroup::io::start_purging_expired_files;
+use crate::runtime::sync::WaitGroup;
+use crate::runtime::TaskPriority;
+use crate::{RaftConfig, Result};
 
 /// `ReadPolicy` is used to control `RaftNodeFacade::read` behavior.
 #[derive(Debug, Clone, Copy)]
@@ -52,8 +50,8 @@ pub enum ReadPolicy {
     Relaxed,
     /// Wait until all former committed entries be applied.
     LeaseRead,
-    /// Like `ReadPolicy::LeaseRead`, but require exchange heartbeat with majority members before
-    /// waiting.
+    /// Like `ReadPolicy::LeaseRead`, but require exchange heartbeat with
+    /// majority members before waiting.
     ReadIndex,
 }
 
@@ -75,13 +73,7 @@ impl RaftManager {
     ) -> Result<Self> {
         start_purging_expired_files(engine.clone()).await;
         let log_writer = LogWriter::new(cfg.max_io_batch_size, engine.clone());
-        Ok(RaftManager {
-            cfg,
-            engine,
-            transport_mgr,
-            snap_mgr,
-            log_writer,
-        })
+        Ok(RaftManager { cfg, engine, transport_mgr, snap_mgr, log_writer })
     }
 
     #[inline]
@@ -132,10 +124,8 @@ fn encode_to_conf_change(change_replicas: ChangeReplicas) -> ConfChangeV2 {
             Some(ChangeReplicaType::AddLearner) => ConfChangeType::AddLearnerNode,
             None => panic!("such change replica operation isn't supported"),
         };
-        conf_changes.push(ConfChangeSingle {
-            change_type: change_type.into(),
-            node_id: c.replica_id,
-        });
+        conf_changes
+            .push(ConfChangeSingle { change_type: change_type.into(), node_id: c.replica_id });
     }
 
     ConfChangeV2 {

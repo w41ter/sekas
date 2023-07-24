@@ -11,16 +11,24 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-use std::{sync::mpsc, time::Duration};
+use std::sync::mpsc;
+use std::time::Duration;
 
 use clap::Parser;
-use sekas_client::{AppError, ClientOptions, Collection, Database, SekasClient, Partition};
-use sekas_server::runtime::{sync::WaitGroup, Shutdown, ShutdownNotifier};
-use rand::{rngs::OsRng, RngCore};
-use tokio::{runtime::Runtime, select, time::MissedTickBehavior};
+use rand::rngs::OsRng;
+use rand::RngCore;
+use sekas_client::{AppError, ClientOptions, Collection, Database, Partition, SekasClient};
+use sekas_server::runtime::sync::WaitGroup;
+use sekas_server::runtime::{Shutdown, ShutdownNotifier};
+use tokio::runtime::Runtime;
+use tokio::select;
+use tokio::time::MissedTickBehavior;
 use tracing::{debug, info};
 
-use super::{config::*, report, report::ReportContext, worker::*};
+use super::config::*;
+use super::report;
+use super::report::ReportContext;
+use super::worker::*;
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
@@ -50,15 +58,9 @@ impl Command {
             .build()
             .unwrap();
 
-        let co = runtime
-            .block_on(async { open_collection(&cfg).await })
-            .expect("open collection");
+        let co = runtime.block_on(async { open_collection(&cfg).await }).expect("open collection");
         let notifier = ShutdownNotifier::default();
-        let ctx = Context {
-            wait_group: WaitGroup::new(),
-            shutdown: notifier.subscribe(),
-            runtime,
-        };
+        let ctx = Context { wait_group: WaitGroup::new(), shutdown: notifier.subscribe(), runtime };
 
         let (send, recv) = mpsc::channel();
         let handle = ctx.runtime.spawn(async move {
@@ -69,10 +71,7 @@ impl Command {
 
         let base_seed = cfg.seed.unwrap_or_else(|| OsRng.next_u64());
 
-        info!(
-            "spawn {} workers with base seed {base_seed}",
-            cfg.worker.num_worker
-        );
+        info!("spawn {} workers with base seed {base_seed}", cfg.worker.num_worker);
         let report_waiter = spawn_reporter(&ctx, cfg.clone());
 
         let num_op = cfg.operation / cfg.worker.num_worker;
@@ -130,10 +129,7 @@ async fn create_or_open_collection(
     num_shards: u32,
 ) -> Result<Collection> {
     let partition = Partition::Hash { slots: num_shards };
-    match db
-        .create_collection(collection.to_owned(), Some(partition))
-        .await
-    {
+    match db.create_collection(collection.to_owned(), Some(partition)).await {
         Ok(co) => Ok(co),
         Err(AppError::AlreadyExists(_)) => Ok(db.open_collection(collection.to_owned()).await?),
         Err(e) => Err(e.into()),
@@ -207,10 +203,7 @@ fn load_config(cmd: Command) -> Result<AppConfig> {
     }
     let cfg = builder
         .add_source(
-            Environment::with_prefix("EB")
-                .try_parsing(true)
-                .separator("_")
-                .list_separator(" "),
+            Environment::with_prefix("EB").try_parsing(true).separator("_").list_separator(" "),
         )
         .build()?;
 

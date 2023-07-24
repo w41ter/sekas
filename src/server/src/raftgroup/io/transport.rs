@@ -13,17 +13,17 @@
 // limitations under the License.
 use std::sync::Arc;
 
+use futures::channel::mpsc;
+use futures::StreamExt;
 use sekas_api::server::v1::{NodeDesc, ReplicaDesc};
-use futures::{channel::mpsc, StreamExt};
 use tracing::{debug, warn};
 
-use crate::{
-    node::route_table::RaftRouteTable,
-    raftgroup::RaftNodeFacade,
-    runtime::TaskPriority,
-    serverpb::v1::{raft_client::RaftClient, RaftMessage, SnapshotChunk, SnapshotRequest},
-    Result,
-};
+use crate::node::route_table::RaftRouteTable;
+use crate::raftgroup::RaftNodeFacade;
+use crate::runtime::TaskPriority;
+use crate::serverpb::v1::raft_client::RaftClient;
+use crate::serverpb::v1::{RaftMessage, SnapshotChunk, SnapshotRequest};
+use crate::Result;
 
 struct StreamingRequest {
     from: ReplicaDesc,
@@ -44,8 +44,8 @@ pub trait AddressResolver: Send + Sync {
     async fn resolve(&self, node_id: u64) -> Result<NodeDesc>;
 }
 
-/// A logic connection between two nodes. A [`Channel`] is bind to a specific target,
-/// the name lookup are finished by internal machenism.
+/// A logic connection between two nodes. A [`Channel`] is bind to a specific
+/// target, the name lookup are finished by internal machenism.
 #[derive(Clone)]
 pub struct Channel {
     transport_mgr: ChannelManager,
@@ -67,10 +67,7 @@ where
 
 impl Channel {
     pub fn new(mgr: ChannelManager) -> Self {
-        Channel {
-            transport_mgr: mgr,
-            sender: None,
-        }
+        Channel { transport_mgr: mgr, sender: None }
     }
 
     pub fn send_message(&mut self, mut msg: RaftMessage) {
@@ -101,11 +98,7 @@ impl Channel {
 impl ChannelManager {
     pub async fn build(resolver: Arc<dyn AddressResolver>, route_table: RaftRouteTable) -> Self {
         let (sender, receiver) = mpsc::unbounded();
-        let mgr = ChannelManager {
-            resolver,
-            sender,
-            route_table,
-        };
+        let mgr = ChannelManager { resolver, sender, route_table };
 
         let cloned_mgr = mgr.clone();
         crate::runtime::current().spawn(None, TaskPriority::Low, async move {
@@ -134,11 +127,7 @@ impl ChannelManager {
                 }
             };
 
-            let task = StreamingTask {
-                resolver: self.resolver.clone(),
-                raft_node,
-                request,
-            };
+            let task = StreamingTask { resolver: self.resolver.clone(), raft_node, request };
             crate::runtime::current().spawn(None, TaskPriority::IoHigh, async move {
                 task.run().await;
             });
@@ -177,10 +166,7 @@ pub async fn retrive_snapshot(
     let node_desc = resolve_address(&*trans_mgr.resolver, target_replica.node_id).await?;
     let address = format!("http://{}", node_desc.addr);
     let mut client = RaftClient::connect(address).await?;
-    let request = SnapshotRequest {
-        replica_id: target_replica.id,
-        snapshot_id,
-    };
+    let request = SnapshotRequest { replica_id: target_replica.id, snapshot_id };
     let resp = client.retrieve_snapshot(request).await?;
     Ok(resp.into_inner())
 }

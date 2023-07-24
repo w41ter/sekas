@@ -11,19 +11,18 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-use std::{sync::Arc, time::Duration};
+use std::sync::Arc;
+use std::time::Duration;
 
 use sekas_api::server::v1::*;
 use tracing::{debug, error, info};
 
 use super::ActionTaskWithLocks;
-use crate::schedule::{
-    actions::{AddLearners, CreateReplicas, ReplaceVoters},
-    provider::GroupProviders,
-    scheduler::ScheduleContext,
-    task::{Task, TaskState},
-    tasks::{ActionTask, PROMOTE_GROUP_TASK_ID},
-};
+use crate::schedule::actions::{AddLearners, CreateReplicas, ReplaceVoters};
+use crate::schedule::provider::GroupProviders;
+use crate::schedule::scheduler::ScheduleContext;
+use crate::schedule::task::{Task, TaskState};
+use crate::schedule::tasks::{ActionTask, PROMOTE_GROUP_TASK_ID};
 
 pub struct PromoteGroup {
     required_replicas: usize,
@@ -32,10 +31,7 @@ pub struct PromoteGroup {
 
 impl PromoteGroup {
     pub fn new(providers: Arc<GroupProviders>) -> Self {
-        PromoteGroup {
-            required_replicas: 3,
-            providers,
-        }
+        PromoteGroup { required_replicas: 3, providers }
     }
 
     async fn setup(
@@ -47,9 +43,7 @@ impl PromoteGroup {
         let group_id = ctx.group_id;
         let replica_id = ctx.replica_id;
 
-        let replicas = match self
-            .alloc_addition_replicas(ctx, "promoting_group", num_acquire)
-            .await
+        let replicas = match self.alloc_addition_replicas(ctx, "promoting_group", num_acquire).await
         {
             Some(replicas) => replicas,
             None => return false,
@@ -65,19 +59,15 @@ impl PromoteGroup {
             .config_change(new_task_id, epoch, &locked_replicas, &replicas, &[])
             .expect("Check conflicts in before steps");
         let create_replicas = Box::new(CreateReplicas::new(replicas.clone()));
-        let add_learners = Box::new(AddLearners {
-            providers: self.providers.clone(),
-            learners: replicas.clone(),
-        });
+        let add_learners =
+            Box::new(AddLearners { providers: self.providers.clone(), learners: replicas.clone() });
         let replace_voters = Box::new(ReplaceVoters {
             providers: self.providers.clone(),
             incoming_voters: replicas,
             demoting_voters: vec![],
         });
-        let promoting_task = ActionTask::new(
-            new_task_id,
-            vec![create_replicas, add_learners, replace_voters],
-        );
+        let promoting_task =
+            ActionTask::new(new_task_id, vec![create_replicas, add_learners, replace_voters]);
         ctx.delegate(Box::new(ActionTaskWithLocks::new(locks, promoting_task)));
 
         info!("group {group_id} replica {replica_id} promote group by add {incoming_peers:?}");

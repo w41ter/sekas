@@ -18,9 +18,10 @@ use sekas_api::server::v1::*;
 use tracing::{debug, info, warn};
 
 use super::{Action, ActionState};
-use crate::{
-    root::RemoteStore, schedule::scheduler::ScheduleContext, transport::TransportManager, Result,
-};
+use crate::root::RemoteStore;
+use crate::schedule::scheduler::ScheduleContext;
+use crate::transport::TransportManager;
+use crate::Result;
 
 pub(crate) struct CreateReplicas {
     pub replicas: Vec<ReplicaDesc>,
@@ -40,11 +41,7 @@ pub(crate) struct ClearReplicaState {
 
 impl CreateReplicas {
     pub fn new(replicas: Vec<ReplicaDesc>) -> Self {
-        CreateReplicas {
-            replicas,
-            interval_ms: 50,
-            retry_count: 0,
-        }
+        CreateReplicas { replicas, interval_ms: 50, retry_count: 0 }
     }
 
     async fn create_replica(
@@ -54,10 +51,7 @@ impl CreateReplicas {
         transport_manager: &TransportManager,
     ) -> Result<(), sekas_client::Error> {
         let client = transport_manager.find_node_client(r.node_id)?;
-        let desc = GroupDesc {
-            id: group_id,
-            ..Default::default()
-        };
+        let desc = GroupDesc { id: group_id, ..Default::default() };
         client.create_replica(r.id, desc).await?;
         Ok(())
     }
@@ -70,18 +64,14 @@ impl Action for CreateReplicas {
         let replica_id = ctx.replica_id;
 
         while let Some(r) = self.replicas.last() {
-            match self
-                .create_replica(group_id, r, ctx.transport_manager)
-                .await
-            {
+            match self.create_replica(group_id, r, ctx.transport_manager).await {
                 Ok(()) => {
                     self.retry_count = 0;
                     self.interval_ms = 50;
                     self.replicas.pop();
                 }
                 Err(sekas_client::Error::Rpc(status))
-                    if sekas_client::error::retryable_rpc_err(&status)
-                        && self.retry_count < 30 =>
+                    if sekas_client::error::retryable_rpc_err(&status) && self.retry_count < 30 =>
                 {
                     debug!("group {group_id} replica {replica_id} task {task_id} create replica {r:?}: {status}");
                     self.retry_count += 1;
@@ -102,11 +92,7 @@ impl Action for CreateReplicas {
 
 impl RemoveReplica {
     pub fn new(group: GroupDesc, replica: ReplicaDesc) -> Self {
-        RemoveReplica {
-            group,
-            replica,
-            retry_count: 0,
-        }
+        RemoveReplica { group, replica, retry_count: 0 }
     }
 
     async fn remove_replica(
@@ -127,10 +113,7 @@ impl Action for RemoveReplica {
         let group_id = ctx.group_id;
         let replica_id = ctx.replica_id;
         let replica = &self.replica;
-        match self
-            .remove_replica(replica, self.group.clone(), ctx.transport_manager)
-            .await
-        {
+        match self.remove_replica(replica, self.group.clone(), ctx.transport_manager).await {
             Ok(()) => {
                 info!("group {group_id} replica {replica_id} task {task_id} remove replica {replica:?} success");
                 return ActionState::Done;

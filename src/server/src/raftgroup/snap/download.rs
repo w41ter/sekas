@@ -12,26 +12,24 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::{
-    ffi::OsString,
-    fs::File,
-    os::unix::ffi::OsStringExt,
-    path::{Path, PathBuf},
-};
+use std::ffi::OsString;
+use std::fs::File;
+use std::os::unix::ffi::OsStringExt;
+use std::path::{Path, PathBuf};
 
-use sekas_api::server::v1::ReplicaDesc;
-use futures::{channel::mpsc, SinkExt, StreamExt};
+use futures::channel::mpsc;
+use futures::{SinkExt, StreamExt};
 use raft::eraftpb::Message;
+use sekas_api::server::v1::ReplicaDesc;
 use tracing::{debug, error, info};
 
 use super::SnapManager;
-use crate::{
-    raftgroup::{metrics::*, retrive_snapshot, worker::Request, ChannelManager},
-    record_latency,
-    runtime::TaskPriority,
-    serverpb::v1::{snapshot_chunk, SnapshotChunk, SnapshotFile, SnapshotMeta},
-    Error, Result,
-};
+use crate::raftgroup::metrics::*;
+use crate::raftgroup::worker::Request;
+use crate::raftgroup::{retrive_snapshot, ChannelManager};
+use crate::runtime::TaskPriority;
+use crate::serverpb::v1::{snapshot_chunk, SnapshotChunk, SnapshotFile, SnapshotMeta};
+use crate::{record_latency, Error, Result};
 
 struct PartialFile {
     meta: SnapshotFile,
@@ -123,12 +121,7 @@ impl PartialFile {
 
         let file = OpenOptions::new().write(true).create(true).open(path)?;
 
-        Ok(PartialFile {
-            meta: file_meta,
-            file,
-            size: 0,
-            crc32: crc32fast::Hasher::new(),
-        })
+        Ok(PartialFile { meta: file_meta, file, size: 0, crc32: crc32fast::Hasher::new() })
     }
 
     async fn write_all(&mut self, buf: &[u8]) -> Result<()> {
@@ -211,10 +204,7 @@ where
     S: futures::Stream<Item = Result<SnapshotChunk, tonic::Status>> + Unpin,
 {
     let base_dir = snap_mgr.create(replica_id);
-    info!(
-        "replica {replica_id} save incoming snapshot chunk stream into {}",
-        base_dir.display()
-    );
+    info!("replica {replica_id} save incoming snapshot chunk stream into {}", base_dir.display());
 
     std::fs::create_dir_all(&base_dir)?;
     let mut snap_builder = SnapshotBuilder::new(replica_id, &base_dir);

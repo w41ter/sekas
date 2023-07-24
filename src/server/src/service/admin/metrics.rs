@@ -17,7 +17,8 @@ use lazy_static::lazy_static;
 use prometheus::{self, register_int_counter, IntCounter, TextEncoder};
 use tonic::codegen::*;
 
-use crate::{root::RootCollector, Server};
+use crate::root::RootCollector;
+use crate::Server;
 
 lazy_static! {
     // A special metric for testing metrics pulling.
@@ -66,9 +67,6 @@ impl super::service::HttpHandle for MetricsHandle {
             .encode_to_string(&metric_families)
             .map_err(|e| crate::Error::InvalidData(e.to_string()))?;
 
-        Ok(http::Response::builder()
-            .status(http::StatusCode::OK)
-            .body(content)
-            .unwrap())
+        Ok(http::Response::builder().status(http::StatusCode::OK).body(content).unwrap())
     }
 }

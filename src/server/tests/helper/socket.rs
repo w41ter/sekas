@@ -29,21 +29,12 @@ pub fn next_n_avail_port(n: usize) -> Vec<u16> {
             let socket = Socket::new(Domain::IPV4, Type::STREAM, None).unwrap();
             socket.set_reuse_address(true).unwrap();
             socket.set_reuse_port(true).unwrap();
-            socket
-                .bind(&"127.0.0.1:0".parse::<SocketAddr>().unwrap().into())
-                .unwrap();
+            socket.bind(&"127.0.0.1:0".parse::<SocketAddr>().unwrap().into()).unwrap();
             socket
         })
         .collect::<Vec<_>>();
     sockets
         .into_iter()
-        .map(|socket| {
-            socket
-                .local_addr()
-                .unwrap()
-                .as_socket_ipv4()
-                .unwrap()
-                .port()
-        })
+        .map(|socket| socket.local_addr().unwrap().as_socket_ipv4().unwrap().port())
         .collect()
 }

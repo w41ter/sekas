@@ -11,11 +11,9 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-use crate::{
-    engine::{GroupEngine, SnapshotMode},
-    node::Replica,
-    NodeConfig, Result,
-};
+use crate::engine::{GroupEngine, SnapshotMode};
+use crate::node::Replica;
+use crate::{NodeConfig, Result};
 
 pub(crate) async fn remove_shard(
     cfg: &NodeConfig,

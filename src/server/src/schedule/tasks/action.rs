@@ -12,11 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::schedule::{
-    actions::{Action, ActionState},
-    scheduler::ScheduleContext,
-    task::{Task, TaskState},
-};
+use crate::schedule::actions::{Action, ActionState};
+use crate::schedule::scheduler::ScheduleContext;
+use crate::schedule::task::{Task, TaskState};
 
 #[derive(Clone, Copy, Debug)]
 enum ActionStage {
@@ -32,11 +30,7 @@ pub struct ActionTask {
 
 impl ActionTask {
     pub fn new(task_id: u64, actions: Vec<Box<dyn Action>>) -> Self {
-        ActionTask {
-            task_id,
-            stage: ActionStage::Next(0),
-            actions,
-        }
+        ActionTask { task_id, stage: ActionStage::Next(0), actions }
     }
 }
 

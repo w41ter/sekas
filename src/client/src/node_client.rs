@@ -14,9 +14,11 @@
 
 use std::time::Duration;
 
-use sekas_api::{server::v1::*, v1::*};
 use prost::Message;
-use tonic::{transport::Channel, IntoRequest};
+use sekas_api::server::v1::*;
+use sekas_api::v1::*;
+use tonic::transport::Channel;
+use tonic::IntoRequest;
 
 #[derive(Debug, Clone)]
 pub struct Client {
@@ -25,9 +27,7 @@ pub struct Client {
 
 impl Client {
     pub fn new(channel: Channel) -> Self {
-        Client {
-            client: node_client::NodeClient::new(channel),
-        }
+        Client { client: node_client::NodeClient::new(channel) }
     }
 
     pub async fn connect(addr: String) -> Result<Self, tonic::transport::Error> {
@@ -40,9 +40,7 @@ impl Client {
         let mut client = self.client.clone();
         let resp = client
             .admin(NodeAdminRequest {
-                request: Some(node_admin_request::Request::GetRoot(
-                    GetRootRequest::default(),
-                )),
+                request: Some(node_admin_request::Request::GetRoot(GetRootRequest::default())),
             })
             .await?;
         match resp.into_inner().response {
@@ -60,10 +58,7 @@ impl Client {
         group_desc: GroupDesc,
     ) -> Result<(), tonic::Status> {
         let mut client = self.client.clone();
-        let req = CreateReplicaRequest {
-            replica_id,
-            group: Some(group_desc),
-        };
+        let req = CreateReplicaRequest { replica_id, group: Some(group_desc) };
         let resp = client
             .admin(NodeAdminRequest {
                 request: Some(node_admin_request::Request::CreateReplica(req)),
@@ -84,10 +79,7 @@ impl Client {
         group: GroupDesc,
     ) -> Result<(), tonic::Status> {
         let mut client = self.client.clone();
-        let req = RemoveReplicaRequest {
-            replica_id,
-            group: Some(group),
-        };
+        let req = RemoveReplicaRequest { replica_id, group: Some(group) };
         let resp = client
             .admin(NodeAdminRequest {
                 request: Some(node_admin_request::Request::RemoveReplica(req)),
@@ -116,9 +108,7 @@ impl Client {
     ) -> Result<HeartbeatResponse, tonic::Status> {
         let mut client = self.client.clone();
         let resp = client
-            .admin(NodeAdminRequest {
-                request: Some(node_admin_request::Request::Heartbeat(req)),
-            })
+            .admin(NodeAdminRequest { request: Some(node_admin_request::Request::Heartbeat(req)) })
             .await?;
         match resp.into_inner().response {
             Some(node_admin_response::Response::Heartbeat(resp)) => Ok(resp),
@@ -131,9 +121,7 @@ impl Client {
     pub async fn forward(&self, req: ForwardRequest) -> Result<ForwardResponse, tonic::Status> {
         let mut client = self.client.clone();
         let resp = client
-            .migrate(MigrateRequest {
-                request: Some(migrate_request::Request::Forward(req)),
-            })
+            .migrate(MigrateRequest { request: Some(migrate_request::Request::Forward(req)) })
             .await?;
         match resp.into_inner().response {
             Some(migrate_response::Response::Forward(resp)) => Ok(resp),
@@ -186,10 +174,7 @@ pub struct RequestBatchBuilder {
 
 impl RequestBatchBuilder {
     pub fn new(node_id: u64) -> Self {
-        Self {
-            node_id,
-            requests: vec![],
-        }
+        Self { node_id, requests: vec![] }
     }
 
     pub fn get(mut self, group_id: u64, epoch: u64, shard_id: u64, key: Vec<u8>) -> Self {
@@ -220,11 +205,7 @@ impl RequestBatchBuilder {
             request: Some(GroupRequestUnion {
                 request: Some(group_request_union::Request::Put(ShardPutRequest {
                     shard_id,
-                    put: Some(PutRequest {
-                        key,
-                        value,
-                        ..Default::default()
-                    }),
+                    put: Some(PutRequest { key, value, ..Default::default() }),
                 })),
             }),
         });
@@ -238,10 +219,7 @@ impl RequestBatchBuilder {
             request: Some(GroupRequestUnion {
                 request: Some(group_request_union::Request::Delete(ShardDeleteRequest {
                     shard_id,
-                    delete: Some(DeleteRequest {
-                        key,
-                        ..Default::default()
-                    }),
+                    delete: Some(DeleteRequest { key, ..Default::default() }),
                 })),
             }),
         });
@@ -253,11 +231,9 @@ impl RequestBatchBuilder {
             group_id,
             epoch,
             request: Some(GroupRequestUnion {
-                request: Some(group_request_union::Request::CreateShard(
-                    CreateShardRequest {
-                        shard: Some(shard_desc),
-                    },
-                )),
+                request: Some(group_request_union::Request::CreateShard(CreateShardRequest {
+                    shard: Some(shard_desc),
+                })),
             }),
         });
         self
@@ -278,9 +254,7 @@ impl RequestBatchBuilder {
             group_id,
             epoch,
             request: Some(GroupRequestUnion {
-                request: Some(group_request_union::Request::ChangeReplicas(
-                    change_replicas,
-                )),
+                request: Some(group_request_union::Request::ChangeReplicas(change_replicas)),
             }),
         });
         self
@@ -301,9 +275,7 @@ impl RequestBatchBuilder {
             group_id,
             epoch,
             request: Some(GroupRequestUnion {
-                request: Some(group_request_union::Request::ChangeReplicas(
-                    change_replicas,
-                )),
+                request: Some(group_request_union::Request::ChangeReplicas(change_replicas)),
             }),
         });
         self
@@ -324,9 +296,7 @@ impl RequestBatchBuilder {
             group_id,
             epoch,
             request: Some(GroupRequestUnion {
-                request: Some(group_request_union::Request::ChangeReplicas(
-                    change_replicas,
-                )),
+                request: Some(group_request_union::Request::ChangeReplicas(change_replicas)),
             }),
         });
         self
@@ -344,13 +314,11 @@ impl RequestBatchBuilder {
             group_id,
             epoch,
             request: Some(GroupRequestUnion {
-                request: Some(group_request_union::Request::AcceptShard(
-                    AcceptShardRequest {
-                        src_group_id,
-                        src_group_epoch,
-                        shard_desc: Some(shard_desc.to_owned()),
-                    },
-                )),
+                request: Some(group_request_union::Request::AcceptShard(AcceptShardRequest {
+                    src_group_id,
+                    src_group_epoch,
+                    shard_desc: Some(shard_desc.to_owned()),
+                })),
             }),
         });
         self
@@ -417,10 +385,7 @@ impl RequestBatchBuilder {
     }
 
     pub fn build(self) -> BatchRequest {
-        BatchRequest {
-            node_id: self.node_id,
-            requests: self.requests,
-        }
+        BatchRequest { node_id: self.node_id, requests: self.requests }
     }
 }
 

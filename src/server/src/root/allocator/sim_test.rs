@@ -12,20 +12,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::{
-    collections::{hash_map::Entry, HashMap},
-    sync::{
-        atomic::{AtomicU64, Ordering},
-        Mutex,
-    },
-};
+use std::collections::hash_map::Entry;
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
 
 use sekas_api::server::v1::*;
 
 use super::*;
-use crate::{
-    constants::REPLICA_PER_GROUP, root::allocator::source::NodeFilter, runtime::ExecutorOwner,
-};
+use crate::constants::REPLICA_PER_GROUP;
+use crate::root::allocator::source::NodeFilter;
+use crate::runtime::ExecutorOwner;
 
 #[test]
 fn sim_boostrap_join_node_balance() {
@@ -41,20 +38,12 @@ fn sim_boostrap_join_node_balance() {
             id: 1,
             epoch: 0,
             shards: vec![],
-            replicas: vec![ReplicaDesc {
-                id: 1,
-                node_id: 1,
-                role: ReplicaRole::Voter.into(),
-            }],
+            replicas: vec![ReplicaDesc { id: 1, node_id: 1, role: ReplicaRole::Voter.into() }],
         }]);
         p.set_nodes(vec![NodeDesc {
             id: 1,
             addr: "".into(),
-            capacity: Some(NodeCapacity {
-                cpu_nums: 2.0,
-                replica_count: 1,
-                leader_count: 1,
-            }),
+            capacity: Some(NodeCapacity { cpu_nums: 2.0, replica_count: 1, leader_count: 1 }),
             status: NodeStatus::Active as i32,
         }]);
         p.set_replica_states(vec![ReplicaState {
@@ -76,21 +65,13 @@ fn sim_boostrap_join_node_balance() {
             NodeDesc {
                 id: 2,
                 addr: "".into(),
-                capacity: Some(NodeCapacity {
-                    cpu_nums: 2.0,
-                    replica_count: 0,
-                    leader_count: 0,
-                }),
+                capacity: Some(NodeCapacity { cpu_nums: 2.0, replica_count: 0, leader_count: 0 }),
                 status: NodeStatus::Active as i32,
             },
             NodeDesc {
                 id: 3,
                 addr: "".into(),
-                capacity: Some(NodeCapacity {
-                    cpu_nums: 2.0,
-                    replica_count: 0,
-                    leader_count: 0,
-                }),
+                capacity: Some(NodeCapacity { cpu_nums: 2.0, replica_count: 0, leader_count: 0 }),
                 status: NodeStatus::Active as i32,
             },
         ]);
@@ -103,21 +84,9 @@ fn sim_boostrap_join_node_balance() {
             epoch: 1,
             shards: vec![],
             replicas: vec![
-                ReplicaDesc {
-                    id: 1,
-                    node_id: 1,
-                    role: ReplicaRole::Voter.into(),
-                },
-                ReplicaDesc {
-                    id: 2,
-                    node_id: 2,
-                    role: ReplicaRole::Voter.into(),
-                },
-                ReplicaDesc {
-                    id: 3,
-                    node_id: 3,
-                    role: ReplicaRole::Voter.into(),
-                },
+                ReplicaDesc { id: 1, node_id: 1, role: ReplicaRole::Voter.into() },
+                ReplicaDesc { id: 2, node_id: 2, role: ReplicaRole::Voter.into() },
+                ReplicaDesc { id: 3, node_id: 3, role: ReplicaRole::Voter.into() },
             ],
         }]);
         p.set_replica_states(vec![
@@ -155,10 +124,7 @@ fn sim_boostrap_join_node_balance() {
         match act {
             GroupAction::Add(n) => {
                 for _ in 0..n {
-                    let nodes = a
-                        .allocate_group_replica(vec![], REPLICA_PER_GROUP)
-                        .await
-                        .unwrap();
+                    let nodes = a.allocate_group_replica(vec![], REPLICA_PER_GROUP).await.unwrap();
                     println!(
                         "alloc group {} in {:?}",
                         group_id_gen,
@@ -192,12 +158,7 @@ fn sim_boostrap_join_node_balance() {
                     }
                     groups.insert(
                         group_id_gen,
-                        GroupDesc {
-                            id: group_id_gen,
-                            epoch: 0,
-                            shards: vec![],
-                            replicas,
-                        },
+                        GroupDesc { id: group_id_gen, epoch: 0, shards: vec![], replicas },
                     );
                     p.set_groups(groups.values().into_iter().map(ToOwned::to_owned).collect());
                     p.set_replica_states(replica_states);
@@ -218,11 +179,7 @@ fn sim_boostrap_join_node_balance() {
         for id in 0..9 {
             let group = cg.get(id % cg.len()).unwrap();
             p.assign_shard(group.id);
-            println!(
-                "assign shard to group {}, prev_shard_cnt: {}",
-                group.id,
-                group.shards.len()
-            );
+            println!("assign shard to group {}, prev_shard_cnt: {}", group.id, group.shards.len());
         }
 
         println!("6. node 4 joined");
@@ -230,11 +187,7 @@ fn sim_boostrap_join_node_balance() {
         nodes.extend_from_slice(&[NodeDesc {
             id: 4,
             addr: "".into(),
-            capacity: Some(NodeCapacity {
-                cpu_nums: 2.0,
-                replica_count: 0,
-                leader_count: 0,
-            }),
+            capacity: Some(NodeCapacity { cpu_nums: 2.0, replica_count: 0, leader_count: 0 }),
             status: NodeStatus::Active as i32,
         }]);
         p.set_nodes(nodes);
@@ -245,10 +198,7 @@ fn sim_boostrap_join_node_balance() {
         match act {
             GroupAction::Add(n) => {
                 for _ in 0..n {
-                    let nodes = a
-                        .allocate_group_replica(vec![], REPLICA_PER_GROUP)
-                        .await
-                        .unwrap();
+                    let nodes = a.allocate_group_replica(vec![], REPLICA_PER_GROUP).await.unwrap();
                     println!(
                         "alloc group {} in {:?}",
                         group_id_gen,
@@ -282,12 +232,7 @@ fn sim_boostrap_join_node_balance() {
                     }
                     groups.insert(
                         group_id_gen,
-                        GroupDesc {
-                            id: group_id_gen,
-                            epoch: 0,
-                            shards: vec![],
-                            replicas,
-                        },
+                        GroupDesc { id: group_id_gen, epoch: 0, shards: vec![], replicas },
                     );
                     p.set_groups(groups.values().into_iter().map(ToOwned::to_owned).collect());
                     p.set_replica_states(replica_states);
@@ -334,15 +279,8 @@ fn sim_boostrap_join_node_balance() {
         assert!(!sact.is_empty());
         for act in &sact {
             match act {
-                ShardAction::Migrate(ReallocateShard {
-                    shard,
-                    source_group,
-                    target_group,
-                }) => {
-                    println!(
-                        "move shard {} from {} to {}",
-                        shard, source_group, target_group
-                    );
+                ShardAction::Migrate(ReallocateShard { shard, source_group, target_group }) => {
+                    println!("move shard {} from {} to {}", shard, source_group, target_group);
                     p.move_shards(
                         source_group.to_owned(),
                         target_group.to_owned(),
@@ -355,15 +293,8 @@ fn sim_boostrap_join_node_balance() {
         assert!(!sact.is_empty());
         for act in &sact {
             match act {
-                ShardAction::Migrate(ReallocateShard {
-                    shard,
-                    source_group,
-                    target_group,
-                }) => {
-                    println!(
-                        "move shard {} from {} to {}",
-                        shard, source_group, target_group
-                    );
+                ShardAction::Migrate(ReallocateShard { shard, source_group, target_group }) => {
+                    println!("move shard {} from {} to {}", shard, source_group, target_group);
                     p.move_shards(
                         source_group.to_owned(),
                         target_group.to_owned(),
@@ -443,11 +374,7 @@ impl AllocSource for MockInfoProvider {
 
     fn node_replicas(&self, node_id: &u64) -> Vec<(ReplicaDesc, u64)> {
         let groups = self.groups.lock().unwrap();
-        groups
-            .node_replicas
-            .get(node_id)
-            .map(ToOwned::to_owned)
-            .unwrap_or_default()
+        groups.node_replicas.get(node_id).map(ToOwned::to_owned).unwrap_or_default()
     }
 
     fn replica_state(&self, replica_id: &u64) -> Option<ReplicaState> {
@@ -493,13 +420,7 @@ impl MockInfoProvider {
         self.set_nodes(nodes);
 
         let descs = gs.into_iter().map(|g| (g.id, g)).collect();
-        let _ = std::mem::replace(
-            &mut *groups,
-            GroupInfo {
-                descs,
-                node_replicas,
-            },
-        );
+        let _ = std::mem::replace(&mut *groups, GroupInfo { descs, node_replicas });
     }
 
     fn set_replica_states(&self, rs: Vec<ReplicaState>) {
@@ -514,11 +435,7 @@ impl MockInfoProvider {
                 continue;
             }
             let group = groups.get(&r.group_id).unwrap();
-            let desc = group
-                .replicas
-                .iter()
-                .find(|d| d.id == r.replica_id)
-                .unwrap();
+            let desc = group.replicas.iter().find(|d| d.id == r.replica_id).unwrap();
             match node_leader.entry(&desc.node_id) {
                 Entry::Occupied(mut ent) => {
                     let v = ent.get_mut();
@@ -531,18 +448,13 @@ impl MockInfoProvider {
         }
         for n in nodes.iter_mut() {
             let mut cap = n.capacity.take().unwrap();
-            cap.leader_count = node_leader
-                .get(&n.id)
-                .map(ToOwned::to_owned)
-                .unwrap_or_default();
+            cap.leader_count = node_leader.get(&n.id).map(ToOwned::to_owned).unwrap_or_default();
             n.capacity = Some(cap);
         }
         self.set_nodes(nodes);
 
-        let id_to_state = rs
-            .into_iter()
-            .map(|r| (r.replica_id, r))
-            .collect::<HashMap<u64, ReplicaState>>();
+        let id_to_state =
+            rs.into_iter().map(|r| (r.replica_id, r)).collect::<HashMap<u64, ReplicaState>>();
         let _ = std::mem::replace(&mut *replicas, id_to_state);
     }
 
@@ -618,11 +530,7 @@ impl MockInfoProvider {
         let groups = self.groups.lock().unwrap();
         println!("----------");
         for (n, g) in &groups.node_replicas {
-            println!(
-                "node replicas: {} -> {:?}",
-                n,
-                g.iter().map(|r| r.0.id).collect::<Vec<u64>>()
-            )
+            println!("node replicas: {} -> {:?}", n, g.iter().map(|r| r.0.id).collect::<Vec<u64>>())
         }
         let descs = &groups.descs;
         for g in descs.values() {
@@ -631,10 +539,7 @@ impl MockInfoProvider {
         }
 
         let nodes = self.nodes.lock().unwrap();
-        println!(
-            "cluster_nodes: {:?}",
-            nodes.iter().map(|n| n.id).collect::<Vec<u64>>()
-        );
+        println!("cluster_nodes: {:?}", nodes.iter().map(|n| n.id).collect::<Vec<u64>>());
 
         let state = self.replicas.lock().unwrap();
         let mut node_leaders: HashMap<u64, Vec<u64>> = HashMap::new();

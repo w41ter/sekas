@@ -74,13 +74,15 @@ pub enum Error {
 
     #[error("not leader of group {0}")]
     NotLeader(
-        /* group_id */ u64,
-        /* term */ u64,
+        // group_id
+        u64,
+        // term
+        u64,
         Option<ReplicaDesc>,
     ),
 
-    /// This indicates that the `GroupClient` has not been able to access the group leader after
-    /// retries many times.
+    /// This indicates that the `GroupClient` has not been able to access the
+    /// group leader after retries many times.
     #[error("group {0} not accessable")]
     GroupNotAccessable(u64),
 
@@ -214,9 +216,7 @@ pub fn retryable_io_err(err: &std::io::Error) -> bool {
 pub fn retryable_rpc_err(status: &tonic::Status) -> bool {
     use tonic::Code;
     if status.code() == Code::Unavailable
-        && status
-            .message()
-            .contains("error trying to connect: deadline has elapsed")
+        && status.message().contains("error trying to connect: deadline has elapsed")
     {
         // connection timeout.
         true
@@ -225,12 +225,9 @@ pub fn retryable_rpc_err(status: &tonic::Status) -> bool {
         while let Some(err) = cause {
             if let Some(err) = err.downcast_ref::<std::io::Error>() {
                 return retryable_io_err(err);
-            } else if err
-                .to_string()
-                .ends_with("operation was canceled: connection closed")
-            {
-                // The request is dropped in an internal queue, which is guaranteed to have not been
-                // sent to the server. See https://github.com/hyperium/hyper/blob/bb3af17ce1a3841e9170adabcce595c7c8743ea7/src/client/dispatch.rs#L209 for details.
+            } else if err.to_string().ends_with("operation was canceled: connection closed") {
+                // The request is dropped in an internal queue, which is guaranteed to have not
+                // been sent to the server. See https://github.com/hyperium/hyper/blob/bb3af17ce1a3841e9170adabcce595c7c8743ea7/src/client/dispatch.rs#L209 for details.
                 return true;
             }
             cause = err.source();
@@ -242,17 +239,15 @@ pub fn retryable_rpc_err(status: &tonic::Status) -> bool {
 pub fn transport_io_err(err: &std::io::Error) -> bool {
     use std::io::ErrorKind;
 
-    matches!(
-        err.kind(),
-        ErrorKind::ConnectionReset | ErrorKind::BrokenPipe
-    )
+    matches!(err.kind(), ErrorKind::ConnectionReset | ErrorKind::BrokenPipe)
 }
 
 pub fn transport_err(status: &tonic::Status) -> bool {
     // Cases:
     // - transport error: <inner messages>: connection reset
     // - transport error: <inner messages>: broken pipe
-    // - error trying to connect: tcp connect error: Connection reset by peer (os error 104)
+    // - error trying to connect: tcp connect error: Connection reset by peer (os
+    //   error 104)
     // - error reading a body from connection: connection reset
     let mut cause = status.source();
     while let Some(err) = cause {
@@ -265,8 +260,8 @@ pub fn transport_err(status: &tonic::Status) -> bool {
 }
 
 pub fn from_source_or_details(status: tonic::Status) -> Error {
-    use sekas_api::server::v1;
     use prost::Message;
+    use sekas_api::server::v1;
 
     if !status.details().is_empty() {
         if let Ok(err) = v1::Error::decode(status.details()) {

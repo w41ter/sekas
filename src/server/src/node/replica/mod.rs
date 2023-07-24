@@ -18,35 +18,30 @@ mod migrate;
 pub mod retry;
 mod state;
 
-use std::{
-    sync::{atomic::AtomicI32, Arc, Mutex},
-    task::Poll,
-};
+use std::sync::atomic::AtomicI32;
+use std::sync::{Arc, Mutex};
+use std::task::Poll;
 
-use sekas_api::{
-    server::v1::{group_request_union::Request, group_response_union::Response, *},
-    v1::{DeleteResponse, GetResponse, PutResponse},
-};
+use sekas_api::server::v1::group_request_union::Request;
+use sekas_api::server::v1::group_response_union::Response;
+use sekas_api::server::v1::*;
+use sekas_api::v1::{DeleteResponse, GetResponse, PutResponse};
 use serde::Serialize;
 use tracing::info;
 
+pub use self::eval::LatchGuard;
 use self::eval::{acquire_row_latches, RowLatchManager};
-pub use self::{
-    eval::LatchGuard,
-    state::{LeaseState, LeaseStateObserver},
-};
+pub use self::state::{LeaseState, LeaseStateObserver};
+use crate::engine::GroupEngine;
+use crate::error::BusyReason;
 pub use crate::raftgroup::RaftNodeFacade as RaftSender;
-use crate::{
-    engine::GroupEngine,
-    error::BusyReason,
-    raftgroup::{
-        perf_point_micros, write_initial_state, RaftManager, RaftNodeFacade, ReadPolicy,
-        WorkerPerfContext,
-    },
-    schedule::MoveReplicasProvider,
-    serverpb::v1::*,
-    Error, Result,
+use crate::raftgroup::{
+    perf_point_micros, write_initial_state, RaftManager, RaftNodeFacade, ReadPolicy,
+    WorkerPerfContext,
 };
+use crate::schedule::MoveReplicasProvider;
+use crate::serverpb::v1::*;
+use crate::{Error, Result};
 
 #[derive(Debug, Default, Clone, Serialize)]
 pub struct ReplicaPerfContext {
@@ -102,12 +97,8 @@ impl Replica {
         target_desc: &GroupDesc,
         raft_mgr: &RaftManager,
     ) -> Result<()> {
-        let eval_results = target_desc
-            .shards
-            .iter()
-            .cloned()
-            .map(eval::add_shard)
-            .collect::<Vec<_>>();
+        let eval_results =
+            target_desc.shards.iter().cloned().map(eval::add_shard).collect::<Vec<_>>();
         write_initial_state(
             &raft_mgr.cfg,
             &raft_mgr.engine(),
@@ -169,8 +160,8 @@ impl Replica {
         self.evaluate_command(exec_ctx, request).await
     }
 
-    /// Execute group request. instead of be blocked, it will returns `Error::ServiceIsBusy` if
-    /// it could not success to take acl guard.
+    /// Execute group request. instead of be blocked, it will returns
+    /// `Error::ServiceIsBusy` if it could not success to take acl guard.
     pub(crate) async fn try_execute(
         &self,
         mut exec_ctx: ExecCtx,
@@ -180,9 +171,8 @@ impl Replica {
             return Err(Error::GroupNotFound(self.info.group_id));
         }
 
-        let _acl_guard = self
-            .try_take_acl_guard(request)
-            .ok_or(Error::ServiceIsBusy(BusyReason::AclGuard))?;
+        let _acl_guard =
+            self.try_take_acl_guard(request).ok_or(Error::ServiceIsBusy(BusyReason::AclGuard))?;
         self.check_request_early(&mut exec_ctx, request)?;
         self.evaluate_command(&exec_ctx, request).await
     }
@@ -203,9 +193,7 @@ impl Replica {
             } else if self.info.is_terminated() {
                 Poll::Ready(Err(Error::NotLeader(self.info.group_id, 0, None)))
             } else {
-                lease_state
-                    .leader_subscribers
-                    .insert(source, ctx.waker().clone());
+                lease_state.leader_subscribers.insert(source, ctx.waker().clone());
                 Poll::Pending
             }
         })
@@ -264,20 +252,16 @@ impl Replica {
         let _acl_guard = self.take_read_acl_guard().await;
         let propose = perf_point_micros();
         let raft = self.raft_node.clone().monitor().await?;
-        Ok(ReplicaPerfContext {
-            take_acl_guard,
-            propose,
-            raft,
-        })
+        Ok(ReplicaPerfContext { take_acl_guard, propose, raft })
     }
 }
 
 impl Replica {
     #[inline]
     async fn take_acl_guard(&self, request: &Request) -> MetaAclGuard {
-        // `Request::MoveReplicas` is very special, it doesn't modify the metadata directly,
-        // instead, it does some config changes asynchronously, so there's no need for a write lock
-        // here.
+        // `Request::MoveReplicas` is very special, it doesn't modify the metadata
+        // directly, instead, it does some config changes asynchronously, so
+        // there's no need for a write lock here.
         if is_change_meta_request(request) && !matches!(request, Request::MoveReplicas(_)) {
             self.take_write_acl_guard().await
         } else {
@@ -306,8 +290,9 @@ impl Replica {
 
     /// Delegates the eval method for the given `Request`.
     async fn evaluate_command(&self, exec_ctx: &ExecCtx, request: &Request) -> Result<Response> {
-        // Acquire row latches one by one. The implementation guarantees that there will be no
-        // deadlock, so waiting while holding `read/write_acl_guard` will not affect other requests.
+        // Acquire row latches one by one. The implementation guarantees that there will
+        // be no deadlock, so waiting while holding `read/write_acl_guard` will
+        // not affect other requests.
         let _latches = acquire_row_latches(&self.latch_mgr, request, None).await?;
         let (eval_result_opt, resp) = match &request {
             Request::Get(req) => {
@@ -350,9 +335,7 @@ impl Replica {
             }
             Request::MoveReplicas(req) => {
                 eval::move_replicas(exec_ctx, self.move_replicas_provider.as_ref(), req).await?;
-                let resp = MoveReplicasResponse {
-                    schedule_state: Some(self.schedule_state()),
-                };
+                let resp = MoveReplicasResponse { schedule_state: Some(self.schedule_state()) };
                 (None, Response::MoveReplicas(resp))
             }
             Request::AcceptShard(req) => {
@@ -391,8 +374,9 @@ impl Replica {
                 lease_state.leader_descriptor(),
             ))
         } else if !lease_state.is_log_term_matched() {
-            // Replica has just been elected as the leader, and there are still exists unapplied
-            // WALs, so the freshness of metadata cannot be guaranteed.
+            // Replica has just been elected as the leader, and there are still exists
+            // unapplied WALs, so the freshness of metadata cannot be
+            // guaranteed.
             Err(Error::GroupNotReady(group_id))
         } else if exec_ctx.forward_shard_id.is_some() {
             Ok(())
@@ -402,13 +386,12 @@ impl Replica {
             // At the same time, there can only be one migration task.
             Err(Error::ServiceIsBusy(BusyReason::Migrating))
         } else {
-            // If the current replica is the leader and has applied data in the current term,
-            // it is expected that the input epoch should not be larger than the leaders.
+            // If the current replica is the leader and has applied data in the current
+            // term, it is expected that the input epoch should not be larger
+            // than the leaders.
             debug_assert_eq!(exec_ctx.epoch, lease_state.descriptor.epoch);
-            let migrating_digest = lease_state
-                .migration_state
-                .as_ref()
-                .and_then(|m| m.migration_desc.clone());
+            let migrating_digest =
+                lease_state.migration_state.as_ref().and_then(|m| m.migration_desc.clone());
             exec_ctx.migration_desc = migrating_digest;
             Ok(())
         }
@@ -475,24 +458,17 @@ impl ReplicaInfo {
 
         let local_state: i32 = self.local_state().into();
         debug_assert_eq!(local_state, ReplicaLocalState::Initial as i32);
-        self.local_state
-            .store(ReplicaLocalState::Normal as i32, Ordering::SeqCst);
+        self.local_state.store(ReplicaLocalState::Normal as i32, Ordering::SeqCst);
     }
 }
 
 impl ExecCtx {
     pub fn with_epoch(epoch: u64) -> Self {
-        ExecCtx {
-            epoch,
-            ..Default::default()
-        }
+        ExecCtx { epoch, ..Default::default() }
     }
 
     pub fn forward(shard_id: u64) -> Self {
-        ExecCtx {
-            forward_shard_id: Some(shard_id),
-            ..Default::default()
-        }
+        ExecCtx { forward_shard_id: Some(shard_id), ..Default::default() }
     }
 
     pub fn reset(&mut self) {

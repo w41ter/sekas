@@ -12,11 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use sekas_api::{server::v1::*, v1::*};
+use sekas_api::server::v1::*;
+use sekas_api::v1::*;
 use tonic::{Request, Response, Status};
 
 use super::metrics::*;
-use crate::{record_latency, root::Watcher, Error, Result, Server};
+use crate::root::Watcher;
+use crate::{record_latency, Error, Result, Server};
 
 #[tonic::async_trait]
 impl root_server::Root for Server {
@@ -35,9 +37,7 @@ impl root_server::Root for Server {
     ) -> Result<Response<Self::WatchStream>, Status> {
         record_latency!(take_watch_request_metrics());
         let req = req.into_inner();
-        let watcher = self
-            .wrap(self.root.watch(req.cur_group_epochs).await)
-            .await?;
+        let watcher = self.wrap(self.root.watch(req.cur_group_epochs).await).await?;
         Ok(Response::new(watcher))
     }
 
@@ -50,9 +50,8 @@ impl root_server::Root for Server {
         let capacity = request
             .capacity
             .ok_or_else(|| Error::InvalidArgument("capacity is required".into()))?;
-        let (cluster_id, node, root) = self
-            .wrap(self.root.join(request.addr, capacity).await)
-            .await?;
+        let (cluster_id, node, root) =
+            self.wrap(self.root.join(request.addr, capacity).await).await?;
         Ok::<Response<JoinNodeResponse>, Status>(Response::new(JoinNodeResponse {
             cluster_id,
             node_id: node.id,
@@ -77,11 +76,7 @@ impl root_server::Root for Server {
         record_latency!(take_alloc_replica_request_metrics());
         let req = request.into_inner();
         let replicas = self
-            .wrap(
-                self.root
-                    .alloc_replica(req.group_id, req.epoch, req.num_required)
-                    .await,
-            )
+            .wrap(self.root.alloc_replica(req.group_id, req.epoch, req.num_required).await)
             .await?;
         Ok(Response::new(AllocReplicaResponse { replicas }))
     }
@@ -92,30 +87,21 @@ impl root_server::Root for Server {
     ) -> Result<Response<AllocTxnIdResponse>, Status> {
         let req = request.into_inner();
 
-        let base_txn_id = self
-            .wrap(self.root.alloc_txn_id(req.num_required).await)
-            .await?;
-        Ok(Response::new(AllocTxnIdResponse {
-            base_txn_id,
-            num: req.num_required,
-        }))
+        let base_txn_id = self.wrap(self.root.alloc_txn_id(req.num_required).await).await?;
+        Ok(Response::new(AllocTxnIdResponse { base_txn_id, num: req.num_required }))
     }
 }
 
 impl Server {
     async fn handle_admin(&self, req: AdminRequest) -> Result<AdminResponse> {
         let mut res = AdminResponse::default();
-        let req = req
-            .request
-            .ok_or_else(|| Error::InvalidArgument("AdminRequest".into()))?;
+        let req = req.request.ok_or_else(|| Error::InvalidArgument("AdminRequest".into()))?;
         res.response = Some(self.wrap(self.handle_admin_union(req).await).await?);
         Ok(res)
     }
 
     async fn handle_admin_union(&self, req: AdminRequestUnion) -> Result<AdminResponseUnion> {
-        let req = req
-            .request
-            .ok_or_else(|| Error::InvalidArgument("AdminRequestUnion".into()))?;
+        let req = req.request.ok_or_else(|| Error::InvalidArgument("AdminRequestUnion".into()))?;
         let res = match req {
             admin_request_union::Request::CreateDatabase(req) => {
                 let res = self.handle_create_database(req).await?;
@@ -156,9 +142,7 @@ impl Server {
                 admin_response_union::Response::ListCollections(res)
             }
         };
-        Ok(AdminResponseUnion {
-            response: Some(res),
-        })
+        Ok(AdminResponseUnion { response: Some(res) })
     }
 
     async fn handle_create_database(
@@ -166,9 +150,7 @@ impl Server {
         req: CreateDatabaseRequest,
     ) -> Result<CreateDatabaseResponse> {
         let desc = self.root.create_database(req.name).await?;
-        Ok(CreateDatabaseResponse {
-            database: Some(desc),
-        })
+        Ok(CreateDatabaseResponse { database: Some(desc) })
     }
 
     async fn handle_delete_database(
@@ -199,13 +181,8 @@ impl Server {
         let database = req.database.ok_or_else(|| {
             Error::InvalidArgument("CreateCollectionRequest::database".to_owned())
         })?;
-        let desc = self
-            .root
-            .create_collection(req.name, database.name, req.partition)
-            .await?;
-        Ok(CreateCollectionResponse {
-            collection: Some(desc),
-        })
+        let desc = self.root.create_collection(req.name, database.name, req.partition).await?;
+        Ok(CreateCollectionResponse { collection: Some(desc) })
     }
 
     async fn handle_delete_collection(

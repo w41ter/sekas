@@ -29,16 +29,12 @@ impl Default for RetryState {
 
 impl RetryState {
     pub fn new(timeout: Option<Duration>) -> Self {
-        RetryState {
-            interval_ms: 8,
-            deadline: timeout.and_then(|d| Instant::now().checked_add(d)),
-        }
+        RetryState { interval_ms: 8, deadline: timeout.and_then(|d| Instant::now().checked_add(d)) }
     }
 
     #[inline]
     pub fn timeout(&self) -> Option<Duration> {
-        self.deadline
-            .map(|d| d.saturating_duration_since(Instant::now()))
+        self.deadline.map(|d| d.saturating_duration_since(Instant::now()))
     }
 
     pub async fn retry(&mut self, err: Error) -> Result<()> {

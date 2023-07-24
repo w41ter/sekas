@@ -12,20 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::{
-    collections::HashMap,
-    sync::{Arc, Mutex},
-    time::Duration,
-};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
-use sekas_api::{
-    server::v1::{
-        watch_response::{delete_event::Event as DeleteEvent, update_event::Event as UpdateEvent},
-        *,
-    },
-    v1::*,
-};
 use futures::StreamExt;
+use sekas_api::server::v1::watch_response::delete_event::Event as DeleteEvent;
+use sekas_api::server::v1::watch_response::update_event::Event as UpdateEvent;
+use sekas_api::server::v1::*;
+use sekas_api::v1::*;
 use tonic::Streaming;
 use tracing::{info, trace, warn};
 
@@ -123,7 +118,7 @@ impl Router {
                     continue;
                 }
                 if (end.as_slice() < key) || (end.is_empty())
-                /* end = vec![] means MAX */
+                // end = vec![] means MAX
                 {
                     let group_state = state.find_group_by_shard(shard.id).ok_or_else(|| {
                         crate::Error::NotFound(format!("shard (key={key:?}) group"))
@@ -216,16 +211,9 @@ impl State {
         let (id, epoch) = (group_desc.id, group_desc.epoch);
         let (shards, replicas) = (group_desc.shards, group_desc.replicas);
 
-        let replicas = replicas
-            .into_iter()
-            .map(|d| (d.id, d))
-            .collect::<HashMap<u64, ReplicaDesc>>();
-        let mut group_state = RouterGroupState {
-            id,
-            epoch,
-            leader_state: None,
-            replicas,
-        };
+        let replicas =
+            replicas.into_iter().map(|d| (d.id, d)).collect::<HashMap<u64, ReplicaDesc>>();
+        let mut group_state = RouterGroupState { id, epoch, leader_state: None, replicas };
         if let Some(old_state) = self.group_id_lookup.get(&id) {
             group_state.leader_state = old_state.leader_state;
         } else if let Some(cached_state) = self.cached_group_states.remove(&id) {
@@ -287,11 +275,7 @@ async fn state_main(state: Arc<Mutex<State>>, root_client: RootClient) {
     loop {
         let cur_group_epochs = {
             let state = state.lock().unwrap();
-            state
-                .group_id_lookup
-                .iter()
-                .map(|(id, s)| (*id, s.epoch))
-                .collect()
+            state.group_id_lookup.iter().map(|(id, s)| (*id, s.epoch)).collect()
         };
         let events = match root_client.watch(cur_group_epochs).await {
             Ok(events) => events,
@@ -364,20 +348,12 @@ mod tests {
         ShardDesc {
             id,
             collection_id: 1,
-            partition: Some(Partition::Hash(HashPartition {
-                slot_id: 1,
-                slots: 1,
-            })),
+            partition: Some(Partition::Hash(HashPartition { slot_id: 1, slots: 1 })),
         }
     }
 
     fn descriptor(id: u64, epoch: u64) -> GroupDesc {
-        GroupDesc {
-            id,
-            epoch,
-            shards: vec![],
-            replicas: vec![],
-        }
+        GroupDesc { id, epoch, shards: vec![], replicas: vec![] }
     }
 
     #[test]

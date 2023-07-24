@@ -52,8 +52,7 @@ impl CommonEventSource {
 
     #[inline]
     pub fn fire(&mut self) {
-        self.active_tasks
-            .extend(std::mem::take(&mut self.subscribe_tasks).iter());
+        self.active_tasks.extend(std::mem::take(&mut self.subscribe_tasks).iter());
         if let Some(waker) = self.waker.take() {
             waker.wake();
         }

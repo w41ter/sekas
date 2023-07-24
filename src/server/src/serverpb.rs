@@ -34,9 +34,7 @@ pub mod v1 {
         #[inline]
         pub fn purge_replica(orphan_replica_id: u64) -> Box<Self> {
             Box::new(SyncOp {
-                purge_replica: Some(PurgeOrphanReplica {
-                    replica_id: orphan_replica_id,
-                }),
+                purge_replica: Some(PurgeOrphanReplica { replica_id: orphan_replica_id }),
                 ..Default::default()
             })
         }
@@ -73,9 +71,7 @@ pub mod v1 {
 
         #[inline]
         pub fn get_migration_desc(&self) -> &MigrationDesc {
-            self.migration_desc
-                .as_ref()
-                .expect("MigrationState::migration_desc is not None")
+            self.migration_desc.as_ref().expect("MigrationState::migration_desc is not None")
         }
 
         #[inline]
@@ -86,10 +82,7 @@ pub mod v1 {
 
     impl From<&raft::eraftpb::Entry> for EntryId {
         fn from(e: &raft::eraftpb::Entry) -> Self {
-            EntryId {
-                index: e.index,
-                term: e.term,
-            }
+            EntryId { index: e.index, term: e.term }
         }
     }
 }

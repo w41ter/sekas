@@ -12,23 +12,29 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::{sync::Arc, time::Duration};
+use std::sync::Arc;
+use std::time::Duration;
 
-use sekas_api::{
-    server::v1::{group_request_union::Request, group_response_union::Response, *},
-    v1::{create_collection_request::*, *},
-};
+use sekas_api::server::v1::group_request_union::Request;
+use sekas_api::server::v1::group_response_union::Response;
+use sekas_api::server::v1::*;
+use sekas_api::v1::create_collection_request::*;
+use sekas_api::v1::*;
 
+use crate::conn_manager::ConnManager;
+use crate::discovery::StaticServiceDiscovery;
+use crate::group_client::GroupClient;
+use crate::metrics::*;
+use crate::txn_client::TxnClient;
 use crate::{
-    conn_manager::ConnManager, discovery::StaticServiceDiscovery, group_client::GroupClient,
-    metrics::*, record_latency, txn_client::TxnClient, AdminRequestBuilder, AdminResponseExtractor,
-    AppError, AppResult, RetryState, RootClient, Router,
+    record_latency, AdminRequestBuilder, AdminResponseExtractor, AppError, AppResult, RetryState,
+    RootClient, Router,
 };
 
 #[derive(Debug, Clone, Default)]
 pub struct ClientOptions {
-    /// The duration of connection timeout, an error is issued if establish connection is not
-    /// finished after so the duration.
+    /// The duration of connection timeout, an error is issued if establish
+    /// connection is not finished after so the duration.
     pub connect_timeout: Option<Duration>,
 
     /// The duration of RPC over this client.
@@ -59,14 +65,7 @@ impl Client {
         let discovery = Arc::new(StaticServiceDiscovery::new(addrs.clone()));
         let root_client = RootClient::new(discovery, conn_manager.clone());
         let router = Router::new(root_client.clone()).await;
-        Ok(Self {
-            inner: Arc::new(ClientInner {
-                opts,
-                root_client,
-                router,
-                conn_manager,
-            }),
-        })
+        Ok(Self { inner: Arc::new(ClientInner { opts, root_client, router, conn_manager }) })
     }
 
     pub fn build(
@@ -75,36 +74,23 @@ impl Client {
         root_client: RootClient,
         conn_manager: ConnManager,
     ) -> Self {
-        Client {
-            inner: Arc::new(ClientInner {
-                opts,
-                root_client,
-                router,
-                conn_manager,
-            }),
-        }
+        Client { inner: Arc::new(ClientInner { opts, root_client, router, conn_manager }) }
     }
 
     pub async fn create_database(&self, name: String) -> AppResult<Database> {
         let root_client = self.inner.root_client.clone();
-        let resp = root_client
-            .admin(AdminRequestBuilder::create_database(name.clone()))
-            .await?;
+        let resp = root_client.admin(AdminRequestBuilder::create_database(name.clone())).await?;
         match AdminResponseExtractor::create_database(resp) {
             None => Err(AppError::NotFound(format!("database {name}"))),
-            Some(desc) => Ok(Database {
-                rpc_timeout: self.inner.opts.timeout,
-                desc,
-                client: self.clone(),
-            }),
+            Some(desc) => {
+                Ok(Database { rpc_timeout: self.inner.opts.timeout, desc, client: self.clone() })
+            }
         }
     }
 
     pub async fn delete_database(&self, name: String) -> AppResult<()> {
         let root_client = self.inner.root_client.clone();
-        let resp = root_client
-            .admin(AdminRequestBuilder::delete_database(name.clone()))
-            .await?;
+        let resp = root_client.admin(AdminRequestBuilder::delete_database(name.clone())).await?;
         match AdminResponseExtractor::delete_database(resp) {
             Some(()) => Ok(()),
             None => Err(AppError::NotFound(format!("database {name}"))),
@@ -113,9 +99,7 @@ impl Client {
 
     pub async fn list_database(&self) -> AppResult<Vec<Database>> {
         let root_client = self.inner.root_client.clone();
-        let resp = root_client
-            .admin(AdminRequestBuilder::list_database())
-            .await?;
+        let resp = root_client.admin(AdminRequestBuilder::list_database()).await?;
         Ok(AdminResponseExtractor::list_database(resp)
             .into_iter()
             .map(|desc| Database {
@@ -128,16 +112,12 @@ impl Client {
 
     pub async fn open_database(&self, name: String) -> AppResult<Database> {
         let root_client = self.inner.root_client.clone();
-        let resp = root_client
-            .admin(AdminRequestBuilder::get_database(name.clone()))
-            .await?;
+        let resp = root_client.admin(AdminRequestBuilder::get_database(name.clone())).await?;
         match AdminResponseExtractor::get_database(resp) {
             None => Err(AppError::NotFound(format!("database {}", name))),
-            Some(desc) => Ok(Database {
-                rpc_timeout: self.inner.opts.timeout,
-                desc,
-                client: self.clone(),
-            }),
+            Some(desc) => {
+                Ok(Database { rpc_timeout: self.inner.opts.timeout, desc, client: self.clone() })
+            }
         }
     }
 
@@ -186,11 +166,7 @@ impl From<create_collection_request::Partition> for Partition {
 
 impl Database {
     pub fn new(client: Client, desc: DatabaseDesc, rpc_timeout: Option<Duration>) -> Self {
-        Database {
-            client,
-            desc,
-            rpc_timeout,
-        }
+        Database { client, desc, rpc_timeout }
     }
 
     pub async fn create_collection(
@@ -210,11 +186,9 @@ impl Database {
             .await?;
         match AdminResponseExtractor::create_collection(resp) {
             None => Err(AppError::NotFound(format!("collection {name}"))),
-            Some(co_desc) => Ok(Collection {
-                rpc_timeout: self.rpc_timeout,
-                co_desc,
-                client: client.clone(),
-            }),
+            Some(co_desc) => {
+                Ok(Collection { rpc_timeout: self.rpc_timeout, co_desc, client: client.clone() })
+            }
         }
     }
 
@@ -223,10 +197,7 @@ impl Database {
         let db_desc = self.desc.clone();
         let root_client = client.inner.root_client.clone();
         let resp = root_client
-            .admin(AdminRequestBuilder::delete_collection(
-                db_desc.clone(),
-                name.clone(),
-            ))
+            .admin(AdminRequestBuilder::delete_collection(db_desc.clone(), name.clone()))
             .await?;
         match AdminResponseExtractor::delete_collection(resp) {
             None => Err(AppError::NotFound(format!("collection {name}"))),
@@ -237,9 +208,8 @@ impl Database {
     pub async fn list_collection(&self) -> AppResult<Vec<Collection>> {
         let client = self.client.clone();
         let root_client = client.inner.root_client.clone();
-        let resp = root_client
-            .admin(AdminRequestBuilder::list_collection(self.desc.clone()))
-            .await?;
+        let resp =
+            root_client.admin(AdminRequestBuilder::list_collection(self.desc.clone())).await?;
         Ok(AdminResponseExtractor::list_collection(resp)
             .into_iter()
             .map(|co_desc| Collection {
@@ -254,16 +224,13 @@ impl Database {
         let client = self.client.clone();
         let db_desc = self.desc.clone();
         let root_client = client.inner.root_client.clone();
-        let resp = root_client
-            .admin(AdminRequestBuilder::get_collection(db_desc, name.clone()))
-            .await?;
+        let resp =
+            root_client.admin(AdminRequestBuilder::get_collection(db_desc, name.clone())).await?;
         match AdminResponseExtractor::get_collection(resp) {
             None => Err(AppError::NotFound(format!("collection {}", name))),
-            Some(co_desc) => Ok(Collection {
-                rpc_timeout: self.rpc_timeout,
-                co_desc,
-                client: client.clone(),
-            }),
+            Some(co_desc) => {
+                Ok(Collection { rpc_timeout: self.rpc_timeout, co_desc, client: client.clone() })
+            }
         }
     }
 
@@ -291,11 +258,7 @@ impl Collection {
         co_desc: CollectionDesc,
         rpc_timeout: Option<Duration>,
     ) -> Collection {
-        Collection {
-            client,
-            co_desc,
-            rpc_timeout,
-        }
+        Collection { client, co_desc, rpc_timeout }
     }
 
     pub async fn delete(&self, key: Vec<u8>, conditions: Vec<WriteCondition>) -> AppResult<()> {
@@ -305,10 +268,7 @@ impl Collection {
         let mut retry_state = RetryState::new(self.rpc_timeout);
 
         loop {
-            match self
-                .delete_inner(&key, &conditions, retry_state.timeout())
-                .await
-            {
+            match self.delete_inner(&key, &conditions, retry_state.timeout()).await {
                 Ok(()) => return Ok(()),
                 Err(err) => {
                     retry_state.retry(err).await?;
@@ -325,23 +285,14 @@ impl Collection {
         operation: Option<PutOperation>,
         conditions: Vec<WriteCondition>,
     ) -> AppResult<()> {
-        CLIENT_DATABASE_BYTES_TOTAL
-            .rx
-            .inc_by((key.len() + value.len()) as u64);
+        CLIENT_DATABASE_BYTES_TOTAL.rx.inc_by((key.len() + value.len()) as u64);
         CLIENT_DATABASE_REQUEST_TOTAL.put.inc();
         record_latency!(&CLIENT_DATABASE_REQUEST_DURATION_SECONDS.put);
         let mut retry_state = RetryState::new(self.rpc_timeout);
 
         loop {
             match self
-                .put_inner(
-                    &key,
-                    &value,
-                    ttl,
-                    operation,
-                    &conditions,
-                    retry_state.timeout(),
-                )
+                .put_inner(&key, &value, ttl, operation, &conditions, retry_state.timeout())
                 .await
             {
                 Ok(()) => return Ok(()),
@@ -397,10 +348,7 @@ impl Collection {
         );
         let req = Request::Delete(ShardDeleteRequest {
             shard_id: shard.id,
-            delete: Some(DeleteRequest {
-                key: key.to_owned(),
-                conditions: conditions.to_owned(),
-            }),
+            delete: Some(DeleteRequest { key: key.to_owned(), conditions: conditions.to_owned() }),
         });
         if let Some(duration) = timeout {
             client.set_timeout(duration);
@@ -456,18 +404,14 @@ impl Collection {
         );
         let req = Request::Get(ShardGetRequest {
             shard_id: shard.id,
-            get: Some(GetRequest {
-                key: key.to_owned(),
-            }),
+            get: Some(GetRequest { key: key.to_owned() }),
         });
         if let Some(duration) = timeout {
             client.set_timeout(duration);
         }
         match client.request(&req).await? {
             Response::Get(GetResponse { value }) => Ok(value),
-            _ => Err(crate::Error::Internal(wrap(
-                "invalid response type, Get is required",
-            ))),
+            _ => Err(crate::Error::Internal(wrap("invalid response type, Get is required"))),
         }
     }
 

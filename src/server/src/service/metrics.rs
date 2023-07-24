@@ -11,10 +11,11 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-use sekas_api::{server::v1::*, v1::collection_request_union};
 use lazy_static::lazy_static;
 use prometheus::*;
 use prometheus_static_metric::make_static_metric;
+use sekas_api::server::v1::*;
+use sekas_api::v1::collection_request_union;
 
 make_static_metric! {
     pub struct GroupRequestTotal: IntCounter {
@@ -295,14 +296,14 @@ pub fn take_database_request_metrics(
 
 #[macro_export]
 macro_rules! record_latency {
-    ($metrics: expr) => {
+    ($metrics:expr) => {
         let _timer = $metrics.start_timer();
     };
 }
 
 #[macro_export]
 macro_rules! record_latency_opt {
-    ($metrics_opt: expr) => {
+    ($metrics_opt:expr) => {
         let _timer = $metrics_opt.map(|m| m.start_timer());
     };
 }

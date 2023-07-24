@@ -12,15 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::{
-    collections::{hash_map::Entry, HashMap},
-    sync::{Arc, Mutex},
-};
+use std::collections::hash_map::Entry;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 use sekas_api::server::v1::*;
 
 use super::RootShared;
-use crate::{root::liveness::Liveness, Result};
+use crate::root::liveness::Liveness;
+use crate::Result;
 
 pub enum NodeFilter {
     All,
@@ -118,11 +118,7 @@ impl AllocSource for SysAllocSource {
 
     fn node_replicas(&self, node_id: &u64) -> Vec<(ReplicaDesc, u64)> {
         let groups = self.groups.lock().unwrap();
-        groups
-            .node_replicas
-            .get(node_id)
-            .map(ToOwned::to_owned)
-            .unwrap_or_default()
+        groups.node_replicas.get(node_id).map(ToOwned::to_owned).unwrap_or_default()
     }
 
     fn replica_state(&self, replica_id: &u64) -> Option<ReplicaState> {
@@ -132,11 +128,7 @@ impl AllocSource for SysAllocSource {
 
     fn replica_states(&self) -> Vec<ReplicaState> {
         let replica_info = self.replicas.lock().unwrap();
-        replica_info
-            .replicas
-            .iter()
-            .map(|e| e.1.to_owned())
-            .collect()
+        replica_info.replicas.iter().map(|e| e.1.to_owned()).collect()
     }
 }
 
@@ -176,13 +168,7 @@ impl SysAllocSource {
             }
         }
         let descs = gs.into_iter().map(|g| (g.id, g)).collect();
-        let _ = std::mem::replace(
-            &mut *groups,
-            GroupInfo {
-                descs,
-                node_replicas,
-            },
-        );
+        let _ = std::mem::replace(&mut *groups, GroupInfo { descs, node_replicas });
     }
 
     async fn reload_replica_status(&self) -> Result<()> {
@@ -195,15 +181,8 @@ impl SysAllocSource {
     #[allow(dead_code)]
     fn set_replica_states(&self, rs: Vec<ReplicaState>) {
         let mut replicas = self.replicas.lock().unwrap();
-        let id_to_state = rs
-            .into_iter()
-            .map(|r| (r.replica_id, r))
-            .collect::<HashMap<u64, ReplicaState>>();
-        let _ = std::mem::replace(
-            &mut *replicas,
-            ReplicaInfo {
-                replicas: id_to_state,
-            },
-        );
+        let id_to_state =
+            rs.into_iter().map(|r| (r.replica_id, r)).collect::<HashMap<u64, ReplicaState>>();
+        let _ = std::mem::replace(&mut *replicas, ReplicaInfo { replicas: id_to_state });
     }
 }

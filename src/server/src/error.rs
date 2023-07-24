@@ -89,8 +89,10 @@ pub enum Error {
 
     #[error("not leader of group {0}")]
     NotLeader(
-        /* group_id */ u64,
-        /* term */ u64,
+        // group_id
+        u64,
+        // term
+        u64,
         Option<ReplicaDesc>,
     ),
 
@@ -126,8 +128,8 @@ impl std::fmt::Display for BusyReason {
 
 impl From<Error> for tonic::Status {
     fn from(e: Error) -> Self {
-        use sekas_api::server::v1;
         use prost::Message;
+        use sekas_api::server::v1;
         use tonic::{Code, Status};
 
         match e {
@@ -146,16 +148,12 @@ impl From<Error> for tonic::Status {
             Error::NotLeader(group_id, term, leader) => Status::with_details(
                 Code::Unknown,
                 format!("not leader of group {}", group_id),
-                v1::Error::not_leader(group_id, term, leader)
-                    .encode_to_vec()
-                    .into(),
+                v1::Error::not_leader(group_id, term, leader).encode_to_vec().into(),
             ),
             Error::NotRootLeader(root, term, leader) => Status::with_details(
                 Code::Unknown,
                 "not root",
-                v1::Error::not_root_leader(root, term, leader)
-                    .encode_to_vec()
-                    .into(),
+                v1::Error::not_root_leader(root, term, leader).encode_to_vec().into(),
             ),
             Error::EpochNotMatch(desc) => Status::with_details(
                 Code::Unknown,

@@ -60,12 +60,13 @@ impl SubCommand {
 #[derive(Parser)]
 #[clap(about = "Start sekas server")]
 struct StartCommand {
-    /// Try to bootstrap a cluster if it not initialized, otherwise join a cluster
+    /// Try to bootstrap a cluster if it not initialized, otherwise join a
+    /// cluster
     #[clap(long)]
     init: bool,
 
-    /// Sets the address of the target cluster to which this node will join. It only takes effect
-    /// when `--init` is not set
+    /// Sets the address of the target cluster to which this node will join. It
+    /// only takes effect when `--init` is not set
     #[clap(long, value_name = "ADDR")]
     join: Option<Vec<String>>,
 
@@ -81,7 +82,8 @@ struct StartCommand {
     #[clap(long, value_name = "DIR")]
     db: Option<String>,
 
-    /// Limit the number of cores is allowed to use, default is the number of machine cpus
+    /// Limit the number of cores is allowed to use, default is the number of
+    /// machine cpus
     #[clap(long, value_name = "LIMIT")]
     cpu_nums: Option<u32>,
 
@@ -132,9 +134,8 @@ fn main() -> Result<()> {
         std::process::abort();
     }));
 
-    let filter_layer = EnvFilter::try_from_default_env()
-        .or_else(|_| EnvFilter::try_new("info"))
-        .unwrap();
+    let filter_layer =
+        EnvFilter::try_from_default_env().or_else(|_| EnvFilter::try_new("info")).unwrap();
     tracing_subscriber::fmt()
         .with_env_filter(filter_layer)
         .with_ansi(atty::is(atty::Stream::Stderr))

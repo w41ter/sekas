@@ -17,7 +17,8 @@ use sekas_api::v1::*;
 use tonic::{Request, Response, Status};
 
 use super::ProxyServer;
-use crate::{record_latency, service::metrics::take_database_request_metrics, Error};
+use crate::service::metrics::take_database_request_metrics;
+use crate::{record_latency, Error};
 
 #[tonic::async_trait]
 impl sekas_server::Sekas for ProxyServer {
@@ -25,16 +26,13 @@ impl sekas_server::Sekas for ProxyServer {
         &self,
         request: Request<AdminRequest>,
     ) -> Result<Response<AdminResponse>, Status> {
-        use sekas_api::v1::{admin_request_union::Request, admin_response_union::Response};
-        let req = request
-            .into_inner()
-            .request
-            .and_then(|r| r.request)
-            .ok_or_else(|| {
-                Error::InvalidArgument(
-                    "AdminRequest::request or AdminRequestUnion::request is required".to_owned(),
-                )
-            })?;
+        use sekas_api::v1::admin_request_union::Request;
+        use sekas_api::v1::admin_response_union::Response;
+        let req = request.into_inner().request.and_then(|r| r.request).ok_or_else(|| {
+            Error::InvalidArgument(
+                "AdminRequest::request or AdminRequestUnion::request is required".to_owned(),
+            )
+        })?;
         let resp = match req {
             Request::GetDatabase(req) => Response::GetDatabase(self.get_database(req).await?),
             Request::ListDatabases(req) => Response::ListDatabases(self.list_database(req).await?),
@@ -63,9 +61,7 @@ impl sekas_server::Sekas for ProxyServer {
         };
 
         Ok(tonic::Response::new(AdminResponse {
-            response: Some(AdminResponseUnion {
-                response: Some(resp),
-            }),
+            response: Some(AdminResponseUnion { response: Some(resp) }),
         }))
     }
 
@@ -73,9 +69,8 @@ impl sekas_server::Sekas for ProxyServer {
         &self,
         request: Request<DatabaseRequest>,
     ) -> Result<Response<DatabaseResponse>, Status> {
-        use sekas_api::v1::{
-            collection_request_union::Request, collection_response_union::Response,
-        };
+        use sekas_api::v1::collection_request_union::Request;
+        use sekas_api::v1::collection_response_union::Response;
 
         let request = request.into_inner();
         let request = request.request.ok_or_else(|| {
@@ -98,9 +93,7 @@ impl sekas_server::Sekas for ProxyServer {
         };
         Ok(tonic::Response::new(DatabaseResponse {
             response: Some(CollectionResponse {
-                response: Some(CollectionResponseUnion {
-                    response: Some(resp),
-                }),
+                response: Some(CollectionResponseUnion { response: Some(resp) }),
             }),
         }))
     }
@@ -109,22 +102,14 @@ impl sekas_server::Sekas for ProxyServer {
 impl ProxyServer {
     async fn get_database(&self, req: GetDatabaseRequest) -> Result<GetDatabaseResponse, Status> {
         let database = self.client.open_database(req.name).await?;
-        Ok(GetDatabaseResponse {
-            database: Some(database.desc()),
-        })
+        Ok(GetDatabaseResponse { database: Some(database.desc()) })
     }
 
     async fn list_database(
         &self,
         _req: ListDatabasesRequest,
     ) -> Result<ListDatabasesResponse, Status> {
-        let databases = self
-            .client
-            .list_database()
-            .await?
-            .into_iter()
-            .map(|d| d.desc())
-            .collect();
+        let databases = self.client.list_database().await?.into_iter().map(|d| d.desc()).collect();
         Ok(ListDatabasesResponse { databases })
     }
 
@@ -133,9 +118,7 @@ impl ProxyServer {
         req: CreateDatabaseRequest,
     ) -> Result<CreateDatabaseResponse, Status> {
         let database = self.client.create_database(req.name).await?;
-        Ok(CreateDatabaseResponse {
-            database: Some(database.desc()),
-        })
+        Ok(CreateDatabaseResponse { database: Some(database.desc()) })
     }
 
     async fn update_database(
@@ -163,9 +146,7 @@ impl ProxyServer {
         let name = req.name;
         let database = Database::new(self.client.clone(), desc, None);
         let collection = database.open_collection(name).await?;
-        Ok(GetCollectionResponse {
-            collection: Some(collection.desc()),
-        })
+        Ok(GetCollectionResponse { collection: Some(collection.desc()) })
     }
 
     async fn list_collections(
@@ -176,12 +157,7 @@ impl ProxyServer {
             Error::InvalidArgument("ListCollectionRequest::database is required".to_owned())
         })?;
         let database = Database::new(self.client.clone(), desc, None);
-        let collections = database
-            .list_collection()
-            .await?
-            .into_iter()
-            .map(|c| c.desc())
-            .collect();
+        let collections = database.list_collection().await?.into_iter().map(|c| c.desc()).collect();
         Ok(ListCollectionsResponse { collections })
     }
 
@@ -197,12 +173,8 @@ impl ProxyServer {
         })?;
         let name = req.name;
         let database = Database::new(self.client.clone(), desc, None);
-        let collection = database
-            .create_collection(name, Some(partition.into()))
-            .await?;
-        Ok(CreateCollectionResponse {
-            collection: Some(collection.desc()),
-        })
+        let collection = database.create_collection(name, Some(partition.into())).await?;
+        Ok(CreateCollectionResponse { collection: Some(collection.desc()) })
     }
 
     async fn update_collection(
@@ -244,13 +216,7 @@ impl ProxyServer {
     ) -> Result<PutResponse, Status> {
         let collection = Collection::new(self.client.clone(), desc, None);
         collection
-            .put(
-                req.key,
-                req.value,
-                Some(req.ttl),
-                PutOperation::from_i32(req.op),
-                req.conditions,
-            )
+            .put(req.key, req.value, Some(req.ttl), PutOperation::from_i32(req.op), req.conditions)
             .await?;
         Ok(PutResponse {})
     }

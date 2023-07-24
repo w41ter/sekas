@@ -19,7 +19,10 @@ use sekas_api::server::v1::TxnState;
 use sekas_client::{AppError, ClientOptions, Error, Partition};
 use tracing::info;
 
-use crate::helper::{client::*, context::*, init::setup_panic_hook, runtime::*};
+use crate::helper::client::*;
+use crate::helper::context::*;
+use crate::helper::init::setup_panic_hook;
+use crate::helper::runtime::*;
 
 #[ctor::ctor]
 fn init() {
@@ -95,8 +98,7 @@ fn create_duplicated_database_or_collection() {
             .await
             .unwrap();
         assert!(matches!(
-            db.create_collection("test_co".to_string(), Some(Partition::Hash { slots: 3 }))
-                .await,
+            db.create_collection("test_co".to_string(), Some(Partition::Hash { slots: 3 })).await,
             Err(AppError::AlreadyExists(_))
         ));
         c.assert_collection_ready(&co.desc()).await;
@@ -173,10 +175,7 @@ fn request_to_offline_leader() {
             let r = r.map(String::from_utf8);
             assert!(matches!(r, Some(Ok(v)) if v == format!("value-{i}")));
             if i == 100 {
-                let state = c
-                    .find_router_group_state_by_key(&co.desc(), b"key")
-                    .await
-                    .unwrap();
+                let state = c.find_router_group_state_by_key(&co.desc(), b"key").await.unwrap();
                 let node_id = c.get_group_leader_node_id(state.id).await.unwrap();
                 ctx.stop_server(node_id).await;
             }

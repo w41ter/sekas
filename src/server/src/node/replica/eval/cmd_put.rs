@@ -12,18 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use sekas_api::{
-    server::v1::ShardPutRequest,
-    v1::{PutOperation, PutRequest},
-};
+use sekas_api::server::v1::ShardPutRequest;
+use sekas_api::v1::{PutOperation, PutRequest};
 
 use super::cas::eval_conditions;
-use crate::{
-    engine::{GroupEngine, WriteBatch},
-    node::{migrate::ForwardCtx, replica::ExecCtx},
-    serverpb::v1::{EvalResult, WriteBatchRep},
-    Error, Result,
-};
+use crate::engine::{GroupEngine, WriteBatch};
+use crate::node::migrate::ForwardCtx;
+use crate::node::replica::ExecCtx;
+use crate::serverpb::v1::{EvalResult, WriteBatchRep};
+use crate::{Error, Result};
 
 enum Op {
     Add,
@@ -43,11 +40,8 @@ pub(crate) async fn put(
     if let Some(desc) = exec_ctx.migration_desc.as_ref() {
         let shard_id = desc.shard_desc.as_ref().unwrap().id;
         if shard_id == req.shard_id {
-            let forward_ctx = ForwardCtx {
-                shard_id,
-                dest_group_id: desc.dest_group_id,
-                payloads: vec![],
-            };
+            let forward_ctx =
+                ForwardCtx { shard_id, dest_group_id: desc.dest_group_id, payloads: vec![] };
             return Err(Error::Forward(forward_ctx));
         }
     }
@@ -63,17 +57,9 @@ pub(crate) async fn put(
 
     let value = eval_put_op(put, value_result.as_deref())?;
     let mut wb = WriteBatch::default();
-    group_engine.put(
-        &mut wb,
-        req.shard_id,
-        &put.key,
-        &value,
-        super::FLAT_KEY_VERSION,
-    )?;
+    group_engine.put(&mut wb, req.shard_id, &put.key, &value, super::FLAT_KEY_VERSION)?;
     Ok(EvalResult {
-        batch: Some(WriteBatchRep {
-            data: wb.data().to_owned(),
-        }),
+        batch: Some(WriteBatchRep { data: wb.data().to_owned() }),
         ..Default::default()
     })
 }
@@ -83,10 +69,7 @@ fn eval_put_op(put: &PutRequest, value_result: Option<&[u8]>) -> Result<Vec<u8>>
         Some(PutOperation::None) => Ok(put.value.clone()),
         Some(PutOperation::Add) => do_op(Op::Add, value_result, &put.value),
         Some(PutOperation::Sub) => do_op(Op::Sub, value_result, &put.value),
-        None => Err(Error::InvalidArgument(format!(
-            "Invalid PutOperation {}",
-            put.op
-        ))),
+        None => Err(Error::InvalidArgument(format!("Invalid PutOperation {}", put.op))),
     }
 }
 

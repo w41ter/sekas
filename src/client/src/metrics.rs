@@ -12,10 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use sekas_api::server::v1::*;
 use lazy_static::lazy_static;
 use prometheus::*;
 use prometheus_static_metric::make_static_metric;
+use sekas_api::server::v1::*;
 
 make_static_metric! {
     pub struct GroupRequestTotal: IntCounter {
@@ -68,11 +68,9 @@ lazy_static! {
         .unwrap();
     pub static ref GROUP_CLIENT_GROUP_REQUEST_DURATION_SECONDS: GroupRequestDuration =
         GroupRequestDuration::from(&GROUP_CLIENT_GROUP_REQUEST_DURATION_SECONDS_VEC);
-    pub static ref GROUP_CLIENT_RETRY_TOTAL: IntCounter = register_int_counter!(
-        "group_client_retry_total",
-        "The total retries of group client",
-    )
-    .unwrap();
+    pub static ref GROUP_CLIENT_RETRY_TOTAL: IntCounter =
+        register_int_counter!("group_client_retry_total", "The total retries of group client",)
+            .unwrap();
 }
 
 pub fn take_group_request_metrics(
@@ -178,14 +176,14 @@ lazy_static! {
 
 #[macro_export]
 macro_rules! record_latency {
-    ($metrics: expr) => {
+    ($metrics:expr) => {
         let _timer = $metrics.start_timer();
     };
 }
 
 #[macro_export]
 macro_rules! record_latency_opt {
-    ($metrics_opt: expr) => {
+    ($metrics_opt:expr) => {
         let _timer = $metrics_opt.map(|m| m.start_timer());
     };
 }

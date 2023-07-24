@@ -19,10 +19,9 @@ mod shutdown;
 pub mod sync;
 pub mod time;
 
-pub use tokio::{select, task::yield_now};
+pub use tokio::select;
+pub use tokio::task::yield_now;
 
-pub use self::{
-    executor::*,
-    incoming::TcpIncoming,
-    shutdown::{Shutdown, ShutdownNotifier},
-};
+pub use self::executor::*;
+pub use self::incoming::TcpIncoming;
+pub use self::shutdown::{Shutdown, ShutdownNotifier};

@@ -14,24 +14,20 @@
 
 use std::path::Path;
 
-use futures::{channel::mpsc, SinkExt};
+use futures::channel::mpsc;
+use futures::SinkExt;
 use prost::Message;
 use tracing::{error, info};
 
 use super::{SnapManager, SNAP_DATA};
-use crate::{
-    raftgroup::{
-        fsm::SnapshotBuilder,
-        metrics::*,
-        snap::{SNAP_META, SNAP_TEMP},
-        worker::Request,
-        StateMachine,
-    },
-    record_latency,
-    runtime::TaskPriority,
-    serverpb::v1::{SnapshotFile, SnapshotMeta},
-    Result,
-};
+use crate::raftgroup::fsm::SnapshotBuilder;
+use crate::raftgroup::metrics::*;
+use crate::raftgroup::snap::{SNAP_META, SNAP_TEMP};
+use crate::raftgroup::worker::Request;
+use crate::raftgroup::StateMachine;
+use crate::runtime::TaskPriority;
+use crate::serverpb::v1::{SnapshotFile, SnapshotMeta};
+use crate::{record_latency, Result};
 
 pub fn dispatch_creating_snap_task(
     replica_id: u64,
@@ -50,10 +46,7 @@ pub fn dispatch_creating_snap_task(
             }
         };
 
-        sender
-            .send(Request::CreateSnapshotFinished)
-            .await
-            .unwrap_or_default();
+        sender.send(Request::CreateSnapshotFinished).await.unwrap_or_default();
     });
 }
 
@@ -65,10 +58,7 @@ pub(super) async fn create_snapshot(
 ) -> Result<Vec<u8>> {
     record_latency!(take_create_snapshot_metrics());
     let snap_dir = snap_mgr.create(replica_id);
-    info!(
-        "replica {replica_id} begin create snapshot at {}",
-        snap_dir.display()
-    );
+    info!("replica {replica_id} begin create snapshot at {}", snap_dir.display());
 
     let data = snap_dir.join(SNAP_DATA);
     let (apply_state, descriptor) = builder.checkpoint(&data).await?;
@@ -90,24 +80,19 @@ pub(super) async fn create_snapshot(
         files.push(read_file_meta(&data).await?);
     }
 
-    let snap_meta = SnapshotMeta {
-        apply_state: Some(apply_state),
-        group_desc: Some(descriptor),
-        files,
-    };
+    let snap_meta =
+        SnapshotMeta { apply_state: Some(apply_state), group_desc: Some(descriptor), files };
 
     stable_snapshot_meta(&snap_dir, &snap_meta).await?;
 
-    info!(
-        "replica {replica_id} create snapshot {} success",
-        snap_dir.display()
-    );
+    info!("replica {replica_id} create snapshot {} success", snap_dir.display());
 
     Ok(snap_mgr.install(replica_id, &snap_dir, &snap_meta))
 }
 
 pub(super) async fn stable_snapshot_meta(base_dir: &Path, snap_meta: &SnapshotMeta) -> Result<()> {
-    use std::{fs::OpenOptions, io::Write};
+    use std::fs::OpenOptions;
+    use std::io::Write;
 
     let content = snap_meta.encode_to_vec();
 
@@ -126,10 +111,8 @@ pub(super) async fn stable_snapshot_meta(base_dir: &Path, snap_meta: &SnapshotMe
 }
 
 async fn read_file_meta(filename: &Path) -> Result<SnapshotFile> {
-    use std::{
-        fs::OpenOptions,
-        io::{ErrorKind, Read},
-    };
+    use std::fs::OpenOptions;
+    use std::io::{ErrorKind, Read};
 
     let mut buf = vec![0; 4096];
     let mut file = OpenOptions::new().read(true).open(filename)?;
@@ -162,9 +145,5 @@ async fn read_file_meta(filename: &Path) -> Result<SnapshotFile> {
     };
     let crc32 = hasher.finalize();
 
-    Ok(SnapshotFile {
-        name: name.to_str().unwrap().as_bytes().to_owned(),
-        crc32,
-        size,
-    })
+    Ok(SnapshotFile { name: name.to_str().unwrap().as_bytes().to_owned(), crc32, size })
 }

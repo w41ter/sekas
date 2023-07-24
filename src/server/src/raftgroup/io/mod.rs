@@ -16,4 +16,6 @@ mod log_writer;
 mod purge;
 mod transport;
 
-pub use self::{log_writer::LogWriter, purge::start_purging_expired_files, transport::*};
+pub use self::log_writer::LogWriter;
+pub use self::purge::start_purging_expired_files;
+pub use self::transport::*;

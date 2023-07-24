@@ -12,17 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::{
-    collections::HashMap,
-    sync::Arc,
-    task::{Context, Poll},
-};
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::task::{Context, Poll};
 
-use tonic::{
-    body::BoxBody,
-    codegen::{empty_body, http, BoxFuture, Service},
-    transport::NamedService,
-};
+use tonic::body::BoxBody;
+use tonic::codegen::{empty_body, http, BoxFuture, Service};
+use tonic::transport::NamedService;
 
 #[crate::async_trait]
 pub(super) trait HttpHandle: Send + Sync {
@@ -46,9 +42,7 @@ where
 
 impl AdminService {
     pub(super) fn new(inner: Router) -> Self {
-        AdminService {
-            inner: Arc::new(inner),
-        }
+        AdminService { inner: Arc::new(inner) }
     }
 }
 
@@ -69,11 +63,7 @@ where
         let query_params = req
             .uri()
             .query()
-            .map(|q| {
-                url::form_urlencoded::parse(q.as_bytes())
-                    .into_owned()
-                    .collect()
-            })
+            .map(|q| url::form_urlencoded::parse(q.as_bytes()).into_owned().collect())
             .unwrap_or_else(HashMap::new);
         let path = req.uri().path().to_owned();
         Box::pin(async move { inner.call(&path, query_params).await })
@@ -86,17 +76,13 @@ impl NamedService for AdminService {
 
 impl Clone for AdminService {
     fn clone(&self) -> Self {
-        AdminService {
-            inner: self.inner.clone(),
-        }
+        AdminService { inner: self.inner.clone() }
     }
 }
 
 impl Router {
     pub fn empty() -> Self {
-        Router {
-            handles: HashMap::default(),
-        }
+        Router { handles: HashMap::default() }
     }
 
     pub fn nest(path: &str, r: Router) -> Self {
@@ -104,11 +90,8 @@ impl Router {
             panic!("Paths must start with a `/`");
         }
 
-        let handles = r
-            .handles
-            .into_iter()
-            .map(|(url, handle)| (format!("{path}{url}"), handle))
-            .collect();
+        let handles =
+            r.handles.into_iter().map(|(url, handle)| (format!("{path}{url}"), handle)).collect();
         Router { handles }
     }
 

@@ -13,10 +13,8 @@
 // limitations under the License.
 use sekas_api::server::v1::*;
 
-use crate::{
-    engine::{GroupEngine, SnapshotMode},
-    Result,
-};
+use crate::engine::{GroupEngine, SnapshotMode};
+use crate::Result;
 
 /// Scan the specified range.
 pub(crate) async fn scan(
@@ -58,9 +56,8 @@ async fn scan_prefix(
 
 /// Scan key-value pairs with the specified range.
 async fn scan_range(engine: &GroupEngine, req: &ShardScanRequest) -> Result<ShardScanResponse> {
-    let snapshot_mode = SnapshotMode::Start {
-        start_key: req.start_key.as_ref().map(|v| v.as_ref()),
-    };
+    let snapshot_mode =
+        SnapshotMode::Start { start_key: req.start_key.as_ref().map(|v| v.as_ref()) };
     let mut snapshot = engine.snapshot(req.shard_id, snapshot_mode)?;
     let mut data = Vec::new();
     let mut total_bytes = 0;
@@ -85,11 +82,7 @@ async fn scan_range(engine: &GroupEngine, req: &ShardScanRequest) -> Result<Shar
                 let key = entry.user_key().to_owned();
                 let version = entry.version();
                 total_bytes += value.len() + key.len();
-                data.push(ShardData {
-                    key,
-                    value,
-                    version,
-                });
+                data.push(ShardData { key, value, version });
             }
 
             if (req.limit != 0 && req.limit as usize == data.len())
@@ -104,16 +97,10 @@ async fn scan_range(engine: &GroupEngine, req: &ShardScanRequest) -> Result<Shar
 
 #[inline]
 fn is_equals(target: &Option<Vec<u8>>, user_key: &[u8]) -> bool {
-    target
-        .as_ref()
-        .map(|target_key| target_key == user_key)
-        .unwrap_or_default()
+    target.as_ref().map(|target_key| target_key == user_key).unwrap_or_default()
 }
 
 #[inline]
 fn is_exceeds(target: &Option<Vec<u8>>, user_key: &[u8]) -> bool {
-    target
-        .as_ref()
-        .map(|target_key| target_key.as_slice() < user_key)
-        .unwrap_or_default()
+    target.as_ref().map(|target_key| target_key.as_slice() < user_key).unwrap_or_default()
 }

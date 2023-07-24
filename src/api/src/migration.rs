@@ -17,9 +17,7 @@ use super::server::v1::*;
 impl MigrationDesc {
     #[inline]
     pub fn get_shard_desc(&self) -> &ShardDesc {
-        self.shard_desc
-            .as_ref()
-            .expect("MigrationDesc::shard_desc is not None")
+        self.shard_desc.as_ref().expect("MigrationDesc::shard_desc is not None")
     }
 
     #[inline]

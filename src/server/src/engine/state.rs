@@ -16,7 +16,9 @@ use std::sync::Arc;
 
 use sekas_api::server::v1::*;
 
-use crate::{constants::STATE_REPLICA_ID, serverpb::v1::*, Result};
+use crate::constants::STATE_REPLICA_ID;
+use crate::serverpb::v1::*;
+use crate::Result;
 
 /// A structure supports saving and loading local states.
 ///
@@ -25,8 +27,9 @@ use crate::{constants::STATE_REPLICA_ID, serverpb::v1::*, Result};
 /// - root node descriptors
 /// - replica states
 ///
-/// NOTE: The group descriptors is stored in the corresponding GroupEngine, which is to ensure
-/// that both the changes of group descriptor and data are persisted to disk in atomic.
+/// NOTE: The group descriptors is stored in the corresponding GroupEngine,
+/// which is to ensure that both the changes of group descriptor and data are
+/// persisted to disk in atomic.
 #[derive(Clone)]
 pub struct StateEngine
 where
@@ -42,9 +45,7 @@ impl StateEngine {
 
     /// Read node ident from engine. `None` is returned if no such ident exists.
     pub async fn read_ident(&self) -> Result<Option<NodeIdent>> {
-        Ok(self
-            .raw
-            .get_message::<NodeIdent>(STATE_REPLICA_ID, keys::node_ident())?)
+        Ok(self.raw.get_message::<NodeIdent>(STATE_REPLICA_ID, keys::node_ident())?)
     }
 
     /// Save node ident, return appropriate error if ident already exists.
@@ -69,11 +70,10 @@ impl StateEngine {
         Ok(())
     }
 
-    /// Load root desc. `None` is returned if there no any root node records exists.
+    /// Load root desc. `None` is returned if there no any root node records
+    /// exists.
     pub async fn load_root_desc(&self) -> Result<Option<RootDesc>> {
-        Ok(self
-            .raw
-            .get_message::<RootDesc>(STATE_REPLICA_ID, keys::root_desc())?)
+        Ok(self.raw.get_message::<RootDesc>(STATE_REPLICA_ID, keys::root_desc())?)
     }
 
     /// Save replica state.
@@ -85,11 +85,7 @@ impl StateEngine {
     ) -> Result<()> {
         use raft_engine::LogBatch;
 
-        let replica_meta = ReplicaMeta {
-            group_id,
-            replica_id,
-            state: state.into(),
-        };
+        let replica_meta = ReplicaMeta { group_id, replica_id, state: state.into() };
 
         let mut lb = LogBatch::default();
         let state_key = keys::replica_state(replica_id);

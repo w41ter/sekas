@@ -12,23 +12,22 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::{
-    cell::{Cell, RefCell},
-    collections::VecDeque,
-    sync::Arc,
-};
+use std::cell::{Cell, RefCell};
+use std::collections::VecDeque;
+use std::sync::Arc;
 
-use sekas_api::server::v1::*;
 use prost::Message;
-use raft::{prelude::*, GetEntriesContext, RaftState};
+use raft::prelude::*;
+use raft::{GetEntriesContext, RaftState};
 use raft_engine::{Command, Engine, LogBatch, MessageExt};
+use sekas_api::server::v1::*;
 use tracing::{debug, error, info};
 
-use super::{node::WriteTask, snap::SnapManager, RaftConfig};
-use crate::{
-    serverpb::v1::{EntryId, EvalResult, RaftLocalState},
-    Result,
-};
+use super::node::WriteTask;
+use super::snap::SnapManager;
+use super::RaftConfig;
+use crate::serverpb::v1::{EntryId, EvalResult, RaftLocalState};
+use crate::Result;
 
 #[derive(Clone)]
 pub struct MessageExtTyped;
@@ -41,10 +40,11 @@ impl MessageExt for MessageExtTyped {
     }
 }
 
-/// `EntryCache` is used to make up for the design of raft-rs. All logs that have not been applied
-/// are stored in `EntryCache`. Therefore, it can be guaranteed that in addition to replicate
-/// entries, other operations in raft-rs that need to read entries and their attributes directly
-/// should hit the EntryCache directly, and do not need to be read from disk.
+/// `EntryCache` is used to make up for the design of raft-rs. All logs that
+/// have not been applied are stored in `EntryCache`. Therefore, it can be
+/// guaranteed that in addition to replicate entries, other operations in
+/// raft-rs that need to read entries and their attributes directly should hit
+/// the EntryCache directly, and do not need to be read from disk.
 struct EntryCache {
     entries: VecDeque<Entry>,
 }
@@ -150,9 +150,7 @@ impl Storage {
     /// Apply [`WriteTask`] to [`LogBatch`], and save some states to storage.
     pub fn write(&mut self, batch: &mut LogBatch, write_task: &WriteTask) -> Result<()> {
         if let Some(hs) = &write_task.hard_state {
-            batch
-                .put_message(self.replica_id, keys::HARD_STATE_KEY.to_owned(), hs)
-                .unwrap();
+            batch.put_message(self.replica_id, keys::HARD_STATE_KEY.to_owned(), hs).unwrap();
             self.hard_state = hs.clone();
         }
 
@@ -165,34 +163,21 @@ impl Storage {
             let metadata = snapshot.get_metadata();
             let raft_local_state = RaftLocalState {
                 replica_id: self.replica_id,
-                last_truncated: Some(EntryId {
-                    index: metadata.index,
-                    term: metadata.term,
-                }),
+                last_truncated: Some(EntryId { index: metadata.index, term: metadata.term }),
             };
             batch
-                .put_message(
-                    self.replica_id,
-                    keys::LOCAL_STATE_KEY.to_owned(),
-                    &raft_local_state,
-                )
+                .put_message(self.replica_id, keys::LOCAL_STATE_KEY.to_owned(), &raft_local_state)
                 .unwrap();
             self.hard_state.set_commit(metadata.index);
             batch
-                .put_message(
-                    self.replica_id,
-                    keys::HARD_STATE_KEY.to_owned(),
-                    &self.hard_state,
-                )
+                .put_message(self.replica_id, keys::HARD_STATE_KEY.to_owned(), &self.hard_state)
                 .unwrap();
             self.cache = EntryCache::new();
             self.first_index = metadata.index + 1;
             self.last_index = metadata.index;
             self.local_state = raft_local_state;
         } else if !write_task.entries.is_empty() {
-            batch
-                .add_entries::<MessageExtTyped>(self.replica_id, &write_task.entries)
-                .unwrap();
+            batch.add_entries::<MessageExtTyped>(self.replica_id, &write_task.entries).unwrap();
             self.cache.append(&write_task.entries);
             self.last_index = write_task.entries.last().unwrap().index;
         }
@@ -217,33 +202,21 @@ impl Storage {
         let term = self.term(truncated_index).unwrap();
         let local_state = RaftLocalState {
             replica_id: self.replica_id,
-            last_truncated: Some(EntryId {
-                index: truncated_index,
-                term,
-            }),
+            last_truncated: Some(EntryId { index: truncated_index, term }),
         };
 
         let mut lb = LogBatch::default();
-        // The semantics of `Command::Compact` is removing all entries with index smaller than
-        // `index`.
+        // The semantics of `Command::Compact` is removing all entries with index
+        // smaller than `index`.
         lb.add_command(self.replica_id, Command::Compact { index: to });
-        lb.put_message(
-            self.replica_id,
-            keys::LOCAL_STATE_KEY.to_owned(),
-            &local_state,
-        )
-        .unwrap();
+        lb.put_message(self.replica_id, keys::LOCAL_STATE_KEY.to_owned(), &local_state).unwrap();
 
-        // Since the commit field of HardState is lazily updated, it must also be consistent with
-        // the log range.
+        // Since the commit field of HardState is lazily updated, it must also be
+        // consistent with the log range.
         if self.first_index > self.hard_state.commit {
             self.hard_state.commit = self.first_index;
-            lb.put_message(
-                self.replica_id,
-                keys::LOCAL_STATE_KEY.to_owned(),
-                &self.hard_state,
-            )
-            .unwrap();
+            lb.put_message(self.replica_id, keys::LOCAL_STATE_KEY.to_owned(), &self.hard_state)
+                .unwrap();
         }
 
         self.local_state = local_state;
@@ -274,10 +247,7 @@ impl Storage {
         if low > high {
             panic!("low {} is greater than high {}", low, high);
         } else if high > self.last_index + 1 {
-            panic!(
-                "entries high {} is out of bound, last index {}",
-                high, self.last_index
-            );
+            panic!("entries high {} is out of bound, last index {}", high, self.last_index);
         } else if low <= self.truncated_index() {
             Err(raft::Error::Store(raft::StorageError::Compacted))
         } else {
@@ -292,10 +262,7 @@ impl raft::Storage for Storage {
             Some(cs) => cs,
             None => panic!("invoke initial state multiple times"),
         };
-        Ok(RaftState {
-            hard_state: self.hard_state.clone(),
-            conf_state,
-        })
+        Ok(RaftState { hard_state: self.hard_state.clone(), conf_state })
     }
 
     fn entries(
@@ -323,10 +290,7 @@ impl raft::Storage for Storage {
                 Some(max_size),
                 &mut entries,
             ) {
-                error!(
-                    replica = self.replica_id,
-                    "fetch entries from engine: {}", e
-                );
+                error!(replica = self.replica_id, "fetch entries from engine: {}", e);
                 return Err(other_store_error(e));
             }
             if entries.len() < (end - low) as usize {
@@ -354,17 +318,9 @@ impl raft::Storage for Storage {
         }
 
         self.check_range(idx, idx + 1)?;
-        if !self
-            .cache
-            .first_index()
-            .map(|fi| fi <= idx)
-            .unwrap_or_default()
-        {
+        if !self.cache.first_index().map(|fi| fi <= idx).unwrap_or_default() {
             // TODO(walter) support fetch in asynchronously.
-            match self
-                .engine
-                .get_entry::<MessageExtTyped>(self.replica_id, idx)
-            {
+            match self.engine.get_entry::<MessageExtTyped>(self.replica_id, idx) {
                 Err(e) => Err(other_store_error(e)),
                 Ok(Some(entry)) => Ok(entry.get_term()),
                 Ok(None) => Err(raft::Error::Store(raft::StorageError::Compacted)),
@@ -403,23 +359,17 @@ impl raft::Storage for Storage {
             self.is_creating_snapshot.set(true);
         }
 
-        Err(raft::Error::Store(
-            raft::StorageError::SnapshotTemporarilyUnavailable,
-        ))
+        Err(raft::Error::Store(raft::StorageError::SnapshotTemporarilyUnavailable))
     }
 }
 
 impl EntryCache {
     fn new() -> Self {
-        EntryCache {
-            entries: VecDeque::default(),
-        }
+        EntryCache { entries: VecDeque::default() }
     }
 
     fn with_entries(entries: Vec<Entry>) -> Self {
-        EntryCache {
-            entries: entries.into(),
-        }
+        EntryCache { entries: entries.into() }
     }
 
     fn first_index(&self) -> Option<u64> {
@@ -503,10 +453,11 @@ impl EntryCache {
     }
 }
 
-/// Write raft initial states into log engine.  All previous data of this raft will be clean first.
+/// Write raft initial states into log engine.  All previous data of this raft
+/// will be clean first.
 ///
-/// `voters` and `initial_eval_results` will be committed to raft as committed data. These logs are
-/// applied when raft is restarted.
+/// `voters` and `initial_eval_results` will be committed to raft as committed
+/// data. These logs are applied when raft is restarted.
 #[allow(clippy::field_reassign_with_default)]
 pub async fn write_initial_state(
     cfg: &RaftConfig,
@@ -570,15 +521,13 @@ pub async fn write_initial_state(
     let mut hard_state = HardState::default();
     let local_state = RaftLocalState {
         replica_id,
-        last_truncated: Some(EntryId {
-            index: initial_index,
-            term: 0,
-        }),
+        last_truncated: Some(EntryId { index: initial_index, term: 0 }),
     };
     if !initial_entries.is_empty() {
-        // Due to the limitations of the raft-rs implementation, 0 cannot be used here as the term
-        // of initial entries. Therefore, it is necessary to set the `vote` and `term` in the
-        // HardState to a value that ensures that the current term will not elect a new leader.
+        // Due to the limitations of the raft-rs implementation, 0 cannot be used here
+        // as the term of initial entries. Therefore, it is necessary to set the
+        // `vote` and `term` in the HardState to a value that ensures that the
+        // current term will not elect a new leader.
         hard_state.commit = last_index;
         hard_state.vote = replica_id;
         hard_state.term = 1;
@@ -586,20 +535,11 @@ pub async fn write_initial_state(
 
     let mut batch = LogBatch::default();
     batch.add_command(replica_id, Command::Clean);
-    batch
-        .add_entries::<MessageExtTyped>(replica_id, &initial_entries)
-        .unwrap();
-    batch
-        .put_message(replica_id, keys::HARD_STATE_KEY.to_owned(), &hard_state)
-        .unwrap();
-    batch
-        .put_message(replica_id, keys::LOCAL_STATE_KEY.to_owned(), &local_state)
-        .unwrap();
+    batch.add_entries::<MessageExtTyped>(replica_id, &initial_entries).unwrap();
+    batch.put_message(replica_id, keys::HARD_STATE_KEY.to_owned(), &hard_state).unwrap();
+    batch.put_message(replica_id, keys::LOCAL_STATE_KEY.to_owned(), &local_state).unwrap();
 
-    debug!(
-        "write initial state of {replica_id}, total {} initial entries",
-        initial_entries.len()
-    );
+    debug!("write initial state of {replica_id}, total {} initial entries", initial_entries.len());
 
     engine.write(&mut batch, true)?;
     Ok(())
@@ -654,10 +594,7 @@ mod tests {
             (12, 3),
         ];
         if let Some(expect) = select_term {
-            entries
-                .into_iter()
-                .filter(|(_, term)| *term == expect)
-                .collect()
+            entries.into_iter().filter(|(_, term)| *term == expect).collect()
         } else {
             entries
         }
@@ -690,9 +627,8 @@ mod tests {
     fn validate_entries(storage: &impl raft::Storage, entries: Vec<(u64, u64)>) {
         for (idx, term) in entries {
             println!("index is {} term {}", idx, term);
-            let read_entries = storage
-                .entries(idx, idx + 1, None, GetEntriesContext::empty(false))
-                .unwrap();
+            let read_entries =
+                storage.entries(idx, idx + 1, None, GetEntriesContext::empty(false)).unwrap();
             assert!(!read_entries.is_empty());
             assert_eq!(read_entries.len(), 1);
             assert_eq!(read_entries[0].get_term(), term);

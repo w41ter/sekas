@@ -15,11 +15,13 @@ mod helper;
 
 use std::collections::HashSet;
 
-use sekas_api::server::v1::*;
 use helper::context::TestContext;
+use sekas_api::server::v1::*;
 use tracing::info;
 
-use crate::helper::{client::*, init::setup_panic_hook, runtime::block_on_current};
+use crate::helper::client::*;
+use crate::helper::init::setup_panic_hook;
+use crate::helper::runtime::block_on_current;
 
 #[ctor::ctor]
 fn init() {
@@ -52,8 +54,7 @@ async fn create_group(c: &ClusterClient, group_id: u64, nodes: Vec<u64>, learner
         ..Default::default()
     };
     for replica in replicas {
-        c.create_replica(replica.node_id, replica.id, group_desc.clone())
-            .await;
+        c.create_replica(replica.node_id, replica.id, group_desc.clone()).await;
     }
 }
 
@@ -61,10 +62,8 @@ async fn create_group(c: &ClusterClient, group_id: u64, nodes: Vec<u64>, learner
 fn remove_orphan_replicas() {
     block_on_current(async {
         let mut ctx = TestContext::new("node-schedule-test--remove-orphan-replicas");
-        ctx.mut_replica_testing_knobs()
-            .disable_scheduler_orphan_replica_detecting_intervals = true;
-        ctx.mut_replica_testing_knobs()
-            .disable_scheduler_durable_task = true;
+        ctx.mut_replica_testing_knobs().disable_scheduler_orphan_replica_detecting_intervals = true;
+        ctx.mut_replica_testing_knobs().disable_scheduler_durable_task = true;
         ctx.disable_all_balance();
         let nodes = ctx.bootstrap_servers(4).await;
         let c = ClusterClient::new(nodes).await;
@@ -73,21 +72,9 @@ fn remove_orphan_replicas() {
         let group_desc = GroupDesc {
             id: group_id,
             replicas: vec![
-                ReplicaDesc {
-                    id: 100,
-                    node_id: 0,
-                    role: ReplicaRole::Voter as i32,
-                },
-                ReplicaDesc {
-                    id: 101,
-                    node_id: 1,
-                    role: ReplicaRole::Voter as i32,
-                },
-                ReplicaDesc {
-                    id: 102,
-                    node_id: 2,
-                    role: ReplicaRole::Voter as i32,
-                },
+                ReplicaDesc { id: 100, node_id: 0, role: ReplicaRole::Voter as i32 },
+                ReplicaDesc { id: 101, node_id: 1, role: ReplicaRole::Voter as i32 },
+                ReplicaDesc { id: 102, node_id: 2, role: ReplicaRole::Voter as i32 },
             ],
             ..Default::default()
         };
@@ -102,30 +89,19 @@ fn remove_orphan_replicas() {
         info!("create new replica 103");
 
         // 2. create single replica
-        let empty_desc = GroupDesc {
-            id: group_id,
-            ..Default::default()
-        };
+        let empty_desc = GroupDesc { id: group_id, ..Default::default() };
         c.create_replica(3, 103, empty_desc).await;
 
         info!("replica 103 should be removed because orphan replica");
 
         for _ in 0..1000 {
-            if c.collect_replica_state(group_id, 3)
-                .await
-                .unwrap()
-                .is_some()
-            {
+            if c.collect_replica_state(group_id, 3).await.unwrap().is_some() {
                 break;
             }
         }
 
         for _ in 0..1000 {
-            if c.collect_replica_state(group_id, 3)
-                .await
-                .unwrap()
-                .is_none()
-            {
+            if c.collect_replica_state(group_id, 3).await.unwrap().is_none() {
                 return;
             }
         }
@@ -166,8 +142,7 @@ fn remove_offline_learners() {
 fn remove_exceeds_offline_voters() {
     block_on_current(async {
         let mut ctx = TestContext::new("node-schedule-test--remove-exceeds-offline-voters");
-        ctx.mut_replica_testing_knobs()
-            .disable_scheduler_orphan_replica_detecting_intervals = true;
+        ctx.mut_replica_testing_knobs().disable_scheduler_orphan_replica_detecting_intervals = true;
         ctx.disable_all_balance();
         let nodes = ctx.bootstrap_servers(3).await;
         let c = ClusterClient::new(nodes.clone()).await;
@@ -235,8 +210,8 @@ fn replace_offline_voters_by_existing_learners() {
         c.assert_root_group_has_promoted().await;
         let former_epoch = c.must_group_epoch(group_id).await;
 
-        // FIXME(walter) the `learner_node_id` will be promote to voters before we add offline
-        // replicas.
+        // FIXME(walter) the `learner_node_id` will be promote to voters before we add
+        // offline replicas.
         info!("add offline voters");
         let mut group = c.group(group_id);
         group.add_replica(1235, 123).await.unwrap();
@@ -300,7 +275,6 @@ fn cure_group() {
 
         info!("cure group by replace offline voters with new replicas");
         ctx.wait_election_timeout().await;
-        c.assert_group_not_contains_node(group_id, offline_node_id)
-            .await;
+        c.assert_group_not_contains_node(group_id, offline_node_id).await;
     });
 }

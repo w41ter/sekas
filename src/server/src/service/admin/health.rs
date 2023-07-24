@@ -25,9 +25,6 @@ impl super::service::HttpHandle for HealthHandle {
         _: &str,
         _: &HashMap<String, String>,
     ) -> crate::Result<http::Response<String>> {
-        Ok(http::Response::builder()
-            .status(http::StatusCode::OK)
-            .body("Ok\n".to_owned())
-            .unwrap())
+        Ok(http::Response::builder().status(http::StatusCode::OK).body("Ok\n".to_owned()).unwrap())
     }
 }

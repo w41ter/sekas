@@ -18,11 +18,9 @@ use prometheus::*;
 lazy_static! {
     pub static ref NODE_RETRY_TOTAL: IntCounter =
         register_int_counter!("node_retry_total", "The total retries of node",).unwrap();
-    pub static ref NODE_DESTORY_REPLICA_TOTAL: IntCounter = register_int_counter!(
-        "node_destory_replica_total",
-        "The total destory replica of node"
-    )
-    .unwrap();
+    pub static ref NODE_DESTORY_REPLICA_TOTAL: IntCounter =
+        register_int_counter!("node_destory_replica_total", "The total destory replica of node")
+            .unwrap();
     pub static ref NODE_DESTORY_REPLICA_DURATION_SECONDS: Histogram = register_histogram!(
         "node_destory_replica_duration_seconds",
         "The intervals of destory replica of node",
@@ -45,11 +43,9 @@ lazy_static! {
         exponential_buckets(0.00005, 1.8, 26).unwrap(),
     )
     .unwrap();
-    pub static ref NODE_INGEST_CHUNK_TOTAL: IntCounter = register_int_counter!(
-        "node_ingest_chunk_total",
-        "The total of ingest chunks of node"
-    )
-    .unwrap();
+    pub static ref NODE_INGEST_CHUNK_TOTAL: IntCounter =
+        register_int_counter!("node_ingest_chunk_total", "The total of ingest chunks of node")
+            .unwrap();
 }
 
 pub fn take_destory_replica_metrics() -> &'static Histogram {

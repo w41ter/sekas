@@ -67,13 +67,7 @@ pub struct DataConfig {
 
 impl Default for DataConfig {
     fn default() -> Self {
-        DataConfig {
-            inserted: 10000,
-            limited: 10000,
-            read: 0.5,
-            write: 0.5,
-            value: 10..11,
-        }
+        DataConfig { inserted: 10000, limited: 10000, read: 0.5, write: 0.5, value: 10..11 }
     }
 }
 
@@ -85,10 +79,7 @@ pub struct KeyConfig {
 
 impl Default for KeyConfig {
     fn default() -> Self {
-        KeyConfig {
-            prefix: "user_".to_owned(),
-            leading: 10,
-        }
+        KeyConfig { prefix: "user_".to_owned(), leading: 10 }
     }
 }
 
@@ -100,9 +91,6 @@ pub struct WorkerConfig {
 
 impl Default for WorkerConfig {
     fn default() -> Self {
-        WorkerConfig {
-            num_worker: 1,
-            start_intervals: None,
-        }
+        WorkerConfig { num_worker: 1, start_intervals: None }
     }
 }

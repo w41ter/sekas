@@ -13,11 +13,13 @@
 // limitations under the License.
 mod helper;
 
-use sekas_api::server::v1::*;
 use helper::context::TestContext;
+use sekas_api::server::v1::*;
 use tracing::info;
 
-use crate::helper::{client::*, init::setup_panic_hook, runtime::block_on_current};
+use crate::helper::client::*;
+use crate::helper::init::setup_panic_hook;
+use crate::helper::runtime::block_on_current;
 
 #[ctor::ctor]
 fn init() {
@@ -31,11 +33,7 @@ async fn create_group(c: &ClusterClient, group_id: u64, nodes: Vec<u64>) {
         .cloned()
         .map(|node_id| {
             let replica_id = group_id * 10 + node_id;
-            ReplicaDesc {
-                id: replica_id,
-                node_id,
-                role: ReplicaRole::Voter as i32,
-            }
+            ReplicaDesc { id: replica_id, node_id, role: ReplicaRole::Voter as i32 }
         })
         .collect::<Vec<_>>();
     let group_desc = GroupDesc {
@@ -45,8 +43,7 @@ async fn create_group(c: &ClusterClient, group_id: u64, nodes: Vec<u64>) {
         ..Default::default()
     };
     for replica in replicas {
-        c.create_replica(replica.node_id, replica.id, group_desc.clone())
-            .await;
+        c.create_replica(replica.node_id, replica.id, group_desc.clone()).await;
     }
 }
 
@@ -62,10 +59,7 @@ fn add_replica() {
         let group_id = 0;
         let new_replica_id = 123;
 
-        let root_group = GroupDesc {
-            id: group_id,
-            ..Default::default()
-        };
+        let root_group = GroupDesc { id: group_id, ..Default::default() };
 
         info!("create new replica {new_replica_id} of group {group_id}");
 
@@ -83,8 +77,7 @@ fn add_replica() {
 
         group_client.add_replica(new_replica_id, 1).await.unwrap();
 
-        c.assert_group_contains_member(group_id, new_replica_id)
-            .await;
+        c.assert_group_contains_member(group_id, new_replica_id).await;
     });
 }
 
@@ -101,21 +94,9 @@ fn create_group_with_multi_replicas() {
         let group_desc = GroupDesc {
             id: group_id,
             replicas: vec![
-                ReplicaDesc {
-                    id: 100,
-                    node_id: 0,
-                    role: ReplicaRole::Voter as i32,
-                },
-                ReplicaDesc {
-                    id: 101,
-                    node_id: 1,
-                    role: ReplicaRole::Voter as i32,
-                },
-                ReplicaDesc {
-                    id: 102,
-                    node_id: 2,
-                    role: ReplicaRole::Voter as i32,
-                },
+                ReplicaDesc { id: 100, node_id: 0, role: ReplicaRole::Voter as i32 },
+                ReplicaDesc { id: 101, node_id: 1, role: ReplicaRole::Voter as i32 },
+                ReplicaDesc { id: 102, node_id: 2, role: ReplicaRole::Voter as i32 },
             ],
             ..Default::default()
         };
@@ -129,10 +110,7 @@ fn create_group_with_multi_replicas() {
         info!("create new replica 103");
 
         // 2. create single replica
-        let empty_desc = GroupDesc {
-            id: group_id,
-            ..Default::default()
-        };
+        let empty_desc = GroupDesc { id: group_id, ..Default::default() };
         c.create_replica(3, 103, empty_desc).await;
 
         info!("add replica 103 to group 1");
@@ -145,7 +123,8 @@ fn create_group_with_multi_replicas() {
     });
 }
 
-/// The root group can be promoted to cluster mode as long as enough nodes are added to the cluster.
+/// The root group can be promoted to cluster mode as long as enough nodes are
+/// added to the cluster.
 #[test]
 fn promote_to_cluster_from_single_node() {
     block_on_current(async {
@@ -157,12 +136,7 @@ fn promote_to_cluster_from_single_node() {
         let root_group_id = 0;
         for _ in 0..10000 {
             let members = c.group_members(root_group_id).await;
-            if members
-                .into_iter()
-                .filter(|(_, v)| *v == ReplicaRole::Voter as i32)
-                .count()
-                == 3
-            {
+            if members.into_iter().filter(|(_, v)| *v == ReplicaRole::Voter as i32).count() == 3 {
                 return;
             }
 
@@ -184,21 +158,9 @@ fn cure_group() {
         let group_desc = GroupDesc {
             id: group_id,
             replicas: vec![
-                ReplicaDesc {
-                    id: 100,
-                    node_id: 0,
-                    role: ReplicaRole::Voter as i32,
-                },
-                ReplicaDesc {
-                    id: 101,
-                    node_id: 1,
-                    role: ReplicaRole::Voter as i32,
-                },
-                ReplicaDesc {
-                    id: 103,
-                    node_id: 3,
-                    role: ReplicaRole::Voter as i32,
-                },
+                ReplicaDesc { id: 100, node_id: 0, role: ReplicaRole::Voter as i32 },
+                ReplicaDesc { id: 101, node_id: 1, role: ReplicaRole::Voter as i32 },
+                ReplicaDesc { id: 103, node_id: 3, role: ReplicaRole::Voter as i32 },
             ],
             ..Default::default()
         };
@@ -240,18 +202,13 @@ fn move_replica() {
         let mut group = c.group(group_id);
         group
             .move_replicas(
-                vec![ReplicaDesc {
-                    id: 123123,
-                    node_id,
-                    role: ReplicaRole::Voter as i32,
-                }],
+                vec![ReplicaDesc { id: 123123, node_id, role: ReplicaRole::Voter as i32 }],
                 vec![follower],
             )
             .await
             .unwrap();
 
-        c.assert_group_not_contains_member(group_id, follower_id)
-            .await;
+        c.assert_group_not_contains_member(group_id, follower_id).await;
         c.assert_group_contains_member(group_id, 123123).await;
     });
 }

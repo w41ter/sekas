@@ -12,12 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::{collections::HashMap, io::Write, time::Duration};
+use std::collections::HashMap;
+use std::io::Write;
+use std::time::Duration;
 
 use clap::Parser;
-use sekas_client::{AppError, ClientOptions, Collection, Database, SekasClient, Partition};
 use lazy_static::lazy_static;
-use rustyline::{error::ReadlineError, Editor};
+use rustyline::error::ReadlineError;
+use rustyline::Editor;
+use sekas_client::{AppError, ClientOptions, Collection, Database, Partition, SekasClient};
 
 type ParseResult<T = Request> = std::result::Result<T, String>;
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
@@ -32,10 +35,7 @@ pub struct Command {
 
 impl Command {
     pub fn run(self) {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         runtime.block_on(async move {
             editor_main(self.addrs).await;
         });
@@ -56,26 +56,10 @@ pub enum Token {
 enum Request {
     None,
     Usage,
-    Get {
-        key: Vec<u8>,
-        db: String,
-        coll: String,
-    },
-    Put {
-        key: Vec<u8>,
-        value: Vec<u8>,
-        db: String,
-        coll: String,
-    },
-    Delete {
-        key: Vec<u8>,
-        db: String,
-        coll: String,
-    },
-    Config {
-        key: String,
-        value: String,
-    },
+    Get { key: Vec<u8>, db: String, coll: String },
+    Put { key: Vec<u8>, value: Vec<u8>, db: String, coll: String },
+    Delete { key: Vec<u8>, db: String, coll: String },
+    Config { key: String, value: String },
 }
 
 struct Session {
@@ -111,12 +95,7 @@ impl Session {
                 std::io::stdout().flush()?;
                 Ok(())
             }
-            Request::Put {
-                key,
-                value,
-                db,
-                coll,
-            } => {
+            Request::Put { key, value, db, coll } => {
                 let db = self.open_database(&db).await?;
                 let coll = self.open_collection(&db, &coll).await?;
                 coll.put(key, value, None, None, vec![]).await?;
@@ -181,12 +160,7 @@ impl Session {
 
         must_eof(input)?;
 
-        Ok(Request::Put {
-            key,
-            value,
-            db,
-            coll,
-        })
+        Ok(Request::Put { key, value, db, coll })
     }
 
     fn parse_delete_request(&self, input: &[u8]) -> ParseResult {
@@ -277,13 +251,9 @@ impl Session {
         num_shards: u32,
     ) -> Result<Collection> {
         let partition = Partition::Hash { slots: num_shards };
-        match db
-            .create_collection(collection.to_owned(), Some(partition))
-            .await
-        {
+        match db.create_collection(collection.to_owned(), Some(partition)).await {
             Ok(co) => {
-                self.collections
-                    .insert(format!("{}-{}", db.name(), collection), co.clone());
+                self.collections.insert(format!("{}-{}", db.name(), collection), co.clone());
                 Ok(co)
             }
             Err(AppError::AlreadyExists(_)) => {
@@ -294,11 +264,8 @@ impl Session {
     }
 
     async fn open_database(&mut self, name: &str) -> Result<Database> {
-        let create_if_missing = self
-            .config
-            .get(CONFIG_CREATE_IF_MISSING)
-            .map(|v| v == "true")
-            .unwrap_or_default();
+        let create_if_missing =
+            self.config.get(CONFIG_CREATE_IF_MISSING).map(|v| v == "true").unwrap_or_default();
 
         if let Some(db) = self.databases.get(name) {
             Ok(db.clone())
@@ -317,11 +284,8 @@ impl Session {
     }
 
     async fn open_collection(&mut self, db: &Database, coll: &str) -> Result<Collection> {
-        let create_if_missing = self
-            .config
-            .get(CONFIG_CREATE_IF_MISSING)
-            .map(|v| v == "true")
-            .unwrap_or_default();
+        let create_if_missing =
+            self.config.get(CONFIG_CREATE_IF_MISSING).map(|v| v == "true").unwrap_or_default();
 
         let name = format!("{}-{}", db.name(), coll);
         if let Some(co) = self.collections.get(&name).cloned() {
@@ -353,9 +317,7 @@ async fn editor_main(addrs: Vec<String>) {
             Ok(line) => {
                 editor.add_history_entry(line.as_str());
                 if let Err(err) = session.parse_and_execute(line.as_str().as_bytes()).await {
-                    std::io::stderr()
-                        .write_fmt(format_args!("{:?}\n", err))
-                        .unwrap_or_default();
+                    std::io::stderr().write_fmt(format_args!("{:?}\n", err)).unwrap_or_default();
                 }
             }
             Err(ReadlineError::Interrupted) => {
@@ -367,9 +329,7 @@ async fn editor_main(addrs: Vec<String>) {
                 break;
             }
             Err(err) => {
-                std::io::stderr()
-                    .write_fmt(format_args!("{:?}\n", err))
-                    .unwrap_or_default();
+                std::io::stderr().write_fmt(format_args!("{:?}\n", err)).unwrap_or_default();
                 break;
             }
         }

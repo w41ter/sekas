@@ -58,9 +58,6 @@ impl super::service::HttpHandle for JobHandle {
             }
             Err(e) => return Err(e),
         };
-        Ok(http::Response::builder()
-            .status(http::StatusCode::OK)
-            .body(info)
-            .unwrap())
+        Ok(http::Response::builder().status(http::StatusCode::OK).body(info).unwrap())
     }
 }

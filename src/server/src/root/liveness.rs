@@ -12,11 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::{
-    collections::{hash_map, HashMap},
-    sync::{Arc, Mutex},
-    time::Duration,
-};
+use std::collections::{hash_map, HashMap};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 #[derive(Clone)]
 pub struct NodeLiveness {
@@ -42,17 +40,15 @@ pub struct Liveness {
 
 impl Liveness {
     pub fn new(liveness_threshold: Duration) -> Self {
-        Self {
-            liveness_threshold,
-            nodes: Default::default(),
-        }
+        Self { liveness_threshold, nodes: Default::default() }
     }
 
     pub fn get(&self, node: &u64) -> NodeLiveness {
         let nodes = self.nodes.lock().unwrap();
-        nodes.get(node).cloned().unwrap_or_else(|| NodeLiveness {
-            expiration: self.new_expiration(),
-        })
+        nodes
+            .get(node)
+            .cloned()
+            .unwrap_or_else(|| NodeLiveness { expiration: self.new_expiration() })
     }
 
     pub fn renew(&self, node_id: u64) {
@@ -67,9 +63,7 @@ impl Liveness {
                 }
             }
             hash_map::Entry::Vacant(ent) => {
-                ent.insert(NodeLiveness {
-                    expiration: self.new_expiration(),
-                });
+                ent.insert(NodeLiveness { expiration: self.new_expiration() });
             }
         }
     }
@@ -78,9 +72,7 @@ impl Liveness {
         // Give `liveness_threshold` time window to retry before mark as offline.
         let mut nodes = self.nodes.lock().unwrap();
         if let hash_map::Entry::Vacant(ent) = nodes.entry(node_id) {
-            ent.insert(NodeLiveness {
-                expiration: self.new_expiration(),
-            });
+            ent.insert(NodeLiveness { expiration: self.new_expiration() });
         }
     }
 

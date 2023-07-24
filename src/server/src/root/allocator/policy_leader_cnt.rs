@@ -12,13 +12,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::{cmp::Ordering, collections::HashMap, sync::Arc};
+use std::cmp::Ordering;
+use std::collections::HashMap;
+use std::sync::Arc;
 
 use sekas_api::server::v1::{NodeDesc, RaftRole, ReplicaDesc, ReplicaRole};
 use tracing::debug;
 
-use super::{source::NodeFilter, AllocSource, BalanceStatus, LeaderAction, TransferLeader};
-use crate::{constants::ROOT_GROUP_ID, Result};
+use super::source::NodeFilter;
+use super::{AllocSource, BalanceStatus, LeaderAction, TransferLeader};
+use crate::constants::ROOT_GROUP_ID;
+use crate::Result;
 
 pub struct LeaderCountPolicy<T: AllocSource> {
     alloc_source: Arc<T>,
@@ -49,10 +53,7 @@ impl<T: AllocSource> LeaderCountPolicy<T> {
             mean = mean,
             "node ranked by leader count",
         );
-        for (n, _) in ranked_nodes
-            .iter()
-            .filter(|(_, s)| *s == BalanceStatus::Overfull)
-        {
+        for (n, _) in ranked_nodes.iter().filter(|(_, s)| *s == BalanceStatus::Overfull) {
             if let Some(descision) = self.try_descrease_node_leader_count(n, &ranked_nodes, mean)? {
                 match descision {
                     TransferDescision::TransferOnly {
@@ -90,22 +91,22 @@ impl<T: AllocSource> LeaderCountPolicy<T> {
         {
             let replica_state = self.alloc_source.replica_state(&replica.id);
             if replica_state.is_none() {
-                // The replica existed in group_desc, but not found in replica_state, the reason(if
-                // no code bug) should be: 1. "group_desc update" has be taken
-                // effect, but "replica_state update" is delayed(e.g. report net fail and heartbeat
-                // still wait next turn)
+                // The replica existed in group_desc, but not found in replica_state, the
+                // reason(if no code bug) should be: 1. "group_desc update" has
+                // be taken effect, but "replica_state update" is delayed(e.g.
+                // report net fail and heartbeat still wait next turn)
                 //
-                // It's very low probability for a not exist replica_state be a leader, so we choose
-                // try other replicas here without waiting new replica_state update.
+                // It's very low probability for a not exist replica_state be a leader, so we
+                // choose try other replicas here without waiting new
+                // replica_state update.
                 continue;
             }
             if replica_state.as_ref().unwrap().role != RaftRole::Leader as i32 {
                 continue;
             }
 
-            let group = groups
-                .get(group_id)
-                .expect("group {group_id} inconsistent with node-group index");
+            let group =
+                groups.get(group_id).expect("group {group_id} inconsistent with node-group index");
             let exist_replica_in_nodes = group
                 .replicas
                 .iter()
@@ -180,10 +181,8 @@ impl<T: AllocSource> LeaderCountPolicy<T> {
 
     fn mean_leader_count(&self, filter: NodeFilter) -> f64 {
         let nodes = self.alloc_source.nodes(filter);
-        let total_leaders = nodes
-            .iter()
-            .map(|n| n.capacity.as_ref().unwrap().leader_count)
-            .sum::<u64>() as f64;
+        let total_leaders =
+            nodes.iter().map(|n| n.capacity.as_ref().unwrap().leader_count).sum::<u64>() as f64;
         total_leaders / (nodes.len() as f64)
     }
 }

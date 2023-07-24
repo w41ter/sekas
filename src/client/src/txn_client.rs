@@ -13,10 +13,10 @@
 // limitations under the License.
 use std::time::Duration;
 
-use sekas_api::{
-    server::v1::{group_request_union::Request, group_response_union::Response, *},
-    v1::*,
-};
+use sekas_api::server::v1::group_request_union::Request;
+use sekas_api::server::v1::group_response_union::Response;
+use sekas_api::server::v1::*;
+use sekas_api::v1::*;
 
 use crate::{AppResult, ConnManager, Error, GroupClient, RootClient, Router};
 
@@ -41,12 +41,7 @@ pub struct TxnClient {
 
 impl TxnClient {
     pub fn new(root_client: RootClient, router: Router, conn_manager: ConnManager) -> TxnClient {
-        TxnClient {
-            root_client,
-            router,
-            conn_manager,
-            timeout: None,
-        }
+        TxnClient { root_client, router, conn_manager, timeout: None }
     }
 
     pub fn set_timeout(&mut self, timeout: Duration) {
@@ -239,11 +234,7 @@ impl TxnClient {
         }
 
         // FIXME(walter) support scan during migration.
-        let mut txn_record = TxnRecord {
-            state: TxnState::Aborted,
-            timeout: 0,
-            version: None,
-        };
+        let mut txn_record = TxnRecord { state: TxnState::Aborted, timeout: 0, version: None };
         for item in resp.data {
             match item.key.strip_prefix(prefix.as_slice()) {
                 Some(b"state") => {
@@ -257,18 +248,16 @@ impl TxnClient {
                         })?;
                 }
                 Some(b"timeout") => {
-                    txn_record.timeout = to_fixed_bytes(&item.value)
-                        .map(u64::from_le_bytes)
-                        .ok_or_else(|| {
+                    txn_record.timeout =
+                        to_fixed_bytes(&item.value).map(u64::from_le_bytes).ok_or_else(|| {
                             Error::Internal(
                                 format!("txn timeout has illiged value: {:?}", item.value).into(),
                             )
                         })?;
                 }
                 Some(b"version") => {
-                    let version = to_fixed_bytes(&item.value)
-                        .map(u64::from_le_bytes)
-                        .ok_or_else(|| {
+                    let version =
+                        to_fixed_bytes(&item.value).map(u64::from_le_bytes).ok_or_else(|| {
                             Error::Internal(
                                 format!("txn timeout has illiged value: {:?}", item.value).into(),
                             )
@@ -276,9 +265,7 @@ impl TxnClient {
                     txn_record.version = Some(version);
                 }
                 _ => {
-                    return Err(Error::Internal(
-                        format!("unknown txn key: {:?}", item.key).into(),
-                    ));
+                    return Err(Error::Internal(format!("unknown txn key: {:?}", item.key).into()));
                 }
             }
         }
@@ -291,9 +278,9 @@ impl TxnClient {
             id: 1,
             name: "txn".into(),
             db: 1,
-            partition: Some(collection_desc::Partition::Hash(
-                collection_desc::HashPartition { slots: 256 },
-            )),
+            partition: Some(collection_desc::Partition::Hash(collection_desc::HashPartition {
+                slots: 256,
+            })),
         }
     }
 }
@@ -342,8 +329,5 @@ fn to_fixed_bytes<const V: usize>(bytes: &[u8]) -> Option<[u8; V]> {
 pub fn timestamp_millis() -> u64 {
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_millis() as u64
+    SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64
 }

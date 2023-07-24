@@ -14,20 +14,15 @@
 
 use std::time::Instant;
 
-use sekas_api::server::v1::ChangeReplicas;
 use futures::channel::{mpsc, oneshot};
+use sekas_api::server::v1::ChangeReplicas;
 
-use super::{
-    metrics::*,
-    worker::{RaftGroupState, Request},
-    ReadPolicy, WorkerPerfContext,
-};
-use crate::{
-    error::BusyReason,
-    record_latency,
-    serverpb::v1::{EvalResult, RaftMessage},
-    Result,
-};
+use super::metrics::*;
+use super::worker::{RaftGroupState, Request};
+use super::{ReadPolicy, WorkerPerfContext};
+use crate::error::BusyReason;
+use crate::serverpb::v1::{EvalResult, RaftMessage};
+use crate::{record_latency, Result};
 
 /// `RaftNodeFacade` wraps the operations of raft.
 #[derive(Clone)]
@@ -41,26 +36,21 @@ where
 impl RaftNodeFacade {
     /// Open the existed raft node.
     pub fn open(sender: mpsc::Sender<Request>) -> Self {
-        RaftNodeFacade {
-            request_sender: sender,
-        }
+        RaftNodeFacade { request_sender: sender }
     }
 
     /// Submit a data to replicate, and returns corresponding future value.
     ///
-    /// Once the data is applied to the [`StateMachine`], the value of future will be set to
-    /// [`Ok(())`]. The future is set to specific error if the data cannot be applied.
+    /// Once the data is applied to the [`StateMachine`], the value of future
+    /// will be set to [`Ok(())`]. The future is set to specific error if
+    /// the data cannot be applied.
     ///
     /// TODO(walter) support return user defined error.
     pub async fn propose(&mut self, eval_result: EvalResult) -> Result<()> {
         let start_at = Instant::now();
         let (sender, receiver) = oneshot::channel();
 
-        let request = Request::Propose {
-            eval_result,
-            start: start_at,
-            sender,
-        };
+        let request = Request::Propose { eval_result, start: start_at, sender };
 
         self.send(request)?;
         take_propose_metrics(start_at, receiver.await?)
@@ -114,16 +104,13 @@ impl RaftNodeFacade {
 
     pub fn report_unreachable(&mut self, target_id: u64) {
         RAFTGROUP_UNREACHABLE_TOTAL.inc();
-        self.send(Request::Unreachable { target_id })
-            .unwrap_or_default()
+        self.send(Request::Unreachable { target_id }).unwrap_or_default()
     }
 
     pub async fn monitor(&mut self) -> Result<Box<WorkerPerfContext>> {
         let (sender, receiver) = oneshot::channel();
         if self.send(Request::Monitor(sender)).is_err() {
-            return Err(crate::Error::ServiceIsBusy(
-                BusyReason::RequestChannelFulled,
-            ));
+            return Err(crate::Error::ServiceIsBusy(BusyReason::RequestChannelFulled));
         }
         Ok(receiver.await?)
     }

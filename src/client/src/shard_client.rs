@@ -12,17 +12,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use sekas_api::{
-    server::v1::{group_request_union::Request, group_response_union::Response, *},
-    v1::DeleteRequest,
-};
+use sekas_api::server::v1::group_request_union::Request;
+use sekas_api::server::v1::group_response_union::Response;
+use sekas_api::server::v1::*;
+use sekas_api::v1::DeleteRequest;
 
 use crate::{ConnManager, Error, GroupClient, Result, RetryState, Router};
 
-/// `ShardClient` wraps `GroupClient` and provides retry for shard-related functions.
+/// `ShardClient` wraps `GroupClient` and provides retry for shard-related
+/// functions.
 ///
-/// Since it will retry all requests in the current group, the user must ensure that the shard will
-/// not be migrated during the request process.
+/// Since it will retry all requests in the current group, the user must ensure
+/// that the shard will not be migrated during the request process.
 pub struct ShardClient {
     group_id: u64,
     shard_id: u64,
@@ -32,12 +33,7 @@ pub struct ShardClient {
 
 impl ShardClient {
     pub fn new(group_id: u64, shard_id: u64, router: Router, conn_manager: ConnManager) -> Self {
-        ShardClient {
-            group_id,
-            shard_id,
-            router,
-            conn_manager,
-        }
+        ShardClient { group_id, shard_id, router, conn_manager }
     }
 
     pub async fn prefix_list(&self, prefix: &[u8]) -> Result<Vec<Vec<u8>>> {
@@ -77,11 +73,8 @@ impl ShardClient {
             start_key: last_key,
             end_key: None,
         });
-        let mut client = GroupClient::lazy(
-            self.group_id,
-            self.router.clone(),
-            self.conn_manager.clone(),
-        );
+        let mut client =
+            GroupClient::lazy(self.group_id, self.router.clone(), self.conn_manager.clone());
         match client.request(&req).await? {
             Response::Scan(ShardScanResponse { data }) => Ok(data),
             _ => Err(Error::Internal(
@@ -96,11 +89,8 @@ impl ShardClient {
             prefix: Some(prefix.to_owned()),
             ..Default::default()
         });
-        let mut client = GroupClient::lazy(
-            self.group_id,
-            self.router.clone(),
-            self.conn_manager.clone(),
-        );
+        let mut client =
+            GroupClient::lazy(self.group_id, self.router.clone(), self.conn_manager.clone());
         match client.request(&req).await? {
             Response::Scan(ShardScanResponse { data }) => {
                 Ok(data.into_iter().map(|v| v.value).collect())
@@ -114,16 +104,10 @@ impl ShardClient {
     async fn delete_inner(&self, key: &[u8]) -> Result<()> {
         let req = Request::Delete(ShardDeleteRequest {
             shard_id: self.shard_id,
-            delete: Some(DeleteRequest {
-                key: key.to_owned(),
-                ..Default::default()
-            }),
+            delete: Some(DeleteRequest { key: key.to_owned(), ..Default::default() }),
         });
-        let mut client = GroupClient::lazy(
-            self.group_id,
-            self.router.clone(),
-            self.conn_manager.clone(),
-        );
+        let mut client =
+            GroupClient::lazy(self.group_id, self.router.clone(), self.conn_manager.clone());
         client.request(&req).await?;
         Ok(())
     }

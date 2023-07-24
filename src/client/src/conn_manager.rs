@@ -11,11 +11,9 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-use std::{
-    collections::HashMap,
-    sync::{Arc, Mutex},
-    time::Duration,
-};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use sekas_api::server::v1::root_client::RootClient;
 use tonic::transport::{Channel, Endpoint};
@@ -68,10 +66,7 @@ impl ConnManager {
             }
             Err(e) => return Err(Error::Internal(Box::new(e))),
         };
-        let info = ChannelInfo {
-            channel: channel.clone(),
-            access: 1,
-        };
+        let info = ChannelInfo { channel: channel.clone(), access: 1 };
         core.channels.insert(addr, info);
         Ok(channel)
     }
@@ -91,9 +86,7 @@ impl ConnManager {
 
 impl Default for ConnManager {
     fn default() -> Self {
-        let core = Arc::new(Mutex::new(Core {
-            channels: HashMap::default(),
-        }));
+        let core = Arc::new(Mutex::new(Core { channels: HashMap::default() }));
         let cloned_core = core.clone();
 
         // FIXME
@@ -102,10 +95,7 @@ impl Default for ConnManager {
         tokio::spawn(async move {
             recycle_conn_main(cloned_core).await;
         });
-        ConnManager {
-            core,
-            connect_timeout: None,
-        }
+        ConnManager { core, connect_timeout: None }
     }
 }
 

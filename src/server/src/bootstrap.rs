@@ -12,34 +12,34 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::{sync::Arc, time::Duration, vec};
+use std::sync::Arc;
+use std::time::Duration;
+use std::vec;
 
-use sekas_api::server::v1::{node_server::NodeServer, root_server::RootServer, *};
+use sekas_api::server::v1::node_server::NodeServer;
+use sekas_api::server::v1::root_server::RootServer;
+use sekas_api::server::v1::*;
 use sekas_client::RootClient;
 use tracing::{debug, info, warn};
 
-use crate::{
-    constants::*,
-    engine::{Engines, StateEngine},
-    node::Node,
-    root::{Root, Schema},
-    runtime::{Executor, Shutdown},
-    serverpb::v1::{raft_server::RaftServer, NodeIdent},
-    service::ProxyServer,
-    transport::TransportManager,
-    Config, Error, Result, Server,
-};
+use crate::constants::*;
+use crate::engine::{Engines, StateEngine};
+use crate::node::Node;
+use crate::root::{Root, Schema};
+use crate::runtime::{Executor, Shutdown};
+use crate::serverpb::v1::raft_server::RaftServer;
+use crate::serverpb::v1::NodeIdent;
+use crate::service::ProxyServer;
+use crate::transport::TransportManager;
+use crate::{Config, Error, Result, Server};
 
 /// The main entrance of sekas server.
 pub fn run(config: Config, executor: Executor, shutdown: Shutdown) -> Result<()> {
     executor.block_on(async {
         let engines = Engines::open(&config.root_dir, &config.db)?;
 
-        let root_list = if config.init {
-            vec![config.addr.clone()]
-        } else {
-            config.join_list.clone()
-        };
+        let root_list =
+            if config.init { vec![config.addr.clone()] } else { config.join_list.clone() };
         let transport_manager = TransportManager::new(root_list, engines.state()).await;
         let address_resolver = transport_manager.address_resolver();
         let node = Node::new(config.clone(), engines, transport_manager.clone()).await?;
@@ -53,11 +53,7 @@ pub fn run(config: Config, executor: Executor, shutdown: Shutdown) -> Result<()>
 
         info!("node {} starts serving requests", ident.node_id);
 
-        let server = Server {
-            node: Arc::new(node),
-            root,
-            address_resolver,
-        };
+        let server = Server { node: Arc::new(node), root, address_resolver };
 
         let proxy_server = if config.enable_proxy_service {
             Some(ProxyServer::new(&transport_manager))
@@ -79,7 +75,8 @@ async fn bootstrap_services(
     use tokio::net::TcpListener;
     use tonic::transport::Server;
 
-    use crate::{runtime::TcpIncoming, service::admin::make_admin_service};
+    use crate::runtime::TcpIncoming;
+    use crate::service::admin::make_admin_service;
 
     let listener = TcpListener::bind(addr).await?;
     let incoming = TcpIncoming::from_listener(listener, true);
@@ -108,10 +105,7 @@ async fn bootstrap_or_join_cluster(
 ) -> Result<NodeIdent> {
     let state_engine = node.state_engine();
     if let Some(node_ident) = state_engine.read_ident().await? {
-        info!(
-            "both cluster and node are initialized, node id {}",
-            node_ident.node_id
-        );
+        info!("both cluster and node are initialized, node id {}", node_ident.node_id);
         node.reload_root_from_engine().await?;
         return Ok(node_ident);
     }
@@ -119,14 +113,8 @@ async fn bootstrap_or_join_cluster(
     Ok(if config.init {
         bootstrap_cluster(node, &config.addr).await?
     } else {
-        try_join_cluster(
-            node,
-            &config.addr,
-            config.join_list.clone(),
-            config.cpu_nums,
-            root_client,
-        )
-        .await?
+        try_join_cluster(node, &config.addr, config.join_list.clone(), config.cpu_nums, root_client)
+            .await?
     })
 }
 
@@ -139,26 +127,15 @@ async fn try_join_cluster(
 ) -> Result<NodeIdent> {
     info!("try join a bootstrapted cluster");
 
-    let join_list = join_list
-        .into_iter()
-        .filter(|addr| *addr != local_addr)
-        .collect::<Vec<_>>();
+    let join_list = join_list.into_iter().filter(|addr| *addr != local_addr).collect::<Vec<_>>();
 
     if join_list.is_empty() {
-        return Err(Error::InvalidArgument(
-            "the filtered join list is empty".into(),
-        ));
+        return Err(Error::InvalidArgument("the filtered join list is empty".into()));
     }
 
-    let capacity = NodeCapacity {
-        cpu_nums: cpu_nums as f64,
-        ..Default::default()
-    };
+    let capacity = NodeCapacity { cpu_nums: cpu_nums as f64, ..Default::default() };
 
-    let req = JoinNodeRequest {
-        addr: local_addr.to_owned(),
-        capacity: Some(capacity),
-    };
+    let req = JoinNodeRequest { addr: local_addr.to_owned(), capacity: Some(capacity) };
 
     let mut backoff: u64 = 1;
     loop {
@@ -200,10 +177,7 @@ async fn save_node_ident(
     cluster_id: Vec<u8>,
     node_id: u64,
 ) -> Result<NodeIdent> {
-    let node_ident = NodeIdent {
-        cluster_id,
-        node_id,
-    };
+    let node_ident = NodeIdent { cluster_id, node_id };
     state_engine.save_ident(&node_ident).await?;
 
     info!("save node ident, node id {}", node_id);
@@ -212,7 +186,8 @@ async fn save_node_ident(
 }
 
 async fn write_initial_cluster_data(node: &Node, addr: &str) -> Result<()> {
-    // Create the first raft group of cluster, this node is the only member of the raft group.
+    // Create the first raft group of cluster, this node is the only member of the
+    // raft group.
     let (shards, _) = Schema::init_shards();
 
     let group = GroupDesc {
@@ -238,18 +213,10 @@ async fn write_initial_cluster_data(node: &Node, addr: &str) -> Result<()> {
             role: ReplicaRole::Voter.into(),
         }],
     };
-    node.create_replica(INIT_USER_REPLICA_ID, init_group)
-        .await?;
+    node.create_replica(INIT_USER_REPLICA_ID, init_group).await?;
 
-    let root_node = NodeDesc {
-        id: FIRST_NODE_ID,
-        addr: addr.to_owned(),
-        ..Default::default()
-    };
-    let root_desc = RootDesc {
-        epoch: INITIAL_EPOCH,
-        root_nodes: vec![root_node],
-    };
+    let root_node = NodeDesc { id: FIRST_NODE_ID, addr: addr.to_owned(), ..Default::default() };
+    let root_desc = RootDesc { epoch: INITIAL_EPOCH, root_nodes: vec![root_node] };
     node.update_root(root_desc).await?;
 
     Ok(())

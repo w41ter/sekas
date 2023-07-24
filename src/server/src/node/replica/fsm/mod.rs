@@ -14,7 +14,9 @@
 
 mod checkpoint;
 
-use std::{collections::HashSet, path::Path, sync::Arc};
+use std::collections::HashSet;
+use std::path::Path;
+use std::sync::Arc;
 
 use sekas_api::server::v1::{
     ChangeReplica, ChangeReplicaType, ChangeReplicas, GroupDesc, MigrationDesc, ReplicaDesc,
@@ -23,12 +25,10 @@ use sekas_api::server::v1::{
 use tracing::{info, trace, warn};
 
 use super::ReplicaInfo;
-use crate::{
-    engine::{GroupEngine, WriteBatch, WriteStates},
-    raftgroup::{ApplyEntry, SnapshotBuilder, StateMachine},
-    serverpb::v1::*,
-    ReplicaConfig, Result,
-};
+use crate::engine::{GroupEngine, WriteBatch, WriteStates};
+use crate::raftgroup::{ApplyEntry, SnapshotBuilder, StateMachine};
+use crate::serverpb::v1::*;
+use crate::{ReplicaConfig, Result};
 
 const SHARD_UPDATE_DELTA: u64 = 1 << 32;
 const CONFIG_CHANGE_DELTA: u64 = 1;
@@ -78,9 +78,7 @@ impl GroupStateMachine {
         group_engine: GroupEngine,
         observer: Box<dyn StateMachineObserver>,
     ) -> Self {
-        let apply_state = group_engine
-            .flushed_apply_state()
-            .expect("access flushed index");
+        let apply_state = group_engine.flushed_apply_state().expect("access flushed index");
         GroupStateMachine {
             cfg,
             info,
@@ -251,8 +249,7 @@ impl GroupStateMachine {
     fn flush_updated_events(&mut self, term: u64) {
         if self.desc_updated {
             self.desc_updated = false;
-            self.observer
-                .on_descriptor_updated(self.group_engine.descriptor());
+            self.observer.on_descriptor_updated(self.group_engine.descriptor());
         }
 
         if term > self.last_applied_term {
@@ -262,28 +259,20 @@ impl GroupStateMachine {
 
         if self.migration_state_updated {
             self.migration_state_updated = false;
-            self.observer
-                .on_migrate_state_updated(self.group_engine.migration_state());
+            self.observer.on_migrate_state_updated(self.group_engine.migration_state());
         }
     }
 
     #[inline]
     fn flushed_apply_state(&self) -> ApplyState {
-        self.group_engine
-            .flushed_apply_state()
-            .expect("access flushed index")
+        self.group_engine.flushed_apply_state().expect("access flushed index")
     }
 
     #[inline]
     fn must_migration_state(&self) -> MigrationState {
-        self.plugged_write_states
-            .migration_state
-            .clone()
-            .unwrap_or_else(|| {
-                self.group_engine
-                    .migration_state()
-                    .expect("The MigrationState should exist")
-            })
+        self.plugged_write_states.migration_state.clone().unwrap_or_else(|| {
+            self.group_engine.migration_state().expect("The MigrationState should exist")
+        })
     }
 }
 
@@ -329,27 +318,20 @@ impl StateMachine for GroupStateMachine {
 
     fn apply_snapshot(&mut self, snap_dir: &Path) -> Result<()> {
         checkpoint::apply_snapshot(&self.group_engine, self.info.replica_id, snap_dir)?;
-        self.observer
-            .on_descriptor_updated(self.group_engine.descriptor());
+        self.observer.on_descriptor_updated(self.group_engine.descriptor());
         let apply_state = self.flushed_apply_state();
         self.observer.on_term_updated(apply_state.term);
         Ok(())
     }
 
     fn snapshot_builder(&self) -> Box<dyn SnapshotBuilder> {
-        Box::new(checkpoint::GroupSnapshotBuilder::new(
-            self.cfg.clone(),
-            self.group_engine.clone(),
-        ))
+        Box::new(checkpoint::GroupSnapshotBuilder::new(self.cfg.clone(), self.group_engine.clone()))
     }
 
     #[inline]
     fn flushed_index(&self) -> u64 {
         // FIXME(walter) avoid disk IO.
-        self.group_engine
-            .flushed_apply_state()
-            .expect("access flushed index")
-            .index
+        self.group_engine.flushed_apply_state().expect("access flushed index").index
     }
 
     #[inline]
@@ -459,8 +441,7 @@ fn apply_enter_joint(local_id: u64, desc: &mut GroupDesc, changes: &[ChangeRepli
         }
     }
 
-    desc.replicas
-        .drain_filter(|r| outgoing_learners.contains(&r.id));
+    desc.replicas.drain_filter(|r| outgoing_learners.contains(&r.id));
 
     let changes = change_replicas_digest(changes);
     info!("group {group_id} replica {local_id} enter join and {changes}, former {roles}");
@@ -477,10 +458,7 @@ fn apply_leave_joint(local_id: u64, desc: &mut GroupDesc) {
         replica.role = role as i32;
     }
 
-    info!(
-        "group {group_id} replica {local_id} leave joint with {}",
-        group_role_digest(desc)
-    );
+    info!("group {group_id} replica {local_id} leave joint with {}", group_role_digest(desc));
 }
 
 fn group_role_digest(desc: &GroupDesc) -> String {
@@ -534,11 +512,8 @@ mod tests {
     use super::*;
 
     fn group_replicas(desc: &GroupDesc) -> Vec<(u64, ReplicaRole)> {
-        let mut result: Vec<(u64, ReplicaRole)> = desc
-            .replicas
-            .iter()
-            .map(|r| (r.id, ReplicaRole::from_i32(r.role).unwrap()))
-            .collect();
+        let mut result: Vec<(u64, ReplicaRole)> =
+            desc.replicas.iter().map(|r| (r.id, ReplicaRole::from_i32(r.role).unwrap())).collect();
 
         result.sort_unstable();
         result
@@ -622,32 +597,15 @@ mod tests {
             epoch: 1,
             shards: vec![],
             replicas: vec![
-                ReplicaDesc {
-                    id: 1,
-                    node_id: 1,
-                    role: ReplicaRole::Learner as i32,
-                },
-                ReplicaDesc {
-                    id: 2,
-                    node_id: 2,
-                    role: ReplicaRole::Voter as i32,
-                },
+                ReplicaDesc { id: 1, node_id: 1, role: ReplicaRole::Learner as i32 },
+                ReplicaDesc { id: 2, node_id: 2, role: ReplicaRole::Voter as i32 },
             ],
         };
 
-        for Test {
-            tips,
-            change_type,
-            replica_id,
-            expects,
-        } in tests
-        {
+        for Test { tips, change_type, replica_id, expects } in tests {
             let mut descriptor = base_group_desc.clone();
-            let change = ChangeReplica {
-                change_type: change_type as i32,
-                replica_id,
-                node_id: 123,
-            };
+            let change =
+                ChangeReplica { change_type: change_type as i32, replica_id, node_id: 123 };
             apply_simple_change(0, &mut descriptor, &change);
             let replicas = group_replicas(&descriptor);
             assert_eq!(replicas, expects, "{tips}");
@@ -668,16 +626,8 @@ mod tests {
             epoch: 1,
             shards: vec![],
             replicas: vec![
-                ReplicaDesc {
-                    id: 1,
-                    node_id: 1,
-                    role: ReplicaRole::Learner as i32,
-                },
-                ReplicaDesc {
-                    id: 2,
-                    node_id: 2,
-                    role: ReplicaRole::Voter as i32,
-                },
+                ReplicaDesc { id: 1, node_id: 1, role: ReplicaRole::Learner as i32 },
+                ReplicaDesc { id: 2, node_id: 2, role: ReplicaRole::Voter as i32 },
             ],
         };
 
@@ -746,19 +696,10 @@ mod tests {
             },
         ];
 
-        for Test {
-            tips,
-            change_type,
-            replica_id,
-            expects,
-        } in tests
-        {
+        for Test { tips, change_type, replica_id, expects } in tests {
             let mut descriptor = base_group_desc.clone();
-            let change = ChangeReplica {
-                change_type: change_type as i32,
-                replica_id,
-                node_id: 123,
-            };
+            let change =
+                ChangeReplica { change_type: change_type as i32, replica_id, node_id: 123 };
             apply_enter_joint(0, &mut descriptor, &[change]);
             apply_leave_joint(0, &mut descriptor);
             let replicas = group_replicas(&descriptor);

@@ -16,7 +16,7 @@ use paste::paste;
 use prometheus::*;
 
 macro_rules! request_total {
-    ($name: ident) => {
+    ($name:ident) => {
         paste! {
             lazy_static! {
                 pub static ref [<$name:upper _REQUEST_TOTAL>]: IntCounter =

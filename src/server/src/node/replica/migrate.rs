@@ -16,7 +16,9 @@ use sekas_api::server::v1::*;
 use tracing::{debug, info};
 
 use super::{LeaseState, Replica, ReplicaInfo};
-use crate::{engine::WriteBatch, serverpb::v1::*, Error, Result};
+use crate::engine::WriteBatch;
+use crate::serverpb::v1::*;
+use crate::{Error, Result};
 
 impl Replica {
     pub async fn ingest(
@@ -49,12 +51,8 @@ impl Replica {
             None
         };
 
-        let eval_result = EvalResult {
-            batch: Some(WriteBatchRep {
-                data: wb.data().to_owned(),
-            }),
-            op: sync_op,
-        };
+        let eval_result =
+            EvalResult { batch: Some(WriteBatchRep { data: wb.data().to_owned() }), op: sync_op };
         self.raft_node.clone().propose(eval_result).await?;
 
         Ok(())
@@ -73,40 +71,31 @@ impl Replica {
             self.group_engine.delete(&mut wb, shard_id, key, *version)?;
         }
 
-        let eval_result = EvalResult {
-            batch: Some(WriteBatchRep {
-                data: wb.data().to_owned(),
-            }),
-            op: None,
-        };
+        let eval_result =
+            EvalResult { batch: Some(WriteBatchRep { data: wb.data().to_owned() }), op: None };
         self.raft_node.clone().propose(eval_result).await?;
 
         Ok(())
     }
 
     pub async fn setup_migration(&self, desc: &MigrationDesc) -> Result<()> {
-        self.update_migration_state(desc, MigrationEvent::Setup)
-            .await
+        self.update_migration_state(desc, MigrationEvent::Setup).await
     }
 
     pub async fn enter_pulling_step(&self, desc: &MigrationDesc) -> Result<()> {
-        self.update_migration_state(desc, MigrationEvent::Ingest)
-            .await
+        self.update_migration_state(desc, MigrationEvent::Ingest).await
     }
 
     pub async fn commit_migration(&self, desc: &MigrationDesc) -> Result<()> {
-        self.update_migration_state(desc, MigrationEvent::Commit)
-            .await
+        self.update_migration_state(desc, MigrationEvent::Commit).await
     }
 
     pub async fn abort_migration(&self, desc: &MigrationDesc) -> Result<()> {
-        self.update_migration_state(desc, MigrationEvent::Abort)
-            .await
+        self.update_migration_state(desc, MigrationEvent::Abort).await
     }
 
     pub async fn finish_migration(&self, desc: &MigrationDesc) -> Result<()> {
-        self.update_migration_state(desc, MigrationEvent::Apply)
-            .await
+        self.update_migration_state(desc, MigrationEvent::Apply).await
     }
 
     async fn update_migration_state(
@@ -126,10 +115,7 @@ impl Replica {
         }
 
         let sync_op = SyncOp::migration(event, desc.clone());
-        let eval_result = EvalResult {
-            batch: None,
-            op: Some(sync_op),
-        };
+        let eval_result = EvalResult { batch: None, op: Some(sync_op) };
         self.raft_node.clone().propose(eval_result).await?;
 
         Ok(())
@@ -169,13 +155,9 @@ impl Replica {
         } else if matches!(event, MigrationEvent::Commit) {
             Self::check_migration_commit(self.info.as_ref(), &lease_state, desc)
         } else if lease_state.migration_state.is_none() {
-            Err(Error::InvalidArgument(
-                "no such migration exists".to_owned(),
-            ))
+            Err(Error::InvalidArgument("no such migration exists".to_owned()))
         } else if !lease_state.is_same_migration(desc) {
-            Err(Error::InvalidArgument(
-                "exists another migration".to_owned(),
-            ))
+            Err(Error::InvalidArgument("exists another migration".to_owned()))
         } else {
             Ok(true)
         }
@@ -194,8 +176,8 @@ impl Replica {
             debug_assert_eq!(epoch, lease_state.descriptor.epoch);
             Ok(true)
         } else if !lease_state.is_same_migration(desc) {
-            // This migration needs to be rollback too, because the epoch will be bumped once the
-            // former migration finished.
+            // This migration needs to be rollback too, because the epoch will be bumped
+            // once the former migration finished.
             Err(Error::EpochNotMatch(lease_state.descriptor.clone()))
         } else {
             info!(
@@ -224,9 +206,7 @@ impl Replica {
                 "migration state is {:?}, descriptor {:?}",
                 lease_state.migration_state, lease_state.descriptor
             );
-            Err(Error::InvalidArgument(
-                "no such migration exists".to_owned(),
-            ))
+            Err(Error::InvalidArgument("no such migration exists".to_owned()))
         } else if lease_state.migration_state.as_ref().unwrap().step
             == MigrationStep::Migrated as i32
         {

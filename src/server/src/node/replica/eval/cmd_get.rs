@@ -14,11 +14,10 @@
 
 use sekas_api::server::v1::*;
 
-use crate::{
-    engine::GroupEngine,
-    node::{migrate::ForwardCtx, replica::ExecCtx},
-    Error, Result,
-};
+use crate::engine::GroupEngine;
+use crate::node::migrate::ForwardCtx;
+use crate::node::replica::ExecCtx;
+use crate::{Error, Result};
 
 /// Get the value of the specified key.
 pub(crate) async fn get(
@@ -44,11 +43,7 @@ pub(crate) async fn get(
             } else {
                 Vec::default()
             };
-            let forward_ctx = ForwardCtx {
-                shard_id,
-                dest_group_id: desc.dest_group_id,
-                payloads,
-            };
+            let forward_ctx = ForwardCtx { shard_id, dest_group_id: desc.dest_group_id, payloads };
             return Err(Error::Forward(forward_ctx));
         }
     }

@@ -12,21 +12,21 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::{collections::HashSet, ops::Add, sync::Arc, vec};
+use std::collections::HashSet;
+use std::ops::Add;
+use std::sync::Arc;
+use std::vec;
 
-use sekas_api::server::v1::{
-    watch_response::{update_event, UpdateEvent},
-    *,
-};
+use sekas_api::server::v1::watch_response::{update_event, UpdateEvent};
+use sekas_api::server::v1::*;
 use tokio::time::Instant;
 use tracing::{info, trace, warn};
 
 use super::{HeartbeatTask, Root, Schema};
-use crate::{
-    constants::ROOT_GROUP_ID,
-    root::{metrics, schema::ReplicaNodes},
-    Result,
-};
+use crate::constants::ROOT_GROUP_ID;
+use crate::root::metrics;
+use crate::root::schema::ReplicaNodes;
+use crate::Result;
 
 impl Root {
     pub async fn send_heartbeat(&self, schema: Arc<Schema>, tasks: &[HeartbeatTask]) -> Result<()> {
@@ -54,9 +54,7 @@ impl Root {
                 "sync root info with heartbeat"
             );
             piggybacks.push(PiggybackRequest {
-                info: Some(piggyback_request::Info::SyncRoot(SyncRootRequest {
-                    root: Some(root),
-                })),
+                info: Some(piggyback_request::Info::SyncRoot(SyncRootRequest { root: Some(root) })),
             });
             piggybacks.push(PiggybackRequest {
                 info: Some(piggyback_request::Info::CollectGroupDetail(
@@ -82,10 +80,7 @@ impl Root {
             for n in &nodes {
                 trace!(node = n.id, target = ?n.addr, "attempt send heartbeat");
                 let piggybacks = piggybacks.to_owned();
-                let client = self
-                    .shared
-                    .transport_manager
-                    .get_node_client(n.addr.to_owned())?;
+                let client = self.shared.transport_manager.get_node_client(n.addr.to_owned())?;
                 let handle = crate::runtime::current().dispatch(
                     None,
                     crate::runtime::TaskPriority::Low,
@@ -120,8 +115,7 @@ impl Root {
                             piggyback_response::Info::SyncRoot(_)
                             | piggyback_response::Info::CollectMigrationState(_) => {}
                             piggyback_response::Info::CollectStats(ref resp) => {
-                                self.handle_collect_stats(&schema, resp, n.to_owned())
-                                    .await?
+                                self.handle_collect_stats(&schema, resp, n.to_owned()).await?
                             }
                             piggyback_response::Info::CollectGroupDetail(ref resp) => {
                                 self.handle_group_detail(&schema, resp, &groups).await?
@@ -146,10 +140,7 @@ impl Root {
             }
         }
         self.heartbeat_queue
-            .try_schedule(
-                heartbeat_tasks,
-                last_heartbeat.add(self.cfg.heartbeat_interval()),
-            )
+            .try_schedule(heartbeat_tasks, last_heartbeat.add(self.cfg.heartbeat_interval()))
             .await;
 
         Ok(())
@@ -198,9 +189,7 @@ impl Root {
                     continue;
                 }
             }
-            schema
-                .update_group_replica(Some(desc.to_owned()), None)
-                .await?;
+            schema.update_group_replica(Some(desc.to_owned()), None).await?;
             metrics::ROOT_UPDATE_GROUP_DESC_TOTAL.heartbeat.inc();
             info!(
                 group = desc.id,
@@ -210,23 +199,19 @@ impl Root {
             if desc.id == ROOT_GROUP_ID {
                 self.heartbeat_queue
                     .try_schedule(
-                        vec![HeartbeatTask {
-                            node_id: self.current_node_id(),
-                        }],
+                        vec![HeartbeatTask { node_id: self.current_node_id() }],
                         Instant::now(),
                     )
                     .await;
             }
-            update_events.push(UpdateEvent {
-                event: Some(update_event::Event::Group(desc.to_owned())),
-            })
+            update_events
+                .push(UpdateEvent { event: Some(update_event::Event::Group(desc.to_owned())) })
         }
 
         let mut changed_group_states = HashSet::new();
         for state in &resp.replica_states {
-            if let Some(pre_state) = schema
-                .get_replica_state(state.group_id, state.replica_id)
-                .await?
+            if let Some(pre_state) =
+                schema.get_replica_state(state.group_id, state.replica_id).await?
             {
                 if state.term < pre_state.term
                     || (state.term == pre_state.term && state.role == pre_state.role)
@@ -234,9 +219,7 @@ impl Root {
                     continue;
                 }
             }
-            schema
-                .update_group_replica(None, Some(state.to_owned()))
-                .await?;
+            schema.update_group_replica(None, Some(state.to_owned())).await?;
             metrics::ROOT_UPDATE_REPLICA_STATE_TOTAL.heartbeat.inc();
             info!(
                 group = state.group_id,
@@ -250,9 +233,7 @@ impl Root {
         let mut states = schema.list_group_state().await?; // TODO: fix poor performance.
         states.retain(|s| changed_group_states.contains(&s.group_id));
         for state in states {
-            update_events.push(UpdateEvent {
-                event: Some(update_event::Event::GroupState(state)),
-            })
+            update_events.push(UpdateEvent { event: Some(update_event::Event::GroupState(state)) })
         }
 
         if !update_events.is_empty() {
@@ -263,8 +244,7 @@ impl Root {
     }
 
     async fn handle_schedule_state(&self, resp: &CollectScheduleStateResponse) -> Result<()> {
-        self.ongoing_stats
-            .handle_update(&resp.schedule_states, None);
+        self.ongoing_stats.handle_update(&resp.schedule_states, None);
         Ok(())
     }
 }

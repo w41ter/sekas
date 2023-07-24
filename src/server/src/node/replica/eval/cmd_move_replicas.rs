@@ -15,7 +15,9 @@
 use sekas_api::server::v1::*;
 use tracing::info;
 
-use crate::{node::replica::ExecCtx, schedule::MoveReplicasProvider, Result};
+use crate::node::replica::ExecCtx;
+use crate::schedule::MoveReplicasProvider;
+use crate::Result;
 
 pub(crate) async fn move_replicas(
     ctx: &ExecCtx,
@@ -33,9 +35,7 @@ pub(crate) async fn move_replicas(
         outgoing_voters.iter().map(|v| v.id).collect::<Vec<_>>()
     );
 
-    provider
-        .assign(ctx.epoch, incoming_voters, outgoing_voters)
-        .await??;
+    provider.assign(ctx.epoch, incoming_voters, outgoing_voters).await??;
 
     Ok(())
 }
