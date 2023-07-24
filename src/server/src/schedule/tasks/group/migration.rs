@@ -17,17 +17,13 @@ use std::sync::Arc;
 use tracing::debug;
 
 use super::ActionTaskWithLocks;
-use crate::{
-    schedule::{
-        actions::*,
-        event_source::EventSource,
-        provider::GroupProviders,
-        scheduler::ScheduleContext,
-        task::{Task, TaskState},
-        tasks::{ActionTask, REPLICA_MIGRATION_TASK_ID},
-    },
-    Error,
-};
+use crate::schedule::actions::*;
+use crate::schedule::event_source::EventSource;
+use crate::schedule::provider::GroupProviders;
+use crate::schedule::scheduler::ScheduleContext;
+use crate::schedule::task::{Task, TaskState};
+use crate::schedule::tasks::{ActionTask, REPLICA_MIGRATION_TASK_ID};
+use crate::Error;
 
 pub struct ReplicaMigration {
     providers: Arc<GroupProviders>,

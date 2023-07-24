@@ -12,70 +12,45 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::{
-    collections::HashMap,
-    marker::PhantomData,
-    sync::Arc,
-    task::Context,
-    time::{Duration, Instant},
-};
+use std::collections::HashMap;
+use std::marker::PhantomData;
+use std::sync::Arc;
+use std::task::Context;
+use std::time::{Duration, Instant};
 
-use sekas_api::server::v1::{ChangeReplicas, RaftRole, ReplicaDesc};
-use futures::{
-    channel::{mpsc, oneshot},
-    stream::FusedStream,
-    FutureExt, SinkExt, StreamExt,
-};
-use raft::{prelude::*, SoftState, StateRole};
+use futures::channel::{mpsc, oneshot};
+use futures::stream::FusedStream;
+use futures::{FutureExt, SinkExt, StreamExt};
+use raft::prelude::*;
+use raft::{SoftState, StateRole};
 use raft_engine::{Engine, LogBatch};
+use sekas_api::server::v1::{ChangeReplicas, RaftRole, ReplicaDesc};
 use tokio::time::{interval, Interval, MissedTickBehavior};
 use tracing::{debug, info, warn};
 
-use super::{
-    applier::{Applier, ReplicaCache},
-    fsm::StateMachine,
-    io::{Channel, ChannelManager, LogWriter},
-    metrics::*,
-    monitor::WorkerPerfContext,
-    node::RaftNode,
-    snap::{apply::apply_snapshot, RecycleSnapMode, SnapManager},
-    RaftManager, ReadPolicy,
-};
-use crate::{
-    raftgroup::monitor::record_perf_point,
-    record_latency,
-    serverpb::v1::{EvalResult, RaftMessage},
-    RaftConfig, Result,
-};
+use super::applier::{Applier, ReplicaCache};
+use super::fsm::StateMachine;
+use super::io::{Channel, ChannelManager, LogWriter};
+use super::metrics::*;
+use super::monitor::WorkerPerfContext;
+use super::node::RaftNode;
+use super::snap::apply::apply_snapshot;
+use super::snap::{RecycleSnapMode, SnapManager};
+use super::{RaftManager, ReadPolicy};
+use crate::raftgroup::monitor::record_perf_point;
+use crate::serverpb::v1::{EvalResult, RaftMessage};
+use crate::{record_latency, RaftConfig, Result};
 
 pub enum Request {
-    Read {
-        policy: ReadPolicy,
-        sender: oneshot::Sender<Result<()>>,
-    },
-    Propose {
-        eval_result: EvalResult,
-        start: Instant,
-        sender: oneshot::Sender<Result<()>>,
-    },
+    Read { policy: ReadPolicy, sender: oneshot::Sender<Result<()>> },
+    Propose { eval_result: EvalResult, start: Instant, sender: oneshot::Sender<Result<()>> },
     CreateSnapshotFinished,
-    InstallSnapshot {
-        msg: Message,
-    },
-    RejectSnapshot {
-        msg: Message,
-    },
-    ChangeConfig {
-        change: ChangeReplicas,
-        sender: oneshot::Sender<Result<()>>,
-    },
-    Transfer {
-        transferee: u64,
-    },
+    InstallSnapshot { msg: Message },
+    RejectSnapshot { msg: Message },
+    ChangeConfig { change: ChangeReplicas, sender: oneshot::Sender<Result<()>> },
+    Transfer { transferee: u64 },
     Message(RaftMessage),
-    Unreachable {
-        target_id: u64,
-    },
+    Unreachable { target_id: u64 },
     State(oneshot::Sender<RaftGroupState>),
     Monitor(oneshot::Sender<Box<WorkerPerfContext>>),
     Start,
@@ -136,10 +111,7 @@ impl<'a> super::node::AdvanceTemplate for AdvanceImpl<'a> {
     fn send_messages(&mut self, msgs: Vec<Message>) {
         let mut seperated_msgs: HashMap<u64, Vec<Message>> = HashMap::default();
         for msg in msgs {
-            seperated_msgs
-                .entry(msg.to)
-                .or_insert_with(Vec::default)
-                .push(msg);
+            seperated_msgs.entry(msg.to).or_insert_with(Vec::default).push(msg);
         }
         for (target_id, msgs) in seperated_msgs {
             let to_replica = match self.replica_cache.get(target_id) {
@@ -166,8 +138,7 @@ impl<'a> super::node::AdvanceTemplate for AdvanceImpl<'a> {
     }
 
     fn on_state_updated(&mut self, leader_id: u64, voted_for: u64, term: u64, role: RaftRole) {
-        self.observer
-            .on_state_updated(leader_id, voted_for, term, role);
+        self.observer.on_state_updated(leader_id, voted_for, term, role);
     }
 
     fn mut_replica_cache(&mut self) -> &mut ReplicaCache {
@@ -222,11 +193,7 @@ where
         raft_mgr: &RaftManager,
         mut observer: Box<dyn StateObserver>,
     ) -> Result<Self> {
-        let desc = ReplicaDesc {
-            id: replica_id,
-            node_id,
-            ..Default::default()
-        };
+        let desc = ReplicaDesc { id: replica_id, node_id, ..Default::default() };
         let mut replica_cache = ReplicaCache::default();
         replica_cache.insert(desc.clone());
         replica_cache.batch_insert(&state_machine.descriptor().replicas);
@@ -265,12 +232,10 @@ where
         self.request_sender.clone()
     }
 
-    /// Poll requests and messages, forward both to `RaftNode`, and advance `RaftNode`.
+    /// Poll requests and messages, forward both to `RaftNode`, and advance
+    /// `RaftNode`.
     pub async fn run(mut self, log_writer: LogWriter) -> Result<()> {
-        debug!(
-            "group {} replica {} raft worker is running",
-            self.group_id, self.desc.id
-        );
+        debug!("group {} replica {} raft worker is running", self.group_id, self.desc.id);
 
         let mut log_writer = log_writer;
         // WARNING: the underlying instant isn't steady.
@@ -284,10 +249,7 @@ where
             self.finish_round(ctx);
         }
 
-        debug!(
-            "group {} replica {} raft worker is quit",
-            self.group_id, self.desc.id
-        );
+        debug!("group {} replica {} raft worker is quit", self.group_id, self.desc.id);
 
         Ok(())
     }
@@ -311,9 +273,10 @@ where
             }
             record_perf_point(&mut ctx.perf_ctx.wake);
         } else {
-            // Because the raft node is still in the ready state, there is no need for a block to
-            // wait for a new input event, but the tick may be ready at this time, and we need to
-            // process it first to avoid the tick delay being too long.
+            // Because the raft node is still in the ready state, there is no need for a
+            // block to wait for a new input event, but the tick may be ready at
+            // this time, and we need to process it first to avoid the tick
+            // delay being too long.
             let mut cx = Context::from_waker(futures::task::noop_waker_ref());
             if interval.poll_tick(&mut cx).is_ready() {
                 self.on_tick_fire(ctx);
@@ -353,15 +316,9 @@ where
             observer: &mut self.observer,
             replica_cache: &mut self.replica_cache,
         };
-        if let Some(write_task) = self
-            .raft_node
-            .advance(&mut ctx.perf_ctx.advance, &mut template)
-        {
+        if let Some(write_task) = self.raft_node.advance(&mut ctx.perf_ctx.advance, &mut template) {
             let mut batch = LogBatch::default();
-            self.raft_node
-                .mut_store()
-                .write(&mut batch, &write_task)
-                .expect("write log batch");
+            self.raft_node.mut_store().write(&mut batch, &write_task).expect("write log batch");
 
             let _slow_io_guard = self.cfg.engine_slow_io_threshold_ms.map(SlowIoGuard::new);
             record_perf_point(&mut ctx.perf_ctx.write);
@@ -372,8 +329,7 @@ where
                 writer.submit(batch).await.unwrap_or(Ok(())).unwrap();
             }
             let post_ready = write_task.post_ready();
-            self.raft_node
-                .post_advance(&mut ctx.perf_ctx.advance, post_ready, &mut template);
+            self.raft_node.post_advance(&mut ctx.perf_ctx.advance, post_ready, &mut template);
         }
 
         if self.raft_node.mut_store().create_snapshot.get() {
@@ -393,28 +349,22 @@ where
         record_perf_point(&mut ctx.perf_ctx.finish);
         ctx.perf_ctx.accumulated_bytes = ctx.accumulated_bytes;
         for sender in ctx.monitors {
-            sender
-                .send(Box::new(ctx.perf_ctx.clone()))
-                .unwrap_or_default();
+            sender.send(Box::new(ctx.perf_ctx.clone())).unwrap_or_default();
         }
     }
 
     fn handle_request(&mut self, ctx: &mut WorkerContext, request: Request) -> Result<()> {
         ctx.perf_ctx.num_requests += 1;
         match request {
-            Request::Propose {
-                eval_result,
-                start,
-                sender,
-            } => self.handle_proposal(ctx, eval_result, start, sender),
+            Request::Propose { eval_result, start, sender } => {
+                self.handle_proposal(ctx, eval_result, start, sender)
+            }
             Request::Read { policy, sender } => self.handle_read(policy, sender),
             Request::ChangeConfig { change, sender } => self.handle_conf_change(change, sender),
             Request::CreateSnapshotFinished => {
                 self.raft_node.mut_store().is_creating_snapshot.set(false);
             }
-            Request::Transfer {
-                transferee: target_id,
-            } => {
+            Request::Transfer { transferee: target_id } => {
                 self.raft_node.transfer_leader(target_id);
             }
             Request::Message(msg) => {
@@ -449,9 +399,7 @@ where
                 let store = self.raft_node.mut_store();
                 let first_index = store.first_index().unwrap();
                 let last_index = store.last_index().unwrap();
-                sender
-                    .send(self.raft_group_state(first_index, last_index))
-                    .unwrap_or_default();
+                sender.send(self.raft_group_state(first_index, last_index)).unwrap_or_default();
             }
             Request::Monitor(sender) => {
                 ctx.monitors.push(sender);
@@ -502,10 +450,7 @@ where
     }
 
     fn handle_conf_change(&mut self, change: ChangeReplicas, sender: oneshot::Sender<Result<()>>) {
-        info!(
-            "group {} replica {} handle conf change {change:?}",
-            self.group_id, self.desc.id
-        );
+        info!("group {} replica {} handle conf change {change:?}", self.group_id, self.desc.id);
         let cc = super::encode_to_conf_change(change);
         self.raft_node.propose_conf_change(vec![], cc, sender);
     }
@@ -531,9 +476,8 @@ where
 
         let status = self.raft_node.raft_status();
         if status.ss.raft_state == StateRole::Leader {
-            if let Some(min_matched_index) = status
-                .progress
-                .and_then(|p| p.iter().map(|(_, p)| p.matched).min())
+            if let Some(min_matched_index) =
+                status.progress.and_then(|p| p.iter().map(|(_, p)| p.matched).min())
             {
                 to = std::cmp::min(min_matched_index, to);
             }
@@ -545,8 +489,7 @@ where
             self.engine.write(&mut lb, false).unwrap();
         }
 
-        self.snap_mgr
-            .recycle_snapshots(self.desc.id, RecycleSnapMode::RequiredIndex(to));
+        self.snap_mgr.recycle_snapshots(self.desc.id, RecycleSnapMode::RequiredIndex(to));
     }
 
     fn raft_group_state(&self, first_index: u64, last_index: u64) -> RaftGroupState {
@@ -579,10 +522,7 @@ where
 
 impl SlowIoGuard {
     fn new(threshold: u64) -> Self {
-        SlowIoGuard {
-            threshold,
-            start: Instant::now(),
-        }
+        SlowIoGuard { threshold, start: Instant::now() }
     }
 }
 

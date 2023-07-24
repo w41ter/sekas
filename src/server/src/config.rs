@@ -12,7 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::{path::PathBuf, time::Duration};
+use std::path::PathBuf;
+use std::time::Duration;
 
 use rocksdb::DBCompressionType;
 use serde::{Deserialize, Serialize};
@@ -156,13 +157,14 @@ pub struct RaftConfig {
     /// Default: 102400
     pub max_inflight_requests: usize,
 
-    /// Before a follower begin election, it must wait a randomly election ticks and does not
-    /// receives any messages from leader.
+    /// Before a follower begin election, it must wait a randomly election ticks
+    /// and does not receives any messages from leader.
     ///
     /// Default: 3.
     pub election_tick: usize,
 
-    /// Limit the entries batched in an append message(in size). 0 means one entry per message.
+    /// Limit the entries batched in an append message(in size). 0 means one
+    /// entry per message.
     ///
     /// Default: 64KB
     pub max_size_per_msg: u64,

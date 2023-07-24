@@ -11,15 +11,14 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-use sekas_api::{server::v1::BatchWriteRequest, v1::PutOperation};
+use sekas_api::server::v1::BatchWriteRequest;
+use sekas_api::v1::PutOperation;
 
 use super::cas::eval_conditions;
-use crate::{
-    engine::{GroupEngine, WriteBatch},
-    node::replica::ExecCtx,
-    serverpb::v1::{EvalResult, WriteBatchRep},
-    Error, Result,
-};
+use crate::engine::{GroupEngine, WriteBatch};
+use crate::node::replica::ExecCtx;
+use crate::serverpb::v1::{EvalResult, WriteBatchRep};
+use crate::{Error, Result};
 
 pub(crate) async fn batch_write(
     exec_ctx: &ExecCtx,
@@ -62,18 +61,10 @@ pub(crate) async fn batch_write(
         if exec_ctx.is_migrating_shard(req.shard_id) {
             panic!("BatchWrite does not support migrating shard");
         }
-        group_engine.put(
-            &mut wb,
-            req.shard_id,
-            &put.key,
-            &put.value,
-            super::FLAT_KEY_VERSION,
-        )?;
+        group_engine.put(&mut wb, req.shard_id, &put.key, &put.value, super::FLAT_KEY_VERSION)?;
     }
     Ok(Some(EvalResult {
-        batch: Some(WriteBatchRep {
-            data: wb.data().to_owned(),
-        }),
+        batch: Some(WriteBatchRep { data: wb.data().to_owned() }),
         ..Default::default()
     }))
 }

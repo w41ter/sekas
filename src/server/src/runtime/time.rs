@@ -19,10 +19,8 @@ pub async fn sleep(dur: Duration) {
 
 #[inline]
 pub fn timestamp_nanos() -> u64 {
-    use std::{
-        mem::MaybeUninit,
-        time::{SystemTime, UNIX_EPOCH},
-    };
+    use std::mem::MaybeUninit;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     if cfg!(target_os = "linux") {
         let mut t = MaybeUninit::uninit();
@@ -30,10 +28,7 @@ pub fn timestamp_nanos() -> u64 {
         let now: libc::timespec = unsafe { t.assume_init() };
         (now.tv_sec * 1000 * 1000 * 1000 + now.tv_nsec) as u64
     } else {
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos() as u64
+        SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos() as u64
     }
 }
 

@@ -12,16 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    Arc,
-};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
-use sekas_api::server::v1::NodeStatus;
-use prometheus::{core::Collector, *};
+use prometheus::core::Collector;
+use prometheus::*;
 use prometheus_static_metric::make_static_metric;
+use sekas_api::server::v1::NodeStatus;
 
-use crate::{constants::ROOT_GROUP_ID, Server};
+use crate::constants::ROOT_GROUP_ID;
+use crate::Server;
 
 make_static_metric! {
     struct NodeTotal: IntGauge {

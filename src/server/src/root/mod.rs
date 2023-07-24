@@ -23,44 +23,39 @@ mod schema;
 mod store;
 mod watch;
 
-use std::{
-    collections::*,
-    sync::{
-        atomic::{AtomicU64, Ordering},
-        *,
-    },
-    task::Poll,
-    time::Duration,
-};
+use std::collections::*;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::*;
+use std::task::Poll;
+use std::time::Duration;
 
-use sekas_api::{
-    server::v1::{report_request::GroupUpdates, watch_response::*, *},
-    v1::{
-        collection_desc as co_desc, create_collection_request as co_req, CollectionDesc,
-        DatabaseDesc,
-    },
+use sekas_api::server::v1::report_request::GroupUpdates;
+use sekas_api::server::v1::watch_response::*;
+use sekas_api::server::v1::*;
+use sekas_api::v1::{
+    collection_desc as co_desc, create_collection_request as co_req, CollectionDesc, DatabaseDesc,
 };
 use tokio::time::Instant;
 use tokio_util::time::delay_queue;
 use tracing::{error, info, trace, warn};
 
+use self::allocator::SysAllocSource;
+use self::bg_job::Jobs;
+pub use self::collector::RootCollector;
+use self::diagnosis::Metadata;
+use self::schedule::ReconcileScheduler;
+use self::schema::ReplicaNodes;
 pub(crate) use self::schema::*;
-use self::{
-    allocator::SysAllocSource, bg_job::Jobs, diagnosis::Metadata, schedule::ReconcileScheduler,
-    schema::ReplicaNodes, store::RootStore,
-};
-pub use self::{
-    collector::RootCollector,
-    watch::{WatchHub, Watcher, WatcherInitializer},
-};
-use crate::{
-    constants::{ROOT_GROUP_ID, SHARD_MAX, SHARD_MIN},
-    node::{Node, Replica, ReplicaRouteTable},
-    runtime::{self, time::timestamp_nanos, TaskPriority},
-    serverpb::v1::{background_job::Job, reconcile_task, *},
-    transport::TransportManager,
-    Config, Error, Result, RootConfig,
-};
+use self::store::RootStore;
+pub use self::watch::{WatchHub, Watcher, WatcherInitializer};
+use crate::constants::{ROOT_GROUP_ID, SHARD_MAX, SHARD_MIN};
+use crate::node::{Node, Replica, ReplicaRouteTable};
+use crate::runtime::time::timestamp_nanos;
+use crate::runtime::{self, TaskPriority};
+use crate::serverpb::v1::background_job::Job;
+use crate::serverpb::v1::{reconcile_task, *};
+use crate::transport::TransportManager;
+use crate::{Config, Error, Result, RootConfig};
 
 #[derive(Clone)]
 pub struct Root {
@@ -135,21 +130,14 @@ impl Root {
             node_ident: node_ident.to_owned(),
             watcher_hub: Default::default(),
         });
-        let liveness = Arc::new(liveness::Liveness::new(Duration::from_secs(
-            cfg.root.liveness_threshold_sec,
-        )));
+        let liveness =
+            Arc::new(liveness::Liveness::new(Duration::from_secs(cfg.root.liveness_threshold_sec)));
         let info = Arc::new(SysAllocSource::new(shared.clone(), liveness.to_owned()));
-        let alloc = Arc::new(allocator::Allocator::new(
-            info,
-            ongoing_stats.clone(),
-            cfg.root.to_owned(),
-        ));
+        let alloc =
+            Arc::new(allocator::Allocator::new(info, ongoing_stats.clone(), cfg.root.to_owned()));
         let heartbeat_queue = Arc::new(HeartbeatQueue::default());
-        let jobs = Arc::new(Jobs::new(
-            shared.to_owned(),
-            alloc.to_owned(),
-            heartbeat_queue.to_owned(),
-        ));
+        let jobs =
+            Arc::new(Jobs::new(shared.to_owned(), alloc.to_owned(), heartbeat_queue.to_owned()));
         let sched_ctx = schedule::ScheduleContext::new(
             shared.clone(),
             alloc.clone(),
@@ -243,8 +231,8 @@ impl Root {
         }
     }
 
-    // A Deamon task to finsh handle task scheduled in heartbeat_queue and reschedule for next
-    // heartbeat.
+    // A Deamon task to finsh handle task scheduled in heartbeat_queue and
+    // reschedule for next heartbeat.
     async fn run_heartbeat(&self) -> ! {
         loop {
             if let Ok(schema) = self.schema() {
@@ -286,8 +274,9 @@ impl Root {
         let store = Arc::new(RootStore::new(root_replica.to_owned()));
         let mut schema = Schema::new(store.clone());
 
-        // Only when the program is initialized is it checked for bootstrap, after which the
-        // leadership change does not need to check for whether bootstrap or not.
+        // Only when the program is initialized is it checked for bootstrap, after which
+        // the leadership change does not need to check for whether bootstrap or
+        // not.
         if !*bootstrapped {
             if let Err(err) = schema
                 .try_bootstrap_root(
@@ -342,14 +331,12 @@ impl Root {
             Duration::from_secs(self.cfg.liveness_threshold_sec),
         );
 
-        // try schedule a full cluster heartbeat when current node become new root leader.
+        // try schedule a full cluster heartbeat when current node become new root
+        // leader.
         let nodes = schema.list_node().await?;
         self.heartbeat_queue
             .try_schedule(
-                nodes
-                    .iter()
-                    .map(|n| HeartbeatTask { node_id: n.id })
-                    .collect::<Vec<_>>(),
+                nodes.iter().map(|n| HeartbeatTask { node_id: n.id }).collect::<Vec<_>>(),
                 Instant::now(),
             )
             .await;
@@ -389,9 +376,7 @@ impl Root {
 
         let current_status = NodeStatus::from_i32(node_desc.status).unwrap();
         if !matches!(current_status, NodeStatus::Active) {
-            return Err(crate::Error::InvalidArgument(
-                "node already cordoned".into(),
-            ));
+            return Err(crate::Error::InvalidArgument("node already cordoned".into()));
         }
         node_desc.status = NodeStatus::Cordoned as i32;
         schema.update_node(node_desc).await?; // TODO: cas
@@ -410,9 +395,7 @@ impl Root {
             current_status,
             NodeStatus::Cordoned | NodeStatus::Drained | NodeStatus::Decommissioned
         ) {
-            return Err(crate::Error::InvalidArgument(
-                "node status unsupport uncordon".into(),
-            ));
+            return Err(crate::Error::InvalidArgument("node status unsupport uncordon".into()));
         }
 
         node_desc.status = NodeStatus::Active as i32;
@@ -427,9 +410,7 @@ impl Root {
             info!("try to drain root leader and move root leadership out first");
             self.scheduler
                 .setup_task(ReconcileTask {
-                    task: Some(reconcile_task::Task::ShedRoot(ShedRootLeaderTask {
-                        node_id,
-                    })),
+                    task: Some(reconcile_task::Task::ShedRoot(ShedRootLeaderTask { node_id })),
                 })
                 .await;
             return Err(crate::Error::InvalidArgument(
@@ -487,10 +468,8 @@ impl Root {
         fn to_json(j: &BackgroundJob) -> serde_json::Value {
             match j.job.as_ref().unwrap() {
                 Job::CreateCollection(c) => {
-                    let state = format!(
-                        "{:?}",
-                        CreateCollectionJobStatus::from_i32(c.status).unwrap()
-                    );
+                    let state =
+                        format!("{:?}", CreateCollectionJobStatus::from_i32(c.status).unwrap());
                     let wait_create = c.wait_create.len();
                     let wait_cleanup = c.wait_cleanup.len();
                     json!({
@@ -582,13 +561,7 @@ impl Root {
                         .cloned()
                         .filter(|r| r.raft_role == RaftRole::Leader as i32)
                         .collect::<Vec<_>>();
-                    Node {
-                        id: n.id,
-                        addr: n.addr.to_owned(),
-                        replicas,
-                        leaders,
-                        status: n.status,
-                    }
+                    Node { id: n.id, addr: n.addr.to_owned(), replicas, leaders, status: n.status }
                 })
                 .collect::<Vec<_>>(),
             databases: dbs
@@ -608,11 +581,7 @@ impl Root {
                                     "range".to_owned()
                                 }
                             };
-                            Collection {
-                                id: c.id,
-                                name: c.name.to_owned(),
-                                mode,
-                            }
+                            Collection { id: c.id, name: c.name.to_owned(), mode }
                         })
                         .collect::<Vec<_>>(),
                 })
@@ -654,11 +623,7 @@ impl Root {
                                     format!("range: {start:?} to {end:?}")
                                 }
                             };
-                            GroupShard {
-                                id: s.id,
-                                collection: s.collection_id,
-                                partition: part,
-                            }
+                            GroupShard { id: s.id, collection: s.collection_id, partition: part }
                         })
                         .collect::<Vec<_>>(),
                 })
@@ -672,10 +637,7 @@ impl Root {
     pub async fn create_database(&self, name: String) -> Result<DatabaseDesc> {
         let desc = self
             .schema()?
-            .create_database(DatabaseDesc {
-                name: name.to_owned(),
-                ..Default::default()
-            })
+            .create_database(DatabaseDesc { name: name.to_owned(), ..Default::default() })
             .await?;
         self.watcher_hub()
             .notify_updates(vec![UpdateEvent {
@@ -693,9 +655,7 @@ impl Root {
         }
         let db = db.unwrap();
         if db.id == SYSTEM_DATABASE_ID {
-            return Err(Error::InvalidArgument(
-                "unsupport delete system database".into(),
-            ));
+            return Err(Error::InvalidArgument("unsupport delete system database".into()));
         }
         self.jobs
             .submit(
@@ -713,9 +673,7 @@ impl Root {
         let schema = self.schema()?;
         let id = schema.delete_database(&db).await?;
         self.watcher_hub()
-            .notify_deletes(vec![DeleteEvent {
-                event: Some(delete_event::Event::Database(id)),
-            }])
+            .notify_deletes(vec![DeleteEvent { event: Some(delete_event::Event::Database(id)) }])
             .await;
         trace!(database = ?name, "delete database");
         Ok(())
@@ -750,8 +708,7 @@ impl Root {
             .await?;
         trace!(database = ?database, collection = ?collection, collection_id = collection.id, "prepare create collection");
 
-        self.do_create_collection(schema.to_owned(), collection.to_owned())
-            .await?;
+        self.do_create_collection(schema.to_owned(), collection.to_owned()).await?;
 
         self.watcher_hub()
             .notify_updates(vec![UpdateEvent {
@@ -771,9 +728,7 @@ impl Root {
             let partition = collection
                 .partition
                 .as_ref()
-                .unwrap_or(&co_desc::Partition::Hash(co_desc::HashPartition {
-                    slots: 1,
-                }));
+                .unwrap_or(&co_desc::Partition::Hash(co_desc::HashPartition { slots: 1 }));
 
             let partitions = match partition {
                 co_desc::Partition::Hash(hash_partition) => {
@@ -836,9 +791,7 @@ impl Root {
         let collection = schema.get_collection(db.id, name).await?;
         if let Some(collection) = collection {
             if collection.id < USER_COLLECTION_INIT_ID {
-                return Err(Error::InvalidArgument(
-                    "unsupported delete system collection".into(),
-                ));
+                return Err(Error::InvalidArgument("unsupported delete system collection".into()));
             }
             let collection_id = collection.id;
             let database_name = db.name.to_owned();
@@ -865,11 +818,7 @@ impl Root {
                 }])
                 .await;
         }
-        trace!(
-            collection = name,
-            "delete collection, database {}",
-            database.name
-        );
+        trace!(collection = name, "delete collection, database {}", database.name);
         Ok(())
     }
 
@@ -928,11 +877,7 @@ impl Root {
     ) -> Result<(Vec<u8>, NodeDesc, RootDesc)> {
         let schema = self.schema()?;
         let node = schema
-            .add_node(NodeDesc {
-                addr,
-                capacity: Some(capacity),
-                ..Default::default()
-            })
+            .add_node(NodeDesc { addr, capacity: Some(capacity), ..Default::default() })
             .await?;
         self.watcher_hub()
             .notify_updates(vec![UpdateEvent {
@@ -973,10 +918,7 @@ impl Root {
             };
 
             let replica_state = if let Some(update_replica_state) = &u.replica_state {
-                match schema
-                    .get_replica_state(u.group_id, update_replica_state.replica_id)
-                    .await?
-                {
+                match schema.get_replica_state(u.group_id, update_replica_state.replica_id).await? {
                     Some(pre_rs)
                         if pre_rs.term > update_replica_state.term
                             || (pre_rs.term == update_replica_state.term
@@ -989,9 +931,7 @@ impl Root {
             } else {
                 None
             };
-            schema
-                .update_group_replica(group_desc.to_owned(), replica_state.to_owned())
-                .await?;
+            schema.update_group_replica(group_desc.to_owned(), replica_state.to_owned()).await?;
 
             if let Some(sched_state) = u.schedule_state {
                 ongoing_stats.handle_update(&[sched_state], None);
@@ -1006,17 +946,13 @@ impl Root {
                 if desc.id == ROOT_GROUP_ID {
                     self.heartbeat_queue
                         .try_schedule(
-                            vec![HeartbeatTask {
-                                node_id: self.current_node_id(),
-                            }],
+                            vec![HeartbeatTask { node_id: self.current_node_id() }],
                             Instant::now(),
                         )
                         .await;
                 }
                 metrics::ROOT_UPDATE_GROUP_DESC_TOTAL.report.inc();
-                update_events.push(UpdateEvent {
-                    event: Some(update_event::Event::Group(desc)),
-                })
+                update_events.push(UpdateEvent { event: Some(update_event::Event::Group(desc)) })
             }
             if let Some(state) = replica_state {
                 info!(
@@ -1033,9 +969,7 @@ impl Root {
         let mut states = schema.list_group_state().await?; // TODO: fix poor performance.
         states.retain(|s| changed_group_states.contains(&s.group_id));
         for state in states {
-            update_events.push(UpdateEvent {
-                event: Some(update_event::Event::GroupState(state)),
-            })
+            update_events.push(UpdateEvent { event: Some(update_event::Event::GroupState(state)) })
         }
 
         self.watcher_hub().notify_updates(update_events).await;
@@ -1050,33 +984,21 @@ impl Root {
         requested_cnt: u64,
     ) -> Result<Vec<ReplicaDesc>> {
         let schema = self.schema()?;
-        let group_desc = schema
-            .get_group(group_id)
-            .await?
-            .ok_or(Error::GroupNotFound(group_id))?;
+        let group_desc = schema.get_group(group_id).await?.ok_or(Error::GroupNotFound(group_id))?;
         if group_desc.epoch != epoch {
             return Err(Error::InvalidArgument("epoch not match".to_owned()));
         }
-        let mut existing_replicas = group_desc
-            .replicas
-            .into_iter()
-            .map(|r| r.node_id)
-            .collect::<HashSet<u64>>();
+        let mut existing_replicas =
+            group_desc.replicas.into_iter().map(|r| r.node_id).collect::<HashSet<u64>>();
         let replica_states = schema.group_replica_states(group_id).await?;
         for replica in replica_states {
             existing_replicas.insert(replica.node_id);
         }
-        info!(
-            group = group_id,
-            "attempt allocate {requested_cnt} replicas for exist group"
-        );
+        info!(group = group_id, "attempt allocate {requested_cnt} replicas for exist group");
 
         let nodes = self
             .alloc
-            .allocate_group_replica(
-                existing_replicas.into_iter().collect(),
-                requested_cnt as usize,
-            )
+            .allocate_group_replica(existing_replicas.into_iter().collect(), requested_cnt as usize)
             .await?;
         if nodes.len() != requested_cnt as usize {
             warn!("non enough nodes to allocate replicas, exist nodes: {}, requested: {requested_cnt}", nodes.len());
@@ -1132,12 +1054,10 @@ impl Root {
 
 pub async fn fetch_root_replica(replica_table: &ReplicaRouteTable) -> Arc<Replica> {
     use futures::future::poll_fn;
-    poll_fn(
-        |ctx| match replica_table.current_root_replica(Some(ctx.waker().clone())) {
-            Some(root_replica) => Poll::Ready(root_replica),
-            None => Poll::Pending,
-        },
-    )
+    poll_fn(|ctx| match replica_table.current_root_replica(Some(ctx.waker().clone())) {
+        Some(root_replica) => Poll::Ready(root_replica),
+        None => Poll::Pending,
+    })
     .await
 }
 
@@ -1206,8 +1126,7 @@ impl HeartbeatQueue {
             if !core.enable {
                 return;
             }
-            core.delay
-                .insert(QueueTask::Sentinel(sentinel), Duration::from_millis(0));
+            core.delay.insert(QueueTask::Sentinel(sentinel), Duration::from_millis(0));
         }
         let _ = receiver.await;
     }
@@ -1225,10 +1144,7 @@ impl HeartbeatQueue {
             Poll::Ready(tasks)
         })
         .await;
-        let tasks = tasks
-            .into_iter()
-            .map(|e| e.into_inner())
-            .collect::<Vec<_>>();
+        let tasks = tasks.into_iter().map(|e| e.into_inner()).collect::<Vec<_>>();
         let mut heartbeats = Vec::new();
         for task in tasks {
             match task {
@@ -1386,40 +1302,29 @@ impl SchedStats {
 
 #[cfg(test)]
 mod root_test {
-    use sekas_api::{
-        server::v1::{
-            watch_response::{update_event, UpdateEvent},
-            GroupDesc,
-        },
-        v1::DatabaseDesc,
-    };
     use futures::StreamExt;
+    use sekas_api::server::v1::watch_response::{update_event, UpdateEvent};
+    use sekas_api::server::v1::GroupDesc;
+    use sekas_api::v1::DatabaseDesc;
     use tempdir::TempDir;
 
     use super::Config;
-    use crate::{
-        bootstrap::bootstrap_cluster,
-        constants::{INITIAL_EPOCH, ROOT_GROUP_ID},
-        engine::Engines,
-        node::Node,
-        root::Root,
-        runtime::ExecutorOwner,
-        serverpb::v1::NodeIdent,
-        transport::TransportManager,
-    };
+    use crate::bootstrap::bootstrap_cluster;
+    use crate::constants::{INITIAL_EPOCH, ROOT_GROUP_ID};
+    use crate::engine::Engines;
+    use crate::node::Node;
+    use crate::root::Root;
+    use crate::runtime::ExecutorOwner;
+    use crate::serverpb::v1::NodeIdent;
+    use crate::transport::TransportManager;
 
     async fn create_root_and_node(config: &Config, node_ident: &NodeIdent) -> (Root, Node) {
         let engines = Engines::open(&config.root_dir, &config.db).unwrap();
-        let root_list = if config.init {
-            vec![config.addr.clone()]
-        } else {
-            config.join_list.clone()
-        };
+        let root_list =
+            if config.init { vec![config.addr.clone()] } else { config.join_list.clone() };
         let transport_manager = TransportManager::new(root_list, engines.state()).await;
         let root = Root::new(transport_manager.clone(), node_ident, config.clone());
-        let node = Node::new(config.clone(), engines, transport_manager)
-            .await
-            .unwrap();
+        let node = Node::new(config.clone(), engines, transport_manager).await.unwrap();
         (root, node)
     }
 
@@ -1428,15 +1333,9 @@ mod root_test {
         let executor_owner = ExecutorOwner::new(1);
         let executor = executor_owner.executor();
         let tmp_dir = TempDir::new("bootstrap_root").unwrap();
-        let config = Config {
-            root_dir: tmp_dir.path().to_owned(),
-            ..Default::default()
-        };
+        let config = Config { root_dir: tmp_dir.path().to_owned(), ..Default::default() };
 
-        let ident = NodeIdent {
-            cluster_id: vec![],
-            node_id: 1,
-        };
+        let ident = NodeIdent { cluster_id: vec![], node_id: 1 };
 
         executor.block_on(async {
             let (root, node) = create_root_and_node(&config, &ident).await;
@@ -1452,15 +1351,9 @@ mod root_test {
         let executor_owner = ExecutorOwner::new(1);
         let executor = executor_owner.executor();
         let tmp_dir = TempDir::new("bootstrap_pending_root").unwrap();
-        let config = Config {
-            root_dir: tmp_dir.path().to_owned(),
-            ..Default::default()
-        };
+        let config = Config { root_dir: tmp_dir.path().to_owned(), ..Default::default() };
 
-        let ident = NodeIdent {
-            cluster_id: vec![],
-            node_id: 1,
-        };
+        let ident = NodeIdent { cluster_id: vec![], node_id: 1 };
 
         executor.block_on(async {
             let (root, node) = create_root_and_node(&config, &ident).await;
@@ -1485,31 +1378,18 @@ mod root_test {
         let executor_owner = ExecutorOwner::new(1);
         let executor = executor_owner.executor();
 
-        let ident = NodeIdent {
-            cluster_id: vec![],
-            node_id: 1,
-        };
+        let ident = NodeIdent { cluster_id: vec![], node_id: 1 };
 
         let tmp_dir = TempDir::new("watch_hub").unwrap();
-        let config = Config {
-            root_dir: tmp_dir.path().to_owned(),
-            ..Default::default()
-        };
+        let config = Config { root_dir: tmp_dir.path().to_owned(), ..Default::default() };
         executor.block_on(async {
             let (root, _node) = create_root_and_node(&config, &ident).await;
             let hub = root.watcher_hub();
-            let _create_db1_event = Some(update_event::Event::Database(DatabaseDesc {
-                id: 1,
-                name: "db1".into(),
-            }));
+            let _create_db1_event =
+                Some(update_event::Event::Database(DatabaseDesc { id: 1, name: "db1".into() }));
             let mut w = {
                 let (w, mut initializer) = hub.create_watcher().await;
-                initializer.set_init_resp(
-                    vec![UpdateEvent {
-                        event: _create_db1_event,
-                    }],
-                    vec![],
-                );
+                initializer.set_init_resp(vec![UpdateEvent { event: _create_db1_event }], vec![]);
                 w
             };
             let resp1 = w.next().await.unwrap().unwrap();
@@ -1520,14 +1400,9 @@ mod root_test {
                 w
             };
 
-            let _create_db2_event = Some(update_event::Event::Database(DatabaseDesc {
-                id: 2,
-                name: "db2".into(),
-            }));
-            hub.notify_updates(vec![UpdateEvent {
-                event: _create_db2_event,
-            }])
-            .await;
+            let _create_db2_event =
+                Some(update_event::Event::Database(DatabaseDesc { id: 2, name: "db2".into() }));
+            hub.notify_updates(vec![UpdateEvent { event: _create_db2_event }]).await;
             let resp2 = w.next().await.unwrap().unwrap();
             assert!(matches!(&resp2.updates[0].event, _create_db2_event));
             let resp22 = w2.next().await.unwrap().unwrap();

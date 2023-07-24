@@ -12,14 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::{sync::Arc, time::Duration};
+use std::sync::Arc;
+use std::time::Duration;
 
-use crate::schedule::{
-    provider::GroupProviders,
-    scheduler::ScheduleContext,
-    task::{Task, TaskState},
-    tasks::WATCH_GROUP_DESCRIPTOR_TASK_ID,
-};
+use crate::schedule::provider::GroupProviders;
+use crate::schedule::scheduler::ScheduleContext;
+use crate::schedule::task::{Task, TaskState};
+use crate::schedule::tasks::WATCH_GROUP_DESCRIPTOR_TASK_ID;
 
 pub struct WatchGroupDescriptor {
     providers: Arc<GroupProviders>,

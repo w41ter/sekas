@@ -16,12 +16,13 @@ use std::sync::Arc;
 
 use sekas_api::server::v1::{GroupDesc, NodeDesc};
 
-use self::{
-    policy_leader_cnt::LeaderCountPolicy, policy_replica_cnt::ReplicaCountPolicy,
-    policy_shard_cnt::ShardCountPolicy, source::NodeFilter,
-};
+use self::policy_leader_cnt::LeaderCountPolicy;
+use self::policy_replica_cnt::ReplicaCountPolicy;
+use self::policy_shard_cnt::ShardCountPolicy;
+use self::source::NodeFilter;
 use super::{metrics, OngoingStats, RootShared};
-use crate::{constants::REPLICA_PER_GROUP, Result, RootConfig};
+use crate::constants::REPLICA_PER_GROUP;
+use crate::{Result, RootConfig};
 
 #[cfg(test)]
 mod sim_test;
@@ -102,11 +103,7 @@ pub struct Allocator<T: AllocSource> {
 
 impl<T: AllocSource> Allocator<T> {
     pub fn new(alloc_source: Arc<T>, ongoing_stats: Arc<OngoingStats>, config: RootConfig) -> Self {
-        Self {
-            alloc_source,
-            config,
-            ongoing_stats,
-        }
+        Self { alloc_source, config, ongoing_stats }
     }
 
     pub fn replicas_per_group(&self) -> usize {
@@ -182,15 +179,11 @@ impl<T: AllocSource> Allocator<T> {
         if self.alloc_source.nodes(NodeFilter::All).len() >= self.config.replicas_per_group {
             let actions = ShardCountPolicy::with(self.alloc_source.to_owned()).compute_balance()?;
             if !actions.is_empty() {
-                metrics::RECONCILE_ALREADY_BALANCED_INFO
-                    .group_shard_count
-                    .set(0);
+                metrics::RECONCILE_ALREADY_BALANCED_INFO.group_shard_count.set(0);
                 return Ok(actions);
             }
         }
-        metrics::RECONCILE_ALREADY_BALANCED_INFO
-            .group_shard_count
-            .set(1);
+        metrics::RECONCILE_ALREADY_BALANCED_INFO.group_shard_count.set(1);
         Ok(Vec::new())
     }
 
@@ -229,8 +222,8 @@ impl<T: AllocSource> Allocator<T> {
 impl<T: AllocSource> Allocator<T> {
     fn preferred_remove_groups(&self, want_remove: usize) -> Vec<u64> {
         // TODO:
-        // 1 remove groups from unreachable nodes that indicated by NodeLiveness(they also need
-        // repair replicas).
+        // 1 remove groups from unreachable nodes that indicated by NodeLiveness(they
+        // also need repair replicas).
         // 2 remove groups from unmatched cpu-quota nodes.
         // 3. remove groups with lowest migration cost.
         self.alloc_source
@@ -251,10 +244,7 @@ impl<T: AllocSource> Allocator<T> {
 
         // We want only one worker per core serving a group, and we also want at least
         // one group per machine.
-        std::cmp::max(
-            (total_cpus / replicas_per_group as f64) as usize,
-            total_nodes,
-        )
+        std::cmp::max((total_cpus / replicas_per_group as f64) as usize, total_nodes)
     }
 
     fn current_groups(&self) -> usize {

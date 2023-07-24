@@ -15,12 +15,11 @@
 use sekas_api::server::v1::ShardDeleteRequest;
 
 use super::cas::eval_conditions;
-use crate::{
-    engine::{GroupEngine, SnapshotMode, WriteBatch},
-    node::{migrate::ForwardCtx, replica::ExecCtx},
-    serverpb::v1::{EvalResult, WriteBatchRep},
-    Error, Result,
-};
+use crate::engine::{GroupEngine, SnapshotMode, WriteBatch};
+use crate::node::migrate::ForwardCtx;
+use crate::node::replica::ExecCtx;
+use crate::serverpb::v1::{EvalResult, WriteBatchRep};
+use crate::{Error, Result};
 
 pub(crate) async fn delete(
     exec_ctx: &ExecCtx,
@@ -35,11 +34,8 @@ pub(crate) async fn delete(
     if let Some(desc) = exec_ctx.migration_desc.as_ref() {
         let shard_id = desc.shard_desc.as_ref().unwrap().id;
         if shard_id == req.shard_id {
-            let forward_ctx = ForwardCtx {
-                shard_id,
-                dest_group_id: desc.dest_group_id,
-                payloads: vec![],
-            };
+            let forward_ctx =
+                ForwardCtx { shard_id, dest_group_id: desc.dest_group_id, payloads: vec![] };
             return Err(Error::Forward(forward_ctx));
         }
     }
@@ -51,17 +47,15 @@ pub(crate) async fn delete(
 
     let mut wb = WriteBatch::default();
     if exec_ctx.forward_shard_id.is_some() {
-        // Write tombstone for migrating shard, so that the a deleted key will be overwrite the key
-        // ingested by background pulling. not visible.
+        // Write tombstone for migrating shard, so that the a deleted key will be
+        // overwrite the key ingested by background pulling. not visible.
         group_engine.tombstone(&mut wb, req.shard_id, &delete.key, super::FLAT_KEY_VERSION)?;
     } else {
         purge_versions(&mut wb, group_engine, req.shard_id, &delete.key).await?;
         group_engine.delete(&mut wb, req.shard_id, &delete.key, super::FLAT_KEY_VERSION)?;
     }
     Ok(EvalResult {
-        batch: Some(WriteBatchRep {
-            data: wb.data().to_owned(),
-        }),
+        batch: Some(WriteBatchRep { data: wb.data().to_owned() }),
         ..Default::default()
     })
 }

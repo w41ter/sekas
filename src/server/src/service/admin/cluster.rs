@@ -15,7 +15,8 @@
 use std::collections::HashMap;
 
 use serde_json::json;
-use tonic::{async_trait, codegen::http};
+use tonic::async_trait;
+use tonic::codegen::http;
 
 use crate::{Result, Server};
 
@@ -42,10 +43,7 @@ impl super::service::HttpHandle for CordonHandle {
             .parse::<u64>()
             .map_err(|_| crate::Error::InvalidArgument("illegal node_id".into()))?;
         self.server.root.cordon_node(node_id).await?;
-        Ok(http::Response::builder()
-            .status(http::StatusCode::OK)
-            .body("".to_owned())
-            .unwrap())
+        Ok(http::Response::builder().status(http::StatusCode::OK).body("".to_owned()).unwrap())
     }
 }
 
@@ -72,10 +70,7 @@ impl super::service::HttpHandle for UncordonHandle {
             .parse::<u64>()
             .map_err(|_| crate::Error::InvalidArgument("illegal node_id".into()))?;
         self.server.root.uncordon_node(node_id).await?;
-        Ok(http::Response::builder()
-            .status(http::StatusCode::OK)
-            .body("".to_owned())
-            .unwrap())
+        Ok(http::Response::builder().status(http::StatusCode::OK).body("".to_owned()).unwrap())
     }
 }
 
@@ -102,10 +97,7 @@ impl super::service::HttpHandle for DrainHandle {
             .parse::<u64>()
             .map_err(|_| crate::Error::InvalidArgument("illegal node_id".into()))?;
         self.server.root.begin_drain(node_id).await?;
-        Ok(http::Response::builder()
-            .status(http::StatusCode::OK)
-            .body("".to_owned())
-            .unwrap())
+        Ok(http::Response::builder().status(http::StatusCode::OK).body("".to_owned()).unwrap())
     }
 }
 

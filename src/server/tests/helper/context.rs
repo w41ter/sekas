@@ -11,16 +11,17 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-use std::{collections::HashMap, thread, time::Duration};
+use std::collections::HashMap;
+use std::thread;
+use std::time::Duration;
 
-use sekas_server::{
-    runtime::{ExecutorOwner, ShutdownNotifier},
-    Config, DbConfig, NodeConfig, RaftConfig, RootConfig, *,
-};
+use sekas_server::runtime::{ExecutorOwner, ShutdownNotifier};
+use sekas_server::{Config, DbConfig, NodeConfig, RaftConfig, RootConfig, *};
 use tempdir::TempDir;
 use tracing::info;
 
-use super::{client::node_client_with_retry, socket::next_n_avail_port};
+use super::client::node_client_with_retry;
+use super::socket::next_n_avail_port;
 use crate::helper::socket::next_avail_port;
 
 #[allow(dead_code)]
@@ -69,10 +70,7 @@ impl TestContext {
     }
 
     pub fn next_n_listen_addrs(&self, n: usize) -> Vec<String> {
-        next_n_avail_port(n)
-            .into_iter()
-            .map(|port| format!("127.0.0.1:{port}"))
-            .collect()
+        next_n_avail_port(n).into_iter().map(|port| format!("127.0.0.1:{port}")).collect()
     }
 
     pub fn mut_replica_testing_knobs(&mut self) -> &mut ReplicaTestingKnobs {
@@ -108,8 +106,7 @@ impl TestContext {
 
     pub fn disable_all_node_scheduler(&mut self) {
         self.replica_knobs.disable_scheduler_durable_task = true;
-        self.replica_knobs
-            .disable_scheduler_remove_orphan_replica_task = true;
+        self.replica_knobs.disable_scheduler_remove_orphan_replica_task = true;
     }
 
     #[allow(dead_code)]
@@ -178,10 +175,7 @@ impl TestContext {
     }
 
     pub async fn start_servers(&mut self, nodes: HashMap<u64, String>) -> HashMap<u64, String> {
-        let root_addr = nodes
-            .get(&0)
-            .cloned()
-            .expect("root addr is missed in start_server()");
+        let root_addr = nodes.get(&0).cloned().expect("root addr is missed in start_server()");
         let mut keys = nodes.keys().cloned().collect::<Vec<_>>();
         keys.sort_unstable();
         for id in keys {

@@ -16,27 +16,20 @@ use std::sync::Arc;
 
 use tracing::error;
 
-use crate::{
-    engine::{Engines, GroupEngine, RawDb, StateEngine},
-    node::metrics::*,
-    raftgroup::destory_storage,
-    record_latency,
-    runtime::TaskPriority,
-    serverpb::v1::ReplicaLocalState,
-    Error, Result,
-};
+use crate::engine::{Engines, GroupEngine, RawDb, StateEngine};
+use crate::node::metrics::*;
+use crate::raftgroup::destory_storage;
+use crate::runtime::TaskPriority;
+use crate::serverpb::v1::ReplicaLocalState;
+use crate::{record_latency, Error, Result};
 
-/// Clean a group engine and save the replica state to `ReplicaLocalState::Tombstone`.
+/// Clean a group engine and save the replica state to
+/// `ReplicaLocalState::Tombstone`.
 pub(crate) fn setup(group_id: u64, replica_id: u64, engines: Engines) {
     crate::runtime::current().spawn(Some(group_id), TaskPriority::IoLow, async move {
-        if let Err(err) = destory_replica(
-            group_id,
-            replica_id,
-            engines.state(),
-            engines.db(),
-            engines.log(),
-        )
-        .await
+        if let Err(err) =
+            destory_replica(group_id, replica_id, engines.state(), engines.db(), engines.log())
+                .await
         {
             error!("destory group engine: {}, group {}", err, group_id);
         }
@@ -59,9 +52,7 @@ async fn destory_replica(
         }
     }
     destory_storage(&raft_engine, replica_id).await?;
-    state_engine
-        .save_replica_state(group_id, replica_id, ReplicaLocalState::Tombstone)
-        .await?;
+    state_engine.save_replica_state(group_id, replica_id, ReplicaLocalState::Tombstone).await?;
     Ok(())
 }
 
@@ -72,7 +63,8 @@ mod tests {
     use tempdir::TempDir;
 
     use super::*;
-    use crate::{bootstrap::open_engine_with_default_config, runtime::ExecutorOwner};
+    use crate::bootstrap::open_engine_with_default_config;
+    use crate::runtime::ExecutorOwner;
 
     #[test]
     fn destory_replica_ignore_not_existed_column_families() {
@@ -90,16 +82,12 @@ mod tests {
         let snap_dir = log_path.join("snap");
         create_dir_all_if_not_exists(&engine_dir).unwrap();
         create_dir_all_if_not_exists(&snap_dir).unwrap();
-        let engine_cfg = Config {
-            dir: engine_dir.to_str().unwrap().to_owned(),
-            ..Default::default()
-        };
+        let engine_cfg =
+            Config { dir: engine_dir.to_str().unwrap().to_owned(), ..Default::default() };
         let engine = Arc::new(Engine::open(engine_cfg).unwrap());
         let state_engine = StateEngine::new(engine.clone());
         executor_owner.executor().block_on(async {
-            destory_replica(group_id, replica_id, state_engine, raw_db, engine)
-                .await
-                .unwrap();
+            destory_replica(group_id, replica_id, state_engine, raw_db, engine).await.unwrap();
         });
     }
 

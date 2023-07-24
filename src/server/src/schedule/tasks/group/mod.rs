@@ -24,16 +24,16 @@ use std::collections::HashMap;
 
 use sekas_api::server::v1::{ReplicaDesc, ScheduleState};
 
-pub use self::{
-    durable::DurableGroup, migration::ReplicaMigration, orphan_replica::RemoveOrphanReplica,
-    promote::PromoteGroup, watch_descriptor::WatchGroupDescriptor,
-    watch_raft_state::WatchRaftState, watch_replica_states::WatchReplicaStates,
-};
+pub use self::durable::DurableGroup;
+pub use self::migration::ReplicaMigration;
+pub use self::orphan_replica::RemoveOrphanReplica;
+pub use self::promote::PromoteGroup;
+pub use self::watch_descriptor::WatchGroupDescriptor;
+pub use self::watch_raft_state::WatchRaftState;
+pub use self::watch_replica_states::WatchReplicaStates;
 use super::ActionTask;
-use crate::schedule::{
-    scheduler::ScheduleContext,
-    task::{Task, TaskState},
-};
+use crate::schedule::scheduler::ScheduleContext;
+use crate::schedule::task::{Task, TaskState};
 
 pub struct GroupLockTable {
     group_id: u64,
@@ -78,10 +78,7 @@ impl GroupLockTable {
         incoming_replicas: &[ReplicaDesc],
         outgoing_replicas: &[ReplicaDesc],
     ) -> Option<GroupLocks> {
-        if replicas
-            .iter()
-            .any(|r| self.locked_replicas.contains_key(r))
-        {
+        if replicas.iter().any(|r| self.locked_replicas.contains_key(r)) {
             None
         } else {
             for r in replicas {
@@ -95,9 +92,7 @@ impl GroupLockTable {
             };
             self.states_updated = true;
             self.states.insert(task_id, state);
-            Some(GroupLocks {
-                replicas: replicas.to_owned(),
-            })
+            Some(GroupLocks { replicas: replicas.to_owned() })
         }
     }
 
@@ -111,13 +106,9 @@ impl GroupLockTable {
     ) -> Option<GroupLocks> {
         if self.config_change.is_some() {
             None
-        } else if let Some(locks) = self.lock(
-            task_id,
-            epoch,
-            replicas,
-            incoming_replicas,
-            outgoing_replicas,
-        ) {
+        } else if let Some(locks) =
+            self.lock(task_id, epoch, replicas, incoming_replicas, outgoing_replicas)
+        {
             self.config_change = Some(task_id);
             Some(locks)
         } else {
@@ -155,12 +146,8 @@ impl GroupLockTable {
             outgoing_replicas: vec![],
         };
         for state in self.states.values() {
-            accumulated_state
-                .incoming_replicas
-                .extend(state.incoming_replicas.iter().cloned());
-            accumulated_state
-                .outgoing_replicas
-                .extend(state.outgoing_replicas.iter().cloned());
+            accumulated_state.incoming_replicas.extend(state.incoming_replicas.iter().cloned());
+            accumulated_state.outgoing_replicas.extend(state.outgoing_replicas.iter().cloned());
             if state.epoch > accumulated_state.epoch {
                 accumulated_state.epoch = state.epoch;
             }
@@ -186,8 +173,7 @@ impl Task for ActionTaskWithLocks {
     async fn poll(&mut self, ctx: &mut ScheduleContext<'_>) -> TaskState {
         let state = self.inner.poll(ctx).await;
         if matches!(state, TaskState::Terminated) {
-            ctx.group_lock_table
-                .release(self.inner.id(), std::mem::take(&mut self.locks));
+            ctx.group_lock_table.release(self.inner.id(), std::mem::take(&mut self.locks));
         }
         state
     }

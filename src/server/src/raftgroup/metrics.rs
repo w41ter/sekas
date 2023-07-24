@@ -256,9 +256,7 @@ pub fn take_propose_metrics(start_at: Instant, result: Result<()>) -> Result<()>
         }
         Err(Error::NotLeader(..)) => {
             RAFTGROUP_PROPOSE_TOTAL.not_leader.inc();
-            RAFTGROUP_PROPOSE_DURATION_SECONDS
-                .not_leader
-                .observe(elapsed);
+            RAFTGROUP_PROPOSE_DURATION_SECONDS.not_leader.observe(elapsed);
         }
         Err(Error::ServiceIsBusy(_)) => {
             RAFTGROUP_PROPOSE_TOTAL.busy.inc();

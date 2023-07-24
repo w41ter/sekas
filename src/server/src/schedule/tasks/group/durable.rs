@@ -12,20 +12,20 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::Duration;
 
 use sekas_api::server::v1::*;
 use tracing::{debug, error, info};
 
 use super::ActionTaskWithLocks;
-use crate::schedule::{
-    actions::{AddLearners, CreateReplicas, RemoveLearners, ReplaceVoters},
-    event_source::EventSource,
-    provider::GroupProviders,
-    scheduler::ScheduleContext,
-    task::{Task, TaskState},
-    tasks::{ActionTask, CURE_GROUP_TASK_ID},
-};
+use crate::schedule::actions::{AddLearners, CreateReplicas, RemoveLearners, ReplaceVoters};
+use crate::schedule::event_source::EventSource;
+use crate::schedule::provider::GroupProviders;
+use crate::schedule::scheduler::ScheduleContext;
+use crate::schedule::task::{Task, TaskState};
+use crate::schedule::tasks::{ActionTask, CURE_GROUP_TASK_ID};
 
 #[derive(Default, Debug)]
 struct ReplicaStats {
@@ -72,10 +72,8 @@ impl DurableGroup {
             incoming_voters: learners,
             demoting_voters: voters.clone(),
         });
-        let remove_learners_action = Box::new(RemoveLearners {
-            providers: self.providers.clone(),
-            learners: voters,
-        });
+        let remove_learners_action =
+            Box::new(RemoveLearners { providers: self.providers.clone(), learners: voters });
         let action_task =
             ActionTask::new(task_id, vec![replace_voters_action, remove_learners_action]);
         ctx.delegate(Box::new(ActionTaskWithLocks::new(locks, action_task)));
@@ -203,21 +201,17 @@ impl DurableGroup {
 
         // Offline learners have no use value, remove them to simplify the logic.
         if !stats.offline_learners.is_empty() {
-            self.remove_learners(ctx, stats.peers, stats.offline_learners)
-                .await;
+            self.remove_learners(ctx, stats.peers, stats.offline_learners).await;
             return TaskState::Pending(Some(Duration::from_secs(30)));
         }
 
-        // The redundant replicas can be deleted, and the offline ones will be deleted first, and
-        // then the online ones will be considered.
+        // The redundant replicas can be deleted, and the offline ones will be deleted
+        // first, and then the online ones will be considered.
         let total_voters = stats.online_voters.len() + stats.offline_voters.len();
         if total_voters > num_required {
             let exceeds = total_voters - num_required;
-            let mut outgoing_voters = stats
-                .offline_voters
-                .into_iter()
-                .take(exceeds)
-                .collect::<HashMap<_, _>>();
+            let mut outgoing_voters =
+                stats.offline_voters.into_iter().take(exceeds).collect::<HashMap<_, _>>();
             if outgoing_voters.len() < exceeds {
                 self.select_dismiss_voters(
                     ctx,
@@ -227,51 +221,44 @@ impl DurableGroup {
                 );
             }
 
-            self.replace_voters(ctx, stats.peers, HashMap::default(), outgoing_voters)
-                .await;
+            self.replace_voters(ctx, stats.peers, HashMap::default(), outgoing_voters).await;
             return TaskState::Pending(Some(Duration::from_secs(30)));
         }
 
         // Since the redundant replicas have been removed, there can only be an equal or
-        // insufficient number of replicas. If there are enough learners, it can directly promote
-        // the learners to voter and replace offline voters. If there are not enough learners, it
-        // can only apply to the root and add them into cluster.
+        // insufficient number of replicas. If there are enough learners, it can
+        // directly promote the learners to voter and replace offline voters. If
+        // there are not enough learners, it can only apply to the root and add
+        // them into cluster.
         if stats.online_voters.len() < num_required {
             let acquires = num_required - stats.online_voters.len();
             if !stats.online_learners.is_empty() {
-                let learners = stats
-                    .online_learners
-                    .into_iter()
-                    .take(acquires)
-                    .collect::<HashMap<_, _>>();
+                let learners =
+                    stats.online_learners.into_iter().take(acquires).collect::<HashMap<_, _>>();
                 let outgoing_voters = stats
                     .offline_voters
                     .into_iter()
                     .take(learners.len())
                     .collect::<HashMap<_, _>>();
-                self.replace_voters(ctx, stats.peers, learners, outgoing_voters)
-                    .await;
+                self.replace_voters(ctx, stats.peers, learners, outgoing_voters).await;
                 return TaskState::Pending(Some(Duration::from_secs(30)));
-            } else if let Some(incoming_voters) = self
-                .alloc_addition_replicas(ctx, "cure-group", acquires)
-                .await
+            } else if let Some(incoming_voters) =
+                self.alloc_addition_replicas(ctx, "cure-group", acquires).await
             {
-                self.cure_group(ctx, stats.peers, incoming_voters, stats.offline_voters)
-                    .await;
+                self.cure_group(ctx, stats.peers, incoming_voters, stats.offline_voters).await;
                 return TaskState::Pending(Some(Duration::from_secs(30)));
             } else {
                 return TaskState::Pending(Some(Duration::from_secs(3)));
             }
         }
 
-        // Now, online voters meet the requirements, and there are no offline voters, just delete
-        // redundant learners.
+        // Now, online voters meet the requirements, and there are no offline voters,
+        // just delete redundant learners.
         if !stats.online_learners.is_empty() {
             debug_assert!(stats.offline_voters.is_empty());
             debug_assert!(stats.offline_learners.is_empty());
             debug_assert_eq!(stats.online_voters.len(), num_required);
-            self.remove_learners(ctx, stats.peers, stats.offline_learners)
-                .await;
+            self.remove_learners(ctx, stats.peers, stats.offline_learners).await;
             return TaskState::Pending(Some(Duration::from_secs(30)));
         }
 
@@ -291,20 +278,15 @@ impl DurableGroup {
         matched_indexes.remove(&ctx.replica_id);
         let mut matched_indexes = matched_indexes.into_iter().collect::<Vec<_>>();
         matched_indexes.sort_unstable_by_key(|&(_, index)| index);
-        outgoing_voters.extend(
-            matched_indexes
-                .into_iter()
-                .take(num_required)
-                .map(|(id, _)| {
-                    (
-                        id,
-                        online_voters
-                            .get(&id)
-                            .expect("matched_indexes only contains online voters")
-                            .clone(),
-                    )
-                }),
-        );
+        outgoing_voters.extend(matched_indexes.into_iter().take(num_required).map(|(id, _)| {
+            (
+                id,
+                online_voters
+                    .get(&id)
+                    .expect("matched_indexes only contains online voters")
+                    .clone(),
+            )
+        }));
     }
 }
 

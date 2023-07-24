@@ -54,10 +54,8 @@ mod tests {
 
     #[test]
     fn eval_not_exists() {
-        let cond = WriteCondition {
-            r#type: WriteConditionType::NotExists.into(),
-            ..Default::default()
-        };
+        let cond =
+            WriteCondition { r#type: WriteConditionType::NotExists.into(), ..Default::default() };
         let value_result = Some(vec![b'1']);
         let r = eval_conditions(value_result.as_deref(), &[cond.clone()]);
         assert!(matches!(r, Err(Error::CasFailed(_))));
@@ -68,10 +66,8 @@ mod tests {
 
     #[test]
     fn eval_exists() {
-        let cond = WriteCondition {
-            r#type: WriteConditionType::Exists.into(),
-            ..Default::default()
-        };
+        let cond =
+            WriteCondition { r#type: WriteConditionType::Exists.into(), ..Default::default() };
         let value_result = Some(vec![b'1']);
         let r = eval_conditions(value_result.as_deref(), &[cond.clone()]);
         assert!(r.is_ok());

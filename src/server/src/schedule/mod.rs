@@ -21,7 +21,8 @@ mod tasks;
 
 use sekas_api::server::v1::ScheduleState;
 
-pub(crate) use self::{provider::MoveReplicasProvider, setup::setup_scheduler};
+pub(crate) use self::provider::MoveReplicasProvider;
+pub(crate) use self::setup::setup_scheduler;
 
 pub trait ScheduleStateObserver: Send + Sync {
     fn on_schedule_state_updated(&self, schedule_state: ScheduleState);

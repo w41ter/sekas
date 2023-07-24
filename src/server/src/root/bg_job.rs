@@ -12,25 +12,23 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::{
-    collections::HashSet,
-    sync::{atomic, Arc, Mutex},
-    task::{Poll, Waker},
-};
+use std::collections::HashSet;
+use std::sync::{atomic, Arc, Mutex};
+use std::task::{Poll, Waker};
 
-use sekas_api::server::v1::{GroupDesc, ReplicaDesc, ReplicaRole, RootDesc, ShardDesc};
 use futures::future::poll_fn;
 use prometheus::HistogramTimer;
+use sekas_api::server::v1::{GroupDesc, ReplicaDesc, ReplicaRole, RootDesc, ShardDesc};
 use tokio::time::Instant;
 use tracing::{error, info, warn};
 
-use super::{allocator::*, HeartbeatQueue, HeartbeatTask, RootShared, Schema};
-use crate::{
-    constants::INITIAL_EPOCH,
-    root::metrics,
-    serverpb::v1::{background_job::Job, *},
-    Result,
-};
+use super::allocator::*;
+use super::{HeartbeatQueue, HeartbeatTask, RootShared, Schema};
+use crate::constants::INITIAL_EPOCH;
+use crate::root::metrics;
+use crate::serverpb::v1::background_job::Job;
+use crate::serverpb::v1::*;
+use crate::Result;
 
 pub struct Jobs {
     core: JobCore,
@@ -120,21 +118,17 @@ impl Jobs {
             let _timer = Self::record_create_collection_step(&status);
             match status {
                 CreateCollectionJobStatus::CreateCollectionCreating => {
-                    self.handle_wait_create_shard(job.id, &mut create_collection)
-                        .await?;
+                    self.handle_wait_create_shard(job.id, &mut create_collection).await?;
                 }
                 CreateCollectionJobStatus::CreateCollectionRollbacking => {
-                    self.handle_wait_cleanup_shard(job.id, &mut create_collection)
-                        .await?;
+                    self.handle_wait_cleanup_shard(job.id, &mut create_collection).await?;
                 }
                 CreateCollectionJobStatus::CreateCollectionWriteDesc => {
-                    self.handle_write_desc(job.id, &mut create_collection)
-                        .await?;
+                    self.handle_write_desc(job.id, &mut create_collection).await?;
                 }
                 CreateCollectionJobStatus::CreateCollectionFinish
                 | CreateCollectionJobStatus::CreateCollectionAbort => {
-                    self.handle_finish_create_collection(job, create_collection)
-                        .await?;
+                    self.handle_finish_create_collection(job, create_collection).await?;
                     break;
                 }
             }
@@ -158,28 +152,21 @@ impl Jobs {
                 return Err(crate::Error::ResourceExhausted("no engouth groups".into()));
             }
             let group = groups.first().unwrap();
-            info!(
-                "try create shard at group {}, shards: {}",
-                group.id,
-                group.shards.len()
-            );
+            info!("try create shard at group {}, shards: {}", group.id, group.shards.len());
             if let Err(err) = self.try_create_shard(group.id, &shard).await {
                 error!(group=group.id, shard=shard.id, err=?err, "create collection shard error and try to rollback");
                 create_collection.remark = format!("{err:?}");
                 create_collection.wait_cleanup.push(shard);
                 create_collection.status =
                     CreateCollectionJobStatus::CreateCollectionRollbacking as i32;
-                self.save_create_collection(job_id, create_collection)
-                    .await?;
+                self.save_create_collection(job_id, create_collection).await?;
                 return Ok(());
             }
             create_collection.wait_cleanup.push(shard);
-            self.save_create_collection(job_id, create_collection)
-                .await?;
+            self.save_create_collection(job_id, create_collection).await?;
         }
         create_collection.status = CreateCollectionJobStatus::CreateCollectionWriteDesc as i32;
-        self.save_create_collection(job_id, create_collection)
-            .await?;
+        self.save_create_collection(job_id, create_collection).await?;
         Ok(())
     }
 
@@ -189,12 +176,9 @@ impl Jobs {
         create_collection: &mut CreateCollectionJob,
     ) -> Result<()> {
         let schema = self.core.root_shared.schema()?;
-        schema
-            .create_collection(create_collection.desc.as_ref().unwrap().to_owned())
-            .await?;
+        schema.create_collection(create_collection.desc.as_ref().unwrap().to_owned()).await?;
         create_collection.status = CreateCollectionJobStatus::CreateCollectionFinish as i32;
-        self.save_create_collection(job_id, create_collection)
-            .await?;
+        self.save_create_collection(job_id, create_collection).await?;
         Ok(())
     }
 
@@ -209,12 +193,10 @@ impl Jobs {
                 break;
             }
             let _ = shard; // TODO: delete shard.
-            self.save_create_collection(job_id, create_collection)
-                .await?;
+            self.save_create_collection(job_id, create_collection).await?;
         }
         create_collection.status = CreateCollectionJobStatus::CreateCollectionAbort as i32;
-        self.save_create_collection(job_id, create_collection)
-            .await?;
+        self.save_create_collection(job_id, create_collection).await?;
         Ok(())
     }
 
@@ -237,9 +219,7 @@ impl Jobs {
         self.core
             .update(BackgroundJob {
                 id: job_id,
-                job: Some(background_job::Job::CreateCollection(
-                    create_collection.to_owned(),
-                )),
+                job: Some(background_job::Job::CreateCollection(create_collection.to_owned())),
             })
             .await?;
         Ok(())
@@ -248,25 +228,17 @@ impl Jobs {
     fn record_create_collection_step(step: &CreateCollectionJobStatus) -> Option<HistogramTimer> {
         match step {
             CreateCollectionJobStatus::CreateCollectionCreating => Some(
-                metrics::RECONCILE_CREATE_COLLECTION_STEP_DURATION_SECONDS
-                    .create
-                    .start_timer(),
+                metrics::RECONCILE_CREATE_COLLECTION_STEP_DURATION_SECONDS.create.start_timer(),
             ),
             CreateCollectionJobStatus::CreateCollectionRollbacking => Some(
-                metrics::RECONCILE_CREATE_COLLECTION_STEP_DURATION_SECONDS
-                    .rollback
-                    .start_timer(),
+                metrics::RECONCILE_CREATE_COLLECTION_STEP_DURATION_SECONDS.rollback.start_timer(),
             ),
             CreateCollectionJobStatus::CreateCollectionWriteDesc => Some(
-                metrics::RECONCILE_CREATE_COLLECTION_STEP_DURATION_SECONDS
-                    .write_desc
-                    .start_timer(),
+                metrics::RECONCILE_CREATE_COLLECTION_STEP_DURATION_SECONDS.write_desc.start_timer(),
             ),
             CreateCollectionJobStatus::CreateCollectionFinish
             | CreateCollectionJobStatus::CreateCollectionAbort => Some(
-                metrics::RECONCILE_CREATE_COLLECTION_STEP_DURATION_SECONDS
-                    .finish
-                    .start_timer(),
+                metrics::RECONCILE_CREATE_COLLECTION_STEP_DURATION_SECONDS.finish.start_timer(),
             ),
         }
     }
@@ -285,16 +257,13 @@ impl Jobs {
             let _timer = Self::record_create_group_step(&status);
             match status {
                 CreateOneGroupStatus::CreateOneGroupInit => {
-                    self.handle_init_create_group_replicas(job.id, &mut create_group)
-                        .await?
+                    self.handle_init_create_group_replicas(job.id, &mut create_group).await?
                 }
                 CreateOneGroupStatus::CreateOneGroupCreating => {
-                    self.handle_wait_create_group_replicas(job.id, &mut create_group)
-                        .await?
+                    self.handle_wait_create_group_replicas(job.id, &mut create_group).await?
                 }
                 CreateOneGroupStatus::CreateOneGroupRollbacking => {
-                    self.handle_rollback_group_replicas(job.id, &mut create_group)
-                        .await?
+                    self.handle_rollback_group_replicas(job.id, &mut create_group).await?
                 }
 
                 CreateOneGroupStatus::CreateOneGroupFinish
@@ -314,9 +283,8 @@ impl Jobs {
         if create_group.group_desc.is_none() {
             return Ok(false);
         }
-        let replicas = schema
-            .group_replica_states(create_group.group_desc.as_ref().unwrap().id)
-            .await?;
+        let replicas =
+            schema.group_replica_states(create_group.group_desc.as_ref().unwrap().id).await?;
         if replicas.len() < create_group.request_replica_cnt as usize {
             return Ok(false);
         }
@@ -335,10 +303,7 @@ impl Jobs {
         create_group: &mut CreateOneGroupJob,
     ) -> Result<()> {
         let schema = self.core.root_shared.schema()?;
-        if self
-            .check_is_already_meet_requirement(job_id, create_group, schema.to_owned())
-            .await?
-        {
+        if self.check_is_already_meet_requirement(job_id, create_group, schema.to_owned()).await? {
             return Ok(());
         }
         let nodes = self
@@ -356,12 +321,7 @@ impl Jobs {
                 role: ReplicaRole::Voter.into(),
             });
         }
-        let group_desc = GroupDesc {
-            id: group_id,
-            epoch: INITIAL_EPOCH,
-            shards: vec![],
-            replicas,
-        };
+        let group_desc = GroupDesc { id: group_id, epoch: INITIAL_EPOCH, shards: vec![], replicas };
         create_group.group_desc = Some(group_desc);
         create_group.wait_create = nodes;
         create_group.status = CreateOneGroupStatus::CreateOneGroupCreating as i32;
@@ -374,10 +334,7 @@ impl Jobs {
         create_group: &mut CreateOneGroupJob,
     ) -> Result<()> {
         let schema = self.core.root_shared.schema()?;
-        if self
-            .check_is_already_meet_requirement(job_id, create_group, schema)
-            .await?
-        {
+        if self.check_is_already_meet_requirement(job_id, create_group, schema).await? {
             return Ok(());
         }
         let mut wait_create = create_group.wait_create.to_owned();
@@ -389,14 +346,9 @@ impl Jobs {
                 break;
             }
             let n = n.unwrap();
-            let replica = group_desc
-                .replicas
-                .iter()
-                .find(|r| r.node_id == n.id)
-                .unwrap();
-            if let Err(err) = self
-                .try_create_replica(&n.addr, &replica.id, group_desc.to_owned())
-                .await
+            let replica = group_desc.replicas.iter().find(|r| r.node_id == n.id).unwrap();
+            if let Err(err) =
+                self.try_create_replica(&n.addr, &replica.id, group_desc.to_owned()).await
             {
                 let retried = create_group.create_retry;
                 if retried < 20 {
@@ -484,27 +436,19 @@ impl Jobs {
 
     fn record_create_group_step(step: &CreateOneGroupStatus) -> Option<HistogramTimer> {
         match step {
-            CreateOneGroupStatus::CreateOneGroupInit => Some(
-                metrics::RECONCILE_CREATE_GROUP_STEP_DURATION_SECONDS
-                    .init
-                    .start_timer(),
-            ),
-            CreateOneGroupStatus::CreateOneGroupCreating => Some(
-                metrics::RECONCILE_CREATE_GROUP_STEP_DURATION_SECONDS
-                    .create
-                    .start_timer(),
-            ),
-            CreateOneGroupStatus::CreateOneGroupRollbacking => Some(
-                metrics::RECONCILE_CREATE_GROUP_STEP_DURATION_SECONDS
-                    .rollback
-                    .start_timer(),
-            ),
+            CreateOneGroupStatus::CreateOneGroupInit => {
+                Some(metrics::RECONCILE_CREATE_GROUP_STEP_DURATION_SECONDS.init.start_timer())
+            }
+            CreateOneGroupStatus::CreateOneGroupCreating => {
+                Some(metrics::RECONCILE_CREATE_GROUP_STEP_DURATION_SECONDS.create.start_timer())
+            }
+            CreateOneGroupStatus::CreateOneGroupRollbacking => {
+                Some(metrics::RECONCILE_CREATE_GROUP_STEP_DURATION_SECONDS.rollback.start_timer())
+            }
             CreateOneGroupStatus::CreateOneGroupFinish
-            | CreateOneGroupStatus::CreateOneGroupAbort => Some(
-                metrics::RECONCILE_CREATE_GROUP_STEP_DURATION_SECONDS
-                    .finish
-                    .start_timer(),
-            ),
+            | CreateOneGroupStatus::CreateOneGroupAbort => {
+                Some(metrics::RECONCILE_CREATE_GROUP_STEP_DURATION_SECONDS.finish.start_timer())
+            }
         }
     }
 }
@@ -516,9 +460,7 @@ impl Jobs {
         purge_collection: &PurgeCollectionJob,
     ) -> Result<()> {
         let schema = self.core.root_shared.schema()?;
-        let mut group_shards = schema
-            .get_collection_shards(purge_collection.collection_id)
-            .await?;
+        let mut group_shards = schema.get_collection_shards(purge_collection.collection_id).await?;
         loop {
             if let Some((group, shard)) = group_shards.pop() {
                 self.try_remove_shard(group, shard.id).await?;
@@ -536,9 +478,7 @@ impl Jobs {
         purge_database: &PurgeDatabaseJob,
     ) -> Result<()> {
         let schema = self.core.root_shared.schema()?;
-        let mut collections = schema
-            .list_database_collections(purge_database.database_id)
-            .await?;
+        let mut collections = schema.list_database_collections(purge_database.database_id).await?;
         loop {
             if let Some(co) = collections.pop() {
                 let job = BackgroundJob {
@@ -568,11 +508,7 @@ impl Jobs {
 
 impl Jobs {
     async fn try_create_shard(&self, group_id: u64, desc: &ShardDesc) -> Result<()> {
-        let mut group_client = self
-            .core
-            .root_shared
-            .transport_manager
-            .lazy_group_client(group_id);
+        let mut group_client = self.core.root_shared.transport_manager.lazy_group_client(group_id);
         group_client.create_shard(desc).await?;
         Ok(())
     }
@@ -583,38 +519,26 @@ impl Jobs {
         replica_id: &u64,
         group: GroupDesc,
     ) -> Result<()> {
-        let client = self
-            .core
-            .root_shared
-            .transport_manager
-            .get_node_client(addr.to_owned())?;
+        let client = self.core.root_shared.transport_manager.get_node_client(addr.to_owned())?;
         client.create_replica(replica_id.to_owned(), group).await?;
         Ok(())
     }
 
     async fn try_remove_replica(&self, group: u64, replica: u64) -> Result<()> {
         let schema = self.core.root_shared.schema()?;
-        let rs = schema.get_replica_state(group, replica).await?.ok_or(
-            crate::Error::AbortScheduleTask("source replica already has be destroyed"),
-        )?;
+        let rs = schema
+            .get_replica_state(group, replica)
+            .await?
+            .ok_or(crate::Error::AbortScheduleTask("source replica already has be destroyed"))?;
 
         let target_node = schema
             .get_node(rs.node_id.to_owned())
             .await?
             .ok_or(crate::Error::AbortScheduleTask("source node not exist"))?;
-        let client = self
-            .core
-            .root_shared
-            .transport_manager
-            .get_node_client(target_node.addr.to_owned())?;
+        let client =
+            self.core.root_shared.transport_manager.get_node_client(target_node.addr.to_owned())?;
         client
-            .remove_replica(
-                replica.to_owned(),
-                GroupDesc {
-                    id: group,
-                    ..Default::default()
-                },
-            )
+            .remove_replica(replica.to_owned(), GroupDesc { id: group, ..Default::default() })
             .await?;
         schema.remove_replica_state(group, replica).await?;
         Ok(())

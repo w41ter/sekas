@@ -36,13 +36,11 @@ pub mod serverpb;
 
 pub(crate) use tonic::async_trait;
 
-pub use crate::{
-    bootstrap::run,
-    config::*,
-    error::{Error, Result},
-    root::diagnosis,
-    service::Server,
-};
+pub use crate::bootstrap::run;
+pub use crate::config::*;
+pub use crate::error::{Error, Result};
+pub use crate::root::diagnosis;
+pub use crate::service::Server;
 
 #[cfg(test)]
 mod tests {

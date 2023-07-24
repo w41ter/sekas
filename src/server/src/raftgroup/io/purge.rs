@@ -11,7 +11,8 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-use std::{sync::Arc, time::Duration};
+use std::sync::Arc;
+use std::time::Duration;
 
 use tracing::{debug, warn};
 
@@ -22,10 +23,7 @@ pub async fn start_purging_expired_files(engine: Arc<raft_engine::Engine>) {
         loop {
             crate::runtime::time::sleep(Duration::from_secs(10)).await;
             let cloned_engine = engine.clone();
-            match current()
-                .dispatch_blocking(move || cloned_engine.purge_expired_files())
-                .await
-            {
+            match current().dispatch_blocking(move || cloned_engine.purge_expired_files()).await {
                 Err(e) => {
                     warn!("raft engine purge expired files: {e:?}")
                 }

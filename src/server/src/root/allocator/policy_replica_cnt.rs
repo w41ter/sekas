@@ -12,16 +12,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::{
-    cmp::Ordering,
-    collections::{HashMap, HashSet},
-    sync::Arc,
-};
+use std::cmp::Ordering;
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use sekas_api::server::v1::{NodeDesc, ReplicaDesc};
 
-use super::{source::NodeFilter, *};
-use crate::{constants::ROOT_GROUP_ID, root::OngoingStats, Result};
+use super::source::NodeFilter;
+use super::*;
+use crate::constants::ROOT_GROUP_ID;
+use crate::root::OngoingStats;
+use crate::Result;
 
 pub struct ReplicaCountPolicy<T: AllocSource> {
     alloc_source: Arc<T>,
@@ -30,10 +31,7 @@ pub struct ReplicaCountPolicy<T: AllocSource> {
 
 impl<T: AllocSource> ReplicaCountPolicy<T> {
     pub fn with(alloc_source: Arc<T>, ongoing_stats: Arc<OngoingStats>) -> Self {
-        Self {
-            alloc_source,
-            ongoing_stats,
-        }
+        Self { alloc_source, ongoing_stats }
     }
 
     pub fn allocate_group_replica(
@@ -48,9 +46,7 @@ impl<T: AllocSource> ReplicaCountPolicy<T> {
 
         // sort by alloc score
         candidate_nodes.sort_by(|n1, n2| {
-            self.node_alloc_score(n2)
-                .partial_cmp(&self.node_alloc_score(n1))
-                .unwrap()
+            self.node_alloc_score(n2).partial_cmp(&self.node_alloc_score(n1)).unwrap()
         });
 
         Ok(candidate_nodes.into_iter().take(wanted_count).collect())
@@ -89,13 +85,7 @@ impl<T: AllocSource> ReplicaCountPolicy<T> {
             .groups()
             .into_iter()
             .map(|(group, desc)| {
-                (
-                    group,
-                    desc.replicas
-                        .iter()
-                        .map(|r| r.node_id)
-                        .collect::<HashSet<u64>>(),
-                )
+                (group, desc.replicas.iter().map(|r| r.node_id).collect::<HashSet<u64>>())
             })
             .collect::<HashMap<_, _>>();
 
@@ -132,31 +122,25 @@ impl<T: AllocSource> ReplicaCountPolicy<T> {
         group_nodes: &HashMap<u64, HashSet<u64>>,
     ) -> Option<(ReplicaDesc, u64)> {
         // TODO: sort & rank replica
-        self.alloc_source
-            .node_replicas(&src.id)
-            .into_iter()
-            .find(|(_, g)| {
-                if *g == ROOT_GROUP_ID {
+        self.alloc_source.node_replicas(&src.id).into_iter().find(|(_, g)| {
+            if *g == ROOT_GROUP_ID {
+                return false;
+            }
+            if let Some(exist_nodes) = group_nodes.get(g) {
+                if exist_nodes.len() < REPLICA_PER_GROUP {
                     return false;
                 }
-                if let Some(exist_nodes) = group_nodes.get(g) {
-                    if exist_nodes.len() < REPLICA_PER_GROUP {
-                        return false;
-                    }
-                    if !exist_nodes.contains(&target.id) {
-                        return true;
-                    }
+                if !exist_nodes.contains(&target.id) {
+                    return true;
                 }
-                false
-            })
+            }
+            false
+        })
     }
 
     fn mean_replica_count(&self, filter: NodeFilter) -> f64 {
         let nodes = self.alloc_source.nodes(filter);
-        let total_replicas = nodes
-            .iter()
-            .map(|n| self.node_replica_count(n))
-            .sum::<u64>() as f64;
+        let total_replicas = nodes.iter().map(|n| self.node_replica_count(n)).sum::<u64>() as f64;
         total_replicas / (nodes.len() as f64)
     }
 

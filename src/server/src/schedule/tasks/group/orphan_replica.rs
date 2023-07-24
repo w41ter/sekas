@@ -12,24 +12,20 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::{
-    collections::{HashMap, HashSet},
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use sekas_api::server::v1::*;
 use tracing::info;
 
 use super::ActionTaskWithLocks;
-use crate::schedule::{
-    actions::{ClearReplicaState, RemoveReplica},
-    event_source::EventSource,
-    provider::GroupProviders,
-    scheduler::ScheduleContext,
-    task::{Task, TaskState},
-    tasks::{ActionTask, REMOVE_ORPHAN_REPLICA_TASK_ID},
-};
+use crate::schedule::actions::{ClearReplicaState, RemoveReplica};
+use crate::schedule::event_source::EventSource;
+use crate::schedule::provider::GroupProviders;
+use crate::schedule::scheduler::ScheduleContext;
+use crate::schedule::task::{Task, TaskState};
+use crate::schedule::tasks::{ActionTask, REMOVE_ORPHAN_REPLICA_TASK_ID};
 
 pub struct RemoveOrphanReplica {
     orphan_replicas: HashMap<u64, Instant>,
@@ -38,10 +34,7 @@ pub struct RemoveOrphanReplica {
 
 impl RemoveOrphanReplica {
     pub(crate) fn new(providers: Arc<GroupProviders>) -> RemoveOrphanReplica {
-        RemoveOrphanReplica {
-            orphan_replicas: HashMap::default(),
-            providers,
-        }
+        RemoveOrphanReplica { orphan_replicas: HashMap::default(), providers }
     }
 
     async fn dismiss_orphan_replica(
@@ -53,8 +46,7 @@ impl RemoveOrphanReplica {
         let target_id = replica.id;
         let task_id = ctx.next_task_id();
         if let Some(locks) =
-            ctx.group_lock_table
-                .lock(task_id, group.epoch, &[target_id], &[], &[replica.clone()])
+            ctx.group_lock_table.lock(task_id, group.epoch, &[target_id], &[], &[replica.clone()])
         {
             let action_task = ActionTask::new(
                 task_id,
@@ -73,23 +65,14 @@ impl RemoveOrphanReplica {
         self.orphan_replicas.retain(|k, _| !replica_set.contains(k));
         for r in replica_states {
             if !replica_set.contains(&r.replica_id) {
-                self.orphan_replicas
-                    .entry(r.replica_id)
-                    .or_insert_with(Instant::now);
+                self.orphan_replicas.entry(r.replica_id).or_insert_with(Instant::now);
             }
         }
     }
 
     fn get_dismiss_replicas(&self, ctx: &mut ScheduleContext<'_>) -> HashSet<u64> {
-        if ctx
-            .cfg
-            .testing_knobs
-            .disable_scheduler_orphan_replica_detecting_intervals
-        {
-            self.orphan_replicas
-                .keys()
-                .cloned()
-                .collect::<HashSet<u64>>()
+        if ctx.cfg.testing_knobs.disable_scheduler_orphan_replica_detecting_intervals {
+            self.orphan_replicas.keys().cloned().collect::<HashSet<u64>>()
         } else {
             let now = Instant::now();
             let interval = Duration::from_secs(60);
@@ -109,11 +92,7 @@ impl Task for RemoveOrphanReplica {
     }
 
     async fn poll(&mut self, ctx: &mut ScheduleContext<'_>) -> TaskState {
-        if ctx
-            .cfg
-            .testing_knobs
-            .disable_scheduler_remove_orphan_replica_task
-        {
+        if ctx.cfg.testing_knobs.disable_scheduler_remove_orphan_replica_task {
             return TaskState::Pending(None);
         }
 
@@ -137,20 +116,11 @@ impl Task for RemoveOrphanReplica {
             let group_id = s.group_id;
             info!("group {group_id} find a orphan replica {replica_id}, try remove it",);
 
-            let replica = ReplicaDesc {
-                id: replica_id,
-                node_id: s.node_id,
-                ..Default::default()
-            };
-            self.dismiss_orphan_replica(ctx, replica, desc.clone())
-                .await;
+            let replica = ReplicaDesc { id: replica_id, node_id: s.node_id, ..Default::default() };
+            self.dismiss_orphan_replica(ctx, replica, desc.clone()).await;
         }
 
-        if ctx
-            .cfg
-            .testing_knobs
-            .disable_scheduler_orphan_replica_detecting_intervals
-        {
+        if ctx.cfg.testing_knobs.disable_scheduler_orphan_replica_detecting_intervals {
             TaskState::Pending(Some(Duration::from_millis(1)))
         } else {
             TaskState::Pending(Some(Duration::from_secs(60)))

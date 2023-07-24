@@ -20,12 +20,14 @@ mod resolver;
 use std::sync::Arc;
 
 use sekas_client::{
-    ClientOptions, ConnManager, SekasClient, GroupClient, MigrateClient, NodeClient, RootClient,
-    Router, RouterGroupState, ShardClient,
+    ClientOptions, ConnManager, GroupClient, MigrateClient, NodeClient, RootClient, Router,
+    RouterGroupState, SekasClient, ShardClient,
 };
 
-pub(crate) use self::{discovery::RootDiscovery, resolver::AddressResolver};
-use crate::{engine::StateEngine, Result};
+pub(crate) use self::discovery::RootDiscovery;
+pub(crate) use self::resolver::AddressResolver;
+use crate::engine::StateEngine;
+use crate::Result;
 
 #[derive(Clone)]
 pub(crate) struct TransportManager {
@@ -42,12 +44,7 @@ impl TransportManager {
         let root_client = RootClient::new(discovery, conn_manager.clone());
         let router = Router::new(root_client.clone()).await;
         let address_resolver = Arc::new(AddressResolver::new(router.clone()));
-        TransportManager {
-            address_resolver,
-            conn_manager,
-            root_client,
-            router,
-        }
+        TransportManager { address_resolver, conn_manager, root_client, router }
     }
 
     #[allow(dead_code)]
@@ -92,22 +89,14 @@ impl TransportManager {
     }
 
     #[inline]
-    pub(crate) fn find_node_client(
-        &self,
-        node_id: u64,
-    ) -> Result<NodeClient, sekas_client::Error> {
+    pub(crate) fn find_node_client(&self, node_id: u64) -> Result<NodeClient, sekas_client::Error> {
         let addr = self.router.find_node_addr(node_id)?;
         self.conn_manager.get_node_client(addr)
     }
 
     #[inline]
     pub(crate) fn build_shard_client(&self, group_id: u64, shard_id: u64) -> ShardClient {
-        ShardClient::new(
-            group_id,
-            shard_id,
-            self.router.clone(),
-            self.conn_manager.clone(),
-        )
+        ShardClient::new(group_id, shard_id, self.router.clone(), self.conn_manager.clone())
     }
 
     #[inline]

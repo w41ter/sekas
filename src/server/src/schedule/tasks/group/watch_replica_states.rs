@@ -11,19 +11,16 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-use std::{sync::Arc, time::Duration};
+use std::sync::Arc;
+use std::time::Duration;
 
 use tracing::{error, trace};
 
-use crate::{
-    root::RemoteStore,
-    schedule::{
-        provider::GroupProviders,
-        scheduler::ScheduleContext,
-        task::{Task, TaskState},
-        tasks::WATCH_REPLICA_STATES_TASK_ID,
-    },
-};
+use crate::root::RemoteStore;
+use crate::schedule::provider::GroupProviders;
+use crate::schedule::scheduler::ScheduleContext;
+use crate::schedule::task::{Task, TaskState};
+use crate::schedule::tasks::WATCH_REPLICA_STATES_TASK_ID;
 
 pub struct WatchReplicaStates {
     providers: Arc<GroupProviders>,
@@ -54,11 +51,7 @@ impl Task for WatchReplicaStates {
             }
         }
 
-        if ctx
-            .cfg
-            .testing_knobs
-            .disable_scheduler_orphan_replica_detecting_intervals
-        {
+        if ctx.cfg.testing_knobs.disable_scheduler_orphan_replica_detecting_intervals {
             TaskState::Pending(Some(Duration::from_millis(1)))
         } else {
             TaskState::Pending(Some(Duration::from_secs(31)))

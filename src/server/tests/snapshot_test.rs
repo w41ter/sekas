@@ -13,14 +13,15 @@
 // limitations under the License.
 mod helper;
 
-use sekas_api::{
-    server::v1::{group_request_union::Request, *},
-    v1::PutRequest,
-};
-use sekas_client::RetryState;
 use helper::context::TestContext;
+use sekas_api::server::v1::group_request_union::Request;
+use sekas_api::server::v1::*;
+use sekas_api::v1::PutRequest;
+use sekas_client::RetryState;
 
-use crate::helper::{client::*, init::setup_panic_hook, runtime::block_on_current};
+use crate::helper::client::*;
+use crate::helper::init::setup_panic_hook;
+use crate::helper::runtime::block_on_current;
 
 #[ctor::ctor]
 fn init() {
@@ -34,22 +35,13 @@ async fn create_group(c: &ClusterClient, group_id: u64, nodes: Vec<u64>, shards:
         .cloned()
         .map(|node_id| {
             let replica_id = group_id * 10 + node_id;
-            ReplicaDesc {
-                id: replica_id,
-                node_id,
-                role: ReplicaRole::Voter as i32,
-            }
+            ReplicaDesc { id: replica_id, node_id, role: ReplicaRole::Voter as i32 }
         })
         .collect::<Vec<_>>();
-    let group_desc = GroupDesc {
-        id: group_id,
-        shards,
-        replicas: replicas.clone(),
-        ..Default::default()
-    };
+    let group_desc =
+        GroupDesc { id: group_id, shards, replicas: replicas.clone(), ..Default::default() };
     for replica in replicas {
-        c.create_replica(replica.node_id, replica.id, group_desc.clone())
-            .await;
+        c.create_replica(replica.node_id, replica.id, group_desc.clone()).await;
     }
 }
 
@@ -63,10 +55,7 @@ async fn insert(c: &ClusterClient, group_id: u64, shard_id: u64, range: std::ops
             value: value.as_bytes().to_vec(),
             ..Default::default()
         };
-        let req = Request::Put(ShardPutRequest {
-            shard_id,
-            put: Some(put),
-        });
+        let req = Request::Put(ShardPutRequest { shard_id, put: Some(put) });
 
         let mut retry_state = RetryState::default();
         loop {
@@ -85,8 +74,7 @@ fn send_snapshot() {
     block_on_current(async {
         let mut ctx = TestContext::new("snapshot_test__send_snapshot");
         ctx.disable_all_balance();
-        ctx.mut_raft_testing_knobs()
-            .force_new_peer_receiving_snapshot = true;
+        ctx.mut_raft_testing_knobs().force_new_peer_receiving_snapshot = true;
         let nodes = ctx.bootstrap_servers(4).await;
         let c = ClusterClient::new(nodes.clone()).await;
 
@@ -98,26 +86,17 @@ fn send_snapshot() {
         let shard_desc = ShardDesc {
             id: shard_id,
             collection_id: shard_id,
-            partition: Some(shard_desc::Partition::Range(
-                shard_desc::RangePartition::default(),
-            )),
+            partition: Some(shard_desc::Partition::Range(shard_desc::RangePartition::default())),
         };
         create_group(&c, group_id, node_ids.clone(), vec![shard_desc]).await;
         insert(&c, group_id, shard_id, 1..100).await;
         ctx.wait_election_timeout().await;
 
         let new_replica_id = 123123123;
-        let empty_desc = GroupDesc {
-            id: group_id,
-            ..Default::default()
-        };
-        c.create_replica(left_node_id, new_replica_id, empty_desc)
-            .await;
+        let empty_desc = GroupDesc { id: group_id, ..Default::default() };
+        c.create_replica(left_node_id, new_replica_id, empty_desc).await;
         let mut group_client = c.group(group_id);
-        group_client
-            .add_replica(new_replica_id, left_node_id)
-            .await
-            .unwrap();
+        group_client.add_replica(new_replica_id, left_node_id).await.unwrap();
 
         ctx.wait_election_timeout().await;
         c.assert_root_group_has_promoted().await;

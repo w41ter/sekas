@@ -12,25 +12,22 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::{
-    cell::RefCell,
-    collections::HashMap,
-    ops::{Deref, DerefMut},
-    path::Path,
-    sync::{Arc, RwLock},
-    time::{Duration, Instant},
-};
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::ops::{Deref, DerefMut};
+use std::path::Path;
+use std::sync::{Arc, RwLock};
+use std::time::{Duration, Instant};
 
-use sekas_api::{server::v1::*, shard};
 use prost::Message;
+use sekas_api::server::v1::*;
+use sekas_api::shard;
 use tracing::{info, warn};
 
 use super::RawDb;
-use crate::{
-    constants::{INITIAL_EPOCH, LOCAL_COLLECTION_ID},
-    serverpb::v1::*,
-    EngineConfig, Error, Result,
-};
+use crate::constants::{INITIAL_EPOCH, LOCAL_COLLECTION_ID};
+use crate::serverpb::v1::*;
+use crate::{EngineConfig, Error, Result};
 
 #[derive(Default)]
 pub struct WriteStates {
@@ -47,9 +44,9 @@ pub struct WriteBatch {
 
 /// A structure supports grouped data, metadata saving and retriving.
 ///
-/// NOTE: Shard are managed by `GroupEngine` instead of a shard engine, because shards from
-/// different collections in the same group needs to persist on disk at the same time, to guarantee
-/// the accuracy of applied index.
+/// NOTE: Shard are managed by `GroupEngine` instead of a shard engine, because
+/// shards from different collections in the same group needs to persist on disk
+/// at the same time, to guarantee the accuracy of applied index.
 #[derive(Clone)]
 pub(crate) struct GroupEngine
 where
@@ -107,8 +104,8 @@ pub(crate) struct SnapshotCore<'a> {
     cached_entry: Option<MvccEntry>,
 }
 
-/// Traverse the data of a shard in the group engine, analyze and return the data (including
-/// tombstone).
+/// Traverse the data of a shard in the group engine, analyze and return the
+/// data (including tombstone).
 pub(crate) struct UserDataIterator<'a, 'b> {
     snapshot: &'b Snapshot<'a>,
 }
@@ -155,16 +152,10 @@ impl GroupEngine {
         debug_assert!(raw_db.cf_handle(&name).is_none());
         raw_db.create_cf(&name)?;
 
-        let desc = GroupDesc {
-            id: group_id,
-            epoch: INITIAL_EPOCH,
-            shards: vec![],
-            replicas: vec![],
-        };
+        let desc =
+            GroupDesc { id: group_id, epoch: INITIAL_EPOCH, shards: vec![], replicas: vec![] };
 
-        let cf_handle = raw_db
-            .cf_handle(&name)
-            .expect("cf must exists because it just created");
+        let cf_handle = raw_db.cf_handle(&name).expect("cf must exists because it just created");
         let engine = GroupEngine {
             cfg: cfg.clone(),
             name,
@@ -209,15 +200,9 @@ impl GroupEngine {
         let migration_state = internal::migration_state(&raw_db, &cf_handle)?;
         let mut shard_descs = internal::shard_descs(&group_desc);
         if let Some(shard_desc) = migration_state.as_ref().map(|m| m.get_shard_desc()) {
-            shard_descs
-                .entry(shard_desc.id)
-                .or_insert_with(|| shard_desc.clone());
+            shard_descs.entry(shard_desc.id).or_insert_with(|| shard_desc.clone());
         }
-        let core = GroupEngineCore {
-            migration_state,
-            group_desc,
-            shard_descs,
-        };
+        let core = GroupEngineCore { migration_state, group_desc, shard_descs };
 
         Ok(Some(GroupEngine {
             cfg: cfg.clone(),
@@ -322,12 +307,7 @@ impl GroupEngine {
         debug_assert_ne!(collection_id, LOCAL_COLLECTION_ID);
         debug_assert!(shard::belong_to(&desc, key));
 
-        wb.delete(keys::mvcc_key(
-            collection_id,
-            shard::slot(&desc),
-            key,
-            version,
-        ));
+        wb.delete(keys::mvcc_key(collection_id, shard::slot(&desc), key, version));
 
         Ok(())
     }
@@ -347,10 +327,8 @@ impl GroupEngine {
 
         let cf_handle = self.cf_handle();
         let mut inner_wb = rocksdb::WriteBatch::default();
-        let mut decorator = ColumnFamilyDecorator {
-            cf_handle: cf_handle.clone(),
-            wb: &mut inner_wb,
-        };
+        let mut decorator =
+            ColumnFamilyDecorator { cf_handle: cf_handle.clone(), wb: &mut inner_wb };
         for wb in wbs {
             wb.inner.iterate(&mut decorator);
         }
@@ -384,9 +362,7 @@ impl GroupEngine {
 
         let opts = ReadOptions::default();
         let key = match &mode {
-            SnapshotMode::Start {
-                start_key: Some(start_key),
-            } => {
+            SnapshotMode::Start { start_key: Some(start_key) } => {
                 debug_assert!(shard::belong_to(&desc, start_key));
                 keys::raw(collection_id, shard::slot(&desc), start_key)
             }
@@ -404,9 +380,7 @@ impl GroupEngine {
             }
         };
         let inner_mode = IteratorMode::From(&key, Direction::Forward);
-        let iter = self
-            .raw_db
-            .iterator_cf_opt(&self.cf_handle(), opts, inner_mode);
+        let iter = self.raw_db.iterator_cf_opt(&self.cf_handle(), opts, inner_mode);
         Ok(Snapshot::new(collection_id, iter, mode, &desc))
     }
 
@@ -414,9 +388,7 @@ impl GroupEngine {
         use rocksdb::{IteratorMode, ReadOptions};
 
         let opts = ReadOptions::default();
-        let iter = self
-            .raw_db
-            .iterator_cf_opt(&self.cf_handle(), opts, IteratorMode::Start);
+        let iter = self.raw_db.iterator_cf_opt(&self.cf_handle(), opts, IteratorMode::Start);
         RawIterator::new(iter)
     }
 
@@ -429,8 +401,7 @@ impl GroupEngine {
 
         let opts = IngestExternalFileOptions::default();
         let cf_handle = self.cf_handle();
-        self.raw_db
-            .ingest_external_file_cf_opts(&cf_handle, &opts, files)?;
+        self.raw_db.ingest_external_file_cf_opts(&cf_handle, &opts, files)?;
 
         let group_desc = internal::descriptor(&self.raw_db, &cf_handle)?;
         let migration_state = internal::migration_state(&self.raw_db, &cf_handle)?;
@@ -461,10 +432,7 @@ impl GroupEngine {
         }
 
         core.shard_descs = internal::shard_descs(&core.group_desc);
-        if let Some(shard_desc) = core
-            .migration_state
-            .as_ref()
-            .map(|m| m.get_shard_desc().clone())
+        if let Some(shard_desc) = core.migration_state.as_ref().map(|m| m.get_shard_desc().clone())
         {
             core.shard_descs.entry(shard_desc.id).or_insert(shard_desc);
         }
@@ -483,15 +451,13 @@ impl GroupEngine {
 
     #[inline]
     fn cf_handle(&self) -> Arc<rocksdb::BoundColumnFamily> {
-        self.raw_db
-            .cf_handle(&self.name)
-            .expect("column family handle")
+        self.raw_db.cf_handle(&self.name).expect("column family handle")
     }
 
     #[inline]
     fn cf_name(group_id: u64, replica_id: u64) -> String {
-        // Using the replica id avoids the problem of creating a new replica immediately after
-        // deleting the replica.
+        // Using the replica id avoids the problem of creating a new replica immediately
+        // after deleting the replica.
         format!("{group_id}-{replica_id}")
     }
 }
@@ -504,11 +470,7 @@ impl<'a> RawIterator<'a> {
         let descriptor = next_message(&mut db_iter, &keys::descriptor())?;
         db_iter.set_mode(IteratorMode::Start);
 
-        Ok(RawIterator {
-            apply_state,
-            descriptor,
-            db_iter,
-        })
+        Ok(RawIterator { apply_state, descriptor, db_iter })
     }
 
     #[inline]
@@ -542,24 +504,16 @@ impl<'a> Snapshot<'a> {
         let expect_slot = shard::slot(desc);
 
         let range = match snapshot_mode {
-            SnapshotMode::Key { key } => Some(SnapshotRange::Target {
-                target_key: key.to_owned(),
-            }),
-            SnapshotMode::Prefix { key } => Some(SnapshotRange::Prefix {
-                prefix: key.to_owned(),
-            }),
+            SnapshotMode::Key { key } => Some(SnapshotRange::Target { target_key: key.to_owned() }),
+            SnapshotMode::Prefix { key } => Some(SnapshotRange::Prefix { prefix: key.to_owned() }),
             SnapshotMode::Start { start_key } if expect_slot.is_some() => {
                 Some(SnapshotRange::HashRange {
                     slot: expect_slot.unwrap(),
-                    start: start_key
-                        .map(ToOwned::to_owned)
-                        .unwrap_or_else(Vec::default),
+                    start: start_key.map(ToOwned::to_owned).unwrap_or_else(Vec::default),
                 })
             }
             SnapshotMode::Start { start_key } => Some(SnapshotRange::Range {
-                start: start_key
-                    .map(ToOwned::to_owned)
-                    .unwrap_or_else(|| shard::start_key(desc)),
+                start: start_key.map(ToOwned::to_owned).unwrap_or_else(|| shard::start_key(desc)),
                 end: shard::end_key(desc),
             }),
         };
@@ -648,10 +602,7 @@ impl<'a> SnapshotCore<'a> {
 
     #[inline]
     fn is_current_key(&self, target_key: &[u8]) -> bool {
-        self.current_key
-            .as_ref()
-            .map(|k| k == target_key)
-            .unwrap_or_default()
+        self.current_key.as_ref().map(|k| k == target_key).unwrap_or_default()
     }
 }
 
@@ -674,12 +625,7 @@ impl<'a, 'b> Iterator for MvccIterator<'a, 'b> {
 impl MvccEntry {
     fn new(with_slot: bool, key: Box<[u8]>, value: Box<[u8]>) -> Self {
         let (user_key, slot) = keys::revert_mvcc_key(&key, with_slot);
-        MvccEntry {
-            key,
-            slot,
-            user_key,
-            value,
-        }
+        MvccEntry { key, slot, user_key, value }
     }
 
     #[inline]
@@ -701,7 +647,8 @@ impl MvccEntry {
         !u64::from_be_bytes(buf)
     }
 
-    /// Return value of this `MvccEntry`. `None` is returned if this entry is a tombstone.
+    /// Return value of this `MvccEntry`. `None` is returned if this entry is a
+    /// tombstone.
     pub fn value(&self) -> Option<&[u8]> {
         if self.value[0] == values::TOMBSTONE {
             None
@@ -882,9 +829,7 @@ impl<'a, 'b> rocksdb::WriteBatchIterator for ColumnFamilyDecorator<'a, 'b> {
 impl WriteBatch {
     #[inline]
     pub fn new(content: &[u8]) -> Self {
-        WriteBatch {
-            inner: rocksdb::WriteBatch::new(content),
-        }
+        WriteBatch { inner: rocksdb::WriteBatch::new(content) }
     }
 }
 
@@ -915,11 +860,7 @@ impl WriteStates {
             if migration_state.step != MigrationStep::Finished as i32
                 && migration_state.step != MigrationStep::Aborted as i32
             {
-                wb.put_cf(
-                    cf_handle,
-                    keys::migrate_state(),
-                    migration_state.encode_to_vec(),
-                );
+                wb.put_cf(cf_handle, keys::migrate_state(), migration_state.encode_to_vec());
             } else {
                 wb.delete_cf(cf_handle, keys::migrate_state());
             }
@@ -932,10 +873,7 @@ impl SlowIoGuard {
         use rocksdb::perf::*;
 
         set_perf_stats(PerfStatsLevel::EnableTime);
-        SlowIoGuard {
-            threshold,
-            start: Instant::now(),
-        }
+        SlowIoGuard { threshold, start: Instant::now() }
     }
 }
 
@@ -994,11 +932,7 @@ mod internal {
 
     #[inline]
     pub(super) fn shard_descs(group_desc: &GroupDesc) -> HashMap<u64, ShardDesc> {
-        group_desc
-            .shards
-            .iter()
-            .map(|shard| (shard.id, shard.clone()))
-            .collect::<HashMap<_, _>>()
+        group_desc.shards.iter().map(|shard| (shard.id, shard.clone())).collect::<HashMap<_, _>>()
     }
 }
 
@@ -1035,30 +969,10 @@ mod tests {
 
         let tests = vec![
             // 1. compare version
-            Less {
-                left: b"1",
-                left_version: 1,
-                right: b"1",
-                right_version: 0,
-            },
-            Less {
-                left: b"1",
-                left_version: 256,
-                right: b"1",
-                right_version: 255,
-            },
-            Less {
-                left: b"12345678",
-                left_version: 256,
-                right: b"12345678",
-                right_version: 255,
-            },
-            Less {
-                left: b"123456789",
-                left_version: 256,
-                right: b"123456789",
-                right_version: 255,
-            },
+            Less { left: b"1", left_version: 1, right: b"1", right_version: 0 },
+            Less { left: b"1", left_version: 256, right: b"1", right_version: 255 },
+            Less { left: b"12345678", left_version: 256, right: b"12345678", right_version: 255 },
+            Less { left: b"123456789", left_version: 256, right: b"123456789", right_version: 255 },
             // 2. different length
             Less {
                 left: b"12345678",
@@ -1088,13 +1002,7 @@ mod tests {
         for (idx, t) in tests.iter().enumerate() {
             let left = keys::mvcc_key(0, None, t.left, t.left_version);
             let right = keys::mvcc_key(0, None, t.right, t.right_version);
-            assert!(
-                left < right,
-                "index {}, left {:?}, right {:?}",
-                idx,
-                left,
-                right
-            );
+            assert!(left < right, "index {}, left {:?}, right {:?}", idx, left, right);
         }
     }
 
@@ -1119,9 +1027,7 @@ mod tests {
         let db = open_engine_with_default_config(db_dir).unwrap();
         let db = Arc::new(db);
         let group_engine = executor.block_on(async move {
-            GroupEngine::create(&EngineConfig::default(), db.clone(), 1, 1)
-                .await
-                .unwrap()
+            GroupEngine::create(&EngineConfig::default(), db.clone(), 1, 1).await.unwrap()
         });
 
         let wb = WriteBatch::default();
@@ -1151,22 +1057,10 @@ mod tests {
         }
 
         let payloads = vec![
-            Payload {
-                key: b"123456",
-                version: 1,
-            },
-            Payload {
-                key: b"123456",
-                version: 5,
-            },
-            Payload {
-                key: b"123456",
-                version: 256,
-            },
-            Payload {
-                key: b"123456789",
-                version: 0,
-            },
+            Payload { key: b"123456", version: 1 },
+            Payload { key: b"123456", version: 5 },
+            Payload { key: b"123456", version: 256 },
+            Payload { key: b"123456789", version: 0 },
         ];
 
         let executor_owner = ExecutorOwner::new(1);
@@ -1174,13 +1068,9 @@ mod tests {
         let group_engine = create_engine(executor, 1, 1);
         let mut wb = WriteBatch::default();
         for payload in &payloads {
-            group_engine
-                .put(&mut wb, 1, payload.key, b"", payload.version)
-                .unwrap();
+            group_engine.put(&mut wb, 1, payload.key, b"", payload.version).unwrap();
         }
-        group_engine
-            .commit(wb, WriteStates::default(), false)
-            .unwrap();
+        group_engine.commit(wb, WriteStates::default(), false).unwrap();
 
         let mut snapshot = group_engine.snapshot(1, SnapshotMode::default()).unwrap();
         let mut user_data_iter = snapshot.iter();
@@ -1221,22 +1111,10 @@ mod tests {
         }
 
         let payloads = vec![
-            Payload {
-                key: b"123456",
-                version: 1,
-            },
-            Payload {
-                key: b"123456",
-                version: 5,
-            },
-            Payload {
-                key: b"123456",
-                version: 256,
-            },
-            Payload {
-                key: b"123456789",
-                version: 0,
-            },
+            Payload { key: b"123456", version: 1 },
+            Payload { key: b"123456", version: 5 },
+            Payload { key: b"123456", version: 256 },
+            Payload { key: b"123456789", version: 0 },
         ];
 
         let executor_owner = ExecutorOwner::new(1);
@@ -1244,13 +1122,9 @@ mod tests {
         let group_engine = create_engine(executor, 1, 1);
         let mut wb = WriteBatch::default();
         for payload in &payloads {
-            group_engine
-                .put(&mut wb, 1, payload.key, b"", payload.version)
-                .unwrap();
+            group_engine.put(&mut wb, 1, payload.key, b"", payload.version).unwrap();
         }
-        group_engine
-            .commit(wb, WriteStates::default(), false)
-            .unwrap();
+        group_engine.commit(wb, WriteStates::default(), false).unwrap();
 
         let mut snapshot = group_engine.snapshot(1, SnapshotMode::default()).unwrap();
         let mut user_data_iter = snapshot.iter();
@@ -1281,22 +1155,10 @@ mod tests {
         }
 
         let payloads = vec![
-            Payload {
-                key: b"123456",
-                version: 1,
-            },
-            Payload {
-                key: b"123456",
-                version: 5,
-            },
-            Payload {
-                key: b"123456",
-                version: 256,
-            },
-            Payload {
-                key: b"123456789",
-                version: 0,
-            },
+            Payload { key: b"123456", version: 1 },
+            Payload { key: b"123456", version: 5 },
+            Payload { key: b"123456", version: 256 },
+            Payload { key: b"123456789", version: 0 },
         ];
 
         let executor_owner = ExecutorOwner::new(1);
@@ -1304,13 +1166,9 @@ mod tests {
         let group_engine = create_engine(executor, 1, 1);
         let mut wb = WriteBatch::default();
         for payload in &payloads {
-            group_engine
-                .put(&mut wb, 1, payload.key, b"", payload.version)
-                .unwrap();
+            group_engine.put(&mut wb, 1, payload.key, b"", payload.version).unwrap();
         }
-        group_engine
-            .commit(wb, WriteStates::default(), false)
-            .unwrap();
+        group_engine.commit(wb, WriteStates::default(), false).unwrap();
 
         {
             // Target key `123456`
@@ -1345,21 +1203,11 @@ mod tests {
         let executor = executor_owner.executor();
         let group_engine = create_engine(executor.clone(), 1, 1);
         let mut wb = WriteBatch::default();
-        group_engine
-            .put(&mut wb, 1, b"a12345678", b"", 123)
-            .unwrap();
-        group_engine
-            .tombstone(&mut wb, 1, b"a12345678", 124)
-            .unwrap();
-        group_engine
-            .put(&mut wb, 1, b"b12345678", b"123", 123)
-            .unwrap();
-        group_engine
-            .put(&mut wb, 1, b"b12345678", b"124", 124)
-            .unwrap();
-        group_engine
-            .commit(wb, WriteStates::default(), false)
-            .unwrap();
+        group_engine.put(&mut wb, 1, b"a12345678", b"", 123).unwrap();
+        group_engine.tombstone(&mut wb, 1, b"a12345678", 124).unwrap();
+        group_engine.put(&mut wb, 1, b"b12345678", b"123", 123).unwrap();
+        group_engine.put(&mut wb, 1, b"b12345678", b"124", 124).unwrap();
+        group_engine.commit(wb, WriteStates::default(), false).unwrap();
 
         executor.block_on(async move {
             let v = group_engine.get(1, b"a12345678").await.unwrap();
@@ -1380,9 +1228,7 @@ mod tests {
         group_engine.tombstone(&mut wb, 1, b"a", 124).unwrap();
         group_engine.put(&mut wb, 1, b"b", b"123", 123).unwrap();
         group_engine.put(&mut wb, 1, b"b", b"124", 124).unwrap();
-        group_engine
-            .commit(wb, WriteStates::default(), false)
-            .unwrap();
+        group_engine.commit(wb, WriteStates::default(), false).unwrap();
 
         // Add new shard
         use shard_desc::*;
@@ -1481,9 +1327,7 @@ mod tests {
         group_engine.tombstone(&mut wb, 1, b"a", 124).unwrap();
         group_engine.put(&mut wb, 2, b"b", b"123", 123).unwrap();
         group_engine.put(&mut wb, 2, b"b", b"124", 124).unwrap();
-        group_engine
-            .commit(wb, WriteStates::default(), false)
-            .unwrap();
+        group_engine.commit(wb, WriteStates::default(), false).unwrap();
 
         // Iterate shard 1
         let snapshot_mode = SnapshotMode::default();

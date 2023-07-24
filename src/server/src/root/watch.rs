@@ -12,18 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::{
-    collections::HashMap,
-    sync::{Arc, Mutex},
-    task::{Poll, Waker},
-    vec,
-};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+use std::task::{Poll, Waker};
+use std::vec;
 
-use sekas_api::server::v1::{
-    watch_response::{DeleteEvent, UpdateEvent},
-    WatchResponse,
-};
 use futures::Stream;
+use sekas_api::server::v1::watch_response::{DeleteEvent, UpdateEvent};
+use sekas_api::server::v1::WatchResponse;
 use tokio::sync::{RwLock, RwLockWriteGuard};
 
 use crate::{Error, Result};
@@ -57,19 +53,10 @@ impl WatchHub {
         let mut inner = self.inner.write().await;
         inner.next_watcher_id += 1;
         let watcher_inner = Arc::new(Mutex::new(WatcherInner::default()));
-        let watcher = Watcher {
-            id: inner.next_watcher_id,
-            inner: watcher_inner.to_owned(),
-        };
+        let watcher = Watcher { id: inner.next_watcher_id, inner: watcher_inner.to_owned() };
         inner.watchers.insert(watcher.id, watcher.to_owned());
         super::metrics::WATCH_TABLE_SIZE.set(inner.watchers.len() as i64);
-        (
-            watcher,
-            WatcherInitializer {
-                _guard: inner,
-                watcher_inner,
-            },
-        )
+        (watcher, WatcherInitializer { _guard: inner, watcher_inner })
     }
 
     pub async fn remove_watcher(&self, id: u64) {
@@ -104,9 +91,7 @@ impl WatchHub {
 
     pub async fn cleanup(&self) {
         let mut inner = self.inner.write().await;
-        inner
-            .watchers
-            .retain(|_, w| !w.inner.lock().unwrap().dropped);
+        inner.watchers.retain(|_, w| !w.inner.lock().unwrap().dropped);
         super::metrics::WATCH_TABLE_SIZE.set(inner.watchers.len() as i64);
     }
 }

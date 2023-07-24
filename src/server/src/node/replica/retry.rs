@@ -14,17 +14,15 @@
 
 use std::time::Duration;
 
-use sekas_api::{
-    server::v1::{group_request_union::Request, *},
-    shard,
-};
+use sekas_api::server::v1::group_request_union::Request;
+use sekas_api::server::v1::*;
+use sekas_api::shard;
 
 use super::{ExecCtx, Replica};
-use crate::{
-    node::{metrics::NODE_RETRY_TOTAL, migrate::MigrateController},
-    serverpb::v1::MigrationEvent,
-    Error, Result,
-};
+use crate::node::metrics::NODE_RETRY_TOTAL;
+use crate::node::migrate::MigrateController;
+use crate::serverpb::v1::MigrationEvent;
+use crate::{Error, Result};
 
 pub async fn do_migration(
     replica: &Replica,
@@ -49,7 +47,8 @@ pub async fn do_migration(
     }
 }
 
-/// A wrapper function that detects and completes retries as quickly as possible.
+/// A wrapper function that detects and completes retries as quickly as
+/// possible.
 #[inline]
 pub async fn execute(
     replica: &Replica,
@@ -131,8 +130,8 @@ async fn execute_internal(
                 }
 
                 // This is forwarding request and the target shard might be migrated to another
-                // group. Return `EpochNotMatch` in this case to enforce client retrying with fresh
-                // group descriptor.
+                // group. Return `EpochNotMatch` in this case to enforce client retrying with
+                // fresh group descriptor.
                 //
                 // NOTES: the `accurate_epoch` should set to `true` for forwarding requests.
                 return Err(Error::EpochNotMatch(replica.descriptor()));

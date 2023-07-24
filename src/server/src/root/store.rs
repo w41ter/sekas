@@ -14,15 +14,13 @@
 
 use std::sync::Arc;
 
-use sekas_api::{
-    server::v1::{
-        group_request_union::Request::{self, *},
-        GroupRequest, GroupRequestUnion, *,
-    },
-    v1::{DeleteRequest, GetRequest, PutRequest},
-};
+use sekas_api::server::v1::group_request_union::Request::{self, *};
+use sekas_api::server::v1::{GroupRequest, GroupRequestUnion, *};
+use sekas_api::v1::{DeleteRequest, GetRequest, PutRequest};
 
-use crate::{constants::ROOT_GROUP_ID, node::replica::Replica, Error, Result};
+use crate::constants::ROOT_GROUP_ID;
+use crate::node::replica::Replica;
+use crate::{Error, Result};
 
 pub struct RootStore {
     replica: Arc<Replica>,
@@ -41,11 +39,7 @@ impl RootStore {
     pub async fn put(&self, shard_id: u64, key: Vec<u8>, value: Vec<u8>) -> Result<()> {
         self.submit_request(Put(ShardPutRequest {
             shard_id,
-            put: Some(PutRequest {
-                key,
-                value,
-                ..Default::default()
-            }),
+            put: Some(PutRequest { key, value, ..Default::default() }),
         }))
         .await?;
         Ok(())
@@ -55,9 +49,7 @@ impl RootStore {
         let resp = self
             .submit_request(Get(ShardGetRequest {
                 shard_id,
-                get: Some(GetRequest {
-                    key: key.to_owned(),
-                }),
+                get: Some(GetRequest { key: key.to_owned() }),
             }))
             .await?;
         let resp = resp
@@ -75,10 +67,7 @@ impl RootStore {
     pub async fn delete(&self, shard_id: u64, key: &[u8]) -> Result<()> {
         self.submit_request(Delete(ShardDeleteRequest {
             shard_id,
-            delete: Some(DeleteRequest {
-                key: key.to_owned(),
-                ..Default::default()
-            }),
+            delete: Some(DeleteRequest { key: key.to_owned(), ..Default::default() }),
         }))
         .await?;
         Ok(())
@@ -106,7 +95,8 @@ impl RootStore {
     }
 
     async fn submit_request(&self, req: Request) -> Result<GroupResponse> {
-        use crate::node::replica::{retry::execute, ExecCtx};
+        use crate::node::replica::retry::execute;
+        use crate::node::replica::ExecCtx;
 
         let request = GroupRequest {
             group_id: ROOT_GROUP_ID,

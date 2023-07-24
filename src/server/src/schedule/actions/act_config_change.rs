@@ -11,17 +11,21 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-use std::{collections::HashSet, sync::Arc, time::Duration};
+use std::collections::HashSet;
+use std::sync::Arc;
+use std::time::Duration;
 
-use sekas_api::server::v1::{group_request_union::Request, *};
+use sekas_api::server::v1::group_request_union::Request;
+use sekas_api::server::v1::*;
 use tracing::{info, warn};
 
 use super::{Action, ActionState};
-use crate::{
-    error::BusyReason,
-    node::{replica::ExecCtx, Replica},
-    schedule::{event_source::EventSource, provider::GroupProviders, scheduler::ScheduleContext},
-};
+use crate::error::BusyReason;
+use crate::node::replica::ExecCtx;
+use crate::node::Replica;
+use crate::schedule::event_source::EventSource;
+use crate::schedule::provider::GroupProviders;
+use crate::schedule::scheduler::ScheduleContext;
 
 pub struct AddLearners {
     pub providers: Arc<GroupProviders>,
@@ -43,12 +47,9 @@ pub struct ReplaceVoters {
 #[crate::async_trait]
 impl Action for AddLearners {
     async fn setup(&mut self, task_id: u64, ctx: &mut ScheduleContext<'_>) -> ActionState {
-        let changes = ChangeReplicas {
-            changes: self.learners.iter().map(replica_as_learner).collect(),
-        };
-        let cc = ChangeReplicasRequest {
-            change_replicas: Some(changes),
-        };
+        let changes =
+            ChangeReplicas { changes: self.learners.iter().map(replica_as_learner).collect() };
+        let cc = ChangeReplicasRequest { change_replicas: Some(changes) };
         let req = Request::ChangeReplicas(cc);
         let action_state =
             try_execute(ctx.replica.as_ref(), task_id, &req, "adding learners").await;
@@ -83,15 +84,9 @@ impl Action for AddLearners {
 impl Action for RemoveLearners {
     async fn setup(&mut self, task_id: u64, ctx: &mut ScheduleContext<'_>) -> ActionState {
         let changes = ChangeReplicas {
-            changes: self
-                .learners
-                .iter()
-                .map(replica_as_outgoing_voter)
-                .collect(),
+            changes: self.learners.iter().map(replica_as_outgoing_voter).collect(),
         };
-        let cc = ChangeReplicasRequest {
-            change_replicas: Some(changes),
-        };
+        let cc = ChangeReplicasRequest { change_replicas: Some(changes) };
         let req = Request::ChangeReplicas(cc);
         let action_state =
             try_execute(ctx.replica.as_ref(), task_id, &req, "removing learners").await;
@@ -123,15 +118,10 @@ impl Action for RemoveLearners {
 #[crate::async_trait]
 impl Action for ReplaceVoters {
     async fn setup(&mut self, task_id: u64, ctx: &mut ScheduleContext<'_>) -> ActionState {
-        let mut changes = self
-            .incoming_voters
-            .iter()
-            .map(replica_as_incoming_voter)
-            .collect::<Vec<_>>();
+        let mut changes =
+            self.incoming_voters.iter().map(replica_as_incoming_voter).collect::<Vec<_>>();
         changes.extend(self.demoting_voters.iter().map(replica_as_outgoing_voter));
-        let cc = ChangeReplicasRequest {
-            change_replicas: Some(ChangeReplicas { changes }),
-        };
+        let cc = ChangeReplicasRequest { change_replicas: Some(ChangeReplicas { changes }) };
         let req = Request::ChangeReplicas(cc);
         let action_state =
             try_execute(ctx.replica.as_ref(), task_id, &req, "replacing voters").await;
@@ -144,11 +134,7 @@ impl Action for ReplaceVoters {
     async fn poll(&mut self, task_id: u64, ctx: &mut ScheduleContext<'_>) -> ActionState {
         let replicas = self.providers.descriptor.replicas();
 
-        let mut incoming_voters = self
-            .incoming_voters
-            .iter()
-            .map(|r| r.id)
-            .collect::<HashSet<_>>();
+        let mut incoming_voters = self.incoming_voters.iter().map(|r| r.id).collect::<HashSet<_>>();
         for replica in &replicas {
             if replica.role == ReplicaRole::Voter as i32 {
                 incoming_voters.remove(&replica.id);

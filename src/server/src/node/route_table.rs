@@ -12,14 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::{
-    collections::HashMap,
-    sync::{Arc, RwLock},
-    task::Waker,
-};
+use std::collections::HashMap;
+use std::sync::{Arc, RwLock};
+use std::task::Waker;
 
 use super::Replica;
-use crate::{constants::ROOT_GROUP_ID, raftgroup::RaftNodeFacade};
+use crate::constants::ROOT_GROUP_ID;
+use crate::raftgroup::RaftNodeFacade;
 
 /// A structure support replica route queries.
 #[derive(Clone)]
@@ -40,9 +39,7 @@ struct ReplicaRouteTableCore {
 impl ReplicaRouteTable {
     #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
-        ReplicaRouteTable {
-            core: Arc::default(),
-        }
+        ReplicaRouteTable { core: Arc::default() }
     }
 
     /// Find the corresponding replica.
@@ -93,9 +90,7 @@ where
 impl RaftRouteTable {
     #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
-        RaftRouteTable {
-            senders: Arc::default(),
-        }
+        RaftRouteTable { senders: Arc::default() }
     }
 
     pub fn find(&self, replica_id: u64) -> Option<RaftNodeFacade> {

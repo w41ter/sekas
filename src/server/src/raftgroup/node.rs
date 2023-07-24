@@ -12,21 +12,21 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use sekas_api::server::v1::RaftRole;
 use futures::channel::oneshot;
-use raft::{prelude::*, ConfChangeI, StateRole, Storage as RaftStorage};
+use raft::prelude::*;
+use raft::{ConfChangeI, StateRole, Storage as RaftStorage};
 use raft_engine::LogBatch;
+use sekas_api::server::v1::RaftRole;
 use tracing::{info, trace};
 
-use super::{
-    applier::{Applier, ReplicaCache},
-    fsm::StateMachine,
-    monitor::{record_perf_point, AdvancePerfContext},
-    snap::apply::apply_snapshot,
-    storage::Storage,
-    RaftManager, SnapManager,
-};
-use crate::{error::BusyReason, Error, Result};
+use super::applier::{Applier, ReplicaCache};
+use super::fsm::StateMachine;
+use super::monitor::{record_perf_point, AdvancePerfContext};
+use super::snap::apply::apply_snapshot;
+use super::storage::Storage;
+use super::{RaftManager, SnapManager};
+use crate::error::BusyReason;
+use crate::{Error, Result};
 
 /// WriteTask records the metadata and entries to persist to disk.
 #[derive(Default)]
@@ -166,11 +166,7 @@ where
     pub fn check_proposal_early(&self, check_config_change: bool) -> Result<()> {
         // See `raft-rs/src/raft.rs`:`step_leader` for details.
         if self.raw_node.raft.state != StateRole::Leader {
-            Err(Error::NotLeader(
-                self.group_id,
-                self.raw_node.raft.term,
-                None,
-            ))
+            Err(Error::NotLeader(self.group_id, self.raw_node.raft.term, None))
         } else if self.raw_node.raft.lead_transferee.is_some() {
             Err(Error::ServiceIsBusy(BusyReason::Transfering))
         } else if check_config_change && self.has_pending_config_change() {
@@ -210,11 +206,7 @@ where
         if msg.get_msg_type() == MessageType::MsgSnapStatus {
             self.raw_node.report_snapshot(
                 msg.from,
-                if msg.reject {
-                    SnapshotStatus::Failure
-                } else {
-                    SnapshotStatus::Finish
-                },
+                if msg.reject { SnapshotStatus::Failure } else { SnapshotStatus::Finish },
             );
             Ok(())
         } else {
@@ -230,20 +222,14 @@ where
             let requests = std::mem::take(&mut self.lease_read_requests);
             if self.raw_node.raft.state != StateRole::Leader {
                 for req in requests {
-                    req.send(Err(Error::NotLeader(
-                        self.group_id,
-                        self.raw_node.raft.term,
-                        None,
-                    )))
-                    .unwrap_or_default();
+                    req.send(Err(Error::NotLeader(self.group_id, self.raw_node.raft.term, None)))
+                        .unwrap_or_default();
                 }
             } else {
                 debug_assert!(self.raw_node.raft.commit_to_current_term());
                 let read_state_ctx = self.applier.delegate_read_requests(requests);
-                self.read_states.push(ReadState {
-                    index: self.committed_index(),
-                    request_ctx: read_state_ctx,
-                });
+                self.read_states
+                    .push(ReadState { index: self.committed_index(), request_ctx: read_state_ctx });
             }
         }
 
@@ -268,8 +254,7 @@ where
         self.advance_read_requests();
         if !self.raw_node.has_ready() {
             if !self.read_states.is_empty() {
-                self.applier
-                    .apply_read_states(std::mem::take(&mut self.read_states));
+                self.applier.apply_read_states(std::mem::take(&mut self.read_states));
             }
             return None;
         }
@@ -358,8 +343,7 @@ where
         ready: &mut Ready,
     ) {
         if !self.read_states.is_empty() {
-            self.applier
-                .apply_read_states(std::mem::take(&mut self.read_states));
+            self.applier.apply_read_states(std::mem::take(&mut self.read_states));
         }
 
         if !ready.read_states().is_empty() {
@@ -367,11 +351,7 @@ where
         }
 
         if !ready.committed_entries().is_empty() {
-            trace!(
-                "{} apply committed entries {}",
-                self.group_id,
-                ready.committed_entries().len()
-            );
+            trace!("{} apply committed entries {}", self.group_id, ready.committed_entries().len());
             let replica_cache = template.mut_replica_cache();
             let applied = self.applier.apply_entries(
                 &mut perf_ctx.applier,
@@ -412,8 +392,9 @@ where
 
     /// Check for pending config changes.
     ///
-    /// The underlying raft-rs will convert the proposal to a normal entry if there is an ongoing
-    /// config change. We check before propose to avoid it.
+    /// The underlying raft-rs will convert the proposal to a normal entry if
+    /// there is an ongoing config change. We check before propose to avoid
+    /// it.
     fn has_pending_config_change(&self) -> bool {
         // Possible unapplied conf change.
         if self.raw_node.raft.has_pending_conf() {
@@ -450,10 +431,7 @@ impl PostReady {
 impl WriteTask {
     #[cfg(test)]
     pub fn with_entries(entries: Vec<Entry>) -> Self {
-        WriteTask {
-            entries,
-            ..Default::default()
-        }
+        WriteTask { entries, ..Default::default() }
     }
 
     pub fn post_ready(self) -> PostReady {
@@ -503,10 +481,7 @@ async fn try_reset_storage_state(
                 apply_state.index, apply_state.term
             );
 
-            let task = WriteTask {
-                snapshot: Some(info.to_raft_snapshot()),
-                ..Default::default()
-            };
+            let task = WriteTask { snapshot: Some(info.to_raft_snapshot()), ..Default::default() };
             let mut lb = LogBatch::default();
             storage.write(&mut lb, &task)?;
             engine.write(&mut lb, true)?;
@@ -517,19 +492,19 @@ async fn try_reset_storage_state(
 
 #[cfg(test)]
 mod tests {
-    use std::{path::PathBuf, sync::Arc};
+    use std::path::PathBuf;
+    use std::sync::Arc;
 
-    use sekas_api::server::v1::{GroupDesc, NodeDesc, ReplicaDesc, ReplicaRole};
     use raft_engine::*;
+    use sekas_api::server::v1::{GroupDesc, NodeDesc, ReplicaDesc, ReplicaRole};
 
     use super::*;
-    use crate::{
-        node::RaftRouteTable,
-        raftgroup::{io::LogWriter, write_initial_state, AddressResolver, ChannelManager},
-        runtime::ExecutorOwner,
-        serverpb::v1::{ApplyState, EvalResult, SnapshotMeta},
-        RaftConfig,
-    };
+    use crate::node::RaftRouteTable;
+    use crate::raftgroup::io::LogWriter;
+    use crate::raftgroup::{write_initial_state, AddressResolver, ChannelManager};
+    use crate::runtime::ExecutorOwner;
+    use crate::serverpb::v1::{ApplyState, EvalResult, SnapshotMeta};
+    use crate::RaftConfig;
 
     struct SimpleStateMachine {
         current_snapshot: Option<PathBuf>,
@@ -631,34 +606,23 @@ mod tests {
             )
             .await
             .unwrap();
-            let state_machine = SimpleStateMachine {
-                flushed_index: 1,
-                current_snapshot: None,
-            };
+            let state_machine = SimpleStateMachine { flushed_index: 1, current_snapshot: None };
             let mut applier = Applier::new(1, state_machine);
 
             // 1. recover nothing
-            try_recover_snapshot(1, &snap_mgr, &engine, &mut storage, &mut applier)
-                .await
-                .unwrap();
+            try_recover_snapshot(1, &snap_mgr, &engine, &mut storage, &mut applier).await.unwrap();
             assert!(applier.mut_state_machine().current_snapshot.is_none());
 
             // 2. recovery snapshot
             let snap = create_snapshot(&snap_mgr, 1, 123, 1);
 
-            try_recover_snapshot(1, &snap_mgr, &engine, &mut storage, &mut applier)
-                .await
-                .unwrap();
+            try_recover_snapshot(1, &snap_mgr, &engine, &mut storage, &mut applier).await.unwrap();
             assert!(
                 matches!(applier.mut_state_machine().current_snapshot.clone(),
                 Some(v) if v == snap.join("DATA")),
                 "expect {}, got {:?}",
                 snap.display(),
-                applier
-                    .mut_state_machine()
-                    .current_snapshot
-                    .as_ref()
-                    .map(|v| v.display())
+                applier.mut_state_machine().current_snapshot.as_ref().map(|v| v.display())
             );
         });
     }
@@ -692,10 +656,7 @@ mod tests {
             )
             .await
             .unwrap();
-            let state_machine = SimpleStateMachine {
-                flushed_index: 123,
-                current_snapshot: None,
-            };
+            let state_machine = SimpleStateMachine { flushed_index: 123, current_snapshot: None };
             let mut applier = Applier::new(1, state_machine);
 
             insert_entries(
@@ -709,9 +670,7 @@ mod tests {
             // create staled snapshot.
             create_snapshot(&snap_mgr, 1, 10, 1);
 
-            try_recover_snapshot(1, &snap_mgr, &engine, &mut storage, &mut applier)
-                .await
-                .unwrap();
+            try_recover_snapshot(1, &snap_mgr, &engine, &mut storage, &mut applier).await.unwrap();
             assert!(applier.mut_state_machine().current_snapshot.is_none());
             assert_eq!(storage.truncated_index(), 50);
         });
@@ -764,41 +723,31 @@ mod tests {
             )
             .await
             .unwrap();
-            let state_machine = SimpleStateMachine {
-                flushed_index: 123,
-                current_snapshot: None,
-            };
+            let state_machine = SimpleStateMachine { flushed_index: 123, current_snapshot: None };
             let mut applier = Applier::new(1, state_machine);
 
             create_snapshot(&snap_mgr, 1, 123, 123);
 
             // case 1: snapshot exceeds log storage range.
-            try_recover_snapshot(1, &snap_mgr, &engine, &mut storage, &mut applier)
-                .await
-                .unwrap();
+            try_recover_snapshot(1, &snap_mgr, &engine, &mut storage, &mut applier).await.unwrap();
             assert!(applier.mut_state_machine().current_snapshot.is_none());
             assert_eq!(storage.truncated_index(), 123);
 
             // case 2: snapshot term is bigger.
-            insert_entries(
-                engine.clone(),
-                &mut storage,
-                vec![(124, 123), (125, 123), (126, 123)],
-            )
-            .await;
+            insert_entries(engine.clone(), &mut storage, vec![(124, 123), (125, 123), (126, 123)])
+                .await;
             applier.mut_state_machine().flushed_index = 125;
             create_snapshot(&snap_mgr, 1, 125, 124);
 
-            try_recover_snapshot(1, &snap_mgr, &engine, &mut storage, &mut applier)
-                .await
-                .unwrap();
+            try_recover_snapshot(1, &snap_mgr, &engine, &mut storage, &mut applier).await.unwrap();
             assert!(applier.mut_state_machine().current_snapshot.is_none());
             assert_eq!(storage.truncated_index(), 125);
         });
     }
 
-    /// After restoring the state machine data from the snapshot, the index of the submitted apply
-    /// task must be monotonically increasing (the first one should be equal to snapshot.index + 1).
+    /// After restoring the state machine data from the snapshot, the index of
+    /// the submitted apply task must be monotonically increasing (the first
+    /// one should be equal to snapshot.index + 1).
     #[test]
     fn recover_from_snapshot_with_consistent_applied_index() {
         struct MockedAddressResolver {}
@@ -895,14 +844,8 @@ mod tests {
                 &RaftConfig::default(),
                 engine.as_ref(),
                 1,
-                vec![ReplicaDesc {
-                    id: 1,
-                    ..Default::default()
-                }],
-                (0..100)
-                    .into_iter()
-                    .map(|_| EvalResult::default())
-                    .collect(),
+                vec![ReplicaDesc { id: 1, ..Default::default() }],
+                (0..100).into_iter().map(|_| EvalResult::default()).collect(),
             )
             .await
             .unwrap();
@@ -949,9 +892,7 @@ mod tests {
             let mut perf_ctx = AdvancePerfContext::default();
             while let Some(task) = node.advance(&mut perf_ctx, &mut template) {
                 let mut batch = LogBatch::default();
-                node.mut_store()
-                    .write(&mut batch, &task)
-                    .expect("write log batch");
+                node.mut_store().write(&mut batch, &task).expect("write log batch");
                 engine.write(&mut batch, false).unwrap();
                 node.post_advance(&mut perf_ctx, task.post_ready(), &mut template)
             }

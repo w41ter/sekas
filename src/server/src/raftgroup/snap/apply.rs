@@ -14,10 +14,10 @@
 use raft::prelude::Snapshot;
 
 use super::{SnapManager, SNAP_DATA};
-use crate::{
-    raftgroup::{applier::Applier, metrics::*, StateMachine},
-    record_latency,
-};
+use crate::raftgroup::applier::Applier;
+use crate::raftgroup::metrics::*;
+use crate::raftgroup::StateMachine;
+use crate::record_latency;
 
 pub fn apply_snapshot<M: StateMachine>(
     replica_id: u64,

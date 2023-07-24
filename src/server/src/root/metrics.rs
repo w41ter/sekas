@@ -18,11 +18,9 @@ use prometheus_static_metric::make_static_metric;
 
 // root status.
 lazy_static! {
-    pub static ref LEADER_STATE_INFO: IntGauge = register_int_gauge!(
-        "root_service_node_as_leader_info",
-        "the node as root leader count"
-    )
-    .unwrap();
+    pub static ref LEADER_STATE_INFO: IntGauge =
+        register_int_gauge!("root_service_node_as_leader_info", "the node as root leader count")
+            .unwrap();
 }
 
 // bootstrap root.
@@ -34,11 +32,9 @@ lazy_static! {
         exponential_buckets(0.00005, 1.8, 26).unwrap(),
     )
     .unwrap();
-    pub static ref BOOTSTRAP_FAIL_TOTAL: IntCounter = register_int_counter!(
-        "root_boostrap_fail_total",
-        "the count of boostrap root fail"
-    )
-    .unwrap();
+    pub static ref BOOTSTRAP_FAIL_TOTAL: IntCounter =
+        register_int_counter!("root_boostrap_fail_total", "the count of boostrap root fail")
+            .unwrap();
 }
 
 // reconcile.

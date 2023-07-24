@@ -19,31 +19,29 @@ pub mod migrate;
 pub mod replica;
 pub mod route_table;
 
-use std::{
-    collections::{HashMap, HashSet},
-    sync::Arc,
-};
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
+use futures::channel::mpsc;
+use futures::lock::Mutex;
 use sekas_api::server::v1::*;
-use futures::{channel::mpsc, lock::Mutex};
 use tracing::{debug, info, warn};
 
-use self::{job::StateChannel, migrate::MigrateController};
-pub use self::{
-    replica::Replica,
-    route_table::{RaftRouteTable, ReplicaRouteTable},
-};
-use crate::{
-    constants::ROOT_GROUP_ID,
-    engine::{Engines, GroupEngine, RawDb, StateEngine},
-    node::replica::{fsm::GroupStateMachine, ExecCtx, LeaseState, LeaseStateObserver, ReplicaInfo},
-    raftgroup::{snap::RecycleSnapMode, ChannelManager, RaftManager, RaftNodeFacade, SnapManager},
-    runtime::sync::WaitGroup,
-    schedule::MoveReplicasProvider,
-    serverpb::v1::*,
-    transport::TransportManager,
-    Config, EngineConfig, Error, NodeConfig, Result,
-};
+use self::job::StateChannel;
+use self::migrate::MigrateController;
+pub use self::replica::Replica;
+pub use self::route_table::{RaftRouteTable, ReplicaRouteTable};
+use crate::constants::ROOT_GROUP_ID;
+use crate::engine::{Engines, GroupEngine, RawDb, StateEngine};
+use crate::node::replica::fsm::GroupStateMachine;
+use crate::node::replica::{ExecCtx, LeaseState, LeaseStateObserver, ReplicaInfo};
+use crate::raftgroup::snap::RecycleSnapMode;
+use crate::raftgroup::{ChannelManager, RaftManager, RaftNodeFacade, SnapManager};
+use crate::runtime::sync::WaitGroup;
+use crate::schedule::MoveReplicasProvider;
+use crate::serverpb::v1::*;
+use crate::transport::TransportManager;
+use crate::{Config, EngineConfig, Error, NodeConfig, Result};
 
 struct ReplicaContext {
     #[allow(dead_code)]
@@ -61,8 +59,9 @@ where
 
     serving_replicas: HashMap<u64, ReplicaContext>,
 
-    /// `serving_groups` used to record the groups that has replicas being served on this node.
-    /// Only one replica of a group is allowed on a node.
+    /// `serving_groups` used to record the groups that has replicas being
+    /// served on this node. Only one replica of a group is allowed on a
+    /// node.
     serving_groups: HashSet<u64>,
 
     root: RootDesc,
@@ -87,7 +86,8 @@ where
     /// Node related metadata, including serving replicas, root desc.
     node_state: Arc<Mutex<NodeState>>,
 
-    /// A lock is used to ensure serialization of create/terminate replica operations.
+    /// A lock is used to ensure serialization of create/terminate replica
+    /// operations.
     replica_mutation: Arc<Mutex<()>>,
 }
 
@@ -98,11 +98,9 @@ impl Node {
         transport_manager: TransportManager,
     ) -> Result<Self> {
         let raft_route_table = RaftRouteTable::new();
-        let trans_mgr = ChannelManager::build(
-            transport_manager.address_resolver(),
-            raft_route_table.clone(),
-        )
-        .await;
+        let trans_mgr =
+            ChannelManager::build(transport_manager.address_resolver(), raft_route_table.clone())
+                .await;
         let snap_dir = engines.snap_dir();
         let snap_mgr = SnapManager::recovery(snap_dir).await?;
         let raft_mgr =
@@ -141,28 +139,16 @@ impl Node {
             if state == ReplicaLocalState::Terminated {
                 setup_destory_replica(group_id, replica_id, self.engines.clone());
             }
-            if matches!(
-                state,
-                ReplicaLocalState::Tombstone | ReplicaLocalState::Terminated
-            ) {
+            if matches!(state, ReplicaLocalState::Tombstone | ReplicaLocalState::Terminated) {
                 self.raft_mgr
                     .snapshot_manager()
                     .recycle_snapshots(replica_id, RecycleSnapMode::All);
                 continue;
             }
 
-            let desc = ReplicaDesc {
-                id: replica_id,
-                node_id,
-                ..Default::default()
-            };
+            let desc = ReplicaDesc { id: replica_id, node_id, ..Default::default() };
             let context = self
-                .serve_replica(
-                    group_id,
-                    desc,
-                    state,
-                    node_state.channel.as_ref().unwrap().clone(),
-                )
+                .serve_replica(group_id, desc, state, node_state.channel.as_ref().unwrap().clone())
                 .await?;
             node_state.serving_replicas.insert(replica_id, context);
             node_state.serving_groups.insert(group_id);
@@ -189,9 +175,10 @@ impl Node {
             return Ok(());
         }
 
-        // To ensure crash-recovery consistency, first create raft metadata, and then save replica
-        // state. In this way, even if the node is restarted before the group is
-        // successfully created, a replica can be recreated by retrying.
+        // To ensure crash-recovery consistency, first create raft metadata, and then
+        // save replica state. In this way, even if the node is restarted before
+        // the group is successfully created, a replica can be recreated by
+        // retrying.
         Replica::create(replica_id, &group, &self.raft_mgr).await?;
         self.state_engine
             .save_replica_state(group_id, replica_id, ReplicaLocalState::Initial)
@@ -199,19 +186,16 @@ impl Node {
 
         info!("group {group_id} create replica {replica_id} and write initial state success");
 
-        // If this node has not completed initialization, then there is no need to record
-        // `ReplicaInfo`. Because the recovery operation will be performed later, `ReplicaMeta` will
-        // be read again and the corresponding `ReplicaInfo` will be created.
+        // If this node has not completed initialization, then there is no need to
+        // record `ReplicaInfo`. Because the recovery operation will be
+        // performed later, `ReplicaMeta` will be read again and the
+        // corresponding `ReplicaInfo` will be created.
         //
         // See `Node::bootstrap` for details.
         let mut node_state = self.node_state.lock().await;
         if node_state.is_bootstrapped() {
             let node_id = node_state.ident.as_ref().unwrap().node_id;
-            let desc = ReplicaDesc {
-                id: replica_id,
-                node_id,
-                ..Default::default()
-            };
+            let desc = ReplicaDesc { id: replica_id, node_id, ..Default::default() };
             let context = self
                 .serve_replica(
                     group_id,
@@ -277,9 +261,7 @@ impl Node {
             .save_replica_state(group_id, replica_id, ReplicaLocalState::Terminated)
             .await?;
 
-        self.raft_mgr
-            .snapshot_manager()
-            .recycle_snapshots(replica_id, RecycleSnapMode::All);
+        self.raft_mgr.snapshot_manager().recycle_snapshots(replica_id, RecycleSnapMode::All);
 
         // Clean group engine data in asynchronously.
         self::job::setup_destory_replica(group_id, replica_id, self.engines.clone());
@@ -299,14 +281,9 @@ impl Node {
     ) -> Result<ReplicaContext> {
         use crate::schedule::setup_scheduler;
 
-        let group_engine = open_group_engine(
-            &self.cfg.engine,
-            self.engines.db(),
-            group_id,
-            desc.id,
-            local_state,
-        )
-        .await?;
+        let group_engine =
+            open_group_engine(&self.cfg.engine, self.engines.db(), group_id, desc.id, local_state)
+                .await?;
         let wait_group = WaitGroup::new();
         let (sender, receiver) = mpsc::unbounded();
 
@@ -329,11 +306,8 @@ impl Node {
 
         let replica_id = info.replica_id;
         let move_replicas_provider = Arc::new(MoveReplicasProvider::new());
-        let schedule_state_observer = Arc::new(LeaseStateObserver::new(
-            info.clone(),
-            lease_state.clone(),
-            channel,
-        ));
+        let schedule_state_observer =
+            Arc::new(LeaseStateObserver::new(info.clone(), lease_state.clone(), channel));
         let replica = Replica::new(
             info.clone(),
             lease_state,
@@ -346,9 +320,7 @@ impl Node {
         self.raft_route_table.update(replica_id, raft_node);
 
         // Setup jobs
-        self.migrate_ctrl
-            .watch_state_changes(replica.clone(), receiver, wait_group.clone())
-            .await;
+        self.migrate_ctrl.watch_state_changes(replica.clone(), receiver, wait_group.clone()).await;
 
         setup_scheduler(
             self.cfg.replica.clone(),
@@ -359,8 +331,8 @@ impl Node {
             wait_group.clone(),
         );
 
-        // Now that all initialization work is done, the replica is ready to serve, mark it as
-        // normal state.
+        // Now that all initialization work is done, the replica is ready to serve, mark
+        // it as normal state.
         if matches!(local_state, ReplicaLocalState::Initial) {
             info.as_normal_state();
             self.state_engine
@@ -432,18 +404,13 @@ impl Node {
         }
 
         debug_assert!(request.request.is_some());
-        let group_request = GroupRequest {
-            group_id: request.group_id,
-            epoch: 0,
-            request: request.request,
-        };
+        let group_request =
+            GroupRequest { group_id: request.group_id, epoch: 0, request: request.request };
 
         let exec_ctx = ExecCtx::forward(request.shard_id);
         let resp = execute(&replica, &exec_ctx, &group_request).await?;
         debug_assert!(resp.response.is_some());
-        Ok(ForwardResponse {
-            response: resp.response,
-        })
+        Ok(ForwardResponse { response: resp.response })
     }
 
     // This request is issued by dest group.
@@ -451,9 +418,7 @@ impl Node {
         use self::replica::retry::do_migration;
 
         if desc.shard_desc.is_none() {
-            return Err(Error::InvalidArgument(
-                "MigrationDesc::shard_desc".to_owned(),
-            ));
+            return Err(Error::InvalidArgument("MigrationDesc::shard_desc".to_owned()));
         }
 
         let group_id = desc.src_group_id;
@@ -532,11 +497,7 @@ impl Node {
             }
         }
 
-        CollectStatsResponse {
-            node_stats: Some(ns),
-            group_stats,
-            replica_stats,
-        }
+        CollectStatsResponse { node_stats: Some(ns), group_stats, replica_stats }
     }
 
     pub async fn collect_group_detail(
@@ -564,10 +525,7 @@ impl Node {
             }
         }
 
-        CollectGroupDetailResponse {
-            replica_states: states,
-            group_descs: descriptors,
-        }
+        CollectGroupDetailResponse { replica_states: states, group_descs: descriptors }
     }
 
     pub async fn collect_migration_state(
@@ -576,10 +534,7 @@ impl Node {
     ) -> CollectMigrationStateResponse {
         use collect_migration_state_response::State;
 
-        let mut resp = CollectMigrationStateResponse {
-            state: State::None as i32,
-            desc: None,
-        };
+        let mut resp = CollectMigrationStateResponse { state: State::None as i32, desc: None };
 
         let group_id = req.group;
         if let Some(replica) = self.replica_route_table.find(group_id) {
@@ -607,9 +562,7 @@ impl Node {
         &self,
         _req: &CollectScheduleStateRequest,
     ) -> CollectScheduleStateResponse {
-        let mut resp = CollectScheduleStateResponse {
-            schedule_states: vec![],
-        };
+        let mut resp = CollectScheduleStateResponse { schedule_states: vec![] };
 
         for group_id in self.serving_group_id_list().await {
             if let Some(replica) = self.replica_route_table.find(group_id) {
@@ -666,11 +619,8 @@ async fn start_raft_group(
     wait_group: WaitGroup,
 ) -> Result<RaftNodeFacade> {
     let group_id = info.group_id;
-    let state_observer = Box::new(LeaseStateObserver::new(
-        info.clone(),
-        lease_state.clone(),
-        channel,
-    ));
+    let state_observer =
+        Box::new(LeaseStateObserver::new(info.clone(), lease_state.clone(), channel));
     let fsm = GroupStateMachine::new(
         cfg.replica.clone(),
         info.clone(),
@@ -691,27 +641,22 @@ async fn start_raft_group(
 
 #[cfg(test)]
 mod tests {
-    use std::{path::PathBuf, time::Duration};
+    use std::path::PathBuf;
+    use std::time::Duration;
 
-    use sekas_api::{
-        server::v1::{
-            group_request_union::Request,
-            report_request::GroupUpdates,
-            shard_desc::{Partition, RangePartition},
-            ReplicaDesc, ReplicaRole,
-        },
-        v1::PutRequest,
-    };
+    use sekas_api::server::v1::group_request_union::Request;
+    use sekas_api::server::v1::report_request::GroupUpdates;
+    use sekas_api::server::v1::shard_desc::{Partition, RangePartition};
+    use sekas_api::server::v1::{ReplicaDesc, ReplicaRole};
+    use sekas_api::v1::PutRequest;
     use tempdir::TempDir;
 
     use super::*;
-    use crate::{constants::INITIAL_EPOCH, runtime::ExecutorOwner};
+    use crate::constants::INITIAL_EPOCH;
+    use crate::runtime::ExecutorOwner;
 
     async fn create_node(root_dir: PathBuf) -> Node {
-        let config = Config {
-            root_dir,
-            ..Default::default()
-        };
+        let config = Config { root_dir, ..Default::default() };
 
         let engines = Engines::open(&config.root_dir, &config.db).unwrap();
         let transport_manager = TransportManager::new(vec![], engines.state()).await;
@@ -767,12 +712,8 @@ mod tests {
 
             let group_id = 2;
             let replica_id = 2;
-            let group = GroupDesc {
-                id: group_id,
-                epoch: INITIAL_EPOCH,
-                shards: vec![],
-                replicas: vec![],
-            };
+            let group =
+                GroupDesc { id: group_id, epoch: INITIAL_EPOCH, shards: vec![], replicas: vec![] };
             node.create_replica(replica_id, group).await.unwrap();
         });
         drop(executor_owner);
@@ -780,10 +721,7 @@ mod tests {
         let executor_owner = ExecutorOwner::new(1);
         executor_owner.executor().block_on(async {
             let node = create_node(tmp_dir.path().to_owned()).await;
-            let ident = NodeIdent {
-                cluster_id: vec![],
-                node_id: 1,
-            };
+            let ident = NodeIdent { cluster_id: vec![], node_id: 1 };
             node.bootstrap(&ident).await.unwrap();
         });
     }
@@ -798,19 +736,10 @@ mod tests {
 
             let group_id = 2;
             let replica_id = 2;
-            let group = GroupDesc {
-                id: group_id,
-                epoch: INITIAL_EPOCH,
-                shards: vec![],
-                replicas: vec![],
-            };
-            node.create_replica(replica_id, group.clone())
-                .await
-                .unwrap();
-            let ident = NodeIdent {
-                cluster_id: vec![],
-                node_id: 1,
-            };
+            let group =
+                GroupDesc { id: group_id, epoch: INITIAL_EPOCH, shards: vec![], replicas: vec![] };
+            node.create_replica(replica_id, group.clone()).await.unwrap();
+            let ident = NodeIdent { cluster_id: vec![], node_id: 1 };
             node.bootstrap(&ident).await.unwrap();
 
             crate::runtime::time::sleep(Duration::from_millis(10)).await;
@@ -830,19 +759,10 @@ mod tests {
 
             let group_id = 2;
             let replica_id = 2;
-            let group = GroupDesc {
-                id: group_id,
-                epoch: INITIAL_EPOCH,
-                shards: vec![],
-                replicas: vec![],
-            };
-            node.create_replica(replica_id, group.clone())
-                .await
-                .unwrap();
-            let ident = NodeIdent {
-                cluster_id: vec![],
-                node_id: 1,
-            };
+            let group =
+                GroupDesc { id: group_id, epoch: INITIAL_EPOCH, shards: vec![], replicas: vec![] };
+            node.create_replica(replica_id, group.clone()).await.unwrap();
+            let ident = NodeIdent { cluster_id: vec![], node_id: 1 };
             node.bootstrap(&ident).await.unwrap();
 
             crate::runtime::time::sleep(Duration::from_millis(10)).await;
@@ -852,9 +772,7 @@ mod tests {
             crate::runtime::time::sleep(Duration::from_millis(10)).await;
 
             let new_replica_id = 3;
-            node.create_replica(new_replica_id, group.clone())
-                .await
-                .unwrap();
+            node.create_replica(new_replica_id, group.clone()).await.unwrap();
         });
     }
 
@@ -868,19 +786,10 @@ mod tests {
 
             let group_id = 2;
             let replica_id = 2;
-            let group = GroupDesc {
-                id: group_id,
-                epoch: INITIAL_EPOCH,
-                shards: vec![],
-                replicas: vec![],
-            };
-            node.create_replica(replica_id, group.clone())
-                .await
-                .unwrap();
-            let ident = NodeIdent {
-                cluster_id: vec![],
-                node_id: 1,
-            };
+            let group =
+                GroupDesc { id: group_id, epoch: INITIAL_EPOCH, shards: vec![], replicas: vec![] };
+            node.create_replica(replica_id, group.clone()).await.unwrap();
+            let ident = NodeIdent { cluster_id: vec![], node_id: 1 };
             node.bootstrap(&ident).await.unwrap();
 
             let new_replica_id = 3;
@@ -952,9 +861,7 @@ mod tests {
                     role: ReplicaRole::Voter as i32,
                 }],
             };
-            node.create_replica(replica_id, group.clone())
-                .await
-                .unwrap();
+            node.create_replica(replica_id, group.clone()).await.unwrap();
 
             node.remove_replica(replica_id, &group).await.unwrap();
 
@@ -975,9 +882,7 @@ mod tests {
                     role: ReplicaRole::Voter as i32,
                 }],
             };
-            node.create_replica(new_replica_id, group.clone())
-                .await
-                .unwrap();
+            node.create_replica(new_replica_id, group.clone()).await.unwrap();
 
             let replica = node.replica_table().find(group_id).unwrap();
             replica.on_leader("test", false).await.unwrap();
@@ -1019,9 +924,7 @@ mod tests {
                     role: ReplicaRole::Voter as i32,
                 }],
             };
-            node.create_replica(replica_id, group.clone())
-                .await
-                .unwrap();
+            node.create_replica(replica_id, group.clone()).await.unwrap();
 
             node.state_engine
                 .save_replica_state(group_id, replica_id, ReplicaLocalState::Terminated)
@@ -1054,9 +957,7 @@ mod tests {
                     role: ReplicaRole::Voter as i32,
                 }],
             };
-            node.create_replica(new_replica_id, group.clone())
-                .await
-                .unwrap();
+            node.create_replica(new_replica_id, group.clone()).await.unwrap();
 
             let replica = node.replica_table().find(group_id).unwrap();
             replica.on_leader("test", false).await.unwrap();

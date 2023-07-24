@@ -16,10 +16,8 @@ mod act_replica;
 
 use std::time::Duration;
 
-pub(crate) use self::{
-    act_config_change::{AddLearners, RemoveLearners, ReplaceVoters},
-    act_replica::{ClearReplicaState, CreateReplicas, RemoveReplica},
-};
+pub(crate) use self::act_config_change::{AddLearners, RemoveLearners, ReplaceVoters};
+pub(crate) use self::act_replica::{ClearReplicaState, CreateReplicas, RemoveReplica};
 use super::scheduler::ScheduleContext;
 
 #[derive(Debug)]
@@ -29,11 +27,13 @@ pub enum ActionState {
     Done,
 }
 
-/// An abstraction which used to describe a independent behavior and it's terminated states.
+/// An abstraction which used to describe a independent behavior and it's
+/// terminated states.
 ///
-/// The working model of `Action`s are issuing requests and polling metadata changes. For example,
-/// adding learners and promoting them to voters requires the addition learners catch up leader's
-/// committed entries, so the `setup` should add the learners into raft group and `poll` should wait
+/// The working model of `Action`s are issuing requests and polling metadata
+/// changes. For example, adding learners and promoting them to voters requires
+/// the addition learners catch up leader's committed entries, so the `setup`
+/// should add the learners into raft group and `poll` should wait
 /// until the learners catch up log entries.
 #[crate::async_trait]
 pub trait Action: Send {

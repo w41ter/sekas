@@ -12,20 +12,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::{
-    error::Error,
-    io::ErrorKind,
-    net::SocketAddr,
-    os::unix::prelude::{FromRawFd, IntoRawFd},
-    panic, process,
-    time::Duration,
-};
+use std::error::Error;
+use std::io::ErrorKind;
+use std::net::SocketAddr;
+use std::os::unix::prelude::{FromRawFd, IntoRawFd};
+use std::time::Duration;
+use std::{panic, process};
 
-use sekas_api::server::v1::{node_server::NodeServer, *};
-use sekas_client::{
-    error::{find_io_error, retryable_rpc_err, transport_err},
-    NodeClient, RequestBatchBuilder,
-};
+use sekas_api::server::v1::node_server::NodeServer;
+use sekas_api::server::v1::*;
+use sekas_client::error::{find_io_error, retryable_rpc_err, transport_err};
+use sekas_client::{NodeClient, RequestBatchBuilder};
 use socket2::{Domain, Socket, Type};
 use tokio::sync::oneshot;
 use tonic::transport::Endpoint;
@@ -81,16 +78,9 @@ async fn broken_pipe() {
 
     let socket = Socket::new(Domain::IPV4, Type::STREAM, None).unwrap();
     socket.set_linger(Some(Duration::ZERO)).unwrap();
-    socket
-        .bind(&"127.0.0.1:0".parse::<SocketAddr>().unwrap().into())
-        .unwrap();
+    socket.bind(&"127.0.0.1:0".parse::<SocketAddr>().unwrap().into()).unwrap();
     socket.listen(1).unwrap();
-    let port = socket
-        .local_addr()
-        .unwrap()
-        .as_socket_ipv4()
-        .unwrap()
-        .port();
+    let port = socket.local_addr().unwrap().as_socket_ipv4().unwrap().port();
 
     let channel = Endpoint::new(format!("http://127.0.0.1:{port}"))
         .unwrap()
@@ -124,24 +114,14 @@ async fn connection_closed() {
     let socket = Socket::new(Domain::IPV4, Type::STREAM, None).unwrap();
     socket.set_nodelay(true).unwrap();
     socket.set_nonblocking(true).unwrap();
-    socket
-        .bind(&"127.0.0.1:0".parse::<SocketAddr>().unwrap().into())
-        .unwrap();
+    socket.bind(&"127.0.0.1:0".parse::<SocketAddr>().unwrap().into()).unwrap();
     socket.listen(10).unwrap();
-    let port = socket
-        .local_addr()
-        .unwrap()
-        .as_socket_ipv4()
-        .unwrap()
-        .port();
+    let port = socket.local_addr().unwrap().as_socket_ipv4().unwrap().port();
 
     let (sender, receiver) = oneshot::channel::<()>();
     let handle = std::thread::spawn(move || {
-        tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap()
-            .block_on(async move {
+        tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(
+            async move {
                 use tokio::net::TcpListener;
                 use tokio_stream::wrappers::TcpListenerStream;
                 use tonic::transport::Server;
@@ -159,7 +139,8 @@ async fn connection_closed() {
                         info!("shutdown");
                     }
                 };
-            });
+            },
+        );
     });
 
     let channel = Endpoint::new(format!("http://127.0.0.1:{port}"))
@@ -182,10 +163,7 @@ async fn connection_closed() {
             let mut cause = status.source();
             let found = loop {
                 if let Some(err) = cause {
-                    if err
-                        .to_string()
-                        .starts_with("operation was canceled: connection closed")
-                    {
+                    if err.to_string().starts_with("operation was canceled: connection closed") {
                         break true;
                     }
                     cause = err.source();
@@ -206,16 +184,9 @@ async fn connection_reset() {
 
     let socket = Socket::new(Domain::IPV4, Type::STREAM, None).unwrap();
     socket.set_linger(Some(Duration::ZERO)).unwrap();
-    socket
-        .bind(&"127.0.0.1:0".parse::<SocketAddr>().unwrap().into())
-        .unwrap();
+    socket.bind(&"127.0.0.1:0".parse::<SocketAddr>().unwrap().into()).unwrap();
     socket.listen(100).unwrap();
-    let port = socket
-        .local_addr()
-        .unwrap()
-        .as_socket_ipv4()
-        .unwrap()
-        .port();
+    let port = socket.local_addr().unwrap().as_socket_ipv4().unwrap().port();
 
     let handle = tokio::spawn(async move {
         let channel = Endpoint::new(format!("http://127.0.0.1:{port}"))

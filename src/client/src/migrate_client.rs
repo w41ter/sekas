@@ -16,7 +16,8 @@ use sekas_api::server::v1::*;
 
 use crate::{ConnManager, Error, GroupClient, Result, RetryState, Router, ShardClient};
 
-/// `MigrateClient` wraps `GroupClient` and provides retry for migration-related functions.
+/// `MigrateClient` wraps `GroupClient` and provides retry for migration-related
+/// functions.
 pub struct MigrateClient {
     group_id: u64,
     router: Router,
@@ -25,11 +26,7 @@ pub struct MigrateClient {
 
 impl MigrateClient {
     pub fn new(group_id: u64, router: Router, conn_manager: ConnManager) -> Self {
-        MigrateClient {
-            group_id,
-            router,
-            conn_manager,
-        }
+        MigrateClient { group_id, router, conn_manager }
     }
     pub async fn setup_migration(&mut self, desc: &MigrationDesc) -> Result<()> {
         let mut retry_state = RetryState::new(None);
@@ -99,10 +96,6 @@ impl MigrateClient {
 
     #[inline]
     fn group_client(&self) -> GroupClient {
-        GroupClient::lazy(
-            self.group_id,
-            self.router.clone(),
-            self.conn_manager.clone(),
-        )
+        GroupClient::lazy(self.group_id, self.router.clone(), self.conn_manager.clone())
     }
 }

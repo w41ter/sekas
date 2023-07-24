@@ -11,7 +11,8 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-use crate::server::v1::{shard_desc::*, *};
+use crate::server::v1::shard_desc::*;
+use crate::server::v1::*;
 
 pub fn in_range(start: &[u8], end: &[u8], key: &[u8]) -> bool {
     start <= key && (key < end || end.is_empty())
@@ -57,7 +58,8 @@ pub fn end_key(shard: &ShardDesc) -> Vec<u8> {
     }
 }
 
-/// Return the slot of the corresponding shard.  `None` is returned if shard is range partition.
+/// Return the slot of the corresponding shard.  `None` is returned if shard is
+/// range partition.
 pub fn slot(shard: &ShardDesc) -> Option<u32> {
     match shard.partition.as_ref().unwrap() {
         Partition::Hash(hash) => Some(hash.slot_id),

@@ -12,22 +12,26 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::{collections::HashMap, future::Future, sync::Arc, time::Duration};
+use std::collections::HashMap;
+use std::future::Future;
+use std::sync::Arc;
+use std::time::Duration;
 
 use derivative::Derivative;
-use sekas_api::{
-    server::v1::{root_client::RootClient, *},
-    v1::{create_collection_request::Partition, *},
-};
 use prost::Message;
+use sekas_api::server::v1::root_client::RootClient;
+use sekas_api::server::v1::*;
+use sekas_api::v1::create_collection_request::Partition;
+use sekas_api::v1::*;
 use tokio::sync::Mutex;
-use tonic::{transport::Channel, Code, Status, Streaming};
+use tonic::transport::Channel;
+use tonic::{Code, Status, Streaming};
 use tracing::trace;
 
-use crate::{
-    conn_manager::ConnManager, discovery::ServiceDiscovery, error::retryable_rpc_err, NodeClient,
-    Result,
-};
+use crate::conn_manager::ConnManager;
+use crate::discovery::ServiceDiscovery;
+use crate::error::retryable_rpc_err;
+use crate::{NodeClient, Result};
 
 #[derive(thiserror::Error, Debug)]
 enum RootError {
@@ -74,11 +78,7 @@ impl Client {
             shared: Arc::new(ClientShared {
                 discovery,
                 conn_manager,
-                core: Mutex::new(ClientCore {
-                    leader: None,
-                    term: 0,
-                    root: Arc::default(),
-                }),
+                core: Mutex::new(ClientCore { leader: None, term: 0, root: Arc::default() }),
                 refresh_descriptor_lock: Mutex::new(0),
             }),
         }
@@ -173,10 +173,7 @@ impl Client {
                     }
                     Err(RootError::Rpc(status)) => return Err(status.into()),
                     Err(RootError::NotAvailable) => {
-                        trace!(
-                            "send rpc to root {}: remote is not available",
-                            leader_node.addr
-                        );
+                        trace!("send rpc to root {}: remote is not available", leader_node.addr);
                     }
                     Err(RootError::NotRoot(root, term, leader_opt)) => {
                         if core.root.epoch <= root.epoch {
@@ -335,9 +332,7 @@ impl AdminRequestBuilder {
     pub fn list_database() -> AdminRequest {
         AdminRequest {
             request: Some(AdminRequestUnion {
-                request: Some(admin_request_union::Request::ListDatabases(
-                    ListDatabasesRequest {},
-                )),
+                request: Some(admin_request_union::Request::ListDatabases(ListDatabasesRequest {})),
             }),
         }
     }
@@ -345,9 +340,9 @@ impl AdminRequestBuilder {
     pub fn get_database(name: String) -> AdminRequest {
         AdminRequest {
             request: Some(AdminRequestUnion {
-                request: Some(admin_request_union::Request::GetDatabase(
-                    GetDatabaseRequest { name },
-                )),
+                request: Some(admin_request_union::Request::GetDatabase(GetDatabaseRequest {
+                    name,
+                })),
             }),
         }
     }
@@ -360,11 +355,7 @@ impl AdminRequestBuilder {
         AdminRequest {
             request: Some(AdminRequestUnion {
                 request: Some(admin_request_union::Request::CreateCollection(
-                    CreateCollectionRequest {
-                        name: co_name,
-                        database: Some(database),
-                        partition,
-                    },
+                    CreateCollectionRequest { name: co_name, database: Some(database), partition },
                 )),
             }),
         }
@@ -374,10 +365,7 @@ impl AdminRequestBuilder {
         AdminRequest {
             request: Some(AdminRequestUnion {
                 request: Some(admin_request_union::Request::DeleteCollection(
-                    DeleteCollectionRequest {
-                        name: co_name,
-                        database: Some(database),
-                    },
+                    DeleteCollectionRequest { name: co_name, database: Some(database) },
                 )),
             }),
         }
@@ -387,9 +375,7 @@ impl AdminRequestBuilder {
         AdminRequest {
             request: Some(AdminRequestUnion {
                 request: Some(admin_request_union::Request::ListCollections(
-                    ListCollectionsRequest {
-                        database: Some(database),
-                    },
+                    ListCollectionsRequest { database: Some(database) },
                 )),
             }),
         }
@@ -398,12 +384,10 @@ impl AdminRequestBuilder {
     pub fn get_collection(database: DatabaseDesc, co_name: String) -> AdminRequest {
         AdminRequest {
             request: Some(AdminRequestUnion {
-                request: Some(admin_request_union::Request::GetCollection(
-                    GetCollectionRequest {
-                        name: co_name,
-                        database: Some(database),
-                    },
-                )),
+                request: Some(admin_request_union::Request::GetCollection(GetCollectionRequest {
+                    name: co_name,
+                    database: Some(database),
+                })),
             }),
         }
     }

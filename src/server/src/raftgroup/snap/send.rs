@@ -11,23 +11,19 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-use std::{
-    ffi::OsStr,
-    fs::File,
-    io::Read,
-    os::unix::ffi::OsStrExt,
-    pin::Pin,
-    task::{Context, Poll},
-};
+use std::ffi::OsStr;
+use std::fs::File;
+use std::io::Read;
+use std::os::unix::ffi::OsStrExt;
+use std::pin::Pin;
+use std::task::{Context, Poll};
 
 use tracing::debug;
 
 use super::{SnapManager, SnapshotGuard};
-use crate::{
-    raftgroup::metrics::*,
-    serverpb::v1::{snapshot_chunk, SnapshotChunk},
-    Error, Result,
-};
+use crate::raftgroup::metrics::*;
+use crate::serverpb::v1::{snapshot_chunk, SnapshotChunk};
+use crate::{Error, Result};
 
 type SnapResult = Result<SnapshotChunk, tonic::Status>;
 
@@ -55,15 +51,12 @@ pub async fn send_snapshot(
 
 impl SnapshotChunkStream {
     fn new(info: SnapshotGuard) -> Self {
-        SnapshotChunkStream {
-            info,
-            file: None,
-            file_index: 0,
-        }
+        SnapshotChunkStream { info, file: None, file_index: 0 }
     }
 
     fn next_chunk(&mut self) -> Option<SnapResult> {
-        use std::{fs::OpenOptions, io::ErrorKind};
+        use std::fs::OpenOptions;
+        use std::io::ErrorKind;
 
         match self.file.as_mut() {
             // Send snapshot file chunk.

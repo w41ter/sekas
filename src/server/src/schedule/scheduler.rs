@@ -12,24 +12,22 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::{
-    cmp::Ordering,
-    collections::{BinaryHeap, HashMap, HashSet},
-    pin::Pin,
-    sync::{Arc, Mutex},
-    task::{Context, Poll},
-    time::{Duration, Instant},
-};
+use std::cmp::Ordering;
+use std::collections::{BinaryHeap, HashMap, HashSet};
+use std::pin::Pin;
+use std::sync::{Arc, Mutex};
+use std::task::{Context, Poll};
+use std::time::{Duration, Instant};
 
 use futures::Future;
 
-use super::{
-    event_source::EventSource,
-    task::{Task, TaskState},
-    tasks::{GroupLockTable, GENERATED_TASK_ID},
-    ScheduleStateObserver,
-};
-use crate::{node::Replica, transport::TransportManager, ReplicaConfig};
+use super::event_source::EventSource;
+use super::task::{Task, TaskState};
+use super::tasks::{GroupLockTable, GENERATED_TASK_ID};
+use super::ScheduleStateObserver;
+use crate::node::Replica;
+use crate::transport::TransportManager;
+use crate::ReplicaConfig;
 
 #[derive(Clone)]
 pub struct EventWaker {
@@ -147,8 +145,7 @@ impl Scheduler {
 
         let mut pending_tasks: Vec<Box<dyn Task>> = vec![];
         for task_id in self.collect_active_tasks() {
-            self.advance_task(current_term, task_id, &mut pending_tasks)
-                .await;
+            self.advance_task(current_term, task_id, &mut pending_tasks).await;
             crate::runtime::yield_now().await;
         }
 
@@ -193,8 +190,7 @@ impl Scheduler {
             }
 
             if let Some(schedule_state) = self.group_lock_table.take_updated_states() {
-                self.schedule_state_observer
-                    .on_schedule_state_updated(schedule_state);
+                self.schedule_state_observer.on_schedule_state_updated(schedule_state);
             }
         }
     }
@@ -204,14 +200,7 @@ impl Scheduler {
         for task in tasks {
             let task_id = task.id();
             self.incoming_tasks.push(task_id);
-            self.jobs.insert(
-                task_id,
-                Job {
-                    _start_at: now,
-                    advanced_at: now,
-                    task,
-                },
-            );
+            self.jobs.insert(task_id, Job { _start_at: now, advanced_at: now, task });
         }
     }
 
@@ -255,9 +244,7 @@ impl EventWaiter {
     }
 
     fn waker(&self) -> EventWaker {
-        EventWaker {
-            state: self.state.clone(),
-        }
+        EventWaker { state: self.state.clone() }
     }
 }
 
@@ -280,10 +267,7 @@ impl std::future::Future for EventWaiter {
 
 impl Ord for Deadline {
     fn cmp(&self, other: &Self) -> Ordering {
-        other
-            .deadline
-            .cmp(&self.deadline)
-            .then_with(|| other.timer_id.cmp(&self.timer_id))
+        other.deadline.cmp(&self.deadline).then_with(|| other.timer_id.cmp(&self.timer_id))
     }
 }
 
@@ -302,11 +286,7 @@ impl TaskTimer {
         let timer_id = self.next_timer_id;
         self.next_timer_id += 1;
         self.timer_indexes.insert(task_id, timer_id);
-        self.timer_heap.push(Deadline {
-            deadline,
-            timer_id,
-            task_id,
-        });
+        self.timer_heap.push(Deadline { deadline, timer_id, task_id });
     }
 
     async fn timeout<T: Future<Output = ()>>(&self, f: T) {
@@ -320,21 +300,11 @@ impl TaskTimer {
     fn take_fired_tasks(&mut self) -> HashSet<u64> {
         let now = Instant::now();
         let mut result = HashSet::default();
-        while let Some(Deadline {
-            deadline,
-            timer_id,
-            task_id,
-        }) = self.timer_heap.peek()
-        {
+        while let Some(Deadline { deadline, timer_id, task_id }) = self.timer_heap.peek() {
             if *deadline > now {
                 break;
             }
-            if self
-                .timer_indexes
-                .get(task_id)
-                .map(|t| *t == *timer_id)
-                .unwrap_or_default()
-            {
+            if self.timer_indexes.get(task_id).map(|t| *t == *timer_id).unwrap_or_default() {
                 self.timer_indexes.remove(task_id);
                 result.insert(*task_id);
             }

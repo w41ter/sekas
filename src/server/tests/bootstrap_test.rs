@@ -15,7 +15,10 @@ mod helper;
 
 use sekas_server::Result;
 
-use crate::helper::{client::*, context::*, init::setup_panic_hook, runtime::block_on_current};
+use crate::helper::client::*;
+use crate::helper::context::*;
+use crate::helper::init::setup_panic_hook;
+use crate::helper::runtime::block_on_current;
 
 #[ctor::ctor]
 fn init() {

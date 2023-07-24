@@ -21,19 +21,24 @@ mod cmd_move_replicas;
 mod cmd_put;
 mod cmd_scan;
 
-use std::{collections::VecDeque, sync::Arc, time::Duration};
+use std::collections::VecDeque;
+use std::sync::Arc;
+use std::time::Duration;
 
 use dashmap::DashMap;
-use sekas_api::server::v1::{
-    group_request_union::Request, ShardDeleteRequest, ShardDesc, ShardPutRequest,
-};
 use futures::channel::oneshot;
+use sekas_api::server::v1::group_request_union::Request;
+use sekas_api::server::v1::{ShardDeleteRequest, ShardDesc, ShardPutRequest};
 
-pub(crate) use self::{
-    cmd_accept_shard::accept_shard, cmd_batch_write::batch_write, cmd_delete::delete, cmd_get::get,
-    cmd_move_replicas::move_replicas, cmd_put::put, cmd_scan::scan,
-};
-use crate::{serverpb::v1::EvalResult, Error, Result};
+pub(crate) use self::cmd_accept_shard::accept_shard;
+pub(crate) use self::cmd_batch_write::batch_write;
+pub(crate) use self::cmd_delete::delete;
+pub(crate) use self::cmd_get::get;
+pub(crate) use self::cmd_move_replicas::move_replicas;
+pub(crate) use self::cmd_put::put;
+pub(crate) use self::cmd_scan::scan;
+use crate::serverpb::v1::EvalResult;
+use crate::{Error, Result};
 
 const FLAT_KEY_VERSION: u64 = u64::MAX - 1;
 pub const MIGRATING_KEY_VERSION: u64 = 0;
@@ -63,9 +68,7 @@ pub struct RowLatchManager {
 
 impl RowLatchManager {
     pub fn new() -> Self {
-        RowLatchManager {
-            latches: Arc::new(DashMap::with_shard_amount(16)),
-        }
+        RowLatchManager { latches: Arc::new(DashMap::with_shard_amount(16)) }
     }
 
     pub async fn acquire(
@@ -90,10 +93,7 @@ impl RowLatchManager {
     }
 
     pub fn release(&self, shard_id: u64, key: &[u8]) {
-        let shard_key = ShardKey {
-            shard_id,
-            user_key: key.to_owned(),
-        };
+        let shard_key = ShardKey { shard_id, user_key: key.to_owned() };
 
         self.latches.remove_if_mut(&shard_key, |shard_key, value| {
             let mut guard = LatchGuard {
@@ -125,10 +125,7 @@ impl RowLatchManager {
         shard_id: u64,
         key: &[u8],
     ) -> Result<LatchGuard, oneshot::Receiver<LatchGuard>> {
-        let shard_key = ShardKey {
-            shard_id,
-            user_key: key.to_owned(),
-        };
+        let shard_key = ShardKey { shard_id, user_key: key.to_owned() };
 
         let mut entry = self.latches.entry(shard_key).or_default();
         let latch = entry.value_mut();
@@ -136,10 +133,7 @@ impl RowLatchManager {
             latch.hold = true;
             Ok(LatchGuard {
                 hold: true,
-                shard_key: ShardKey {
-                    shard_id,
-                    user_key: key.to_owned(),
-                },
+                shard_key: ShardKey { shard_id, user_key: key.to_owned() },
                 latch_manager: self.clone(),
             })
         } else {
@@ -153,8 +147,7 @@ impl RowLatchManager {
 impl Drop for LatchGuard {
     fn drop(&mut self) {
         if self.hold {
-            self.latch_manager
-                .release(self.shard_key.shard_id, &self.shard_key.user_key);
+            self.latch_manager.release(self.shard_key.shard_id, &self.shard_key.user_key);
         }
     }
 }
@@ -162,10 +155,7 @@ impl Drop for LatchGuard {
 pub fn add_shard(shard: ShardDesc) -> EvalResult {
     use crate::serverpb::v1::SyncOp;
 
-    EvalResult {
-        op: Some(SyncOp::add_shard(shard)),
-        ..Default::default()
-    }
+    EvalResult { op: Some(SyncOp::add_shard(shard)), ..Default::default() }
 }
 
 pub async fn acquire_row_latches(
@@ -196,19 +186,13 @@ pub async fn acquire_row_latches(
                     .put
                     .as_ref()
                     .ok_or_else(|| Error::InvalidArgument("ShardPutRequest::put is None".into()))?;
-                keys.push(ShardKey {
-                    shard_id: req.shard_id,
-                    user_key: put.key.clone(),
-                });
+                keys.push(ShardKey { shard_id: req.shard_id, user_key: put.key.clone() });
             }
             for req in &batch_writes.deletes {
                 let delete = req.delete.as_ref().ok_or_else(|| {
                     Error::InvalidArgument("ShardDeleteRequest::delete is None".into())
                 })?;
-                keys.push(ShardKey {
-                    shard_id: req.shard_id,
-                    user_key: delete.key.clone(),
-                });
+                keys.push(ShardKey { shard_id: req.shard_id, user_key: delete.key.clone() });
             }
 
             // Sort shard keys before acquiring any latch, to avoid deadlock.

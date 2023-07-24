@@ -14,11 +14,12 @@
 
 use std::time::Instant;
 
-use sekas_client::Collection;
 use rand::prelude::*;
+use sekas_client::Collection;
 use tracing::trace;
 
-use super::{metrics::*, AppConfig};
+use super::metrics::*;
+use super::AppConfig;
 
 pub struct Job {
     co: Collection,
@@ -42,11 +43,7 @@ pub enum NextOp {
 
 impl Generator {
     pub fn new(seed: u64, cfg: AppConfig, range: std::ops::Range<u64>) -> Generator {
-        Generator {
-            cfg,
-            range,
-            rng: SmallRng::seed_from_u64(seed),
-        }
+        Generator { cfg, range, rng: SmallRng::seed_from_u64(seed) }
     }
 
     pub fn next_op(&mut self) -> NextOp {
@@ -71,24 +68,15 @@ impl Generator {
 
     fn next_key(&mut self) -> Vec<u8> {
         let index = self.rng.gen_range(self.range.clone());
-        format!(
-            "{}{index:0leading$}",
-            self.cfg.key.prefix,
-            leading = self.cfg.key.leading
-        )
-        .into_bytes()
+        format!("{}{index:0leading$}", self.cfg.key.prefix, leading = self.cfg.key.leading)
+            .into_bytes()
     }
 }
 
 impl Job {
     pub fn new(co: Collection, seed: u64, num_op: usize, cfg: AppConfig) -> Job {
         let limited = cfg.data.limited;
-        Job {
-            co,
-            consumed: 0,
-            num_op,
-            gen: Generator::new(seed, cfg, 0..limited),
-        }
+        Job { co, consumed: 0, num_op, gen: Generator::new(seed, cfg, 0..limited) }
     }
 }
 

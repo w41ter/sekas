@@ -12,18 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::{error::Error, result::Result};
+use std::error::Error;
+use std::result::Result;
 
 fn main() -> Result<(), Box<dyn Error>> {
     std::env::set_var("PROTOC", protoc_build::PROTOC);
     std::env::set_var("PROTOC_INCLUDE", protoc_build::PROTOC_INCLUDE);
 
     tonic_build::configure().compile(
-        &[
-            "sekas/v1/sekas.proto",
-            "sekas/server/v1/node.proto",
-            "sekas/server/v1/root.proto",
-        ],
+        &["sekas/v1/sekas.proto", "sekas/server/v1/node.proto", "sekas/server/v1/root.proto"],
         &["."],
     )?;
     Ok(())

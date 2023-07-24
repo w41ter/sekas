@@ -23,10 +23,7 @@ pub struct RootDiscovery {
 
 impl RootDiscovery {
     pub fn new(initial_nodes: Vec<String>, state_engine: StateEngine) -> Self {
-        RootDiscovery {
-            initial_nodes,
-            state_engine,
-        }
+        RootDiscovery { initial_nodes, state_engine }
     }
 }
 

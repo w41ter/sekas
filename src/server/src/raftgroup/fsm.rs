@@ -16,10 +16,8 @@ use std::path::Path;
 
 use sekas_api::server::v1::{ChangeReplicas, GroupDesc};
 
-use crate::{
-    serverpb::v1::{ApplyState, EvalResult},
-    Result,
-};
+use crate::serverpb::v1::{ApplyState, EvalResult};
+use crate::Result;
 
 /// A helper structure to used to access the internal field of entries.
 pub enum ApplyEntry {
@@ -28,7 +26,8 @@ pub enum ApplyEntry {
     Proposal { eval_result: EvalResult },
 }
 
-/// An abstraction of finate state machine. It is used by `RaftNode` to apply entries.
+/// An abstraction of finate state machine. It is used by `RaftNode` to apply
+/// entries.
 pub trait StateMachine: Send {
     fn start_plug(&mut self) -> Result<()>;
     fn apply(&mut self, index: u64, term: u64, entry: ApplyEntry) -> Result<()>;
@@ -47,6 +46,7 @@ pub trait StateMachine: Send {
 /// An abstraction of snapshot generation.
 #[crate::async_trait]
 pub trait SnapshotBuilder: Send + Sync {
-    /// Stable this checkpoint to `base_dir`, and returns applied index and group descriptor.
+    /// Stable this checkpoint to `base_dir`, and returns applied index and
+    /// group descriptor.
     async fn checkpoint(&self, base_dir: &Path) -> Result<(ApplyState, GroupDesc)>;
 }

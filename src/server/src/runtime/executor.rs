@@ -12,12 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::{
-    future::Future,
-    pin::Pin,
-    task::{Context, Poll},
-    time::{Duration, Instant},
-};
+use std::future::Future;
+use std::pin::Pin;
+use std::task::{Context, Poll};
+use std::time::{Duration, Instant};
 
 use pin_project::pin_project;
 
@@ -41,9 +39,9 @@ enum TaskState {
 
 /// A handle that awaits the result of a task.
 ///
-/// Dropping a [`JoinHandle`] will detach the task, meaning that there is no longer
-/// a handle to the task and no way to `join` on it. If you want cancel tasks when
-/// dropping a handle, use [`DispatchHandle`].
+/// Dropping a [`JoinHandle`] will detach the task, meaning that there is no
+/// longer a handle to the task and no way to `join` on it. If you want cancel
+/// tasks when dropping a handle, use [`DispatchHandle`].
 type JoinHandle<T> = tokio::task::JoinHandle<T>;
 
 /// A handle that awaits the result of a task.
@@ -101,9 +99,7 @@ impl ExecutorOwner {
     }
 
     pub fn executor(&self) -> Executor {
-        Executor {
-            handle: self.runtime.handle().clone(),
-        }
+        Executor { handle: self.runtime.handle().clone() }
     }
 }
 
@@ -151,7 +147,8 @@ impl Executor {
         DispatchHandle { inner }
     }
 
-    /// Runs a future to completion on the executor. This is the executor’s entry point.
+    /// Runs a future to completion on the executor. This is the executor’s
+    /// entry point.
     #[inline]
     pub fn block_on<F, T>(&self, future: F) -> T
     where
@@ -201,10 +198,7 @@ impl<T> Drop for DispatchHandle<T> {
 
 impl<F: Future> FutureWrapper<F> {
     fn new(inner: F) -> Self {
-        FutureWrapper {
-            state: TaskState::First(Instant::now()),
-            inner,
-        }
+        FutureWrapper { state: TaskState::First(Instant::now()), inner }
     }
 }
 
@@ -248,9 +242,7 @@ impl<F: Future> Future for FutureWrapper<F> {
 ///
 /// This will panic if called outside the context of a runtime.
 pub fn current() -> Executor {
-    Executor {
-        handle: tokio::runtime::Handle::current(),
-    }
+    Executor { handle: tokio::runtime::Handle::current() }
 }
 
 #[inline]

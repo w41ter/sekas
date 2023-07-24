@@ -14,17 +14,17 @@
 
 use std::time::Duration;
 
-use sekas_api::server::v1::{
-    report_request::GroupUpdates, GroupDesc, ReplicaState, ReportRequest, ScheduleState,
-};
+use futures::channel::mpsc;
+use futures::StreamExt;
+use sekas_api::server::v1::report_request::GroupUpdates;
+use sekas_api::server::v1::{GroupDesc, ReplicaState, ReportRequest, ScheduleState};
 use sekas_client::RootClient;
-use futures::{channel::mpsc, StreamExt};
 use tracing::warn;
 
-use crate::{
-    node::metrics::take_report_metrics, record_latency, runtime::TaskPriority,
-    transport::TransportManager,
-};
+use crate::node::metrics::take_report_metrics;
+use crate::record_latency;
+use crate::runtime::TaskPriority;
+use crate::transport::TransportManager;
 
 #[derive(Clone)]
 pub struct StateChannel {
@@ -53,8 +53,8 @@ async fn report_state_worker(
     }
 }
 
-/// Wait until at least a new request is received or the channel is closed. Returns `None` if the
-/// channel is closed.
+/// Wait until at least a new request is received or the channel is closed.
+/// Returns `None` if the channel is closed.
 async fn wait_state_updates(
     receiver: &mut mpsc::UnboundedReceiver<GroupUpdates>,
 ) -> Option<Vec<GroupUpdates>> {
@@ -80,13 +80,13 @@ async fn wait_state_updates(
 
 /// Issue report rpc request to root server.
 ///
-/// This function is executed synchronously, and it will not affect normal reporting, because
-/// a node has only a small number of replicas, and the replica state changes are not frequent.
-/// Using a synchronous method can simplify the sequence problem introduced by asynchronous
-/// reporting.
+/// This function is executed synchronously, and it will not affect normal
+/// reporting, because a node has only a small number of replicas, and the
+/// replica state changes are not frequent. Using a synchronous method can
+/// simplify the sequence problem introduced by asynchronous reporting.
 ///
-/// If one day you find that reporting has become a bottleneck, you can consider optimizing this
-/// code.
+/// If one day you find that reporting has become a bottleneck, you can consider
+/// optimizing this code.
 async fn report_state_updates(root_client: &RootClient, request: ReportRequest) {
     let mut interval = 1;
     while let Err(e) = root_client.report(&request).await {
@@ -103,31 +103,21 @@ impl StateChannel {
 
     #[inline]
     pub fn broadcast_replica_state(&mut self, group_id: u64, replica_state: ReplicaState) {
-        let update = GroupUpdates {
-            group_id,
-            replica_state: Some(replica_state),
-            ..Default::default()
-        };
+        let update =
+            GroupUpdates { group_id, replica_state: Some(replica_state), ..Default::default() };
         self.sender.start_send(update).unwrap_or_default();
     }
 
     #[inline]
     pub fn broadcast_group_descriptor(&mut self, group_id: u64, group_desc: GroupDesc) {
-        let update = GroupUpdates {
-            group_id,
-            group_desc: Some(group_desc),
-            ..Default::default()
-        };
+        let update = GroupUpdates { group_id, group_desc: Some(group_desc), ..Default::default() };
         self.sender.start_send(update).unwrap_or_default();
     }
 
     #[inline]
     pub fn broadcast_schedule_state(&self, group_id: u64, schedule_state: ScheduleState) {
-        let update = GroupUpdates {
-            group_id,
-            schedule_state: Some(schedule_state),
-            ..Default::default()
-        };
+        let update =
+            GroupUpdates { group_id, schedule_state: Some(schedule_state), ..Default::default() };
         self.sender.clone().start_send(update).unwrap_or_default();
     }
 }

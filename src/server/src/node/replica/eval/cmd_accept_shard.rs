@@ -25,8 +25,5 @@ pub async fn accept_shard(group_id: u64, epoch: u64, req: &AcceptShardRequest) -
         dest_group_epoch: epoch,
     };
     let sync_op = SyncOp::migration(MigrationEvent::Setup, migration_desc);
-    EvalResult {
-        batch: None,
-        op: Some(sync_op),
-    }
+    EvalResult { batch: None, op: Some(sync_op) }
 }

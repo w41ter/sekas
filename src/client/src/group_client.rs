@@ -12,34 +12,36 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::{
-    collections::HashMap,
-    future::Future,
-    time::{Duration, Instant},
-};
+use std::collections::HashMap;
+use std::future::Future;
+use std::time::{Duration, Instant};
 
-use sekas_api::{
-    server::v1::{group_request_union::Request, group_response_union::Response, *},
-    shard,
-};
+use sekas_api::server::v1::group_request_union::Request;
+use sekas_api::server::v1::group_response_union::Response;
+use sekas_api::server::v1::*;
+use sekas_api::shard;
 use tonic::{Code, Status};
 use tracing::{debug, trace, warn};
 
+use crate::metrics::*;
+use crate::node_client::RpcTimeout;
 use crate::{
-    metrics::*, node_client::RpcTimeout, record_latency_opt, ConnManager, Error, NodeClient,
-    RequestBatchBuilder, Result, Router, RouterGroupState,
+    record_latency_opt, ConnManager, Error, NodeClient, RequestBatchBuilder, Result, Router,
+    RouterGroupState,
 };
 
 #[derive(Clone, Debug, Default)]
 struct InvokeOpt<'a> {
     request: Option<&'a Request>,
 
-    /// It indicates that the value of epoch is accurate. If `EpochNotMatch` is encountered, it
-    /// means that the precondition is not satisfied, and there is no need to retry.
+    /// It indicates that the value of epoch is accurate. If `EpochNotMatch` is
+    /// encountered, it means that the precondition is not satisfied, and
+    /// there is no need to retry.
     accurate_epoch: bool,
 
-    /// It points out that the associated request is idempotent, and if a transport error
-    /// (connection reset, broken pipe) is encountered, it can be retried safety.
+    /// It points out that the associated request is idempotent, and if a
+    /// transport error (connection reset, broken pipe) is encountered, it
+    /// can be retried safety.
     ignore_transport_error: bool,
 }
 
@@ -51,13 +53,14 @@ struct InvokeContext {
     timeout: Option<Duration>,
 }
 
-/// GroupClient is an abstraction for submitting requests to the leader of a group of replicas.
+/// GroupClient is an abstraction for submitting requests to the leader of a
+/// group of replicas.
 ///
-/// It provides leader positioning, automatic error retry (for retryable errors) and requests
-/// timeout.
+/// It provides leader positioning, automatic error retry (for retryable errors)
+/// and requests timeout.
 ///
-/// Of course, if it has traversed all the replicas and has not successfully submitted the
-/// request, it will return `GroupNotAccessable`.
+/// Of course, if it has traversed all the replicas and has not successfully
+/// submitted the request, it will return `GroupNotAccessable`.
 #[derive(Clone)]
 pub struct GroupClient {
     group_id: u64,
@@ -128,29 +131,18 @@ impl GroupClient {
         }
         self.next_access_index = 0;
 
-        let deadline = self
-            .timeout
-            .take()
-            .map(|duration| Instant::now() + duration);
+        let deadline = self.timeout.take().map(|duration| Instant::now() + duration);
         let mut index = 0;
         let group_id = self.group_id;
         while let Some((node_id, client)) = self.recommend_client() {
             trace!("group {group_id} issue rpc request with index {index} to node {node_id}");
             index += 1;
-            let ctx = InvokeContext {
-                group_id,
-                epoch: self.epoch,
-                node_id,
-                timeout: self.timeout,
-            };
+            let ctx = InvokeContext { group_id, epoch: self.epoch, node_id, timeout: self.timeout };
             match op(ctx, client).await {
                 Err(status) => self.apply_status(status, &opt)?,
                 Ok(s) => return Ok(s),
             };
-            if deadline
-                .map(|v| v.elapsed() > Duration::ZERO)
-                .unwrap_or_default()
-            {
+            if deadline.map(|v| v.elapsed() > Duration::ZERO).unwrap_or_default() {
                 return Err(Error::DeadlineExceeded("issue rpc".to_owned()));
             }
             GROUP_CLIENT_RETRY_TOTAL.inc();
@@ -202,8 +194,8 @@ impl GroupClient {
 
     /// Return the next node id, skip the leader node.
     fn next_access_node_id(&mut self) -> Option<u64> {
-        // The first node is the current leader in most cases, making sure it retries more than
-        // other nodes.
+        // The first node is the current leader in most cases, making sure it retries
+        // more than other nodes.
         if self.next_access_index <= self.replicas.len() {
             let replica_desc = &self.replicas[self.next_access_index % self.replicas.len()];
             self.next_access_index += 1;
@@ -298,11 +290,7 @@ impl GroupClient {
         self.access_node_id = None;
         if let Some(leader) = leader_desc {
             // Ignore staled `NotLeader` response.
-            if !self
-                .leader_state
-                .map(|(_, local_term)| local_term >= term)
-                .unwrap_or_default()
-            {
+            if !self.leader_state.map(|(_, local_term)| local_term >= term).unwrap_or_default() {
                 self.access_node_id = Some(leader.node_id);
                 self.leader_state = Some((leader.id, term));
 
@@ -339,11 +327,7 @@ impl GroupClient {
             group_desc.epoch,
         );
 
-        if opt
-            .request
-            .map(|r| !is_executable(&group_desc, r))
-            .unwrap_or_default()
-        {
+        if opt.request.map(|r| !is_executable(&group_desc, r)).unwrap_or_default() {
             // The target group would not execute the specified request.
             Err(Error::EpochNotMatch(group_desc))
         } else {
@@ -365,9 +349,7 @@ impl GroupClient {
                 requests: vec![GroupRequest {
                     group_id: ctx.group_id,
                     epoch: ctx.epoch,
-                    request: Some(GroupRequestUnion {
-                        request: Some(request.clone()),
-                    }),
+                    request: Some(GroupRequestUnion { request: Some(request.clone()) }),
                 }],
             };
             async move {
@@ -390,9 +372,7 @@ impl GroupClient {
 
     fn batch_response<T>(mut resps: Vec<T>) -> Result<T, Status> {
         if resps.is_empty() {
-            Err(Status::internal(
-                "response of batch request is empty".to_owned(),
-            ))
+            Err(Status::internal("response of batch request is empty".to_owned()))
         } else {
             Ok(resps.pop().unwrap())
         }
@@ -404,20 +384,15 @@ impl GroupClient {
         if let Some(resp) = resp.response.and_then(|resp| resp.response) {
             Ok(resp)
         } else if let Some(err) = resp.error {
-            Err(Status::with_details(
-                Code::Unknown,
-                "response",
-                err.encode_to_vec().into(),
-            ))
+            Err(Status::with_details(Code::Unknown, "response", err.encode_to_vec().into()))
         } else {
-            Err(Status::internal(
-                "Both response and error are None in GroupResponse".to_owned(),
-            ))
+            Err(Status::internal("Both response and error are None in GroupResponse".to_owned()))
         }
     }
 }
 
-// Scheduling related functions that return GroupNotAccessable will be retried safely.
+// Scheduling related functions that return GroupNotAccessable will be retried
+// safely.
 impl GroupClient {
     pub async fn create_shard(&mut self, desc: &ShardDesc) -> Result<()> {
         let op = |ctx: InvokeContext, client: NodeClient| {
@@ -433,9 +408,7 @@ impl GroupClient {
                     .and_then(Self::group_response)?;
                 match resp {
                     Response::CreateShard(_) => Ok(()),
-                    _ => Err(Status::internal(
-                        "invalid response type, CreateShard is required",
-                    )),
+                    _ => Err(Status::internal("invalid response type, CreateShard is required")),
                 }
             }
         };
@@ -456,17 +429,12 @@ impl GroupClient {
                     .and_then(Self::group_response)?;
                 match resp {
                     Response::Transfer(_) => Ok(()),
-                    _ => Err(Status::internal(
-                        "invalid response type, Transfer is required",
-                    )),
+                    _ => Err(Status::internal("invalid response type, Transfer is required")),
                 }
             }
         };
-        let opt = InvokeOpt {
-            accurate_epoch: true,
-            ignore_transport_error: true,
-            ..Default::default()
-        };
+        let opt =
+            InvokeOpt { accurate_epoch: true, ignore_transport_error: true, ..Default::default() };
         self.invoke_with_opt(op, opt).await
     }
 
@@ -484,9 +452,7 @@ impl GroupClient {
                     .and_then(Self::group_response)?;
                 match resp {
                     Response::ChangeReplicas(_) => Ok(()),
-                    _ => Err(Status::internal(
-                        "invalid response type, ChangeReplicas is required",
-                    )),
+                    _ => Err(Status::internal("invalid response type, ChangeReplicas is required")),
                 }
             }
         };
@@ -506,9 +472,7 @@ impl GroupClient {
                     .and_then(Self::group_response)?;
                 match resp {
                     Response::ChangeReplicas(_) => Ok(()),
-                    _ => Err(Status::internal(
-                        "invalid response type, ChangeReplicas is required",
-                    )),
+                    _ => Err(Status::internal("invalid response type, ChangeReplicas is required")),
                 }
             }
         };
@@ -520,10 +484,7 @@ impl GroupClient {
         incoming_voters: Vec<ReplicaDesc>,
         outgoing_voters: Vec<ReplicaDesc>,
     ) -> Result<ScheduleState> {
-        let req = Request::MoveReplicas(MoveReplicasRequest {
-            incoming_voters,
-            outgoing_voters,
-        });
+        let req = Request::MoveReplicas(MoveReplicasRequest { incoming_voters, outgoing_voters });
         let resp = match self.request(&req).await? {
             Response::MoveReplicas(resp) => resp,
             _ => {
@@ -550,9 +511,7 @@ impl GroupClient {
                     .and_then(Self::group_response)?;
                 match resp {
                     Response::ChangeReplicas(_) => Ok(()),
-                    _ => Err(Status::internal(
-                        "invalid response type, ChangeReplicas is required",
-                    )),
+                    _ => Err(Status::internal("invalid response type, ChangeReplicas is required")),
                 }
             }
         };
@@ -577,17 +536,12 @@ impl GroupClient {
                     .and_then(Self::group_response)?;
                 match resp {
                     Response::AcceptShard(_) => Ok(()),
-                    _ => Err(Status::internal(
-                        "invalid response type, AcceptShard is required",
-                    )),
+                    _ => Err(Status::internal("invalid response type, AcceptShard is required")),
                 }
             }
         };
-        let opt = InvokeOpt {
-            accurate_epoch: true,
-            ignore_transport_error: true,
-            ..Default::default()
-        };
+        let opt =
+            InvokeOpt { accurate_epoch: true, ignore_transport_error: true, ..Default::default() };
         self.invoke_with_opt(op, opt).await
     }
 }
@@ -599,11 +553,8 @@ impl GroupClient {
         let op = |_: InvokeContext, client: NodeClient| async move {
             client.setup_migration(desc.clone()).await
         };
-        let opt = InvokeOpt {
-            accurate_epoch: true,
-            ignore_transport_error: true,
-            ..Default::default()
-        };
+        let opt =
+            InvokeOpt { accurate_epoch: true, ignore_transport_error: true, ..Default::default() };
         self.invoke_with_opt(op, opt).await
     }
 
@@ -611,10 +562,7 @@ impl GroupClient {
         let op = |_: InvokeContext, client: NodeClient| async move {
             client.commit_migration(desc.clone()).await
         };
-        let opt = InvokeOpt {
-            ignore_transport_error: true,
-            ..Default::default()
-        };
+        let opt = InvokeOpt { ignore_transport_error: true, ..Default::default() };
         self.invoke_with_opt(op, opt).await
     }
 
@@ -623,10 +571,7 @@ impl GroupClient {
             let cloned_req = req.clone();
             async move { client.forward(cloned_req).await }
         };
-        let opt = InvokeOpt {
-            accurate_epoch: true,
-            ..Default::default()
-        };
+        let opt = InvokeOpt { accurate_epoch: true, ..Default::default() };
         self.invoke_with_opt(op, opt).await
     }
 }
@@ -661,10 +606,7 @@ fn is_target_shard_exists(desc: &GroupDesc, shard_id: u64, key: &[u8]) -> bool {
 }
 
 fn move_node_to_first_element(replicas: &mut [ReplicaDesc], node_id: u64) {
-    if let Some(idx) = replicas
-        .iter()
-        .position(|replica| replica.node_id == node_id)
-    {
+    if let Some(idx) = replicas.iter().position(|replica| replica.node_id == node_id) {
         if idx != 0 {
             replicas.swap(0, idx)
         }

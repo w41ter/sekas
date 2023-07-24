@@ -16,11 +16,13 @@ mod helper;
 use std::time::Duration;
 
 use sekas_api::v1::{CollectionDesc, DatabaseDesc};
-use sekas_client::{ClientOptions, SekasClient, NodeClient, Partition};
+use sekas_client::{ClientOptions, NodeClient, Partition, SekasClient};
 use sekas_server::diagnosis;
 use tracing::info;
 
-use crate::helper::{context::*, init::setup_panic_hook, runtime::block_on_current};
+use crate::helper::context::*;
+use crate::helper::init::setup_panic_hook;
+use crate::helper::runtime::block_on_current;
 
 #[ctor::ctor]
 fn init() {
@@ -66,23 +68,18 @@ fn balance_init_cluster() {
 fn admin_delete() {
     block_on_current(async {
         let mut ctx = TestContext::new("db-col-mng-2");
-        ctx.mut_replica_testing_knobs()
-            .disable_scheduler_orphan_replica_detecting_intervals = true;
+        ctx.mut_replica_testing_knobs().disable_scheduler_orphan_replica_detecting_intervals = true;
         ctx.disable_all_balance();
         let nodes = ctx.bootstrap_servers(1).await;
         let addrs = nodes.values().cloned().collect::<Vec<_>>();
-        let c = SekasClient::new(ClientOptions::default(), addrs.to_owned())
-            .await
-            .unwrap();
+        let c = SekasClient::new(ClientOptions::default(), addrs.to_owned()).await.unwrap();
         {
             let db = c.create_database("test1".into()).await.unwrap();
             let c1 = db
                 .create_collection("test_co1".into(), Some(Partition::Hash { slots: 1 }))
                 .await
                 .unwrap();
-            c1.put("k1".into(), "v1".into(), None, None, vec![])
-                .await
-                .unwrap();
+            c1.put("k1".into(), "v1".into(), None, None, vec![]).await.unwrap();
             db.delete_collection("test_co1".into()).await.unwrap();
             assert!(db.open_collection("test_co1".into()).await.is_err());
             db.create_collection("test_co1".into(), Some(Partition::Hash { slots: 1 }))
@@ -94,9 +91,7 @@ fn admin_delete() {
         {
             c.create_database("test_db1".into()).await.unwrap();
             let db1 = c.open_database("test_db1".into()).await.unwrap();
-            db1.create_collection("co1".into(), Some(Partition::Hash { slots: 1 }))
-                .await
-                .unwrap();
+            db1.create_collection("co1".into(), Some(Partition::Hash { slots: 1 })).await.unwrap();
             assert!(db1.list_collection().await.unwrap().len() == 1);
             c.delete_database("test_db1".into()).await.unwrap();
             assert!(c.open_database("test_db1".into()).await.is_err());
@@ -116,15 +111,10 @@ fn admin_basic() {
         let nodes = ctx.bootstrap_servers(node_count).await;
         let addrs = nodes.values().cloned().collect::<Vec<_>>();
 
-        let c = SekasClient::new(ClientOptions::default(), addrs.to_owned())
-            .await
-            .unwrap();
+        let c = SekasClient::new(ClientOptions::default(), addrs.to_owned()).await.unwrap();
         let sys_db = c.open_database("__system__".to_owned()).await.unwrap();
         let sys_db_col = sys_db.open_collection("database".to_owned()).await.unwrap();
-        let sys_col_col = sys_db
-            .open_collection("collection".to_owned())
-            .await
-            .unwrap();
+        let sys_col_col = sys_db.open_collection("collection".to_owned()).await.unwrap();
 
         // test create database.
         let new_db_name = "db1".to_owned();
@@ -132,22 +122,15 @@ fn admin_basic() {
         let new_db = {
             let pcnt = c.list_database().await.unwrap().len();
 
-            assert!(sys_db_col
-                .get(new_db_name.as_bytes().to_owned())
-                .await
-                .unwrap()
-                .is_none());
+            assert!(sys_db_col.get(new_db_name.as_bytes().to_owned()).await.unwrap().is_none());
 
             let new_db = c.create_database(new_db_name.to_owned()).await.unwrap();
 
             assert!(c.list_database().await.unwrap().len() == pcnt + 1);
 
             use prost::Message;
-            let db_bytes = sys_db_col
-                .get(new_db_name.to_owned().into_bytes())
-                .await
-                .unwrap()
-                .unwrap();
+            let db_bytes =
+                sys_db_col.get(new_db_name.to_owned().into_bytes()).await.unwrap().unwrap();
             let db_desc = DatabaseDesc::decode(&*db_bytes).unwrap();
             assert!(db_desc.id == new_db_id);
 
@@ -189,11 +172,8 @@ fn admin_basic() {
 
         // check meta data api.
         let m = curr_metadata(addrs).await;
-        let d = m
-            .databases
-            .iter()
-            .find(|d| d.name == new_db_name)
-            .expect("created database not found");
+        let d =
+            m.databases.iter().find(|d| d.name == new_db_name).expect("created database not found");
         d.collections
             .iter()
             .find(|c| c.name == new_collection_name)
@@ -211,9 +191,7 @@ fn collection_key(database_id: u64, collection_name: &str) -> Vec<u8> {
 
 async fn curr_metadata(nodes: Vec<String>) -> diagnosis::Metadata {
     let root_addr = find_root(nodes).await;
-    let resp = reqwest::get(format!("http://{root_addr}/admin/metadata"))
-        .await
-        .unwrap();
+    let resp = reqwest::get(format!("http://{root_addr}/admin/metadata")).await.unwrap();
     let content = resp.bytes().await.unwrap();
     let json_res = serde_json::from_slice(&content);
     json_res.unwrap_or_else(|_| panic!("decode json fail: {:?}", content))

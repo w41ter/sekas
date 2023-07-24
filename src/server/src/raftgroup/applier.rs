@@ -12,25 +12,22 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::{
-    collections::{HashMap, VecDeque},
-    path::Path,
-};
+use std::collections::{HashMap, VecDeque};
+use std::path::Path;
 
-use sekas_api::server::v1::ReplicaDesc;
 use futures::channel::oneshot;
-use raft::{
-    prelude::{ConfChangeV2, Entry, EntryType},
-    RawNode, ReadState,
-};
+use raft::prelude::{ConfChangeV2, Entry, EntryType};
+use raft::{RawNode, ReadState};
+use sekas_api::server::v1::ReplicaDesc;
 
-use super::{fsm::StateMachine, monitor::ApplierPerfContext, storage::Storage, ApplyEntry};
-use crate::{
-    raftgroup::{metrics::*, monitor::record_perf_point},
-    record_latency,
-    serverpb::v1::{EntryId, EvalResult},
-    Error, Result,
-};
+use super::fsm::StateMachine;
+use super::monitor::ApplierPerfContext;
+use super::storage::Storage;
+use super::ApplyEntry;
+use crate::raftgroup::metrics::*;
+use crate::raftgroup::monitor::record_perf_point;
+use crate::serverpb::v1::{EntryId, EvalResult};
+use crate::{record_latency, Error, Result};
 
 struct ProposalContext {
     index: u64,
@@ -80,11 +77,7 @@ impl<M: StateMachine> Applier<M> {
         term: u64,
         sender: oneshot::Sender<Result<()>>,
     ) {
-        let ctx = ProposalContext {
-            index,
-            term,
-            sender,
-        };
+        let ctx = ProposalContext { index, term, sender };
 
         // ensure the proposals are monotonic.
         if let Some(last_ctx) = self.proposal_queue.back() {
@@ -204,10 +197,7 @@ impl<M: StateMachine> Applier<M> {
     ) {
         use prost::Message;
 
-        assert!(matches!(
-            entry.get_entry_type(),
-            EntryType::EntryConfChangeV2
-        ));
+        assert!(matches!(entry.get_entry_type(), EntryType::EntryConfChangeV2));
 
         let conf_change = if !entry.data.is_empty() {
             ConfChangeV2::decode(&*entry.data).expect("decode ConfChangeV2")
@@ -218,11 +208,7 @@ impl<M: StateMachine> Applier<M> {
 
         let change_replicas = super::decode_from_conf_change(&conf_change);
         self.state_machine
-            .apply(
-                entry.index,
-                entry.term,
-                ApplyEntry::ConfigChange { change_replicas },
-            )
+            .apply(entry.index, entry.term, ApplyEntry::ConfigChange { change_replicas })
             .expect("apply config change");
         replica_cache.batch_insert(&self.state_machine.descriptor().replicas);
         raw_node.apply_conf_change(&conf_change).unwrap_or_default();
@@ -235,22 +221,13 @@ impl<M: StateMachine> Applier<M> {
 
         let eval_result = EvalResult::decode(&*entry.data).expect("Entry::data is EvalResult");
         self.state_machine
-            .apply(
-                entry.index,
-                entry.term,
-                ApplyEntry::Proposal { eval_result },
-            )
+            .apply(entry.index, entry.term, ApplyEntry::Proposal { eval_result })
             .expect("apply normal entry");
     }
 
     #[inline]
     fn response_proposal(&mut self, index: u64, term: u64) {
-        if self
-            .proposal_queue
-            .front()
-            .map(|ctx| ctx.index == index)
-            .unwrap_or_default()
-        {
+        if self.proposal_queue.front().map(|ctx| ctx.index == index).unwrap_or_default() {
             let ctx = self.proposal_queue.pop_front().unwrap();
             if ctx.term == term {
                 // TODO(walter) support user defined result.

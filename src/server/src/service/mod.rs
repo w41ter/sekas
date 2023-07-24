@@ -18,15 +18,14 @@ pub mod proxy;
 pub mod raft;
 pub mod root;
 
-use std::{sync::Arc, time::Duration};
+use std::sync::Arc;
+use std::time::Duration;
 
 use sekas_client::{ClientOptions, SekasClient};
 
-use crate::{
-    node::Node,
-    root::Root,
-    transport::{AddressResolver, TransportManager},
-};
+use crate::node::Node;
+use crate::root::Root;
+use crate::transport::{AddressResolver, TransportManager};
 
 #[derive(Clone)]
 pub struct Server {
@@ -42,12 +41,8 @@ pub struct ProxyServer {
 
 impl ProxyServer {
     pub(crate) fn new(transport_manager: &TransportManager) -> Self {
-        let opts = ClientOptions {
-            connect_timeout: Some(Duration::from_millis(250)),
-            timeout: None,
-        };
-        ProxyServer {
-            client: transport_manager.build_client(opts),
-        }
+        let opts =
+            ClientOptions { connect_timeout: Some(Duration::from_millis(250)), timeout: None };
+        ProxyServer { client: transport_manager.build_client(opts) }
     }
 }

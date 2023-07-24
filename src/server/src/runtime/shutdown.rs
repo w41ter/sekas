@@ -12,13 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::{
-    collections::HashMap,
-    future::Future,
-    pin::Pin,
-    sync::{Arc, Mutex},
-    task::{Context, Poll, Waker},
-};
+use std::collections::HashMap;
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::{Arc, Mutex};
+use std::task::{Context, Poll, Waker};
 
 pub struct ShutdownNotifier {
     core: Arc<Mutex<Core>>,
@@ -62,9 +60,7 @@ impl ShutdownNotifier {
     }
 
     pub async fn ctrl_c(self) {
-        tokio::signal::ctrl_c()
-            .await
-            .expect("failed to listen ctrl c event");
+        tokio::signal::ctrl_c().await.expect("failed to listen ctrl c event");
     }
 
     pub fn subscribe(&self) -> Shutdown {
@@ -75,10 +71,7 @@ impl ShutdownNotifier {
 impl Default for ShutdownNotifier {
     fn default() -> Self {
         ShutdownNotifier {
-            core: Arc::new(Mutex::new(Core {
-                closed: false,
-                wakers: HashMap::default(),
-            })),
+            core: Arc::new(Mutex::new(Core { closed: false, wakers: HashMap::default() })),
         }
     }
 }

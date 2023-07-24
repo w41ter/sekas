@@ -18,9 +18,7 @@ impl GroupResponse {
     #[inline]
     pub fn new(response: group_response_union::Response) -> Self {
         GroupResponse {
-            response: Some(GroupResponseUnion {
-                response: Some(response),
-            }),
+            response: Some(GroupResponseUnion { response: Some(response) }),
             error: None,
         }
     }
@@ -28,19 +26,14 @@ impl GroupResponse {
     #[inline]
     pub fn with_error(resp: group_response_union::Response, error: Error) -> Self {
         GroupResponse {
-            response: Some(GroupResponseUnion {
-                response: Some(resp),
-            }),
+            response: Some(GroupResponseUnion { response: Some(resp) }),
             error: Some(error),
         }
     }
 
     #[inline]
     pub fn error(error: Error) -> Self {
-        GroupResponse {
-            response: None,
-            error: Some(error),
-        }
+        GroupResponse { response: None, error: Some(error) }
     }
 }
 
@@ -64,28 +57,19 @@ impl ErrorDetailUnion {
 impl ErrorDetail {
     #[inline]
     pub fn is_retryable(&self) -> bool {
-        self.detail
-            .as_ref()
-            .map(ErrorDetailUnion::is_retryable)
-            .unwrap_or_default()
+        self.detail.as_ref().map(ErrorDetailUnion::is_retryable).unwrap_or_default()
     }
 }
 
 impl ErrorDetail {
     #[inline]
     pub fn new(value: error_detail_union::Value) -> Self {
-        ErrorDetail {
-            detail: Some(ErrorDetailUnion { value: Some(value) }),
-            ..Default::default()
-        }
+        ErrorDetail { detail: Some(ErrorDetailUnion { value: Some(value) }), ..Default::default() }
     }
 
     #[inline]
     pub fn with_message(value: error_detail_union::Value, message: String) -> Self {
-        ErrorDetail {
-            detail: Some(ErrorDetailUnion { value: Some(value) }),
-            message,
-        }
+        ErrorDetail { detail: Some(ErrorDetailUnion { value: Some(value) }), message }
     }
 
     #[inline]
@@ -154,15 +138,11 @@ impl Error {
 
     #[inline]
     pub fn status(code: i32, msg: impl Into<String>) -> Self {
-        Error {
-            details: vec![ErrorDetail::status(code, msg)],
-        }
+        Error { details: vec![ErrorDetail::status(code, msg)] }
     }
 
     #[inline]
     pub fn with_detail_value(value: error_detail_union::Value) -> Self {
-        Error {
-            details: vec![ErrorDetail::new(value)],
-        }
+        Error { details: vec![ErrorDetail::new(value)] }
     }
 }

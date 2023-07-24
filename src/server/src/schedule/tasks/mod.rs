@@ -15,12 +15,10 @@
 mod action;
 mod group;
 
-pub use self::{
-    action::ActionTask,
-    group::{
-        DurableGroup, GroupLockTable, PromoteGroup, RemoveOrphanReplica, ReplicaMigration,
-        WatchGroupDescriptor, WatchRaftState, WatchReplicaStates,
-    },
+pub use self::action::ActionTask;
+pub use self::group::{
+    DurableGroup, GroupLockTable, PromoteGroup, RemoveOrphanReplica, ReplicaMigration,
+    WatchGroupDescriptor, WatchRaftState, WatchReplicaStates,
 };
 
 pub const PROMOTE_GROUP_TASK_ID: u64 = 1;

@@ -13,12 +13,17 @@
 // limitations under the License.
 mod helper;
 
-use sekas_api::{server::v1::ReplicaRole, v1::PutOperation};
-use sekas_client::{AppError, ClientOptions, SekasClient, Partition, WriteConditionBuilder};
-use rand::{prelude::SmallRng, Rng, SeedableRng};
+use rand::prelude::SmallRng;
+use rand::{Rng, SeedableRng};
+use sekas_api::server::v1::ReplicaRole;
+use sekas_api::v1::PutOperation;
+use sekas_client::{AppError, ClientOptions, Partition, SekasClient, WriteConditionBuilder};
 use tracing::info;
 
-use crate::helper::{client::*, context::*, init::setup_panic_hook, runtime::*};
+use crate::helper::client::*;
+use crate::helper::context::*;
+use crate::helper::init::setup_panic_hook;
+use crate::helper::runtime::*;
 
 #[ctor::ctor]
 fn init() {
@@ -36,9 +41,7 @@ fn single_node_server() {
         node_client_with_retry(&node_1_addr).await;
 
         let addrs = vec![node_1_addr];
-        let client = SekasClient::new(ClientOptions::default(), addrs)
-            .await
-            .unwrap();
+        let client = SekasClient::new(ClientOptions::default(), addrs).await.unwrap();
         let db = client.create_database("test_db".to_string()).await.unwrap();
         let co = db
             .create_collection("test_co".to_string(), Some(Partition::Hash { slots: 3 }))
@@ -150,10 +153,8 @@ fn operation_with_leader_transfer() {
         let app = c.app_client().await;
 
         let db = app.create_database("test_db".to_string()).await.unwrap();
-        let co = db
-            .create_collection("test_co".to_string(), Some(Partition::Range {}))
-            .await
-            .unwrap();
+        let co =
+            db.create_collection("test_co".to_string(), Some(Partition::Range {})).await.unwrap();
         c.assert_collection_ready(&co.desc()).await;
 
         for i in 0..1000 {
@@ -165,10 +166,8 @@ fn operation_with_leader_transfer() {
             assert!(matches!(r, Some(Ok(v)) if v == format!("value-{i}")));
 
             if i % 100 == 0 {
-                let state = c
-                    .find_router_group_state_by_key(&co.desc(), k.as_slice())
-                    .await
-                    .unwrap();
+                let state =
+                    c.find_router_group_state_by_key(&co.desc(), k.as_slice()).await.unwrap();
                 let leader_id = state.leader_state.unwrap().0;
                 for (id, replica) in state.replicas {
                     if id != leader_id && replica.role == ReplicaRole::Voter as i32 {
@@ -196,16 +195,11 @@ fn operation_with_shard_migration() {
         let app = c.app_client().await;
 
         let db = app.create_database("test_db".to_string()).await.unwrap();
-        let co = db
-            .create_collection("test_co".to_string(), Some(Partition::Range {}))
-            .await
-            .unwrap();
+        let co =
+            db.create_collection("test_co".to_string(), Some(Partition::Range {})).await.unwrap();
         c.assert_collection_ready(&co.desc()).await;
 
-        let source_state = c
-            .find_router_group_state_by_key(&co.desc(), &[0])
-            .await
-            .unwrap();
+        let source_state = c.find_router_group_state_by_key(&co.desc(), &[0]).await.unwrap();
         let prev_group_id = source_state.id;
         let target_group_id = 0;
 
@@ -218,10 +212,8 @@ fn operation_with_shard_migration() {
             assert!(matches!(r, Some(Ok(v)) if v == format!("value-{i}")));
 
             if i % 100 == 0 {
-                let source_state = c
-                    .find_router_group_state_by_key(&co.desc(), &[0])
-                    .await
-                    .unwrap();
+                let source_state =
+                    c.find_router_group_state_by_key(&co.desc(), &[0]).await.unwrap();
                 if source_state.id == target_group_id {
                     continue;
                 }
@@ -235,10 +227,7 @@ fn operation_with_shard_migration() {
                 });
             }
         }
-        let source_state = c
-            .find_router_group_state_by_key(&co.desc(), &[0])
-            .await
-            .unwrap();
+        let source_state = c.find_router_group_state_by_key(&co.desc(), &[0]).await.unwrap();
         assert_ne!(source_state.id, prev_group_id);
     });
 }
@@ -263,10 +252,8 @@ fn single_server_large_read_write() {
         let app = c.app_client().await;
 
         let db = app.create_database("test_db".to_string()).await.unwrap();
-        let co = db
-            .create_collection("test_co".to_string(), Some(Partition::Range {}))
-            .await
-            .unwrap();
+        let co =
+            db.create_collection("test_co".to_string(), Some(Partition::Range {})).await.unwrap();
         c.assert_collection_ready(&co.desc()).await;
 
         let mut rng = SmallRng::seed_from_u64(0);
@@ -309,9 +296,7 @@ fn cluster_put_with_condition() {
 
         // 2. Put if not exists success
         let conds = WriteConditionBuilder::new().not_exists().build().unwrap();
-        co.put(k.clone(), v.clone(), None, None, conds)
-            .await
-            .unwrap();
+        co.put(k.clone(), v.clone(), None, None, conds).await.unwrap();
         let r = co.get(k.clone()).await.unwrap();
         let r = r.map(String::from_utf8);
         assert!(matches!(r, Some(Ok(v)) if v == "rust_in_actions"));
@@ -327,18 +312,13 @@ fn cluster_put_with_condition() {
         assert!(r.is_ok());
 
         // 5.Put with expected value failed
-        let conds = WriteConditionBuilder::new()
-            .expect_value(b"rust".to_vec())
-            .build()
-            .unwrap();
+        let conds = WriteConditionBuilder::new().expect_value(b"rust".to_vec()).build().unwrap();
         let r = co.put(k.clone(), v.clone(), None, None, conds).await;
         assert!(matches!(r, Err(AppError::CasFailed(_))));
 
         // 6.Put with expected value success
-        let conds = WriteConditionBuilder::new()
-            .expect_value(b"rust_in_actions".to_vec())
-            .build()
-            .unwrap();
+        let conds =
+            WriteConditionBuilder::new().expect_value(b"rust_in_actions".to_vec()).build().unwrap();
         let r = co.put(k.clone(), v.clone(), None, None, conds).await;
         assert!(r.is_ok());
     });
@@ -368,13 +348,7 @@ fn cluster_concurrent_inc() {
             let value = 1i64.to_le_bytes().to_vec();
             for _ in 0..1000 {
                 cloned_co
-                    .put(
-                        k.clone(),
-                        value.clone(),
-                        None,
-                        Some(PutOperation::Add),
-                        vec![],
-                    )
+                    .put(k.clone(), value.clone(), None, Some(PutOperation::Add), vec![])
                     .await
                     .unwrap();
             }
@@ -386,13 +360,7 @@ fn cluster_concurrent_inc() {
             let value = 1i64.to_le_bytes().to_vec();
             for _ in 0..1000 {
                 cloned_co
-                    .put(
-                        k.clone(),
-                        value.clone(),
-                        None,
-                        Some(PutOperation::Add),
-                        vec![],
-                    )
+                    .put(k.clone(), value.clone(), None, Some(PutOperation::Add), vec![])
                     .await
                     .unwrap();
             }

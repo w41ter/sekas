@@ -12,28 +12,22 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::{
-    collections::{HashMap, HashSet},
-    sync::{Arc, Mutex},
-    time::Instant,
-};
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
+use futures::channel::oneshot;
 use sekas_api::server::v1::*;
 use sekas_client::Router;
-use futures::channel::oneshot;
 
-use crate::{
-    node::Replica,
-    raftgroup::RaftGroupState,
-    schedule::{
-        event_source::{CommonEventSource, EventSource},
-        scheduler::EventWaker,
-    },
-    Error, Result,
-};
+use crate::node::Replica;
+use crate::raftgroup::RaftGroupState;
+use crate::schedule::event_source::{CommonEventSource, EventSource};
+use crate::schedule::scheduler::EventWaker;
+use crate::{Error, Result};
 
 macro_rules! inherit_event_source {
-    ($name: ident) => {
+    ($name:ident) => {
         impl EventSource for $name {
             fn bind(&self, waker: EventWaker) {
                 let mut inner = self.inner.lock().unwrap();
@@ -116,10 +110,7 @@ pub struct MoveReplicas {
 impl GroupDescProvider {
     pub fn new(desc: GroupDesc) -> GroupDescProvider {
         GroupDescProvider {
-            inner: Mutex::new(GroupDescProviderInner {
-                core: CommonEventSource::new(),
-                desc,
-            }),
+            inner: Mutex::new(GroupDescProviderInner { core: CommonEventSource::new(), desc }),
         }
     }
 
@@ -154,9 +145,7 @@ impl NodeProvider {
 
 impl ReplicaStatesProvider {
     fn new() -> Self {
-        ReplicaStatesProvider {
-            inner: Mutex::default(),
-        }
+        ReplicaStatesProvider { inner: Mutex::default() }
     }
 
     pub fn replica_states(&self) -> Vec<ReplicaState> {
@@ -207,12 +196,7 @@ impl RaftStateProvider {
 
     pub fn matched_indexes(&self) -> HashMap<u64, u64> {
         let inner = self.inner.lock().unwrap();
-        inner
-            .raft_state
-            .peers
-            .iter()
-            .map(|(&id, state)| (id, state.matched))
-            .collect()
+        inner.raft_state.peers.iter().map(|(&id, state)| (id, state.matched)).collect()
     }
 }
 
@@ -234,12 +218,7 @@ impl MoveReplicasProvider {
                 .send(Err(Error::AlreadyExists("MoveReplicas task".to_owned())))
                 .unwrap_or_default();
         } else {
-            inner.duty = Some(MoveReplicas {
-                epoch,
-                incoming_replicas,
-                outgoing_replicas,
-                sender,
-            });
+            inner.duty = Some(MoveReplicas { epoch, incoming_replicas, outgoing_replicas, sender });
             inner.core.fire();
         }
 

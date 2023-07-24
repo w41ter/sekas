@@ -18,18 +18,15 @@ use sekas_api::server::v1::ScheduleState;
 use tracing::debug;
 
 use super::ScheduleStateObserver;
-use crate::{
-    node::Replica,
-    runtime::{sync::WaitGroup, TaskPriority},
-    schedule::{
-        event_source::EventSource,
-        provider::{GroupProviders, MoveReplicasProvider},
-        scheduler::Scheduler,
-        task::Task,
-    },
-    transport::TransportManager,
-    ReplicaConfig,
-};
+use crate::node::Replica;
+use crate::runtime::sync::WaitGroup;
+use crate::runtime::TaskPriority;
+use crate::schedule::event_source::EventSource;
+use crate::schedule::provider::{GroupProviders, MoveReplicasProvider};
+use crate::schedule::scheduler::Scheduler;
+use crate::schedule::task::Task;
+use crate::transport::TransportManager;
+use crate::ReplicaConfig;
 
 pub(crate) fn setup_scheduler(
     cfg: ReplicaConfig,
@@ -47,14 +44,8 @@ pub(crate) fn setup_scheduler(
 
     let group_id = replica.replica_info().group_id;
     crate::runtime::current().spawn(Some(group_id), TaskPriority::Low, async move {
-        scheduler_main(
-            cfg,
-            replica,
-            transport_manager,
-            group_providers,
-            schedule_state_observer,
-        )
-        .await;
+        scheduler_main(cfg, replica, transport_manager, group_providers, schedule_state_observer)
+            .await;
         drop(wait_group);
     });
 }
@@ -87,8 +78,8 @@ async fn scheduler_main(
         );
         allocate_group_tasks(&mut scheduler, group_providers.clone()).await;
 
-        // After the schedule is initialized, the root needs to be notified to clear the expired
-        // state in memory.
+        // After the schedule is initialized, the root needs to be notified to clear the
+        // expired state in memory.
         schedule_state_observer.on_schedule_state_updated(ScheduleState::default());
         while let Ok(Some(term)) = replica.on_leader("scheduler", true).await {
             if term != current_term {
