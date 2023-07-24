@@ -1,0 +1,122 @@
+// Copyright 2022 The Engula Authors.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+syntax = "proto3";
+
+package sekas.server.v1;
+
+import "sekas/v1/sekas.proto";
+import "sekas/v1/metadata.proto";
+import "sekas/server/v1/metadata.proto";
+
+service Root {
+  rpc Admin(sekas.v1.AdminRequest) returns (sekas.v1.AdminResponse) {}
+  rpc Watch(WatchRequest) returns (stream WatchResponse) {}
+
+  /// Join a bootstrapped cluster. If the target node is itself not part of a
+  /// bootstrapped cluster, an appropriate error is returned.
+  rpc Join(JoinNodeRequest) returns (JoinNodeResponse) {}
+
+  /// Report the changes of metadata and volatile states of group or replicas.
+  rpc Report(ReportRequest) returns (ReportResponse) {}
+
+  /// Alloc replica id and node for the corresponding group.
+  rpc AllocReplica(AllocReplicaRequest) returns (AllocReplicaResponse) {}
+
+  /// Alloc txn id.
+  rpc AllocTxnId(AllocTxnIdRequest) returns (AllocTxnIdResponse) {}
+}
+
+message WatchRequest {
+  map<uint64, uint64> cur_group_epochs = 1; // <group_id, group_epoch>
+}
+
+message WatchResponse {
+  message UpdateEvent {
+    oneof event {
+      NodeDesc node = 1;
+      GroupDesc group = 2;
+      GroupState group_state = 3;
+      sekas.v1.DatabaseDesc database = 4;
+      sekas.v1.CollectionDesc collection = 5;
+    }
+  }
+
+  message DeleteEvent {
+    oneof event {
+      uint64 node = 1;
+      uint64 group = 2;
+      uint64 database = 3;
+      uint64 collection = 4;
+      uint64 group_state = 5;
+    }
+  }
+
+  repeated UpdateEvent updates = 2;
+  repeated DeleteEvent deletes = 3;
+}
+
+message JoinNodeRequest {
+  string addr = 1;
+  NodeCapacity capacity = 2;
+}
+
+message JoinNodeResponse {
+  bytes cluster_id = 1;
+  uint64 node_id = 2;
+  RootDesc root = 3;
+}
+
+message ReportRequest {
+  message GroupUpdates {
+    uint64 group_id = 1;
+
+    /// The leader is responsible for reporting the `GroupDesc` when the
+    /// `GroupDesc` changes.
+    optional GroupDesc group_desc = 2;
+
+    /// Each replica is responsible for reporting itself's volatile state.
+    optional ReplicaState replica_state = 3;
+
+    /// The leader is responsible for reporting the `ScheduleState` when the
+    /// schedule state changes.
+    optional ScheduleState schedule_state = 4;
+  }
+
+  repeated GroupUpdates updates = 1;
+}
+
+message ReportResponse {}
+
+message AllocReplicaRequest {
+  uint64 group_id = 1;
+  uint64 epoch = 2;
+  uint64 current_term = 3;
+  uint64 leader_id = 4;
+
+  uint64 num_required = 5;
+}
+
+message AllocReplicaResponse {
+  repeated ReplicaDesc replicas = 1;
+}
+
+message AllocTxnIdRequest {
+  uint64 num_required = 1;
+}
+
+message AllocTxnIdResponse {
+  uint64 base_txn_id = 1;
+  uint64 num = 2;
+}
