@@ -14,7 +14,7 @@
 
 use std::time::Duration;
 
-use engula_api::{
+use sekas_api::{
     server::v1::{group_request_union::Request, *},
     shard,
 };

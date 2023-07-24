@@ -19,7 +19,7 @@ use std::{
     vec,
 };
 
-use engula_api::server::v1::{
+use sekas_api::server::v1::{
     watch_response::{DeleteEvent, UpdateEvent},
     WatchResponse,
 };

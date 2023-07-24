@@ -14,8 +14,8 @@
 
 use std::{collections::HashMap, sync::Mutex};
 
-use engula_api::server::v1::NodeDesc;
-use engula_client::Router;
+use sekas_api::server::v1::NodeDesc;
+use sekas_client::Router;
 
 use crate::{Error, Result};
 

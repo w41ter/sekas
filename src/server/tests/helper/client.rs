@@ -18,15 +18,15 @@ use std::{
     time::Duration,
 };
 
-use engula_api::{
+use sekas_api::{
     server::v1::*,
     v1::{collection_desc, CollectionDesc},
 };
-use engula_client::{
-    ClientOptions, ConnManager, EngulaClient, GroupClient, NodeClient, RootClient, Router,
+use sekas_client::{
+    ClientOptions, ConnManager, SekasClient, GroupClient, NodeClient, RootClient, Router,
     RouterGroupState, StaticServiceDiscovery,
 };
-use engula_server::{runtime, Result};
+use sekas_server::{runtime, Result};
 
 pub async fn node_client_with_retry(addr: &str) -> NodeClient {
     for _ in 0..10000 {
@@ -73,16 +73,16 @@ impl ClusterClient {
         GroupClient::lazy(group_id, self.router.clone(), self.conn_manager.clone())
     }
 
-    pub async fn app_client(&self) -> EngulaClient {
+    pub async fn app_client(&self) -> SekasClient {
         let addrs = self.nodes.values().cloned().collect::<Vec<_>>();
-        EngulaClient::new(ClientOptions::default(), addrs)
+        SekasClient::new(ClientOptions::default(), addrs)
             .await
             .unwrap()
     }
 
-    pub async fn app_client_with_options(&self, opts: ClientOptions) -> EngulaClient {
+    pub async fn app_client_with_options(&self, opts: ClientOptions) -> SekasClient {
         let addrs = self.nodes.values().cloned().collect::<Vec<_>>();
-        EngulaClient::new(opts, addrs).await.unwrap()
+        SekasClient::new(opts, addrs).await.unwrap()
     }
 
     pub async fn group_members(&self, group_id: u64) -> Vec<(u64, i32)> {

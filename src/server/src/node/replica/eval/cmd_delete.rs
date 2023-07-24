@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use engula_api::server::v1::ShardDeleteRequest;
+use sekas_api::server::v1::ShardDeleteRequest;
 
 use super::cas::eval_conditions;
 use crate::{

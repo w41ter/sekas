@@ -14,7 +14,7 @@
 
 use std::{sync::Arc, time::Duration};
 
-use engula_api::{
+use sekas_api::{
     server::v1::{group_request_union::Request, group_response_union::Response, *},
     v1::{create_collection_request::*, *},
 };

@@ -18,11 +18,11 @@ syntax = "proto3";
 
 package serverpb.v1;
 
-import "engula/server/v1/metadata.proto";
+import "sekas/server/v1/metadata.proto";
 
 message SnapshotMeta {
   EntryID apply_state = 1;
-  engula.server.v1.GroupDesc group_desc = 2;
+  sekas.server.v1.GroupDesc group_desc = 2;
   repeated SnapshotFile files = 3;
 }
 
@@ -104,7 +104,7 @@ enum MigrationStep {
 
 message MigrationState {
   /// The descriptor of migration.
-  engula.server.v1.MigrationDesc migration_desc = 1;
+  sekas.server.v1.MigrationDesc migration_desc = 1;
 
   /// For dest group, this field saves the last key migrated by background
   /// pulling.
@@ -138,7 +138,7 @@ message SyncOp {
   EvalResult must_boxed = 128;
 }
 
-message AddShard { engula.server.v1.ShardDesc shard = 1; }
+message AddShard { sekas.server.v1.ShardDesc shard = 1; }
 
 /// PurgeOrphanReplica is used by the replica leader. When the replica leader
 /// finds an orphan replica, it can propose a command. After the command is
@@ -157,7 +157,7 @@ message Migration {
 
   Event event = 1;
 
-  engula.server.v1.MigrationDesc migration_desc = 2;
+  sekas.server.v1.MigrationDesc migration_desc = 2;
 
   /// The latest migrated key, used for fault tolerance, locate the cursor that
   /// has been replicated.

@@ -14,7 +14,7 @@
 
 use std::time::Instant;
 
-use engula_api::server::v1::ChangeReplicas;
+use sekas_api::server::v1::ChangeReplicas;
 use futures::channel::{mpsc, oneshot};
 
 use super::{

@@ -15,11 +15,11 @@ mod helper;
 
 use std::time::Duration;
 
-use engula_api::{
+use sekas_api::{
     server::v1::{group_request_union::Request, group_response_union::Response, *},
     v1::{GetRequest, GetResponse, PutRequest},
 };
-use engula_client::RetryState;
+use sekas_client::RetryState;
 use tracing::{debug, error, info, warn};
 
 use crate::helper::{client::*, context::*, init::setup_panic_hook, runtime::*};
@@ -464,7 +464,7 @@ fn source_group_receive_duplicate_accepting_shard_request() {
                 dest_group_epoch: 1,
             };
             match g.setup_migration(&desc).await {
-                Err(engula_client::Error::EpochNotMatch(_)) => {
+                Err(sekas_client::Error::EpochNotMatch(_)) => {
                     continue;
                 }
                 Ok(_) => {}
@@ -502,7 +502,7 @@ fn source_group_receive_many_accepting_shard_request() {
                 dest_group_epoch: 1,
             };
             match g.setup_migration(&desc).await {
-                Err(engula_client::Error::EpochNotMatch(_)) => {
+                Err(sekas_client::Error::EpochNotMatch(_)) => {
                     continue;
                 }
                 Ok(_) => {}
@@ -518,7 +518,7 @@ fn source_group_receive_many_accepting_shard_request() {
                 // retry
                 assert!(matches!(
                     cloned_g.setup_migration(&diff_desc).await,
-                    Err(engula_client::Error::EpochNotMatch(_))
+                    Err(sekas_client::Error::EpochNotMatch(_))
                 ));
             });
 

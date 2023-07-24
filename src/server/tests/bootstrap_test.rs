@@ -13,7 +13,7 @@
 // limitations under the License.
 mod helper;
 
-use engula_server::Result;
+use sekas_server::Result;
 
 use crate::helper::{client::*, context::*, init::setup_panic_hook, runtime::block_on_current};
 

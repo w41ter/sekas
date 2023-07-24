@@ -14,7 +14,7 @@
 
 use std::time::Duration;
 
-use engula_api::server::v1::*;
+use sekas_api::server::v1::*;
 use tracing::{debug, info, warn};
 
 use super::{Action, ActionState};
@@ -52,7 +52,7 @@ impl CreateReplicas {
         group_id: u64,
         r: &ReplicaDesc,
         transport_manager: &TransportManager,
-    ) -> Result<(), engula_client::Error> {
+    ) -> Result<(), sekas_client::Error> {
         let client = transport_manager.find_node_client(r.node_id)?;
         let desc = GroupDesc {
             id: group_id,
@@ -79,8 +79,8 @@ impl Action for CreateReplicas {
                     self.interval_ms = 50;
                     self.replicas.pop();
                 }
-                Err(engula_client::Error::Rpc(status))
-                    if engula_client::error::retryable_rpc_err(&status)
+                Err(sekas_client::Error::Rpc(status))
+                    if sekas_client::error::retryable_rpc_err(&status)
                         && self.retry_count < 30 =>
                 {
                     debug!("group {group_id} replica {replica_id} task {task_id} create replica {r:?}: {status}");
@@ -114,7 +114,7 @@ impl RemoveReplica {
         r: &ReplicaDesc,
         group: GroupDesc,
         transport_manager: &TransportManager,
-    ) -> Result<(), engula_client::Error> {
+    ) -> Result<(), sekas_client::Error> {
         let client = transport_manager.find_node_client(r.node_id)?;
         client.remove_replica(r.id, group.clone()).await?;
         Ok(())
@@ -135,8 +135,8 @@ impl Action for RemoveReplica {
                 info!("group {group_id} replica {replica_id} task {task_id} remove replica {replica:?} success");
                 return ActionState::Done;
             }
-            Err(engula_client::Error::Rpc(status))
-                if engula_client::error::retryable_rpc_err(&status) && self.retry_count < 3 =>
+            Err(sekas_client::Error::Rpc(status))
+                if sekas_client::error::retryable_rpc_err(&status) && self.retry_count < 3 =>
             {
                 debug!("group {group_id} replica {replica_id} task {task_id} remove replica {replica:?}: {status}");
                 self.retry_count += 1;

@@ -21,7 +21,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use engula_api::{server::v1::*, shard};
+use sekas_api::{server::v1::*, shard};
 use prost::Message;
 use tracing::{info, warn};
 
@@ -1018,7 +1018,7 @@ fn next_message<T: prost::Message + Default>(
 
 #[cfg(test)]
 mod tests {
-    use engula_api::server::v1::ShardDesc;
+    use sekas_api::server::v1::ShardDesc;
     use tempdir::TempDir;
 
     use super::*;
@@ -1111,7 +1111,7 @@ mod tests {
     ) -> GroupEngine {
         use shard_desc::*;
 
-        let tmp_dir = TempDir::new("engula").unwrap().into_path();
+        let tmp_dir = TempDir::new("sekas").unwrap().into_path();
         let db_dir = tmp_dir.join("db");
 
         use crate::bootstrap::open_engine_with_default_config;

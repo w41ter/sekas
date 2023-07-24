@@ -18,7 +18,7 @@ use std::{
     task::{Poll, Waker},
 };
 
-use engula_api::server::v1::{GroupDesc, ReplicaDesc, ReplicaRole, RootDesc, ShardDesc};
+use sekas_api::server::v1::{GroupDesc, ReplicaDesc, ReplicaRole, RootDesc, ShardDesc};
 use futures::future::poll_fn;
 use prometheus::HistogramTimer;
 use tokio::time::Instant;

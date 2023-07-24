@@ -16,7 +16,7 @@ mod checkpoint;
 
 use std::{collections::HashSet, path::Path, sync::Arc};
 
-use engula_api::server::v1::{
+use sekas_api::server::v1::{
     ChangeReplica, ChangeReplicaType, ChangeReplicas, GroupDesc, MigrationDesc, ReplicaDesc,
     ReplicaRole,
 };

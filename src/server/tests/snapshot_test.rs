@@ -13,11 +13,11 @@
 // limitations under the License.
 mod helper;
 
-use engula_api::{
+use sekas_api::{
     server::v1::{group_request_union::Request, *},
     v1::PutRequest,
 };
-use engula_client::RetryState;
+use sekas_client::RetryState;
 use helper::context::TestContext;
 
 use crate::helper::{client::*, init::setup_panic_hook, runtime::block_on_current};

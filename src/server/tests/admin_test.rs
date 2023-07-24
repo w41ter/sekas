@@ -15,9 +15,9 @@ mod helper;
 
 use std::time::Duration;
 
-use engula_api::v1::{CollectionDesc, DatabaseDesc};
-use engula_client::{ClientOptions, EngulaClient, NodeClient, Partition};
-use engula_server::diagnosis;
+use sekas_api::v1::{CollectionDesc, DatabaseDesc};
+use sekas_client::{ClientOptions, SekasClient, NodeClient, Partition};
+use sekas_server::diagnosis;
 use tracing::info;
 
 use crate::helper::{context::*, init::setup_panic_hook, runtime::block_on_current};
@@ -71,7 +71,7 @@ fn admin_delete() {
         ctx.disable_all_balance();
         let nodes = ctx.bootstrap_servers(1).await;
         let addrs = nodes.values().cloned().collect::<Vec<_>>();
-        let c = EngulaClient::new(ClientOptions::default(), addrs.to_owned())
+        let c = SekasClient::new(ClientOptions::default(), addrs.to_owned())
             .await
             .unwrap();
         {
@@ -116,7 +116,7 @@ fn admin_basic() {
         let nodes = ctx.bootstrap_servers(node_count).await;
         let addrs = nodes.values().cloned().collect::<Vec<_>>();
 
-        let c = EngulaClient::new(ClientOptions::default(), addrs.to_owned())
+        let c = SekasClient::new(ClientOptions::default(), addrs.to_owned())
             .await
             .unwrap();
         let sys_db = c.open_database("__system__".to_owned()).await.unwrap();

@@ -14,7 +14,7 @@
 
 use std::time::Instant;
 
-use engula_client::Collection;
+use sekas_client::Collection;
 use rand::prelude::*;
 use tracing::trace;
 

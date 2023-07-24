@@ -17,7 +17,7 @@ use std::{
     path::Path,
 };
 
-use engula_api::server::v1::ReplicaDesc;
+use sekas_api::server::v1::ReplicaDesc;
 use futures::channel::oneshot;
 use raft::{
     prelude::{ConfChangeV2, Entry, EntryType},

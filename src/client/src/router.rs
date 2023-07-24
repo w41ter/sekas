@@ -18,7 +18,7 @@ use std::{
     time::Duration,
 };
 
-use engula_api::{
+use sekas_api::{
     server::v1::{
         watch_response::{delete_event::Event as DeleteEvent, update_event::Event as UpdateEvent},
         *,
@@ -356,7 +356,7 @@ fn leader_state(group_state: &GroupState) -> Option<(u64, u64)> {
 
 #[cfg(test)]
 mod tests {
-    use engula_api::server::v1::shard_desc::{HashPartition, Partition};
+    use sekas_api::server::v1::shard_desc::{HashPartition, Partition};
 
     use super::*;
 

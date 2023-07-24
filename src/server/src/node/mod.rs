@@ -24,7 +24,7 @@ use std::{
     sync::Arc,
 };
 
-use engula_api::server::v1::*;
+use sekas_api::server::v1::*;
 use futures::{channel::mpsc, lock::Mutex};
 use tracing::{debug, info, warn};
 
@@ -693,7 +693,7 @@ async fn start_raft_group(
 mod tests {
     use std::{path::PathBuf, time::Duration};
 
-    use engula_api::{
+    use sekas_api::{
         server::v1::{
             group_request_union::Request,
             report_request::GroupUpdates,

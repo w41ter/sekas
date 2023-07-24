@@ -20,7 +20,7 @@ pub mod root;
 
 use std::{sync::Arc, time::Duration};
 
-use engula_client::{ClientOptions, EngulaClient};
+use sekas_client::{ClientOptions, SekasClient};
 
 use crate::{
     node::Node,
@@ -37,7 +37,7 @@ pub struct Server {
 
 #[derive(Clone)]
 pub struct ProxyServer {
-    pub client: EngulaClient,
+    pub client: SekasClient,
 }
 
 impl ProxyServer {

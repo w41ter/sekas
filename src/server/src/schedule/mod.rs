@@ -19,7 +19,7 @@ mod setup;
 mod task;
 mod tasks;
 
-use engula_api::server::v1::ScheduleState;
+use sekas_api::server::v1::ScheduleState;
 
 pub(crate) use self::{provider::MoveReplicasProvider, setup::setup_scheduler};
 

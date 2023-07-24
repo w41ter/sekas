@@ -11,7 +11,7 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-use engula_api::{server::v1::*, v1::collection_request_union};
+use sekas_api::{server::v1::*, v1::collection_request_union};
 use lazy_static::lazy_static;
 use prometheus::*;
 use prometheus_static_metric::make_static_metric;

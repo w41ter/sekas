@@ -5,8 +5,8 @@ members = ["src/api", "src/bin", "src/client", "src/engine", "src/server"]
 version = "0.5.0"
 edition = "2021"
 license = "Apache-2.0"
-homepage = "https://engula.io"
-repository = "https://github.com/engula/engula"
+homepage = "https://sekas.w41ter.github.io"
+repository = "https://github.com/w41ter/sekas"
 
 [workspace.dependencies]
 async-stream = "0.3"

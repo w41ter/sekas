@@ -14,7 +14,7 @@
 
 use std::{cmp::Ordering, sync::Arc};
 
-use engula_api::server::v1::{GroupDesc, ShardDesc};
+use sekas_api::server::v1::{GroupDesc, ShardDesc};
 use tracing::debug;
 
 use super::{AllocSource, ReallocateShard, ShardAction};

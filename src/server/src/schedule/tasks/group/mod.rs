@@ -22,7 +22,7 @@ mod watch_replica_states;
 
 use std::collections::HashMap;
 
-use engula_api::server::v1::{ReplicaDesc, ScheduleState};
+use sekas_api::server::v1::{ReplicaDesc, ScheduleState};
 
 pub use self::{
     durable::DurableGroup, migration::ReplicaMigration, orphan_replica::RemoveOrphanReplica,

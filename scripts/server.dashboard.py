@@ -496,9 +496,9 @@ def executor_panels():
 
 
 dashboard = Dashboard(
-    title="Engula Server",
-    description="Engula Server dashboard using the default Prometheus datasource",
-    tags=['engula', 'server'],
+    title="Sekas Server",
+    description="Sekas Server dashboard using the default Prometheus datasource",
+    tags=['sekas', 'server'],
     timezone="browser",
     panels=[
         proxy_service_db_panels(),

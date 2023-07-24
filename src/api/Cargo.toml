@@ -1,11 +1,11 @@
 [package]
-name = "engula-api"
+name = "sekas-api"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 homepage.workspace = true
 repository.workspace = true
-description = "The Engula API."
+description = "The Sekas API."
 
 [dependencies]
 crc32fast.workspace = true

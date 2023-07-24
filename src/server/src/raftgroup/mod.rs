@@ -24,7 +24,7 @@ mod worker;
 
 use std::sync::Arc;
 
-use engula_api::server::v1::*;
+use sekas_api::server::v1::*;
 use raft::prelude::{
     ConfChangeSingle, ConfChangeTransition, ConfChangeType, ConfChangeV2, ConfState,
 };

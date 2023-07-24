@@ -14,8 +14,8 @@
 
 use std::sync::Arc;
 
-use engula_api::server::v1::{group_request_union::Request, group_response_union::Response, *};
-use engula_client::{MigrateClient, Router};
+use sekas_api::server::v1::{group_request_union::Request, group_response_union::Response, *};
+use sekas_client::{MigrateClient, Router};
 use futures::{channel::mpsc, StreamExt};
 use tracing::{debug, error, info, warn};
 
@@ -187,7 +187,7 @@ impl MigrationCoordinator {
                 );
                 self.enter_pulling_step().await;
             }
-            Err(engula_client::Error::EpochNotMatch(group_desc)) => {
+            Err(sekas_client::Error::EpochNotMatch(group_desc)) => {
                 // Since the epoch is not matched, this migration should be rollback.
                 warn!(replica = self.replica_id, group = self.group_id, desc = %self.desc,
                     "abort migration since epoch not match, new epoch is {}",

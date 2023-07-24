@@ -13,7 +13,7 @@
 // limitations under the License.
 use std::{collections::HashMap, thread, time::Duration};
 
-use engula_server::{
+use sekas_server::{
     runtime::{ExecutorOwner, ShutdownNotifier},
     Config, DbConfig, NodeConfig, RaftConfig, RootConfig, *,
 };
@@ -158,7 +158,7 @@ impl TestContext {
         let name = self.name.clone();
         let handle = thread::spawn(move || {
             let owner = ExecutorOwner::new(1);
-            engula_server::run(cfg, owner.executor(), shutdown).unwrap();
+            sekas_server::run(cfg, owner.executor(), shutdown).unwrap();
             info!("{name} server {idx} is shutdown");
         });
         self.notifiers.insert(idx as u64, notifier);

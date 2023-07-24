@@ -18,7 +18,7 @@ use std::{
     sync::Arc,
 };
 
-use engula_api::server::v1::*;
+use sekas_api::server::v1::*;
 use prost::Message;
 use raft::{prelude::*, GetEntriesContext, RaftState};
 use raft_engine::{Command, Engine, LogBatch, MessageExt};

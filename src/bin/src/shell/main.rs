@@ -15,7 +15,7 @@
 use std::{collections::HashMap, io::Write, time::Duration};
 
 use clap::Parser;
-use engula_client::{AppError, ClientOptions, Collection, Database, EngulaClient, Partition};
+use sekas_client::{AppError, ClientOptions, Collection, Database, SekasClient, Partition};
 use lazy_static::lazy_static;
 use rustyline::{error::ReadlineError, Editor};
 
@@ -23,7 +23,7 @@ type ParseResult<T = Request> = std::result::Result<T, String>;
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 #[derive(Parser)]
-#[clap(about = "Start engula shell")]
+#[clap(about = "Start sekas shell")]
 pub struct Command {
     /// Sets the address of the target cluster to operate
     #[clap(long, default_value = "0.0.0.0:21805")]
@@ -79,7 +79,7 @@ enum Request {
 }
 
 struct Session {
-    client: EngulaClient,
+    client: SekasClient,
     config: HashMap<String, String>,
     databases: HashMap<String, Database>,
     collections: HashMap<String, Collection>,
@@ -397,7 +397,7 @@ async fn new_session(addrs: Vec<String>) -> Result<Session> {
         connect_timeout: Some(Duration::from_millis(200)),
         timeout: Some(Duration::from_millis(500)),
     };
-    let client = EngulaClient::new(opts, addrs).await?;
+    let client = SekasClient::new(opts, addrs).await?;
     Ok(Session {
         client,
         config: HashMap::default(),

@@ -21,7 +21,7 @@ use crate::constants::REPLICA_PER_GROUP;
 
 #[derive(Default, Clone, Debug, Deserialize, Serialize)]
 pub struct Config {
-    /// The root dir of engula server.
+    /// The root dir of sekas server.
     pub root_dir: PathBuf,
 
     pub addr: String,

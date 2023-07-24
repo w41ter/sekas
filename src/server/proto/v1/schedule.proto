@@ -16,8 +16,8 @@ syntax = "proto3";
 
 package serverpb.v1;
 
-import "engula/server/v1/metadata.proto";
-import "engula/v1/metadata.proto";
+import "sekas/server/v1/metadata.proto";
+import "sekas/v1/metadata.proto";
 
 message ScheduleTask {
   oneof value {
@@ -30,8 +30,8 @@ message ScheduleTask {
 }
 
 message RemoveReplicaTask {
-  engula.server.v1.ReplicaDesc replica = 1;
-  engula.server.v1.GroupDesc group = 2;
+  sekas.server.v1.ReplicaDesc replica = 1;
+  sekas.server.v1.GroupDesc group = 2;
 }
 
 message ChangeConfigTask {
@@ -52,18 +52,18 @@ enum TaskStep {
 }
 
 message CreateReplicaStep {
-  repeated engula.server.v1.ReplicaDesc replicas = 1;
+  repeated sekas.server.v1.ReplicaDesc replicas = 1;
 }
 
-message AddLearnerStep { repeated engula.server.v1.ReplicaDesc replicas = 1; }
+message AddLearnerStep { repeated sekas.server.v1.ReplicaDesc replicas = 1; }
 
 message ReplaceVoterStep {
-  repeated engula.server.v1.ReplicaDesc incoming_voters = 1;
-  repeated engula.server.v1.ReplicaDesc outgoing_voters = 2;
+  repeated sekas.server.v1.ReplicaDesc incoming_voters = 1;
+  repeated sekas.server.v1.ReplicaDesc outgoing_voters = 2;
 }
 
 message RemoveLearnerStep {
-  repeated engula.server.v1.ReplicaDesc learners = 1;
+  repeated sekas.server.v1.ReplicaDesc learners = 1;
 }
 
 message ReconcileTask {
@@ -80,8 +80,8 @@ message ReallocateReplicaTask {
   uint64 group = 1;
   uint64 src_node = 2;
   uint64 src_replica = 3;
-  engula.server.v1.NodeDesc dest_node = 4;
-  engula.server.v1.ReplicaDesc dest_replica = 5;
+  sekas.server.v1.NodeDesc dest_node = 4;
+  sekas.server.v1.ReplicaDesc dest_replica = 5;
 }
 
 message MigrateShardTask {
@@ -114,11 +114,11 @@ message BackgroundJob {
 message CreateCollectionJob {
   uint64 database = 1;
   string collection_name = 2;
-  repeated engula.server.v1.ShardDesc wait_create = 3;
-  repeated engula.server.v1.ShardDesc wait_cleanup = 4;
+  repeated sekas.server.v1.ShardDesc wait_create = 3;
+  repeated sekas.server.v1.ShardDesc wait_cleanup = 4;
   CreateCollectionJobStatus status = 5;
   string remark = 6;
-  engula.v1.CollectionDesc desc = 7;
+  sekas.v1.CollectionDesc desc = 7;
   string created_time = 89;
 }
 
@@ -132,9 +132,9 @@ enum CreateCollectionJobStatus {
 
 message CreateOneGroupJob {
   uint64 request_replica_cnt = 1;
-  engula.server.v1.GroupDesc group_desc = 2;
-  repeated engula.server.v1.NodeDesc wait_create = 3;
-  repeated engula.server.v1.ReplicaDesc wait_cleanup = 4;
+  sekas.server.v1.GroupDesc group_desc = 2;
+  repeated sekas.server.v1.NodeDesc wait_create = 3;
+  repeated sekas.server.v1.ReplicaDesc wait_cleanup = 4;
   CreateOneGroupStatus status = 5;
   uint64 create_retry = 6;
   repeated uint64 invoked_nodes = 7;

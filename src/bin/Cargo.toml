@@ -1,5 +1,5 @@
 [package]
-name = "engula"
+name = "sekas"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -8,11 +8,11 @@ repository.workspace = true
 keywords = ["database"]
 categories = ["database", "data-structures"]
 description = "A distributed key-value store."
-default-run = "engula"
+default-run = "sekas"
 
 [dependencies]
-engula-client = { path = "../client", version = "0.5" }
-engula-server = { path = "../server", version = "0.5" }
+sekas-client = { path = "../client", version = "0.5" }
+sekas-server = { path = "../server", version = "0.5" }
 
 lazy_static.workspace = true
 num_cpus.workspace = true

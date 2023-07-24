@@ -14,7 +14,7 @@
 
 use std::sync::Arc;
 
-use engula_api::server::v1::{GroupDesc, NodeDesc};
+use sekas_api::server::v1::{GroupDesc, NodeDesc};
 
 use self::{
     policy_leader_cnt::LeaderCountPolicy, policy_replica_cnt::ReplicaCountPolicy,

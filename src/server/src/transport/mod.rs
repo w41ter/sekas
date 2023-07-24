@@ -19,8 +19,8 @@ mod resolver;
 
 use std::sync::Arc;
 
-use engula_client::{
-    ClientOptions, ConnManager, EngulaClient, GroupClient, MigrateClient, NodeClient, RootClient,
+use sekas_client::{
+    ClientOptions, ConnManager, SekasClient, GroupClient, MigrateClient, NodeClient, RootClient,
     Router, RouterGroupState, ShardClient,
 };
 
@@ -72,8 +72,8 @@ impl TransportManager {
     }
 
     #[inline]
-    pub(crate) fn build_client(&self, opts: ClientOptions) -> EngulaClient {
-        EngulaClient::build(
+    pub(crate) fn build_client(&self, opts: ClientOptions) -> SekasClient {
+        SekasClient::build(
             opts,
             self.router.clone(),
             self.root_client.clone(),
@@ -95,7 +95,7 @@ impl TransportManager {
     pub(crate) fn find_node_client(
         &self,
         node_id: u64,
-    ) -> Result<NodeClient, engula_client::Error> {
+    ) -> Result<NodeClient, sekas_client::Error> {
         let addr = self.router.find_node_addr(node_id)?;
         self.conn_manager.get_node_client(addr)
     }

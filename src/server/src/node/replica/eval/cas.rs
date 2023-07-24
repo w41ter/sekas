@@ -11,7 +11,7 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-use engula_api::v1::*;
+use sekas_api::v1::*;
 
 use crate::{Error, Result};
 
@@ -47,7 +47,7 @@ pub(super) fn eval_conditions(
 
 #[cfg(test)]
 mod tests {
-    use engula_api::v1::{WriteCondition, WriteConditionType};
+    use sekas_api::v1::{WriteCondition, WriteConditionType};
 
     use super::eval_conditions;
     use crate::Error;

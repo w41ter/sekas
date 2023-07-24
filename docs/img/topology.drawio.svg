@@ -217,13 +217,13 @@
                     <div xmlns="http://www.w3.org/1999/xhtml" style="display: flex; align-items: unsafe center; justify-content: unsafe center; width: 568px; height: 1px; padding-top: 55px; margin-left: 31px;">
                         <div data-drawio-colors="color: rgb(0, 0, 0); " style="box-sizing: border-box; font-size: 0px; text-align: center;">
                             <div style="display: inline-block; font-size: 12px; font-family: Helvetica; color: rgb(0, 0, 0); line-height: 1.2; pointer-events: all; white-space: normal; overflow-wrap: normal;">
-                                Engula Client
+                                Sekas Client
                             </div>
                         </div>
                     </div>
                 </foreignObject>
                 <text x="315" y="59" fill="rgb(0, 0, 0)" font-family="Helvetica" font-size="12px" text-anchor="middle">
-                    Engula Client
+                    Sekas Client
                 </text>
             </switch>
         </g>
@@ -295,7 +295,7 @@
                             <div style="display: inline-block; font-size: 24px; font-family: Helvetica; color: rgb(0, 0, 0); line-height: 1.2; pointer-events: all; font-weight: bold; white-space: nowrap;">
                                 <span style="font-weight: normal">
                                     <font face="Lucida Console" style="font-size: 10px">
-                                        Engula Server
+                                        Sekas Server
                                     </font>
                                 </span>
                             </div>
@@ -303,7 +303,7 @@
                     </div>
                 </foreignObject>
                 <text x="540" y="412" fill="rgb(0, 0, 0)" font-family="Helvetica" font-size="24px" text-anchor="middle" font-weight="bold">
-                    Engula S...
+                    Sekas S...
                 </text>
             </switch>
         </g>
