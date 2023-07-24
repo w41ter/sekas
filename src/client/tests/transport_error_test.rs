@@ -21,8 +21,8 @@ use std::{
     time::Duration,
 };
 
-use engula_api::server::v1::{node_server::NodeServer, *};
-use engula_client::{
+use sekas_api::server::v1::{node_server::NodeServer, *};
+use sekas_client::{
     error::{find_io_error, retryable_rpc_err, transport_err},
     NodeClient, RequestBatchBuilder,
 };
@@ -53,22 +53,22 @@ struct MockedServer {}
 impl node_server::Node for MockedServer {
     async fn batch(
         &self,
-        request: tonic::Request<engula_api::server::v1::BatchRequest>,
-    ) -> Result<tonic::Response<engula_api::server::v1::BatchResponse>, tonic::Status> {
+        request: tonic::Request<sekas_api::server::v1::BatchRequest>,
+    ) -> Result<tonic::Response<sekas_api::server::v1::BatchResponse>, tonic::Status> {
         todo!()
     }
 
     async fn admin(
         &self,
-        request: tonic::Request<engula_api::server::v1::NodeAdminRequest>,
-    ) -> Result<tonic::Response<engula_api::server::v1::NodeAdminResponse>, tonic::Status> {
+        request: tonic::Request<sekas_api::server::v1::NodeAdminRequest>,
+    ) -> Result<tonic::Response<sekas_api::server::v1::NodeAdminResponse>, tonic::Status> {
         todo!()
     }
 
     async fn migrate(
         &self,
-        request: tonic::Request<engula_api::server::v1::MigrateRequest>,
-    ) -> Result<tonic::Response<engula_api::server::v1::MigrateResponse>, tonic::Status> {
+        request: tonic::Request<sekas_api::server::v1::MigrateRequest>,
+    ) -> Result<tonic::Response<sekas_api::server::v1::MigrateResponse>, tonic::Status> {
         todo!()
     }
 }

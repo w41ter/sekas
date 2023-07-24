@@ -29,7 +29,7 @@ NUM_SERVERS=3
 # The first port of servers in cluster.
 BASE_PORT=21805
 
-export RUST_LOG=info #,engula_server=debug,engula_client=debug
+export RUST_LOG=info #,sekas_server=debug,sekas_client=debug
 export ENGULA_ENABLE_PROXY_SERVICE=true
 
 ###### CONFIG ######
@@ -37,7 +37,7 @@ export ENGULA_ENABLE_PROXY_SERVICE=true
 function build_cluster_env() {
     mkdir -p ${BASE_DIR}/log
 
-    ln -s ${BINARY_DIR}/engula ${BASE_DIR}
+    ln -s ${BINARY_DIR}/sekas ${BASE_DIR}
     for id in $(seq 1 ${NUM_SERVERS}); do
         mkdir -p ${BASE_DIR}/server/${id}
         mkdir -p ${BASE_DIR}/config/${id}
@@ -46,7 +46,7 @@ function build_cluster_env() {
 
 function start_init_server() {
     ulimit -c unlimited
-    setsid ${BASE_DIR}/engula start \
+    setsid ${BASE_DIR}/sekas start \
         --db ${BASE_DIR}/server/1 \
         --addr "127.0.0.1:${BASE_PORT}" \
         --init \
@@ -91,7 +91,7 @@ function start_join_server() {
     local servers="$(join_list)"
 
     ulimit -c unlimited
-    setsid ${BASE_DIR}/engula start \
+    setsid ${BASE_DIR}/sekas start \
         --db ${BASE_DIR}/server/${id} \
         --addr "127.0.0.1:$(server_port ${id})" \
         ${servers} \
@@ -102,7 +102,7 @@ function start_server() {
     local id=$1
     ulimit -c unlimited
     ulimit -n 102400
-    setsid ${BASE_DIR}/engula start \
+    setsid ${BASE_DIR}/sekas start \
         --conf ${BASE_DIR}/config/${id}.toml \
         >>${BASE_DIR}/log/${id}.log 2>&1 &
 }
@@ -123,7 +123,7 @@ function start() {
 function stop_server() {
     local id=$1
     ps -ef |
-        grep "engula start" |
+        grep "sekas start" |
         grep "${BASE_DIR}/config/${id}.toml" |
         grep -v grep |
         awk '{print $2}' |
@@ -145,7 +145,7 @@ function stop() {
 
 function setup_cluster() {
     export ENGULA_NUM_CONN=1
-    ${BASE_DIR}/engula start \
+    ${BASE_DIR}/sekas start \
         --db ${BASE_DIR}/server/1 \
         --cpu-nums 2 \
         --addr "127.0.0.1:${BASE_PORT}" \
@@ -155,7 +155,7 @@ function setup_cluster() {
     for id in $(seq 2 ${NUM_SERVERS}); do
         local servers="$(join_list)"
 
-        ${BASE_DIR}/engula start \
+        ${BASE_DIR}/sekas start \
             --db ${BASE_DIR}/server/${id} \
             --cpu-nums 2 \
             --addr "127.0.0.1:$(server_port ${id})" \
@@ -194,7 +194,7 @@ while [[ $# != 0 ]]; do
         exit 0
         ;;
     status)
-        ps -ef | grep "engula start" | grep -v grep
+        ps -ef | grep "sekas start" | grep -v grep
         exit 0
         ;;
     clean)

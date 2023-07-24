@@ -14,7 +14,7 @@
 
 use std::{cmp::Ordering, collections::HashMap, sync::Arc};
 
-use engula_api::server::v1::{NodeDesc, RaftRole, ReplicaDesc, ReplicaRole};
+use sekas_api::server::v1::{NodeDesc, RaftRole, ReplicaDesc, ReplicaRole};
 use tracing::debug;
 
 use super::{source::NodeFilter, AllocSource, BalanceStatus, LeaderAction, TransferLeader};

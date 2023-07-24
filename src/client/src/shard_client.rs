@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use engula_api::{
+use sekas_api::{
     server::v1::{group_request_union::Request, group_response_union::Response, *},
     v1::DeleteRequest,
 };

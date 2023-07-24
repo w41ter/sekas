@@ -19,7 +19,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use engula_api::server::v1::ReplicaDesc;
+use sekas_api::server::v1::ReplicaDesc;
 use futures::{channel::mpsc, SinkExt, StreamExt};
 use raft::eraftpb::Message;
 use tracing::{debug, error, info};

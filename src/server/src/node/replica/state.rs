@@ -18,7 +18,7 @@ use std::{
     task::Waker,
 };
 
-use engula_api::server::v1::{
+use sekas_api::server::v1::{
     GroupDesc, MigrationDesc, RaftRole, ReplicaDesc, ReplicaState, ScheduleState,
 };
 use futures::channel::mpsc;

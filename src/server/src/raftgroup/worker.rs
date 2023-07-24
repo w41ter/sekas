@@ -20,7 +20,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use engula_api::server::v1::{ChangeReplicas, RaftRole, ReplicaDesc};
+use sekas_api::server::v1::{ChangeReplicas, RaftRole, ReplicaDesc};
 use futures::{
     channel::{mpsc, oneshot},
     stream::FusedStream,

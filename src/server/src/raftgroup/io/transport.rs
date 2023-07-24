@@ -13,7 +13,7 @@
 // limitations under the License.
 use std::sync::Arc;
 
-use engula_api::server::v1::{NodeDesc, ReplicaDesc};
+use sekas_api::server::v1::{NodeDesc, ReplicaDesc};
 use futures::{channel::mpsc, StreamExt};
 use tracing::{debug, warn};
 

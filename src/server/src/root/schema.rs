@@ -17,7 +17,7 @@ use std::{
     sync::Arc,
 };
 
-use engula_api::{
+use sekas_api::{
     server::v1::{
         shard_desc::{Partition, RangePartition},
         watch_response::{delete_event, update_event, DeleteEvent, UpdateEvent},

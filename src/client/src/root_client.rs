@@ -15,7 +15,7 @@
 use std::{collections::HashMap, future::Future, sync::Arc, time::Duration};
 
 use derivative::Derivative;
-use engula_api::{
+use sekas_api::{
     server::v1::{root_client::RootClient, *},
     v1::{create_collection_request::Partition, *},
 };

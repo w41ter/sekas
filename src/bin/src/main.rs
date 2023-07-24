@@ -17,12 +17,12 @@ mod bench;
 mod shell;
 
 use clap::{Parser, Subcommand};
-use engula_server::{Error, Result};
+use sekas_server::{Error, Result};
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
-#[clap(name = "engula", version, author, about)]
+#[clap(name = "sekas", version, author, about)]
 struct Command {
     #[clap(subcommand)]
     subcmd: SubCommand,
@@ -58,7 +58,7 @@ impl SubCommand {
 }
 
 #[derive(Parser)]
-#[clap(about = "Start engula server")]
+#[clap(about = "Start sekas server")]
 struct StartCommand {
     /// Try to bootstrap a cluster if it not initialized, otherwise join a cluster
     #[clap(long)]
@@ -92,7 +92,7 @@ struct StartCommand {
 
 impl StartCommand {
     fn run(self) -> Result<()> {
-        use engula_server::runtime::{ExecutorOwner, ShutdownNotifier, TaskPriority};
+        use sekas_server::runtime::{ExecutorOwner, ShutdownNotifier, TaskPriority};
 
         let mut config = match load_config(&self) {
             Ok(c) => c,
@@ -120,7 +120,7 @@ impl StartCommand {
         executor.spawn(None, TaskPriority::Low, async move {
             notifier.ctrl_c().await;
         });
-        engula_server::run(config, executor, shutdown)
+        sekas_server::run(config, executor, shutdown)
     }
 }
 
@@ -144,7 +144,7 @@ fn main() -> Result<()> {
     cmd.run()
 }
 
-fn load_config(cmd: &StartCommand) -> Result<engula_server::Config, config::ConfigError> {
+fn load_config(cmd: &StartCommand) -> Result<sekas_server::Config, config::ConfigError> {
     use config::{Config, Environment, File};
 
     let mut builder = Config::builder()
@@ -159,7 +159,7 @@ fn load_config(cmd: &StartCommand) -> Result<engula_server::Config, config::Conf
     }
 
     let c = builder
-        .add_source(Environment::with_prefix("engula"))
+        .add_source(Environment::with_prefix("sekas"))
         .set_override_option("addr", cmd.addr.clone())?
         .set_override_option("root_dir", cmd.db.clone())?
         .set_override_option("join_list", cmd.join.clone())?

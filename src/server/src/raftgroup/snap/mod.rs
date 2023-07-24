@@ -406,7 +406,7 @@ async fn recycle_snapshot(mut receiver: mpsc::UnboundedReceiver<(u64, PathBuf)>)
 
 #[cfg(test)]
 mod tests {
-    use engula_api::server::v1::GroupDesc;
+    use sekas_api::server::v1::GroupDesc;
     use tempdir::TempDir;
 
     use super::*;

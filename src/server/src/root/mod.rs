@@ -33,7 +33,7 @@ use std::{
     time::Duration,
 };
 
-use engula_api::{
+use sekas_api::{
     server::v1::{report_request::GroupUpdates, watch_response::*, *},
     v1::{
         collection_desc as co_desc, create_collection_request as co_req, CollectionDesc,
@@ -1386,7 +1386,7 @@ impl SchedStats {
 
 #[cfg(test)]
 mod root_test {
-    use engula_api::{
+    use sekas_api::{
         server::v1::{
             watch_response::{update_event, UpdateEvent},
             GroupDesc,

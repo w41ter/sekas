@@ -14,7 +14,7 @@
 
 use std::time::Duration;
 
-use engula_api::{server::v1::*, v1::*};
+use sekas_api::{server::v1::*, v1::*};
 use prost::Message;
 use tonic::{transport::Channel, IntoRequest};
 

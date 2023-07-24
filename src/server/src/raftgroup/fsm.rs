@@ -14,7 +14,7 @@
 
 use std::path::Path;
 
-use engula_api::server::v1::{ChangeReplicas, GroupDesc};
+use sekas_api::server::v1::{ChangeReplicas, GroupDesc};
 
 use crate::{
     serverpb::v1::{ApplyState, EvalResult},

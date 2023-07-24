@@ -11,7 +11,7 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-use engula_api::server::v1::{GroupDesc, ReplicaDesc, RootDesc};
+use sekas_api::server::v1::{GroupDesc, ReplicaDesc, RootDesc};
 
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
@@ -126,7 +126,7 @@ impl std::fmt::Display for BusyReason {
 
 impl From<Error> for tonic::Status {
     fn from(e: Error) -> Self {
-        use engula_api::server::v1;
+        use sekas_api::server::v1;
         use prost::Message;
         use tonic::{Code, Status};
 
@@ -197,13 +197,13 @@ impl From<prost::DecodeError> for Error {
 
 impl From<tonic::Status> for Error {
     fn from(status: tonic::Status) -> Self {
-        engula_client::Error::from(status).into()
+        sekas_client::Error::from(status).into()
     }
 }
 
-impl From<Error> for engula_api::server::v1::Error {
+impl From<Error> for sekas_api::server::v1::Error {
     fn from(err: Error) -> Self {
-        use engula_api::server::v1;
+        use sekas_api::server::v1;
         use tonic::Code;
 
         match err {
@@ -243,41 +243,41 @@ impl From<Error> for engula_api::server::v1::Error {
     }
 }
 
-impl From<engula_api::server::v1::Error> for Error {
-    fn from(err: engula_api::server::v1::Error) -> Self {
-        engula_client::Error::from(err).into()
+impl From<sekas_api::server::v1::Error> for Error {
+    fn from(err: sekas_api::server::v1::Error) -> Self {
+        sekas_client::Error::from(err).into()
     }
 }
 
-impl From<engula_client::Error> for Error {
-    fn from(err: engula_client::Error) -> Self {
+impl From<sekas_client::Error> for Error {
+    fn from(err: sekas_client::Error) -> Self {
         match err {
-            engula_client::Error::InvalidArgument(v) => Error::InvalidArgument(v),
-            engula_client::Error::DeadlineExceeded(v) => Error::DeadlineExceeded(v),
-            engula_client::Error::AlreadyExists(v) => Error::AlreadyExists(v),
-            engula_client::Error::ResourceExhausted(v) => Error::ResourceExhausted(v),
-            engula_client::Error::CasFailed(v) => Error::CasFailed(v),
-            engula_client::Error::Rpc(err) => Error::Rpc(err),
-            engula_client::Error::Connect(err) => Error::Rpc(err),
-            engula_client::Error::Transport(err) => Error::Rpc(err),
+            sekas_client::Error::InvalidArgument(v) => Error::InvalidArgument(v),
+            sekas_client::Error::DeadlineExceeded(v) => Error::DeadlineExceeded(v),
+            sekas_client::Error::AlreadyExists(v) => Error::AlreadyExists(v),
+            sekas_client::Error::ResourceExhausted(v) => Error::ResourceExhausted(v),
+            sekas_client::Error::CasFailed(v) => Error::CasFailed(v),
+            sekas_client::Error::Rpc(err) => Error::Rpc(err),
+            sekas_client::Error::Connect(err) => Error::Rpc(err),
+            sekas_client::Error::Transport(err) => Error::Rpc(err),
 
-            engula_client::Error::GroupNotFound(v) => Error::GroupNotFound(v),
-            engula_client::Error::NotRootLeader(desc, term, leader) => {
+            sekas_client::Error::GroupNotFound(v) => Error::GroupNotFound(v),
+            sekas_client::Error::NotRootLeader(desc, term, leader) => {
                 Error::NotRootLeader(desc, term, leader)
             }
-            engula_client::Error::NotLeader(group, term, leader) => {
+            sekas_client::Error::NotLeader(group, term, leader) => {
                 Error::NotLeader(group, term, leader)
             }
-            engula_client::Error::EpochNotMatch(v) => Error::EpochNotMatch(v),
+            sekas_client::Error::EpochNotMatch(v) => Error::EpochNotMatch(v),
 
             // NOTE: This is a fallback, for some scenarios where you don't need to deal with
             // `GroupNotAccessable` raised by `GroupClient`. (`GroupNotReady` only used inside
             // nodes)
-            engula_client::Error::GroupNotAccessable(id) => Error::GroupNotReady(id),
+            sekas_client::Error::GroupNotAccessable(id) => Error::GroupNotReady(id),
 
             // FIXME(walter) handle unknown errors.
-            engula_client::Error::NotFound(v) => panic!("unknown not found: {v}"),
-            engula_client::Error::Internal(v) => panic!("internal error: {v:?}"),
+            sekas_client::Error::NotFound(v) => panic!("unknown not found: {v}"),
+            sekas_client::Error::Internal(v) => panic!("internal error: {v:?}"),
         }
     }
 }

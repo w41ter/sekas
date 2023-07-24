@@ -20,9 +20,9 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     tonic_build::configure().compile(
         &[
-            "engula/v1/engula.proto",
-            "engula/server/v1/node.proto",
-            "engula/server/v1/root.proto",
+            "sekas/v1/sekas.proto",
+            "sekas/server/v1/node.proto",
+            "sekas/server/v1/root.proto",
         ],
         &["."],
     )?;

@@ -24,7 +24,7 @@ mod cmd_scan;
 use std::{collections::VecDeque, sync::Arc, time::Duration};
 
 use dashmap::DashMap;
-use engula_api::server::v1::{
+use sekas_api::server::v1::{
     group_request_union::Request, ShardDeleteRequest, ShardDesc, ShardPutRequest,
 };
 use futures::channel::oneshot;

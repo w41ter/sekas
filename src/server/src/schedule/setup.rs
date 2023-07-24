@@ -14,7 +14,7 @@
 
 use std::sync::Arc;
 
-use engula_api::server::v1::ScheduleState;
+use sekas_api::server::v1::ScheduleState;
 use tracing::debug;
 
 use super::ScheduleStateObserver;

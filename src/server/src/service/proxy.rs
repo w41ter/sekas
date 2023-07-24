@@ -12,20 +12,20 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use ::engula_client::{Collection, Database};
-use engula_api::v1::*;
+use ::sekas_client::{Collection, Database};
+use sekas_api::v1::*;
 use tonic::{Request, Response, Status};
 
 use super::ProxyServer;
 use crate::{record_latency, service::metrics::take_database_request_metrics, Error};
 
 #[tonic::async_trait]
-impl engula_server::Engula for ProxyServer {
+impl sekas_server::Sekas for ProxyServer {
     async fn admin(
         &self,
         request: Request<AdminRequest>,
     ) -> Result<Response<AdminResponse>, Status> {
-        use engula_api::v1::{admin_request_union::Request, admin_response_union::Response};
+        use sekas_api::v1::{admin_request_union::Request, admin_response_union::Response};
         let req = request
             .into_inner()
             .request
@@ -73,7 +73,7 @@ impl engula_server::Engula for ProxyServer {
         &self,
         request: Request<DatabaseRequest>,
     ) -> Result<Response<DatabaseResponse>, Status> {
-        use engula_api::v1::{
+        use sekas_api::v1::{
             collection_request_union::Request, collection_response_union::Response,
         };
 

@@ -15,7 +15,7 @@ mod helper;
 
 use std::collections::HashSet;
 
-use engula_api::server::v1::*;
+use sekas_api::server::v1::*;
 use helper::context::TestContext;
 use tracing::info;
 

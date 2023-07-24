@@ -14,8 +14,8 @@
 
 use std::{sync::Arc, time::Duration, vec};
 
-use engula_api::server::v1::{node_server::NodeServer, root_server::RootServer, *};
-use engula_client::RootClient;
+use sekas_api::server::v1::{node_server::NodeServer, root_server::RootServer, *};
+use sekas_client::RootClient;
 use tracing::{debug, info, warn};
 
 use crate::{
@@ -30,7 +30,7 @@ use crate::{
     Config, Error, Result, Server,
 };
 
-/// The main entrance of engula server.
+/// The main entrance of sekas server.
 pub fn run(config: Config, executor: Executor, shutdown: Shutdown) -> Result<()> {
     executor.block_on(async {
         let engines = Engines::open(&config.root_dir, &config.db)?;
@@ -75,7 +75,7 @@ async fn bootstrap_services(
     proxy_server: Option<ProxyServer>,
     shutdown: Shutdown,
 ) -> Result<()> {
-    use engula_api::v1::engula_server::EngulaServer;
+    use sekas_api::v1::sekas_server::SekasServer;
     use tokio::net::TcpListener;
     use tonic::transport::Server;
 
@@ -90,7 +90,7 @@ async fn bootstrap_services(
         .add_service(RaftServer::new(server.clone()))
         .add_service(RootServer::new(server.clone()))
         .add_service(make_admin_service(server.clone()))
-        .add_optional_service(proxy_server.map(EngulaServer::new))
+        .add_optional_service(proxy_server.map(SekasServer::new))
         .serve_with_incoming(incoming);
 
     crate::runtime::select! {

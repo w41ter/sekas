@@ -11,7 +11,7 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-use engula_api::server::v1::*;
+use sekas_api::server::v1::*;
 
 use crate::{
     engine::{GroupEngine, SnapshotMode},

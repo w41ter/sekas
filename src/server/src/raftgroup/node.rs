@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use engula_api::server::v1::RaftRole;
+use sekas_api::server::v1::RaftRole;
 use futures::channel::oneshot;
 use raft::{prelude::*, ConfChangeI, StateRole, Storage as RaftStorage};
 use raft_engine::LogBatch;
@@ -519,7 +519,7 @@ async fn try_reset_storage_state(
 mod tests {
     use std::{path::PathBuf, sync::Arc};
 
-    use engula_api::server::v1::{GroupDesc, NodeDesc, ReplicaDesc, ReplicaRole};
+    use sekas_api::server::v1::{GroupDesc, NodeDesc, ReplicaDesc, ReplicaRole};
     use raft_engine::*;
 
     use super::*;
@@ -563,7 +563,7 @@ mod tests {
             todo!()
         }
 
-        fn descriptor(&self) -> engula_api::server::v1::GroupDesc {
+        fn descriptor(&self) -> sekas_api::server::v1::GroupDesc {
             todo!()
         }
 
@@ -848,7 +848,7 @@ mod tests {
                 todo!()
             }
 
-            fn descriptor(&self) -> engula_api::server::v1::GroupDesc {
+            fn descriptor(&self) -> sekas_api::server::v1::GroupDesc {
                 // Only one member, so the node will become leader immediately.
                 GroupDesc {
                     id: 1,

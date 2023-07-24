@@ -13,7 +13,7 @@
 // limitations under the License.
 use std::{sync::Arc, time::Duration};
 
-use engula_api::server::v1::*;
+use sekas_api::server::v1::*;
 use tracing::{debug, error, info};
 
 use super::ActionTaskWithLocks;
@@ -103,8 +103,8 @@ impl PromoteGroup {
         match ctx.transport_manager.root_client().alloc_replica(req).await {
             Ok(resp) => Some(resp.replicas),
             Err(
-                e @ (engula_client::Error::ResourceExhausted(_)
-                | engula_client::Error::EpochNotMatch(_)),
+                e @ (sekas_client::Error::ResourceExhausted(_)
+                | sekas_client::Error::EpochNotMatch(_)),
             ) => {
                 debug!(
                     "group {group_id} replica {replica_id} alloc addition replicas for {who}: {e}",

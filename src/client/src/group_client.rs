@@ -18,7 +18,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use engula_api::{
+use sekas_api::{
     server::v1::{group_request_union::Request, group_response_union::Response, *},
     shard,
 };
@@ -593,7 +593,7 @@ impl GroupClient {
 }
 
 // Migration related functions, which will be retried at:
-// `engula-client::migrate_client::MigrateClient`.
+// `sekas-client::migrate_client::MigrateClient`.
 impl GroupClient {
     pub async fn setup_migration(&mut self, desc: &MigrationDesc) -> Result<()> {
         let op = |_: InvokeContext, client: NodeClient| async move {

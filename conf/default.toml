@@ -10,14 +10,14 @@ init = false
 # `init` is false.
 join_list = []
 
-root_dir = "/tmp/engula"
+root_dir = "/tmp/sekas"
 
-# Whether to allow the current node to serve as Engula's proxy service.
+# Whether to allow the current node to serve as Sekas's proxy service.
 # Default: false
 enable_proxy_service = false
 
-# The num of cpu cores this engula node is allowed to use, engula will assign a
-# worker thread to each core. If set to 0 , then engula automatically detects
+# The num of cpu cores this sekas node is allowed to use, sekas will assign a
+# worker thread to each core. If set to 0 , then sekas automatically detects
 # and sets the value to the number of cores of the local CPU.
 # Default: 0
 cpu_nums = 0

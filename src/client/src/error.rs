@@ -14,7 +14,7 @@
 
 use std::error::Error as StdError;
 
-use engula_api::server::v1::{GroupDesc, ReplicaDesc, RootDesc};
+use sekas_api::server::v1::{GroupDesc, ReplicaDesc, RootDesc};
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 pub type AppResult<T> = std::result::Result<T, AppError>;
@@ -119,9 +119,9 @@ impl From<tonic::Status> for Error {
     }
 }
 
-impl From<engula_api::server::v1::Error> for Error {
-    fn from(err: engula_api::server::v1::Error) -> Self {
-        use engula_api::server::v1::error_detail_union::Value;
+impl From<sekas_api::server::v1::Error> for Error {
+    fn from(err: sekas_api::server::v1::Error) -> Self {
+        use sekas_api::server::v1::error_detail_union::Value;
         use tonic::Status;
 
         if err.details.is_empty() {
@@ -265,7 +265,7 @@ pub fn transport_err(status: &tonic::Status) -> bool {
 }
 
 pub fn from_source_or_details(status: tonic::Status) -> Error {
-    use engula_api::server::v1;
+    use sekas_api::server::v1;
     use prost::Message;
 
     if !status.details().is_empty() {

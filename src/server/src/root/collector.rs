@@ -17,7 +17,7 @@ use std::sync::{
     Arc,
 };
 
-use engula_api::server::v1::NodeStatus;
+use sekas_api::server::v1::NodeStatus;
 use prometheus::{core::Collector, *};
 use prometheus_static_metric::make_static_metric;
 

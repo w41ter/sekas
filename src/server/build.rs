@@ -19,8 +19,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     std::env::set_var("PROTOC_INCLUDE", protoc_build::PROTOC_INCLUDE);
 
     let mut config = prost_build::Config::default();
-    config.extern_path(".engula.server.v1", "::engula_api::server::v1");
-    config.extern_path(".engula.v1", "::engula_api::v1");
+    config.extern_path(".sekas.server.v1", "::sekas_api::server::v1");
+    config.extern_path(".sekas.v1", "::sekas_api::v1");
     config.extern_path(".eraftpb", "::raft::eraftpb");
     tonic_build::configure().compile_with_config(
         config,

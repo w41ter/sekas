@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use engula_api::server::v1::*;
+use sekas_api::server::v1::*;
 use tracing::info;
 
 use crate::{node::replica::ExecCtx, schedule::MoveReplicasProvider, Result};

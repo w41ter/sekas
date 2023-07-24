@@ -15,8 +15,8 @@ mod helper;
 
 use std::time::Duration;
 
-use engula_api::server::v1::TxnState;
-use engula_client::{AppError, ClientOptions, Error, Partition};
+use sekas_api::server::v1::TxnState;
+use sekas_client::{AppError, ClientOptions, Error, Partition};
 use tracing::info;
 
 use crate::helper::{client::*, context::*, init::setup_panic_hook, runtime::*};

@@ -14,10 +14,10 @@
 
 use std::time::Duration;
 
-use engula_api::server::v1::{
+use sekas_api::server::v1::{
     report_request::GroupUpdates, GroupDesc, ReplicaState, ReportRequest, ScheduleState,
 };
-use engula_client::RootClient;
+use sekas_client::RootClient;
 use futures::{channel::mpsc, StreamExt};
 use tracing::warn;
 

@@ -17,7 +17,7 @@ use std::{
     time::Duration,
 };
 
-use engula_api::server::v1::root_client::RootClient;
+use sekas_api::server::v1::root_client::RootClient;
 use tonic::transport::{Channel, Endpoint};
 
 use crate::{Error, NodeClient, Result};

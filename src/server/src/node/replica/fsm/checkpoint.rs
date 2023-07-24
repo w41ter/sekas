@@ -13,7 +13,7 @@
 // limitations under the License.
 use std::path::Path;
 
-use engula_api::server::v1::GroupDesc;
+use sekas_api::server::v1::GroupDesc;
 use tracing::{debug, error, info};
 
 use crate::{
@@ -161,7 +161,7 @@ fn is_sst_file<P: AsRef<Path>>(path: P) -> bool {
 mod tests {
     use std::{path::Path, sync::Arc};
 
-    use engula_api::server::v1::{
+    use sekas_api::server::v1::{
         shard_desc::{Partition, RangePartition},
         GroupDesc, ShardDesc,
     };

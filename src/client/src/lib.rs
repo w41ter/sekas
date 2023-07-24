@@ -29,7 +29,7 @@ mod shard_client;
 mod txn_client;
 
 pub use app_client::{
-    Client as EngulaClient, ClientOptions, Collection, Database, Partition, WriteConditionBuilder,
+    Client as SekasClient, ClientOptions, Collection, Database, Partition, WriteConditionBuilder,
 };
 pub use conn_manager::ConnManager;
 pub use discovery::{ServiceDiscovery, StaticServiceDiscovery};

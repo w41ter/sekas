@@ -14,7 +14,7 @@
 
 use std::{net::SocketAddr, time::Duration};
 
-use engula_client::{error::retryable_rpc_err, NodeClient, RequestBatchBuilder, RpcTimeout};
+use sekas_client::{error::retryable_rpc_err, NodeClient, RequestBatchBuilder, RpcTimeout};
 use socket2::{Domain, Socket, Type};
 use tonic::{transport::Endpoint, Code};
 

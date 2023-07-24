@@ -13,8 +13,8 @@
 // limitations under the License.
 mod helper;
 
-use engula_api::{server::v1::ReplicaRole, v1::PutOperation};
-use engula_client::{AppError, ClientOptions, EngulaClient, Partition, WriteConditionBuilder};
+use sekas_api::{server::v1::ReplicaRole, v1::PutOperation};
+use sekas_client::{AppError, ClientOptions, SekasClient, Partition, WriteConditionBuilder};
 use rand::{prelude::SmallRng, Rng, SeedableRng};
 use tracing::info;
 
@@ -36,7 +36,7 @@ fn single_node_server() {
         node_client_with_retry(&node_1_addr).await;
 
         let addrs = vec![node_1_addr];
-        let client = EngulaClient::new(ClientOptions::default(), addrs)
+        let client = SekasClient::new(ClientOptions::default(), addrs)
             .await
             .unwrap();
         let db = client.create_database("test_db".to_string()).await.unwrap();

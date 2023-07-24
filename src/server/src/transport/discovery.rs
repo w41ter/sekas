@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use engula_client::ServiceDiscovery;
+use sekas_client::ServiceDiscovery;
 
 use crate::engine::StateEngine;
 

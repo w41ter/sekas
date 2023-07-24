@@ -15,7 +15,7 @@
 #![allow(clippy::all)]
 
 pub mod v1 {
-    use engula_api::server::v1::{MigrationDesc, ShardDesc};
+    use sekas_api::server::v1::{MigrationDesc, ShardDesc};
 
     tonic::include_proto!("serverpb.v1");
 
