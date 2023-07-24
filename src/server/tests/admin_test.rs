@@ -182,7 +182,7 @@ fn admin_basic() {
                 .unwrap()
                 .unwrap();
             let col_desc = CollectionDesc::decode(&*col_bytes).unwrap();
-            assert!(col_desc.id == 9);
+            assert!(col_desc.id == 10);
 
             new_col
         };

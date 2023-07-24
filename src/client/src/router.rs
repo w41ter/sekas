@@ -85,7 +85,7 @@ impl Router {
             let shards = state
                 .co_shards_lookup
                 .get(&desc.id)
-                .ok_or_else(|| crate::Error::NotFound(format!("shard (key={:?})", key)))?;
+                .ok_or_else(|| crate::Error::NotFound(format!("co2shard (key={:?})", key)))?;
 
             if slots != shards.len() as u32 {
                 return Err(crate::Error::NotFound("expired shard info".into()));

@@ -114,6 +114,19 @@ impl Client {
         Ok(res.into_inner())
     }
 
+    pub async fn alloc_txn_id(&self, num_required: u64) -> Result<u64> {
+        let req = AllocTxnIdRequest { num_required };
+        let res = self
+            .invoke(|mut client| {
+                let req = req.clone();
+                async move { client.alloc_txn_id(req).await }
+            })
+            .await?;
+        let res = res.into_inner();
+        debug_assert_eq!(res.num, num_required);
+        Ok(res.base_txn_id)
+    }
+
     pub async fn watch(
         &self,
         cur_group_epochs: HashMap<u64, u64>,

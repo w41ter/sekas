@@ -19,7 +19,10 @@ pub fn setup_panic_hook() {
         // invoke the default handler and exit the process
         orig_hook(panic_info);
         tracing::error!("{:#?}", panic_info);
-        tracing::error!("{:#?}", std::backtrace::Backtrace::force_capture());
+        tracing::error!(
+            "Backtrace: \n{}",
+            std::backtrace::Backtrace::force_capture()
+        );
         process::exit(1);
     }));
 }

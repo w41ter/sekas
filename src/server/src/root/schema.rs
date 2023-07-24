@@ -23,7 +23,10 @@ use engula_api::{
         watch_response::{delete_event, update_event, DeleteEvent, UpdateEvent},
         *,
     },
-    v1::{collection_desc, CollectionDesc, DatabaseDesc, PutRequest},
+    v1::{
+        collection_desc::{self, HashPartition},
+        CollectionDesc, DatabaseDesc, PutRequest,
+    },
 };
 use futures::lock::Mutex;
 use prost::Message;
@@ -41,8 +44,10 @@ use crate::{
 
 const SYSTEM_DATABASE_NAME: &str = "__system__";
 pub const SYSTEM_DATABASE_ID: u64 = 1;
+const SYSTEM_TXN_COLLECTION: &str = "txn";
+const SYSTEM_TXN_COLLECTION_ID: u64 = LOCAL_COLLECTION_ID + 1;
 const SYSTEM_COLLECTION_COLLECTION: &str = "collection";
-const SYSTEM_COLLECTION_COLLECTION_ID: u64 = LOCAL_COLLECTION_ID + 1;
+const SYSTEM_COLLECTION_COLLECTION_ID: u64 = SYSTEM_TXN_COLLECTION_ID + 1;
 const SYSTEM_COLLECTION_COLLECTION_SHARD: u64 = 1;
 const SYSTEM_DATABASE_COLLECTION: &str = "database";
 const SYSTEM_DATABASE_COLLECTION_ID: u64 = SYSTEM_COLLECTION_COLLECTION_ID + 1;
@@ -810,7 +815,23 @@ impl Schema {
                 })),
             })
         }
-        (desc, SYSTEM_JOB_HISTORY_COLLECTION_SHARD + 1)
+
+        // Add shards for txn collection.
+        let mut next_shard_id = SYSTEM_JOB_HISTORY_COLLECTION_SHARD + 1;
+        for idx in 0..256u32 {
+            let shard_id = next_shard_id;
+            next_shard_id += 1;
+            desc.push(ShardDesc {
+                id: shard_id,
+                collection_id: SYSTEM_TXN_COLLECTION_ID,
+                partition: Some(Partition::Hash(shard_desc::HashPartition {
+                    slot_id: idx,
+                    slots: 256,
+                })),
+            });
+        }
+
+        (desc, next_shard_id)
     }
 
     pub fn system_shard_id(collection_id: u64) -> u64 {
@@ -834,6 +855,16 @@ impl Schema {
     }
 
     fn init_system_collections(batch: &mut PutBatchBuilder) {
+        let txn_collection = CollectionDesc {
+            id: SYSTEM_TXN_COLLECTION_ID,
+            name: SYSTEM_TXN_COLLECTION.to_owned(),
+            db: SYSTEM_DATABASE_ID,
+            partition: Some(collection_desc::Partition::Hash(HashPartition {
+                slots: 256,
+            })),
+        };
+        batch.put_collection(txn_collection);
+
         let self_collection = CollectionDesc {
             id: SYSTEM_COLLECTION_COLLECTION_ID,
             name: SYSTEM_COLLECTION_COLLECTION.to_owned(),
