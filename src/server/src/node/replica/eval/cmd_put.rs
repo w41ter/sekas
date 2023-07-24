@@ -17,7 +17,7 @@ use engula_api::{
     v1::{PutOperation, PutRequest},
 };
 
-use super::eval_conditions;
+use super::cas::eval_conditions;
 use crate::{
     engine::{GroupEngine, WriteBatch},
     node::{migrate::ForwardCtx, replica::ExecCtx},

@@ -26,7 +26,15 @@ pub fn key_slot(key: &[u8], slots: u32) -> u32 {
 /// Return whether a key belongs to the corresponding shard.
 pub fn belong_to(shard: &ShardDesc, key: &[u8]) -> bool {
     match shard.partition.as_ref().unwrap() {
-        Partition::Hash(hash) => hash.slot_id == key_slot(key, hash.slots),
+        Partition::Hash(hash) => {
+            // FIXME(walter) add schema module.
+            // FOR txn collection.
+            if shard.collection_id == 1 {
+                hash.slot_id == key_slot(&key[0..8], hash.slots)
+            } else {
+                hash.slot_id == key_slot(key, hash.slots)
+            }
+        }
         Partition::Range(RangePartition { start, end }) => in_range(start, end, key),
     }
 }

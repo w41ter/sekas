@@ -1454,7 +1454,7 @@ mod tests {
                 shards: vec![
                     ShardDesc {
                         id: 1,
-                        collection_id: 1,
+                        collection_id: 2,
                         partition: Some(Partition::Hash(HashPartition {
                             slot_id: shard_1_slot_id,
                             slots,
@@ -1462,7 +1462,7 @@ mod tests {
                     },
                     ShardDesc {
                         id: 2,
-                        collection_id: 1,
+                        collection_id: 2,
                         partition: Some(Partition::Hash(HashPartition {
                             slot_id: shard_2_slot_id,
                             slots,
