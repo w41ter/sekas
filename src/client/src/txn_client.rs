@@ -1,4 +1,4 @@
-// Copyright 2023 The sekas Authors.
+// Copyright 2023 The Sekas Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,6 +17,7 @@ use sekas_api::server::v1::group_request_union::Request;
 use sekas_api::server::v1::group_response_union::Response;
 use sekas_api::server::v1::*;
 use sekas_api::v1::*;
+use sekas_rock::time::timestamp_millis;
 
 use crate::{AppResult, ConnManager, Error, GroupClient, RootClient, Router};
 
@@ -323,11 +324,4 @@ fn to_fixed_bytes<const V: usize>(bytes: &[u8]) -> Option<[u8; V]> {
         buf[..].copy_from_slice(bytes);
         Some(buf)
     }
-}
-
-#[inline]
-pub fn timestamp_millis() -> u64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64
 }

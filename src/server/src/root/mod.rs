@@ -35,6 +35,7 @@ use sekas_api::server::v1::*;
 use sekas_api::v1::{
     collection_desc as co_desc, create_collection_request as co_req, CollectionDesc, DatabaseDesc,
 };
+use sekas_rock::time::timestamp_nanos;
 use tokio::time::Instant;
 use tokio_util::time::delay_queue;
 use tracing::{error, info, trace, warn};
@@ -50,7 +51,6 @@ use self::store::RootStore;
 pub use self::watch::{WatchHub, Watcher, WatcherInitializer};
 use crate::constants::{ROOT_GROUP_ID, SHARD_MAX, SHARD_MIN};
 use crate::node::{Node, Replica, ReplicaRouteTable};
-use crate::runtime::time::timestamp_nanos;
 use crate::runtime::{self, TaskPriority};
 use crate::serverpb::v1::background_job::Job;
 use crate::serverpb::v1::{reconcile_task, *};

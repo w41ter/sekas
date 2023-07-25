@@ -2182,6 +2182,7 @@ dependencies = [
  "prometheus-static-metric",
  "prost 0.11.2",
  "sekas-api",
+ "sekas-rock",
  "socket2",
  "thiserror",
  "tokio",
@@ -2194,6 +2195,19 @@ dependencies = [
 [[package]]
 name = "sekas-engine"
 version = "0.5.0"
+
+[[package]]
+name = "sekas-rock"
+version = "0.5.0"
+dependencies = [
+ "crc32fast",
+ "lazy_static",
+ "libc",
+ "paste",
+ "prost 0.11.2",
+ "rand 0.8.5",
+ "thiserror",
+]
 
 [[package]]
 name = "sekas-server"
@@ -2224,6 +2238,7 @@ dependencies = [
  "rocksdb",
  "sekas-api",
  "sekas-client",
+ "sekas-rock",
  "serde",
  "serde_json",
  "socket2",
