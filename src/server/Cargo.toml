@@ -10,6 +10,7 @@ description = "The Sekas server."
 [dependencies]
 sekas-api = { path = "../api", version = "0.5" }
 sekas-client = { path = "../client", version = "0.5" }
+sekas-rock = { path = "../rock", version = "0.5" }
 
 async-stream.workspace = true
 crc32fast.workspace = true

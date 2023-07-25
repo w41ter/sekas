@@ -9,6 +9,7 @@ description = "The Sekas API."
 
 [dependencies]
 sekas-api = { version = "0.5", path = "../api" }
+sekas-rock = { version = "0.5", path = "../rock" }
 
 async-stream.workspace = true
 crc32fast.workspace = true

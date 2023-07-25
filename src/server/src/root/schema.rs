@@ -1,3 +1,4 @@
+// Copyright 2023-present The Sekas Authors.
 // Copyright 2022 The Engula Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -23,12 +24,12 @@ use sekas_api::server::v1::watch_response::{delete_event, update_event, DeleteEv
 use sekas_api::server::v1::*;
 use sekas_api::v1::collection_desc::{self, HashPartition};
 use sekas_api::v1::{CollectionDesc, DatabaseDesc, PutRequest};
+use sekas_rock::time::timestamp_nanos;
 use tracing::{info, warn};
 
 use super::store::RootStore;
 use crate::constants::*;
 use crate::engine::{GroupEngine, SnapshotMode};
-use crate::runtime::time::timestamp_nanos;
 use crate::serverpb::v1::BackgroundJob;
 use crate::transport::TransportManager;
 use crate::{Error, Result};
