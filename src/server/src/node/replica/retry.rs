@@ -1,3 +1,4 @@
+// Copyright 2023-present The Sekas Authors.
 // Copyright 2022 The Engula Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -16,7 +17,7 @@ use std::time::Duration;
 
 use sekas_api::server::v1::group_request_union::Request;
 use sekas_api::server::v1::*;
-use sekas_api::shard;
+use sekas_schema::shard;
 
 use super::{ExecCtx, Replica};
 use crate::node::metrics::NODE_RETRY_TOTAL;

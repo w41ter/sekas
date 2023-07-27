@@ -1,5 +1,13 @@
 [workspace]
-members = ["src/api", "src/bin", "src/client", "src/engine", "src/rock", "src/server"]
+members = [
+    "src/api",
+    "src/bin",
+    "src/client",
+    "src/engine",
+    "src/rock",
+    "src/schema",
+    "src/server",
+]
 
 [workspace.package]
 version = "0.5.0"

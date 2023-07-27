@@ -2183,6 +2183,7 @@ dependencies = [
  "prost 0.11.2",
  "sekas-api",
  "sekas-rock",
+ "sekas-schema",
  "socket2",
  "thiserror",
  "tokio",
@@ -2206,6 +2207,20 @@ dependencies = [
  "paste",
  "prost 0.11.2",
  "rand 0.8.5",
+ "thiserror",
+]
+
+[[package]]
+name = "sekas-schema"
+version = "0.5.0"
+dependencies = [
+ "crc32fast",
+ "lazy_static",
+ "libc",
+ "paste",
+ "prost 0.11.2",
+ "rand 0.8.5",
+ "sekas-api",
  "thiserror",
 ]
 
@@ -2239,6 +2254,7 @@ dependencies = [
  "sekas-api",
  "sekas-client",
  "sekas-rock",
+ "sekas-schema",
  "serde",
  "serde_json",
  "socket2",

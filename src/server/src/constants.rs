@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+pub use sekas_schema::LOCAL_COLLECTION_ID;
+
 pub const REPLICA_PER_GROUP: usize = 3;
 
 pub const ROOT_GROUP_ID: u64 = 0;
@@ -22,9 +24,6 @@ pub const INIT_USER_REPLICA_ID: u64 = FIRST_REPLICA_ID + 1;
 pub const FIRST_NODE_ID: u64 = 0;
 pub const INITIAL_EPOCH: u64 = 0;
 pub const INITIAL_JOB_ID: u64 = 0;
-
-/// The collection id of local states, which allows commit without replicating.
-pub const LOCAL_COLLECTION_ID: u64 = 0;
 
 lazy_static::lazy_static! {
     pub static ref SHARD_MIN: Vec<u8> = vec![];

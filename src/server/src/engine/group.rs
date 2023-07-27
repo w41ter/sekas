@@ -1,3 +1,4 @@
+// Copyright 2023-present The Sekas Authors.
 // Copyright 2022 The Engula Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -21,7 +22,7 @@ use std::time::{Duration, Instant};
 
 use prost::Message;
 use sekas_api::server::v1::*;
-use sekas_api::shard;
+use sekas_schema::shard;
 use tracing::{info, warn};
 
 use super::RawDb;
