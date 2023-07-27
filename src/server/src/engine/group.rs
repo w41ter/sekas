@@ -20,10 +20,10 @@ use std::path::Path;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
+use log::{info, warn};
 use prost::Message;
 use sekas_api::server::v1::*;
 use sekas_schema::shard;
-use tracing::{info, warn};
 
 use super::RawDb;
 use crate::constants::{INITIAL_EPOCH, LOCAL_COLLECTION_ID};

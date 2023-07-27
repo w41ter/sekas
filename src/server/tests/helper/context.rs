@@ -15,10 +15,10 @@ use std::collections::HashMap;
 use std::thread;
 use std::time::Duration;
 
+use log::info;
 use sekas_server::runtime::{ExecutorOwner, ShutdownNotifier};
 use sekas_server::{Config, DbConfig, NodeConfig, RaftConfig, RootConfig, *};
 use tempdir::TempDir;
-use tracing::info;
 
 use super::client::node_client_with_retry;
 use super::socket::next_n_avail_port;

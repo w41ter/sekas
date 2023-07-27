@@ -19,6 +19,7 @@ use std::os::unix::prelude::{FromRawFd, IntoRawFd};
 use std::time::Duration;
 use std::{panic, process};
 
+use log::info;
 use sekas_api::server::v1::node_server::NodeServer;
 use sekas_api::server::v1::*;
 use sekas_client::error::{find_io_error, retryable_rpc_err, transport_err};
@@ -26,7 +27,6 @@ use sekas_client::{NodeClient, RequestBatchBuilder};
 use socket2::{Domain, Socket, Type};
 use tokio::sync::oneshot;
 use tonic::transport::Endpoint;
-use tracing::info;
 
 pub fn setup_panic_hook() {
     let orig_hook = panic::take_hook();

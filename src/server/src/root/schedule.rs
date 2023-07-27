@@ -1,3 +1,4 @@
+// Copyright 2023-present The Sekas Authors.
 // Copyright 2022 The Engula Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -15,11 +16,11 @@
 use std::collections::LinkedList;
 use std::sync::Arc;
 
+use log::{error, info, warn};
 use prometheus::HistogramTimer;
 use sekas_api::server::v1::*;
 use tokio::sync::Mutex;
 use tokio::time::Instant;
-use tracing::{error, info, warn};
 
 use super::allocator::*;
 use super::{metrics, *};
@@ -63,7 +64,7 @@ impl ReconcileScheduler {
     pub async fn setup_task(&self, task: ReconcileTask) {
         let mut tasks = self.tasks.lock().await;
         tasks.push_back(task.to_owned());
-        info!(len = tasks.len(), task=?task, "setup new reconcile task")
+        info!("setup new reconcile task. len={}, task={:?}", tasks.len(), task);
     }
 
     async fn is_empty(&self) -> bool {
@@ -278,7 +279,7 @@ impl ScheduleContext {
         bool, // ack current
         bool, // immediately step next tick
     )> {
-        info!(task=?task, "handle reconcile task");
+        info!("handle reconcile task. task={task:?}");
         match task.task.as_mut().unwrap() {
             Task::ReallocateReplica(reallocate_replica) => {
                 self.handle_reallocate_replica(reallocate_replica).await
@@ -308,11 +309,13 @@ impl ScheduleContext {
             Ok(_) => {}
             Err(crate::Error::AbortScheduleTask(_)) => return Ok((true, false)),
             Err(crate::Error::EpochNotMatch(new_group)) => {
-                warn!(group = group, replica = replica, new_group = ?new_group, "shed leader meet epoch not match, abort task and retry allocator");
+                warn!(
+  "shed leader meet epoch not match, abort task and retry allocator. group={group}, replica={replica}, new_group={new_group:?}");
                 return Ok((true, false));
             }
             Err(err) => {
-                warn!(group = group, replica = replica, err = ?err, "shed leader in source replica fail, retry in next tick");
+                warn!("shed leader in source replica fail, retry in next tick: {err:?}. group={group}, replica={replica}",
+            );
                 metrics::RECONCILE_RETRY_TASK_TOTAL.reallocate_replica.inc();
                 return Err(err);
             }
@@ -320,7 +323,7 @@ impl ScheduleContext {
 
         let group_desc = schema.get_group(group).await?;
         if group_desc.is_none() {
-            warn!(group = group, "group not found abort reallocate replica task.");
+            warn!("group not found abort reallocate replica task. group={group}");
             return Ok((true, false));
         }
 
@@ -329,18 +332,16 @@ impl ScheduleContext {
 
         if src_replica.is_none() {
             warn!(
-                group = group,
-                replica = task.src_replica,
-                "source replica not found abort reallocate replica task."
+                "source replica not found abort reallocate replica task. group={group}, replica={}",
+                task.src_replica
             );
             return Ok((true, false));
         }
 
         info!(
-            group = group,
-            src_node = task.src_node,
-            dest_node = task.dest_node.as_ref().unwrap().id,
-            "start move replica"
+            "start move replica. group={group}, src_node={}, dest_node={}",
+            task.src_node,
+            task.dest_node.as_ref().unwrap().id
         );
         let next_replica = schema.next_replica_id().await?;
         match self
@@ -361,20 +362,17 @@ impl ScheduleContext {
             }
             Err(crate::Error::AlreadyExists(_)) | Err(crate::Error::EpochNotMatch(_)) => {
                 warn!(
-                    group = group,
-                    src_node = task.src_node,
-                    dest_node = task.dest_node.as_ref().unwrap().id,
-                    "move replica task aborted due to replica already changed"
-                );
+            "move replica task aborted due to replica already changed. group={group}, src_node={}, dest_node={}",
+            task.src_node,
+            task.dest_node.as_ref().unwrap().id
+        );
                 Ok((true, false))
             }
             Err(err) => {
                 warn!(
-                    group = group,
-                    src_node = task.src_node,
-                    dest_node = task.dest_node.as_ref().unwrap().id,
-                    err = ?err,
-                    "move replica meet error and retry later"
+                    "move replica meet error and retry later: {err:?}. group={group}, src_node={}, dest_node={}",
+                    task.src_node,
+                    task.dest_node.as_ref().unwrap().id
                 );
                 metrics::RECONCILE_RETRY_TASK_TOTAL.reallocate_replica.inc();
                 Err(err)
@@ -390,26 +388,24 @@ impl ScheduleContext {
         bool, // immediately step next tick
     )> {
         info!(
-            shard = task.shard,
-            src_group = task.src_group,
-            dest_group = task.dest_group,
-            "start migrate shard"
+            "start migrate shard. shard={}, src={}, dest={}",
+            task.shard, task.src_group, task.dest_group
         );
         let r = self.try_migrate_shard(task.src_group, task.dest_group, task.shard).await;
         match r {
             Ok(_) => Ok((true, false)),
             Err(crate::Error::AbortScheduleTask(reason)) => {
                 warn!(
-                    shard = task.shard,
-                    src_group = task.src_group,
-                    dest_group = task.dest_group,
-                    reason = reason,
-                    "abort migrate shard"
+                    "abort migrate shard. shard={}, src={}, dest={}, reason={reason}",
+                    task.shard, task.src_group, task.dest_group
                 );
                 Ok((true, false))
             }
             Err(err) => {
-                warn!(shard = task.shard, src_group = task.src_group, dest_group = task.dest_group, err = ?&err, "migrate shard fail, retry later");
+                warn!(
+                    "migrate shard fail, retry later: {err:?}. shard={}, src={}, dest={}",
+                    task.shard, task.src_group, task.dest_group
+                );
                 Err(err)
             }
         }
@@ -425,11 +421,16 @@ impl ScheduleContext {
         match self.try_transfer_leader(task.group, task.target_replica).await {
             Ok(_) => {}
             Err(crate::Error::EpochNotMatch(new_group)) => {
-                warn!(group = task.group, dest_replica = task.target_replica, new_group = ?&new_group, "transfer target meet epoch not match, abort transfer task");
+                warn!(
+                    "transfer target meet epoch not match, abort transfer task. group={}, dest={}, new_group={:?}",
+                        task.group, task.target_replica, new_group);
                 return Ok((true, false));
             }
             Err(err) => {
-                error!(group = task.group, dest_replica = task.target_replica, err = ?&err, "transfer group leader fail");
+                error!(
+                    "transfer group leader: {err:?}. group={}, dest={}",
+                    task.group, task.target_replica
+                );
                 return Err(err);
             }
         }
@@ -458,7 +459,7 @@ impl ScheduleContext {
 
             if let Some(desc) = schema.get_node(node).await? {
                 if desc.status != NodeStatus::Draining as i32 {
-                    warn!(node = node, "shed leader task cancelled");
+                    warn!("shed leader task cancelled. node={node}");
                     break;
                 }
             }
@@ -503,10 +504,8 @@ impl ScheduleContext {
                         self.try_transfer_leader(group_id, target_replica.id).await?;
                     } else {
                         warn!(
-                            node = node,
-                            group = group_id,
-                            src_replica = replica.replica_id,
-                            "shed leader from node fail due to no suitable target replica."
+                            "shed leader from node fail due to no suitable target replica. node={node}, group={group_id}, src_replica={}",
+                            replica.replica_id
                         );
                         metrics::RECONCILE_RETRY_TASK_TOTAL.shed_group_leaders.inc();
                     }
@@ -578,11 +577,9 @@ impl ScheduleContext {
         if let Some(target_replica) = group.replicas.iter().find(|e| e.id != remove_replica) {
             // TODO: find least-leader node.
             info!(
-                group = group.id,
-                replica = remove_replica,
-                "attempt remove leader replica, so transfer leader to {} in node {}",
+                "attempt remove leader replica, so transfer leader to {} in node {}. group={}, replica={}",
                 target_replica.id,
-                target_replica.node_id,
+                target_replica.node_id, group.id, remove_replica
             );
             self.try_transfer_leader(group_id, target_replica.id).await?;
         }

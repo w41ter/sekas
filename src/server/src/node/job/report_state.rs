@@ -16,10 +16,10 @@ use std::time::Duration;
 
 use futures::channel::mpsc;
 use futures::StreamExt;
+use log::warn;
 use sekas_api::server::v1::report_request::GroupUpdates;
 use sekas_api::server::v1::{GroupDesc, ReplicaState, ReportRequest, ScheduleState};
 use sekas_client::RootClient;
-use tracing::warn;
 
 use crate::node::metrics::take_report_metrics;
 use crate::record_latency;

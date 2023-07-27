@@ -16,8 +16,8 @@ use std::path::Path;
 
 use futures::channel::mpsc;
 use futures::SinkExt;
+use log::{error, info};
 use prost::Message;
-use tracing::{error, info};
 
 use super::{SnapManager, SNAP_DATA};
 use crate::raftgroup::fsm::SnapshotBuilder;

@@ -15,6 +15,7 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use clap::Parser;
+use log::{debug, info};
 use rand::rngs::OsRng;
 use rand::RngCore;
 use sekas_client::{AppError, ClientOptions, Collection, Database, Partition, SekasClient};
@@ -23,7 +24,6 @@ use sekas_server::runtime::{Shutdown, ShutdownNotifier};
 use tokio::runtime::Runtime;
 use tokio::select;
 use tokio::time::MissedTickBehavior;
-use tracing::{debug, info};
 
 use super::config::*;
 use super::report;

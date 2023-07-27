@@ -1,3 +1,4 @@
+// Copyright 2023-present The Sekas Authors.
 // Copyright 2022 The Engula Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -17,10 +18,10 @@ use std::ops::Add;
 use std::sync::Arc;
 use std::vec;
 
+use log::{info, trace, warn};
 use sekas_api::server::v1::watch_response::{update_event, UpdateEvent};
 use sekas_api::server::v1::*;
 use tokio::time::Instant;
-use tracing::{info, trace, warn};
 
 use super::{HeartbeatTask, Root, Schema};
 use crate::constants::ROOT_GROUP_ID;
@@ -50,8 +51,8 @@ impl Root {
                 nodes.0
             };
             trace!(
-                root = ?root.root_nodes.iter().map(|n| n.id).collect::<Vec<_>>(),
-                "sync root info with heartbeat"
+                "sync root info with heartbeat. root={:?}",
+                root.root_nodes.iter().map(|n| n.id).collect::<Vec<_>>(),
             );
             piggybacks.push(PiggybackRequest {
                 info: Some(piggyback_request::Info::SyncRoot(SyncRootRequest { root: Some(root) })),
@@ -78,7 +79,7 @@ impl Root {
             metrics::HEARTBEAT_NODES_BATCH_SIZE.set(nodes.len() as i64);
             let mut handles = Vec::new();
             for n in &nodes {
-                trace!(node = n.id, target = ?n.addr, "attempt send heartbeat");
+                trace!("attempt send heartbeat. node={}, target={}", n.id, n.addr);
                 let piggybacks = piggybacks.to_owned();
                 let client = self.shared.transport_manager.get_node_client(n.addr.to_owned())?;
                 let handle = crate::runtime::current().dispatch(
@@ -131,7 +132,7 @@ impl Root {
                         .with_label_values(&[&n.id.to_string()])
                         .inc();
                     self.liveness.init_node_if_first_seen(n.id);
-                    warn!(node = n.id, target = ?n.addr, err = ?err, "send heartbeat error");
+                    warn!("send heartbeat error: {err:?}. node={}, target={}", n.id, n.addr);
                 }
             }
             heartbeat_tasks.push(HeartbeatTask { node_id: n.id });
@@ -163,10 +164,10 @@ impl Root {
                 cap.replica_count = new_group_count;
                 cap.leader_count = new_leader_count;
                 info!(
-                    node = node.id,
-                    replica_count = cap.replica_count,
-                    leader_count = cap.leader_count,
-                    "update node stats by heartbeat response",
+                    "update node stats by heartbeat response. node={}, replica_count={}, leader_count={}",
+                    node.id,
+                    cap.replica_count,
+                    cap.leader_count,
                 );
                 node.capacity = Some(cap);
                 schema.update_node(node).await?;
@@ -191,11 +192,7 @@ impl Root {
             }
             schema.update_group_replica(Some(desc.to_owned()), None).await?;
             metrics::ROOT_UPDATE_GROUP_DESC_TOTAL.heartbeat.inc();
-            info!(
-                group = desc.id,
-                desc = ?desc,
-                "update group_desc from heartbeat response"
-            );
+            info!("update group_desc from heartbeat response. group={}, desc={:?}", desc.id, desc);
             if desc.id == ROOT_GROUP_ID {
                 self.heartbeat_queue
                     .try_schedule(
@@ -222,10 +219,10 @@ impl Root {
             schema.update_group_replica(None, Some(state.to_owned())).await?;
             metrics::ROOT_UPDATE_REPLICA_STATE_TOTAL.heartbeat.inc();
             info!(
-                group = state.group_id,
-                replica = state.replica_id,
-                state = ?state,
-                "attempt update replica_state from heartbeat response"
+                "attempt update replica_state from heartbeat response. group={}, replica={}, state={:?}",
+                state.group_id,
+                state.replica_id,
+                state,
             );
             changed_group_states.insert(state.group_id);
         }

@@ -14,7 +14,7 @@
 
 use std::sync::Arc;
 
-use tracing::error;
+use log::error;
 
 use crate::engine::{Engines, GroupEngine, RawDb, StateEngine};
 use crate::node::metrics::*;

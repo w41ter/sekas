@@ -14,7 +14,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use tracing::{error, trace};
+use log::{error, trace};
 
 use crate::root::RemoteStore;
 use crate::schedule::provider::GroupProviders;

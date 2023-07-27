@@ -18,6 +18,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use derivative::Derivative;
+use log::trace;
 use prost::Message;
 use sekas_api::server::v1::root_client::RootClient;
 use sekas_api::server::v1::*;
@@ -26,7 +27,6 @@ use sekas_api::v1::*;
 use tokio::sync::Mutex;
 use tonic::transport::Channel;
 use tonic::{Code, Status, Streaming};
-use tracing::trace;
 
 use crate::conn_manager::ConnManager;
 use crate::discovery::ServiceDiscovery;

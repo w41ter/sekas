@@ -1,3 +1,4 @@
+// Copyright 2023-present The Sekas Authors.
 // Copyright 2022 The Engula Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,8 +14,8 @@
 // limitations under the License.
 
 use futures::StreamExt;
+use log::{error, warn};
 use tonic::{Request, Response, Status, Streaming};
-use tracing::{error, warn};
 
 use crate::raftgroup::snap::send::{send_snapshot, SnapshotChunkStream};
 use crate::serverpb::v1::*;
@@ -57,7 +58,7 @@ impl raft_server::Raft for Server {
                     break;
                 }
                 Err(e) => {
-                    warn!(err = ?e, "receive messages");
+                    warn!("receive messages: {e:?}");
                     break;
                 }
             }

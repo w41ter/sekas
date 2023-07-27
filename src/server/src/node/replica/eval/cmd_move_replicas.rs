@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use log::info;
 use sekas_api::server::v1::*;
-use tracing::info;
 
 use crate::node::replica::ExecCtx;
 use crate::schedule::MoveReplicasProvider;

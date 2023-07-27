@@ -17,8 +17,8 @@ mod bench;
 mod shell;
 
 use clap::{Parser, Subcommand};
+use log::info;
 use sekas_server::{Error, Result};
-use tracing::info;
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]

@@ -1,3 +1,4 @@
+// Copyright 2023-present The Sekas Authors.
 // Copyright 2022 The Engula Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -15,8 +16,8 @@ use std::sync::Arc;
 
 use futures::channel::mpsc;
 use futures::StreamExt;
+use log::{debug, warn};
 use sekas_api::server::v1::{NodeDesc, ReplicaDesc};
-use tracing::{debug, warn};
 
 use crate::node::route_table::RaftRouteTable;
 use crate::raftgroup::RaftNodeFacade;
@@ -177,7 +178,7 @@ async fn resolve_address(resolver: &dyn AddressResolver, node_id: u64) -> Result
         match resolver.resolve(node_id).await {
             Ok(node_desc) => return Ok(node_desc),
             Err(err) => {
-                debug!(err = ?err, "resolve address of node {}", node_id);
+                debug!("resolve address of node {node_id}: {err:?}");
                 count += 1;
                 if count == 3 {
                     return Err(err);

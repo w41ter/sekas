@@ -14,8 +14,8 @@
 
 use std::time::Duration;
 
+use log::{debug, info, warn};
 use sekas_api::server::v1::*;
-use tracing::{debug, info, warn};
 
 use super::{Action, ActionState};
 use crate::root::RemoteStore;

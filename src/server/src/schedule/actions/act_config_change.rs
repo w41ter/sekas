@@ -15,9 +15,9 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
+use log::{info, warn};
 use sekas_api::server::v1::group_request_union::Request;
 use sekas_api::server::v1::*;
-use tracing::{info, warn};
 
 use super::{Action, ActionState};
 use crate::error::BusyReason;

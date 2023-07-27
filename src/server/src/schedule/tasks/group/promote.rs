@@ -14,8 +14,8 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use log::{debug, error, info};
 use sekas_api::server::v1::*;
-use tracing::{debug, error, info};
 
 use super::ActionTaskWithLocks;
 use crate::schedule::actions::{AddLearners, CreateReplicas, ReplaceVoters};

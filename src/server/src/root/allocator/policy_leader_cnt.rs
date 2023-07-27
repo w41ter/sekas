@@ -1,3 +1,4 @@
+// Copyright 2023-present The Sekas Authors.
 // Copyright 2022 The Engula Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -16,8 +17,8 @@ use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use log::debug;
 use sekas_api::server::v1::{NodeDesc, RaftRole, ReplicaDesc, ReplicaRole};
-use tracing::debug;
 
 use super::source::NodeFilter;
 use super::{AllocSource, BalanceStatus, LeaderAction, TransferLeader};
@@ -49,9 +50,16 @@ impl<T: AllocSource> LeaderCountPolicy<T> {
         let candidate_nodes = self.alloc_source.nodes(NodeFilter::Schedulable);
         let ranked_nodes = Self::rank_nodes_for_leader(candidate_nodes, mean);
         debug!(
-            scored_nodes = ?ranked_nodes.iter().map(|(n, s)| format!("{}-{}({:?})", n.id, n.capacity.as_ref().unwrap().leader_count, s)).collect::<Vec<_>>(),
-            mean = mean,
-            "node ranked by leader count",
+            "node ranked by leader count. mean={mean}, scored_nodes={:?}",
+            ranked_nodes
+                .iter()
+                .map(|(n, s)| format!(
+                    "{}-{}({:?})",
+                    n.id,
+                    n.capacity.as_ref().unwrap().leader_count,
+                    s
+                ))
+                .collect::<Vec<_>>(),
         );
         for (n, _) in ranked_nodes.iter().filter(|(_, s)| *s == BalanceStatus::Overfull) {
             if let Some(descision) = self.try_descrease_node_leader_count(n, &ranked_nodes, mean)? {
