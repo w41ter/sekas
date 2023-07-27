@@ -1,0 +1,19 @@
+[package]
+name = "sekas-schema"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "The Sekas schema lib."
+
+[dependencies]
+sekas-api = { version = "0.5", path = "../api" }
+
+crc32fast.workspace = true
+lazy_static.workspace = true
+libc.workspace = true
+paste.workspace = true
+prost.workspace = true
+thiserror.workspace = true
+rand.workspace = true

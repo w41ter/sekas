@@ -14,17 +14,18 @@
 // limitations under the License.
 
 use std::collections::hash_map::Entry;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use futures::lock::Mutex;
+use lazy_static::lazy_static;
 use prost::Message;
 use sekas_api::server::v1::shard_desc::{Partition, RangePartition};
 use sekas_api::server::v1::watch_response::{delete_event, update_event, DeleteEvent, UpdateEvent};
 use sekas_api::server::v1::*;
-use sekas_api::v1::collection_desc::{self, HashPartition};
-use sekas_api::v1::{CollectionDesc, DatabaseDesc, PutRequest};
+use sekas_api::v1::{collection_desc, CollectionDesc, DatabaseDesc, PutRequest};
 use sekas_rock::time::timestamp_nanos;
+use sekas_schema::*;
 use tracing::{info, warn};
 
 use super::store::RootStore;
@@ -33,37 +34,6 @@ use crate::engine::{GroupEngine, SnapshotMode};
 use crate::serverpb::v1::BackgroundJob;
 use crate::transport::TransportManager;
 use crate::{Error, Result};
-
-const SYSTEM_DATABASE_NAME: &str = "__system__";
-pub const SYSTEM_DATABASE_ID: u64 = 1;
-const SYSTEM_TXN_COLLECTION: &str = "txn";
-const SYSTEM_TXN_COLLECTION_ID: u64 = LOCAL_COLLECTION_ID + 1;
-const SYSTEM_COLLECTION_COLLECTION: &str = "collection";
-const SYSTEM_COLLECTION_COLLECTION_ID: u64 = SYSTEM_TXN_COLLECTION_ID + 1;
-const SYSTEM_COLLECTION_COLLECTION_SHARD: u64 = 1;
-const SYSTEM_DATABASE_COLLECTION: &str = "database";
-const SYSTEM_DATABASE_COLLECTION_ID: u64 = SYSTEM_COLLECTION_COLLECTION_ID + 1;
-const SYSTEM_DATABASE_COLLECTION_SHARD: u64 = SYSTEM_COLLECTION_COLLECTION_SHARD + 1;
-const SYSTEM_MATE_COLLECTION: &str = "meta";
-const SYSTEM_MATE_COLLECTION_ID: u64 = SYSTEM_DATABASE_COLLECTION_ID + 1;
-const SYSTEM_MATE_COLLECTION_SHARD: u64 = SYSTEM_DATABASE_COLLECTION_SHARD + 1;
-const SYSTEM_NODE_COLLECTION: &str = "node";
-const SYSTEM_NODE_COLLECTION_ID: u64 = SYSTEM_MATE_COLLECTION_ID + 1;
-const SYSTEM_NODE_COLLECTION_SHARD: u64 = SYSTEM_MATE_COLLECTION_SHARD + 1;
-const SYSTEM_GROUP_COLLECTION: &str = "group";
-const SYSTEM_GROUP_COLLECTION_ID: u64 = SYSTEM_NODE_COLLECTION_ID + 1;
-const SYSTEM_GROUP_COLLECTION_SHARD: u64 = SYSTEM_NODE_COLLECTION_SHARD + 1;
-const SYSTEM_REPLICA_STATE_COLLECTION: &str = "replica_state";
-const SYSTEM_REPLICA_STATE_COLLECTION_ID: u64 = SYSTEM_GROUP_COLLECTION_ID + 1;
-const SYSTEM_REPLICA_STATE_COLLECTION_SHARD: u64 = SYSTEM_GROUP_COLLECTION_SHARD + 1;
-const SYSTEM_JOB_COLLECTION: &str = "job";
-const SYSTEM_JOB_COLLECTION_ID: u64 = SYSTEM_REPLICA_STATE_COLLECTION_ID + 1;
-const SYSTEM_JOB_COLLECTION_SHARD: u64 = SYSTEM_REPLICA_STATE_COLLECTION_SHARD + 1;
-const SYSTEM_JOB_HISTORY_COLLECTION: &str = "job_history";
-const SYSTEM_JOB_HISTORY_COLLECTION_ID: u64 = SYSTEM_JOB_COLLECTION_ID + 1;
-const SYSTEM_JOB_HISTORY_COLLECTION_SHARD: u64 = SYSTEM_JOB_COLLECTION_SHARD + 1;
-
-pub const USER_COLLECTION_INIT_ID: u64 = SYSTEM_JOB_HISTORY_COLLECTION_ID + 1;
 
 const META_CLUSTER_ID_KEY: &str = "cluster_id";
 const META_COLLECTION_ID_KEY: &str = "collection_id";
@@ -75,25 +45,15 @@ const META_SHARD_ID_KEY: &str = "shard_id";
 const META_JOB_ID_KEY: &str = "job_id";
 const META_TXN_ID_KEY: &str = "txn_id";
 
-lazy_static::lazy_static! {
-    pub static ref SYSTEM_COLLECTION_SHARD: BTreeMap<u64, u64> = BTreeMap::from([
-        (SYSTEM_COLLECTION_COLLECTION_ID, SYSTEM_COLLECTION_COLLECTION_SHARD),
-        (SYSTEM_DATABASE_COLLECTION_ID, SYSTEM_DATABASE_COLLECTION_SHARD),
-        (SYSTEM_MATE_COLLECTION_ID, SYSTEM_MATE_COLLECTION_SHARD),
-        (SYSTEM_NODE_COLLECTION_ID, SYSTEM_NODE_COLLECTION_SHARD),
-        (SYSTEM_GROUP_COLLECTION_ID, SYSTEM_GROUP_COLLECTION_SHARD),
-        (SYSTEM_REPLICA_STATE_COLLECTION_ID, SYSTEM_REPLICA_STATE_COLLECTION_SHARD),
-        (SYSTEM_JOB_COLLECTION_ID, SYSTEM_JOB_COLLECTION_SHARD),
-        (SYSTEM_JOB_HISTORY_COLLECTION_ID, SYSTEM_JOB_HISTORY_COLLECTION_SHARD),
-    ]);
+lazy_static! {
     pub static ref ID_GEN_LOCKS: HashMap<String, Mutex<()>> = HashMap::from([
         (META_CLUSTER_ID_KEY.to_owned(), Mutex::new(())),
-        (META_COLLECTION_ID_KEY.to_owned(),  Mutex::new(())),
-        (META_DATABASE_ID_KEY.to_owned(),  Mutex::new(())),
-        (META_GROUP_ID_KEY.to_owned(),  Mutex::new(())),
-        (META_NODE_ID_KEY.to_owned(),  Mutex::new(())),
-        (META_REPLICA_ID_KEY.to_owned(),  Mutex::new(())),
-        (META_SHARD_ID_KEY.to_owned(),  Mutex::new(())),
+        (META_COLLECTION_ID_KEY.to_owned(), Mutex::new(())),
+        (META_DATABASE_ID_KEY.to_owned(), Mutex::new(())),
+        (META_GROUP_ID_KEY.to_owned(), Mutex::new(())),
+        (META_NODE_ID_KEY.to_owned(), Mutex::new(())),
+        (META_REPLICA_ID_KEY.to_owned(), Mutex::new(())),
+        (META_SHARD_ID_KEY.to_owned(), Mutex::new(())),
         (META_JOB_ID_KEY.to_owned(), Mutex::new(())),
     ]);
 }
@@ -271,7 +231,7 @@ impl Schema {
     }
 
     pub(crate) async fn list_node_raw(engine: GroupEngine) -> Result<Vec<NodeDesc>> {
-        let shard_id = Self::system_shard_id(SYSTEM_NODE_COLLECTION_ID); // System collection only have one shard.
+        let shard_id = system_shard_id(SYSTEM_NODE_COLLECTION_ID); // System collection only have one shard.
         let mut snapshot = match engine.snapshot(shard_id, SnapshotMode::Prefix { key: &[] }) {
             Ok(snapshot) => snapshot,
             Err(Error::ShardNotFound(_)) => {
@@ -741,7 +701,7 @@ impl Schema {
 
         // Add shards for txn collection.
         let mut next_shard_id = SYSTEM_JOB_HISTORY_COLLECTION_SHARD + 1;
-        for idx in 0..256u32 {
+        for idx in 0..DEFAULT_TXN_COLLECTION_SLOTS {
             let shard_id = next_shard_id;
             next_shard_id += 1;
             desc.push(ShardDesc {
@@ -749,20 +709,12 @@ impl Schema {
                 collection_id: SYSTEM_TXN_COLLECTION_ID,
                 partition: Some(Partition::Hash(shard_desc::HashPartition {
                     slot_id: idx,
-                    slots: 256,
+                    slots: DEFAULT_TXN_COLLECTION_SLOTS,
                 })),
             });
         }
 
         (desc, next_shard_id)
-    }
-
-    pub fn system_shard_id(collection_id: u64) -> u64 {
-        let shard = SYSTEM_COLLECTION_SHARD.get(&collection_id);
-        if shard.is_none() {
-            panic!("no such shard exists for system collection {collection_id}");
-        }
-        shard.unwrap().to_owned()
     }
 
     pub async fn next_group_id(&self) -> Result<u64> {
@@ -778,13 +730,7 @@ impl Schema {
     }
 
     fn init_system_collections(batch: &mut PutBatchBuilder) {
-        let txn_collection = CollectionDesc {
-            id: SYSTEM_TXN_COLLECTION_ID,
-            name: SYSTEM_TXN_COLLECTION.to_owned(),
-            db: SYSTEM_DATABASE_ID,
-            partition: Some(collection_desc::Partition::Hash(HashPartition { slots: 256 })),
-        };
-        batch.put_collection(txn_collection);
+        batch.put_collection(txn_collection());
 
         let self_collection = CollectionDesc {
             id: SYSTEM_COLLECTION_COLLECTION_ID,
@@ -882,14 +828,14 @@ impl Schema {
     }
 
     async fn get(&self, collection_id: u64, key: &[u8]) -> Result<Option<Vec<u8>>> {
-        let shard_id = Self::system_shard_id(collection_id);
+        let shard_id = system_shard_id(collection_id);
         let rs = self.store.get(shard_id, key).await;
         crate::runtime::yield_now().await;
         rs
     }
 
     async fn delete(&self, collection_id: u64, key: &[u8]) -> Result<()> {
-        let shard_id = Self::system_shard_id(collection_id);
+        let shard_id = system_shard_id(collection_id);
         self.store.delete(shard_id, key).await
     }
 
@@ -900,7 +846,7 @@ impl Schema {
     }
 
     async fn list_prefix(&self, collection_id: u64, prefix: &[u8]) -> Result<Vec<Vec<u8>>> {
-        let shard_id = Self::system_shard_id(collection_id); // System collection only have one shard.
+        let shard_id = system_shard_id(collection_id); // System collection only have one shard.
         self.store.list(shard_id, prefix).await
     }
 
@@ -934,7 +880,7 @@ impl RemoteStore {
     }
 
     pub async fn list_replica_state(&self, group_id: u64) -> Result<Vec<ReplicaState>> {
-        let shard_id = Schema::system_shard_id(SYSTEM_REPLICA_STATE_COLLECTION_ID);
+        let shard_id = system_shard_id(SYSTEM_REPLICA_STATE_COLLECTION_ID);
         let prefix = group_key(group_id);
 
         let client = self.transport_manager.build_shard_client(ROOT_GROUP_ID, shard_id);
@@ -949,7 +895,7 @@ impl RemoteStore {
     }
 
     pub async fn clear_replica_state(&self, group_id: u64, replica_id: u64) -> Result<()> {
-        let shard_id = Schema::system_shard_id(SYSTEM_REPLICA_STATE_COLLECTION_ID);
+        let shard_id = system_shard_id(SYSTEM_REPLICA_STATE_COLLECTION_ID);
         let key = replica_key(group_id, replica_id);
         let client = self.transport_manager.build_shard_client(ROOT_GROUP_ID, shard_id);
         client.delete(&key).await?;
@@ -964,7 +910,7 @@ struct PutBatchBuilder {
 
 impl PutBatchBuilder {
     fn put(&mut self, collection_id: u64, key: Vec<u8>, val: Vec<u8>) {
-        let shard_id = Schema::system_shard_id(collection_id);
+        let shard_id = system_shard_id(collection_id);
         self.batch.push((shard_id, key, val));
     }
 

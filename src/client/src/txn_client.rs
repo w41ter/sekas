@@ -18,6 +18,7 @@ use sekas_api::server::v1::group_response_union::Response;
 use sekas_api::server::v1::*;
 use sekas_api::v1::*;
 use sekas_rock::time::timestamp_millis;
+use sekas_schema::txn_collection;
 
 use crate::{AppResult, ConnManager, Error, GroupClient, RootClient, Router};
 
@@ -60,8 +61,7 @@ impl TxnClient {
     }
 
     pub async fn start_txn(&mut self, txn_id: u64) -> crate::Result<()> {
-        let desc = Self::txn_collection();
-
+        let desc = txn_collection();
         let (group, shard) = self.router.find_shard(desc, &txn_key_prefix(txn_id))?;
         let mut client = GroupClient::new(group, self.router.clone(), self.conn_manager.clone());
 
@@ -103,8 +103,7 @@ impl TxnClient {
     }
 
     pub async fn commit_txn(&mut self, txn_id: u64, version: u64) -> crate::Result<()> {
-        let desc = Self::txn_collection();
-
+        let desc = txn_collection();
         let (group, shard) = self.router.find_shard(desc, &txn_key_prefix(txn_id))?;
         let mut client = GroupClient::new(group, self.router.clone(), self.conn_manager.clone());
 
@@ -144,8 +143,7 @@ impl TxnClient {
     }
 
     pub async fn abort_txn(&mut self, txn_id: u64) -> crate::Result<()> {
-        let desc = Self::txn_collection();
-
+        let desc = txn_collection();
         let (group, shard) = self.router.find_shard(desc, &txn_key_prefix(txn_id))?;
         let mut client = GroupClient::new(group, self.router.clone(), self.conn_manager.clone());
 
@@ -171,8 +169,7 @@ impl TxnClient {
     }
 
     pub async fn clean_txn(&mut self, txn_id: u64) -> crate::Result<()> {
-        let desc = Self::txn_collection();
-
+        let desc = txn_collection();
         let (group, shard) = self.router.find_shard(desc, &txn_key_prefix(txn_id))?;
         let mut client = GroupClient::new(group, self.router.clone(), self.conn_manager.clone());
 
@@ -210,8 +207,7 @@ impl TxnClient {
     }
 
     pub async fn get_txn_record(&self, txn_id: u64) -> crate::Result<Option<TxnRecord>> {
-        let desc = Self::txn_collection();
-
+        let desc = txn_collection();
         let prefix = txn_key_prefix(txn_id);
         let (group, shard) = self.router.find_shard(desc, &prefix)?;
         let mut client = GroupClient::new(group, self.router.clone(), self.conn_manager.clone());
@@ -271,18 +267,6 @@ impl TxnClient {
             }
         }
         Ok(Some(txn_record))
-    }
-
-    fn txn_collection() -> CollectionDesc {
-        // FIXME(walter): fetch txn collection desc.
-        CollectionDesc {
-            id: 1,
-            name: "txn".into(),
-            db: 1,
-            partition: Some(collection_desc::Partition::Hash(collection_desc::HashPartition {
-                slots: 256,
-            })),
-        }
     }
 }
 
