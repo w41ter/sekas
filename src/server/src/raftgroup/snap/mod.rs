@@ -25,8 +25,8 @@ use std::time::{Duration, Instant};
 
 use futures::channel::mpsc;
 use futures::StreamExt;
+use log::{error, info, warn};
 use raft::prelude::{Snapshot, SnapshotMetadata};
-use tracing::{error, info, warn};
 
 pub use self::create::dispatch_creating_snap_task;
 pub use self::download::dispatch_downloading_snap_task;

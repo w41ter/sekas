@@ -19,7 +19,7 @@ mod state;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use tracing::info;
+use log::info;
 
 pub(crate) use self::group::{GroupEngine, RawIterator, SnapshotMode, WriteBatch, WriteStates};
 pub(crate) use self::state::StateEngine;

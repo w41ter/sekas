@@ -1,3 +1,4 @@
+// Copyright 2023-present The Sekas Authors.
 // Copyright 2022 The Engula Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -29,6 +30,7 @@ use std::sync::*;
 use std::task::Poll;
 use std::time::Duration;
 
+use log::{error, info, trace, warn};
 use sekas_api::server::v1::report_request::GroupUpdates;
 use sekas_api::server::v1::watch_response::*;
 use sekas_api::server::v1::*;
@@ -39,7 +41,6 @@ use sekas_rock::time::timestamp_nanos;
 use sekas_schema::{SYSTEM_DATABASE_ID, USER_COLLECTION_INIT_ID};
 use tokio::time::Instant;
 use tokio_util::time::delay_queue;
-use tracing::{error, info, trace, warn};
 
 use self::allocator::SysAllocSource;
 use self::bg_job::Jobs;
@@ -232,7 +233,7 @@ impl Root {
         }
     }
 
-    // A Deamon task to finsh handle task scheduled in heartbeat_queue and
+    // A Deamon task to finish handle task scheduled in heartbeat_queue and
     // reschedule for next heartbeat.
     async fn run_heartbeat(&self) -> ! {
         loop {
@@ -242,7 +243,7 @@ impl Root {
                 if !nodes.is_empty() {
                     metrics::HEARTBEAT_TASK_QUEUE_SIZE.set(nodes.len() as i64);
                     if let Err(err) = self.send_heartbeat(schema.to_owned(), &nodes).await {
-                        warn!(err = ?err, "send heartbeat meet error");
+                        warn!("send heartbeat: {err:?}");
                     }
                 }
             }
@@ -254,7 +255,7 @@ impl Root {
         loop {
             if self.schema().is_ok() {
                 if let Err(err) = self.jobs.advance_jobs().await {
-                    warn!(err=?err, "run background job meet err");
+                    warn!("run background job: {err:?}");
                     runtime::time::sleep(Duration::from_secs(3)).await;
                     continue;
                 }
@@ -288,7 +289,7 @@ impl Root {
                 .await
             {
                 metrics::BOOTSTRAP_FAIL_TOTAL.inc();
-                error!(err = ?err, "boostrap error");
+                error!("boostrap: {err:?}");
                 panic!("boostrap cluster failure")
             }
             *bootstrapped = true;
@@ -645,7 +646,7 @@ impl Root {
                 event: Some(update_event::Event::Database(desc.to_owned())),
             }])
             .await;
-        trace!(database_id = desc.id, database = ?name, "create database");
+        trace!("create database. database_id={}, database={}", desc.id, name);
         Ok(desc)
     }
 
@@ -656,7 +657,7 @@ impl Root {
         }
         let db = db.unwrap();
         if db.id == SYSTEM_DATABASE_ID {
-            return Err(Error::InvalidArgument("unsupport delete system database".into()));
+            return Err(Error::InvalidArgument("not support delete system database".into()));
         }
         self.jobs
             .submit(
@@ -676,7 +677,7 @@ impl Root {
         self.watcher_hub()
             .notify_deletes(vec![DeleteEvent { event: Some(delete_event::Event::Database(id)) }])
             .await;
-        trace!(database = ?name, "delete database");
+        trace!("delete database. database={name}");
         Ok(())
     }
 
@@ -707,7 +708,8 @@ impl Root {
                 ..Default::default()
             })
             .await?;
-        trace!(database = ?database, collection = ?collection, collection_id = collection.id, "prepare create collection");
+        trace!(
+            "prepare create collection. database={database}, collection={collection:?}, collection_id={}", collection.id);
 
         self.do_create_collection(schema.to_owned(), collection.to_owned()).await?;
 
@@ -819,7 +821,7 @@ impl Root {
                 }])
                 .await;
         }
-        trace!(collection = name, "delete collection, database {}", database.name);
+        trace!("delete collection, database {}, collection={}", database.name, name);
         Ok(())
     }
 
@@ -896,7 +898,7 @@ impl Root {
         self.heartbeat_queue
             .try_schedule(vec![HeartbeatTask { node_id: node.id }], Instant::now())
             .await;
-        info!(node = node.id, addr = ?node.addr, "new node join cluster");
+        info!("new node join cluster. node={}, addr={}", node.id, node.addr);
         Ok((cluster_id, node, root))
     }
 
@@ -939,11 +941,7 @@ impl Root {
             }
 
             if let Some(desc) = group_desc {
-                info!(
-                    group = desc.id,
-                    desc = ?desc,
-                    "update group_desc from node report"
-                );
+                info!("update group_desc from node report. group={}, desc={:?}", desc.id, desc);
                 if desc.id == ROOT_GROUP_ID {
                     self.heartbeat_queue
                         .try_schedule(
@@ -957,10 +955,8 @@ impl Root {
             }
             if let Some(state) = replica_state {
                 info!(
-                    group = state.group_id,
-                    replica = state.replica_id,
-                    state = ?state,
-                    "update replica_state from node report"
+                    "update replica_state from node report. group={}, replica={}, state={:?}",
+                    state.group_id, state.replica_id, state
                 );
                 metrics::ROOT_UPDATE_REPLICA_STATE_TOTAL.report.inc();
                 changed_group_states.push(state.group_id);
@@ -995,7 +991,7 @@ impl Root {
         for replica in replica_states {
             existing_replicas.insert(replica.node_id);
         }
-        info!(group = group_id, "attempt allocate {requested_cnt} replicas for exist group");
+        info!("attempt allocate {requested_cnt} replicas for exist group {group_id}");
 
         let nodes = self
             .alloc
@@ -1016,8 +1012,7 @@ impl Root {
             });
         }
         info!(
-            group = group_id,
-            "advise allocate new group replicas in nodes: {:?}",
+            "advise allocate new group {group_id} replicas in nodes: {:?}",
             replicas.iter().map(|r| r.node_id).collect::<Vec<_>>()
         );
         Ok(replicas)
@@ -1106,12 +1101,12 @@ impl HeartbeatQueue {
                         .observe(old_when.saturating_duration_since(when).as_secs_f64());
                     core.delay.reset_at(&scheduled_key, when);
                     core.node_scheduled.insert(node, (scheduled_key, when));
-                    trace!(node=node, when=?when, "update next heartbeat");
+                    trace!("update next heartbeat. node={node}, when={when:?}");
                 }
             } else {
                 let key = core.delay.insert_at(QueueTask::Heartbeat(task), when);
                 core.node_scheduled.insert(node, (key, when));
-                trace!(node=node, when=?when, "schedule next heartbeat");
+                trace!("schedule next heartbeat. node={node}, when={when:?}");
             }
             if i % 10 == 0 {
                 crate::runtime::yield_now().await;

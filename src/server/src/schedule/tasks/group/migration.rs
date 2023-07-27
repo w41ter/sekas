@@ -14,7 +14,7 @@
 
 use std::sync::Arc;
 
-use tracing::debug;
+use log::debug;
 
 use super::ActionTaskWithLocks;
 use crate::schedule::actions::*;

@@ -1,3 +1,4 @@
+// Copyright 2023-present The Sekas Authors.
 // Copyright 2022 The Engula Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -17,10 +18,10 @@ use std::sync::{atomic, Arc, Mutex};
 use std::task::{Poll, Waker};
 
 use futures::future::poll_fn;
+use log::{error, info, warn};
 use prometheus::HistogramTimer;
 use sekas_api::server::v1::{GroupDesc, ReplicaDesc, ReplicaRole, RootDesc, ShardDesc};
 use tokio::time::Instant;
-use tracing::{error, info, warn};
 
 use super::allocator::*;
 use super::{HeartbeatQueue, HeartbeatTask, RootShared, Schema};
@@ -154,7 +155,9 @@ impl Jobs {
             let group = groups.first().unwrap();
             info!("try create shard at group {}, shards: {}", group.id, group.shards.len());
             if let Err(err) = self.try_create_shard(group.id, &shard).await {
-                error!(group=group.id, shard=shard.id, err=?err, "create collection shard error and try to rollback");
+                error!(
+                    "create collection shard error and try to rollback: {err:?}. group={}, shard={}",
+                    group.id, shard.id);
                 create_collection.remark = format!("{err:?}");
                 create_collection.wait_cleanup.push(shard);
                 create_collection.status =
@@ -289,8 +292,8 @@ impl Jobs {
             return Ok(false);
         }
         warn!(
-            group = create_group.group_desc.as_ref().unwrap().id,
-            "cluster group count already meet requirement, so abort group creation."
+            "cluster group count already meet requirement, so abort group creation. group={}",
+            create_group.group_desc.as_ref().unwrap().id,
         );
         create_group.status = CreateOneGroupStatus::CreateOneGroupRollbacking as i32;
         self.save_create_group(job_id, create_group).await?;
@@ -352,11 +355,16 @@ impl Jobs {
             {
                 let retried = create_group.create_retry;
                 if retried < 20 {
-                    warn!(node=n.id, replica=replica.id, group=group_desc.id, retried = retried, err = ?err, "create replica for new group error, retry in next");
+                    warn!(
+                        "create replica for new group error, retry in next: {err:?}. node={}, replica={}, group={}, retried={}",
+                        n.id, replica.id, group_desc.id, retried
+                    );
                     metrics::RECONCILE_RETRY_TASK_TOTAL.create_group.inc();
                     create_group.create_retry += 1;
                 } else {
-                    warn!(node=n.id, replica=replica.id, group=group_desc.id, err = ?err, "create replica for new group error, start rollback");
+                    warn!(
+                        "create replica for new group error, start rollback: {err:?}. node={}, replica={}, group={}", 
+                        n.id, replica.id, group_desc.id);
                     create_group.status = CreateOneGroupStatus::CreateOneGroupRollbacking as i32;
                 };
                 self.save_create_group(job_id, create_group).await?;
@@ -386,7 +394,10 @@ impl Jobs {
             let group = create_group.group_desc.as_ref().unwrap().id;
             let r = r.unwrap();
             if let Err(err) = self.try_remove_replica(group, r.id).await {
-                error!(err = ?err, replica=r.id, "rollback temp replica of new group fail and retry later");
+                error!(
+                    "rollback temp replica of new group fail and retry later: {err:?}. replica={}",
+                    r.id
+                );
                 create_group.wait_cleanup = wait_clean.to_owned();
                 self.save_create_group(job_id, create_group).await?;
                 return Err(err);

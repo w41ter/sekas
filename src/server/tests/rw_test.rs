@@ -13,12 +13,12 @@
 // limitations under the License.
 mod helper;
 
+use log::info;
 use rand::prelude::SmallRng;
 use rand::{Rng, SeedableRng};
 use sekas_api::server::v1::ReplicaRole;
 use sekas_api::v1::PutOperation;
 use sekas_client::{AppError, ClientOptions, Partition, SekasClient, WriteConditionBuilder};
-use tracing::info;
 
 use crate::helper::client::*;
 use crate::helper::context::*;

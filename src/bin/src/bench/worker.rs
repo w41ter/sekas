@@ -14,9 +14,9 @@
 
 use std::time::Instant;
 
+use log::trace;
 use rand::prelude::*;
 use sekas_client::Collection;
-use tracing::trace;
 
 use super::metrics::*;
 use super::AppConfig;

@@ -1,3 +1,4 @@
+// Copyright 2023-present The Sekas Authors.
 // Copyright 2022 The Engula Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -15,8 +16,8 @@
 use std::cmp::Ordering;
 use std::sync::Arc;
 
+use log::debug;
 use sekas_api::server::v1::{GroupDesc, ShardDesc};
-use tracing::debug;
 
 use super::{AllocSource, ReallocateShard, ShardAction};
 use crate::constants::ROOT_GROUP_ID;
@@ -43,19 +44,21 @@ impl<T: AllocSource> ShardCountPolicy<T> {
 
     pub fn compute_balance(&self) -> Result<Vec<ShardAction>> {
         let mean_cnt = self.mean_shard_count();
-        let candicate_groups = self.current_user_groups();
+        let candidate_groups = self.current_user_groups();
 
-        let ranked_candicates = Self::rank_group_for_balance(candicate_groups, mean_cnt);
+        let ranked_candidates = Self::rank_group_for_balance(candidate_groups, mean_cnt);
         debug!(
-            scored_nodes = ?ranked_candicates.iter().map(|(g, s)| format!("{}-{}({:?})", g.id, g.shards.len(), s)).collect::<Vec<_>>(),
-            mean = mean_cnt,
-            "group ranked by shard count",
+            "group ranked by shard count. mean={mean_cnt}, scored_nodes={:?}",
+            ranked_candidates
+                .iter()
+                .map(|(g, s)| format!("{}-{}({:?})", g.id, g.shards.len(), s))
+                .collect::<Vec<_>>(),
         );
-        for (src_group, status) in &ranked_candicates {
+        for (src_group, status) in &ranked_candidates {
             if *status != BalanceStatus::Overfull {
                 break;
             }
-            if let Some(action) = self.rebalance_target(src_group, &ranked_candicates) {
+            if let Some(action) = self.rebalance_target(src_group, &ranked_candidates) {
                 return Ok(vec![action]);
             }
         }

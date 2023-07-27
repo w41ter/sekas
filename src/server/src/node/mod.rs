@@ -24,8 +24,8 @@ use std::sync::Arc;
 
 use futures::channel::mpsc;
 use futures::lock::Mutex;
+use log::{debug, info, warn};
 use sekas_api::server::v1::*;
-use tracing::{debug, info, warn};
 
 use self::job::StateChannel;
 use self::migrate::MigrateController;

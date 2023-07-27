@@ -14,7 +14,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use tracing::{debug, warn};
+use log::{debug, warn};
 
 use crate::runtime::{current, TaskPriority};
 

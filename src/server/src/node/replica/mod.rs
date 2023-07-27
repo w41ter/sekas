@@ -1,3 +1,4 @@
+// Copyright 2023-present The Sekas Authors.
 // Copyright 2022 The Engula Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -22,12 +23,12 @@ use std::sync::atomic::AtomicI32;
 use std::sync::{Arc, Mutex};
 use std::task::Poll;
 
+use log::info;
 use sekas_api::server::v1::group_request_union::Request;
 use sekas_api::server::v1::group_response_union::Response;
 use sekas_api::server::v1::*;
 use sekas_api::v1::{DeleteResponse, GetResponse, PutResponse};
 use serde::Serialize;
-use tracing::info;
 
 pub use self::eval::LatchGuard;
 use self::eval::{acquire_row_latches, RowLatchManager};
@@ -345,10 +346,8 @@ impl Replica {
             }
             Request::Transfer(req) => {
                 info!(
-                    replica = self.info.replica_id,
-                    group = self.info.group_id,
-                    "transfer leadership to {}",
-                    req.transferee
+                    "transfer leadership to {}. replica={}, group={}",
+                    req.transferee, self.info.replica_id, self.info.group_id
                 );
                 self.raft_node.clone().transfer_leader(req.transferee)?;
                 return Ok(Response::Transfer(TransferResponse {}));

@@ -19,6 +19,7 @@ use std::sync::Arc;
 
 use futures::lock::Mutex;
 use lazy_static::lazy_static;
+use log::{info, warn};
 use prost::Message;
 use sekas_api::server::v1::shard_desc::{Partition, RangePartition};
 use sekas_api::server::v1::watch_response::{delete_event, update_event, DeleteEvent, UpdateEvent};
@@ -26,7 +27,6 @@ use sekas_api::server::v1::*;
 use sekas_api::v1::{collection_desc, CollectionDesc, DatabaseDesc, PutRequest};
 use sekas_rock::time::timestamp_nanos;
 use sekas_schema::*;
-use tracing::{info, warn};
 
 use super::store::RootStore;
 use crate::constants::*;
@@ -613,7 +613,7 @@ impl Schema {
             return Ok(());
         }
 
-        info!(cluster = ?String::from_utf8_lossy(&cluster_id), "start boostrap root");
+        info!("start boostrap root. cluster={}", String::from_utf8_lossy(&cluster_id));
 
         let mut batch = PutBatchBuilder::default();
 
@@ -681,7 +681,7 @@ impl Schema {
 
         self.batch_write(batch.build()).await?;
 
-        info!(cluster = ?String::from_utf8_lossy(&cluster_id), "boostrap root successfully");
+        info!("boostrap root successfully. cluster={}", String::from_utf8_lossy(&cluster_id));
 
         Ok(())
     }

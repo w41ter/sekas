@@ -17,12 +17,12 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use futures::StreamExt;
+use log::{info, trace, warn};
 use sekas_api::server::v1::watch_response::delete_event::Event as DeleteEvent;
 use sekas_api::server::v1::watch_response::update_event::Event as UpdateEvent;
 use sekas_api::server::v1::*;
 use sekas_api::v1::*;
 use tonic::Streaming;
-use tracing::{info, trace, warn};
 
 use crate::RootClient;
 
@@ -280,7 +280,7 @@ async fn state_main(state: Arc<Mutex<State>>, root_client: RootClient) {
         let events = match root_client.watch(cur_group_epochs).await {
             Ok(events) => events,
             Err(e) => {
-                warn!(err = ?e, "watch events");
+                warn!("watch events: {e:?}");
                 tokio::time::sleep(Duration::from_millis(interval)).await;
                 interval = std::cmp::min(interval * 2, 1000);
                 continue;

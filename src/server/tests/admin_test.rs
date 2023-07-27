@@ -15,10 +15,10 @@ mod helper;
 
 use std::time::Duration;
 
+use log::info;
 use sekas_api::v1::{CollectionDesc, DatabaseDesc};
 use sekas_client::{ClientOptions, NodeClient, Partition, SekasClient};
 use sekas_server::diagnosis;
-use tracing::info;
 
 use crate::helper::context::*;
 use crate::helper::init::setup_panic_hook;

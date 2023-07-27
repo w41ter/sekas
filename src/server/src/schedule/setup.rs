@@ -14,8 +14,8 @@
 
 use std::sync::Arc;
 
+use log::debug;
 use sekas_api::server::v1::ScheduleState;
-use tracing::debug;
 
 use super::ScheduleStateObserver;
 use crate::node::Replica;

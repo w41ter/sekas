@@ -19,9 +19,9 @@ use std::path::{Path, PathBuf};
 
 use futures::channel::mpsc;
 use futures::{SinkExt, StreamExt};
+use log::{debug, error, info};
 use raft::eraftpb::Message;
 use sekas_api::server::v1::ReplicaDesc;
-use tracing::{debug, error, info};
 
 use super::SnapManager;
 use crate::raftgroup::metrics::*;

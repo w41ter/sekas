@@ -1,3 +1,4 @@
+// Copyright 2023-present The Sekas Authors.
 // Copyright 2022 The Engula Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -16,12 +17,12 @@ use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::sync::Arc;
 
+use log::{debug, error, info};
 use prost::Message;
 use raft::prelude::*;
 use raft::{GetEntriesContext, RaftState};
 use raft_engine::{Command, Engine, LogBatch, MessageExt};
 use sekas_api::server::v1::*;
-use tracing::{debug, error, info};
 
 use super::node::WriteTask;
 use super::snap::SnapManager;
@@ -290,7 +291,7 @@ impl raft::Storage for Storage {
                 Some(max_size),
                 &mut entries,
             ) {
-                error!(replica = self.replica_id, "fetch entries from engine: {}", e);
+                error!("fetch entries from engine: {}. replica_id={}", e, self.replica_id);
                 return Err(other_store_error(e));
             }
             if entries.len() < (end - low) as usize {
@@ -568,9 +569,9 @@ fn other_store_error(e: raft_engine::Error) -> raft::Error {
 mod tests {
     use std::sync::Arc;
 
+    use log::info;
     use raft_engine::{Config, Engine};
     use tempdir::TempDir;
-    use tracing::info;
 
     use super::*;
     use crate::runtime::*;

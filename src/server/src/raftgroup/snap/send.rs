@@ -18,7 +18,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-use tracing::debug;
+use log::debug;
 
 use super::{SnapManager, SnapshotGuard};
 use crate::raftgroup::metrics::*;

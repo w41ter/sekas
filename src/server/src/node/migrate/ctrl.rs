@@ -1,3 +1,4 @@
+// Copyright 2023-present The Sekas Authors.
 // Copyright 2022 The Engula Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -16,11 +17,11 @@ use std::sync::Arc;
 
 use futures::channel::mpsc;
 use futures::StreamExt;
+use log::{debug, error, info, warn};
 use sekas_api::server::v1::group_request_union::Request;
 use sekas_api::server::v1::group_response_union::Response;
 use sekas_api::server::v1::*;
 use sekas_client::{MigrateClient, Router};
-use tracing::{debug, error, info, warn};
 
 use crate::node::metrics::*;
 use crate::node::Replica;
@@ -85,9 +86,7 @@ impl MigrateController {
             let mut coord: Option<MigrationCoordinator> = None;
             while let Some(state) = receiver.next().await {
                 debug!(
-                    replica = replica_id,
-                    group = group_id,
-                    "on migration step: {:?}",
+                    "on migration step: {:?}. group={group_id}, replica={replica_id}",
                     MigrationStep::from_i32(state.step)
                 );
                 let desc = state.get_migration_desc();
@@ -110,7 +109,9 @@ impl MigrateController {
                 }
                 coord.as_mut().unwrap().next_step(state).await;
             }
-            debug!(replica = replica_id, group = group_id, "migration state watcher is stopped",);
+            debug!(
+                "migration state watcher is stopped. replica_id={replica_id}, group_id={group_id}"
+            );
             drop(wait_group);
         });
     }
@@ -160,109 +161,102 @@ impl MigrationCoordinator {
 
     async fn setup_source_group(&mut self) {
         debug!(
-            replica = self.replica_id,
-            group = self.group_id,
-            desc = %self.desc,
-            "setup source group migration"
+            "setup source group migration. replica={}, group={}, desc={}",
+            self.replica_id, self.group_id, self.desc
         );
 
         match self.client.setup_migration(&self.desc).await {
             Ok(_) => {
-                info!(replica = self.replica_id,
-                    group = self.group_id,
-                    desc = %self.desc,
-                    "setup source group migration success"
+                info!(
+                    "setup source group migration success. replica={}, group={}, desc={}",
+                    self.replica_id, self.group_id, self.desc
                 );
                 self.enter_pulling_step().await;
             }
             Err(sekas_client::Error::EpochNotMatch(group_desc)) => {
                 // Since the epoch is not matched, this migration should be rollback.
-                warn!(replica = self.replica_id, group = self.group_id, desc = %self.desc,
-                    "abort migration since epoch not match, new epoch is {}",
-                        group_desc.epoch);
+                warn!(
+                    "abort migration since epoch not match, new epoch is {}. replica={}, group={}, desc={}",
+                        group_desc.epoch, self.replica_id, self.group_id, self.desc);
                 self.abort_migration().await;
             }
             Err(err) => {
-                error!(replica = self.replica_id,
-                    group = self.group_id,
-                    desc= %self.desc,
-                    "setup source group migration: {}", err);
+                error!(
+                    "setup source group migration: {err:?}. replica={}, group={}, desc={}",
+                    self.replica_id, self.group_id, self.desc
+                );
             }
         }
     }
 
     async fn commit_source_group(&mut self) {
         if let Err(e) = self.client.commit_migration(&self.desc).await {
-            error!(replica = self.replica_id,
-                group = self.group_id,
-                desc = %self.desc,
-                "commit source group migration: {}", e);
+            error!(
+                "commit source group migration: {e:?}. replica={}, group={}, desc={}",
+                self.replica_id, self.group_id, self.desc
+            );
             return;
         }
 
-        info!(replica = self.replica_id,
-            group = self.group_id,
-            desc = %self.desc,
-            "source group migration is committed");
+        info!(
+            "source group migration is committed. replica={}, group={}, desc={}",
+            self.replica_id, self.group_id, self.desc
+        );
 
         self.clean_migration_state().await;
     }
 
     async fn commit_dest_group(&self) {
         if let Err(e) = self.replica.commit_migration(&self.desc).await {
-            error!(replica = self.replica_id,
-                group = self.group_id,
-                desc = %self.desc,
-                "commit dest migration: {}", e);
+            error!(
+                "commit dest migration: {e:?}. replica={}, group={}, desc={}",
+                self.replica_id, self.group_id, self.desc,
+            );
             return;
         }
 
-        info!(replica = self.replica_id,
-            group = self.group_id,
-            desc = %self.desc,
-            "dest group migration is committed");
+        info!(
+            "dest group migration is committed. replica={}, group={}, desc={}",
+            self.replica_id, self.group_id, self.desc,
+        );
     }
 
     async fn clean_migration_state(&self) {
         if let Err(e) = self.replica.finish_migration(&self.desc).await {
             error!(
-                replica = self.replica_id,
-                group = self.group_id,
-                desc = %self.desc,
-                "clean migration state: {}", e);
+                "clean migration state: {e:?}. replica={}, group={}, desc={}",
+                self.replica_id, self.group_id, self.desc,
+            );
             return;
         }
 
-        info!(replica = self.replica_id,
-            group = self.group_id,
-            desc = %self.desc,
-            "migration state is cleaned");
+        info!(
+            "migration state is cleaned. replica={}, group={}, desc={}",
+            self.replica_id, self.group_id, self.desc
+        );
     }
 
     async fn abort_migration(&self) {
         if let Err(e) = self.replica.abort_migration(&self.desc).await {
             error!(
-                replica = self.replica_id,
-                group = self.group_id,
-                desc = %self.desc,
-                err = ?e,
-                "abort migration",
+                "abort migration: {e:?}. replica={}, group={}, desc={}",
+                self.replica_id, self.group_id, self.desc
             );
             return;
         }
 
-        info!(replica = self.replica_id,
-            group = self.group_id,
-            desc = %self.desc,
-            "migration is aborted");
+        info!(
+            "migration is aborted. replica={}, group={}, desc={}",
+            self.replica_id, self.group_id, self.desc
+        );
     }
 
     async fn enter_pulling_step(&self) {
         if let Err(e) = self.replica.enter_pulling_step(&self.desc).await {
-            error!(replica = self.replica_id,
-                group = self.group_id,
-                desc = %self.desc,
-                "enter pulling step: {}", e);
+            error!(
+                "enter pulling step: {e:?}. replica={}, group={}, desc={}",
+                self.replica_id, self.group_id, self.desc
+            );
         }
     }
 
@@ -274,10 +268,10 @@ impl MigrationCoordinator {
             remove_shard(&self.cfg, self.replica.as_ref(), group_engine, self.desc.get_shard_id())
                 .await
         {
-            error!(replica = self.replica_id,
-                group = self.group_id,
-                desc = %self.desc,
-                "remove migrated shard from source group: {}", e);
+            error!(
+                "remove migrated shard from source group: {e:?}. replica={}, group={}, desc={}",
+                self.replica_id, self.group_id, self.desc
+            );
             return;
         }
 
@@ -288,10 +282,10 @@ impl MigrationCoordinator {
         if let Err(e) =
             pull_shard(&self.client, self.replica.as_ref(), &self.desc, last_migrated_key).await
         {
-            error!(replica = self.replica_id,
-                group = self.group_id,
-                desc = %self.desc,
-                "pull shard from source group: {}", e);
+            error!(
+                "pull shard from source group: {e:?}. replica={}, group={}, desc={}",
+                self.replica_id, self.group_id, self.desc
+            );
             return;
         }
 

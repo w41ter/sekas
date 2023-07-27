@@ -15,9 +15,9 @@ mod helper;
 
 use std::time::Duration;
 
+use log::info;
 use sekas_api::server::v1::TxnState;
 use sekas_client::{AppError, ClientOptions, Error, Partition};
-use tracing::info;
 
 use crate::helper::client::*;
 use crate::helper::context::*;

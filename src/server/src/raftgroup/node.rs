@@ -13,11 +13,11 @@
 // limitations under the License.
 
 use futures::channel::oneshot;
+use log::{info, trace};
 use raft::prelude::*;
 use raft::{ConfChangeI, StateRole, Storage as RaftStorage};
 use raft_engine::LogBatch;
 use sekas_api::server::v1::RaftRole;
-use tracing::{info, trace};
 
 use super::applier::{Applier, ReplicaCache};
 use super::fsm::StateMachine;

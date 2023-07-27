@@ -1,3 +1,4 @@
+// Copyright 2023-present The Sekas Authors.
 // Copyright 2022 The Engula Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -18,11 +19,11 @@ use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Arc;
 
+use log::{info, trace, warn};
 use sekas_api::server::v1::{
     ChangeReplica, ChangeReplicaType, ChangeReplicas, GroupDesc, MigrationDesc, ReplicaDesc,
     ReplicaRole,
 };
-use tracing::{info, trace, warn};
 
 use super::ReplicaInfo;
 use crate::engine::{GroupEngine, WriteBatch, WriteStates};
@@ -146,11 +147,8 @@ impl GroupStateMachine {
         let event = MigrationEvent::from_i32(migration.event).expect("unknown migration event");
         if let Some(desc) = migration.migration_desc.as_ref() {
             info!(
-                replica = self.info.replica_id,
-                group = self.info.group_id,
-                %desc,
-                ?event,
-                "apply migration event"
+                "apply migration event. replica={}, group={}, desc={}, event={:?}",
+                self.info.replica_id, self.info.group_id, desc, event
             );
         }
 
@@ -158,9 +156,8 @@ impl GroupStateMachine {
             MigrationEvent::Setup => {
                 if migration.migration_desc.is_none() {
                     warn!(
-                        replica_id = self.info.replica_id,
-                        group = self.info.group_id,
-                        "Migration::migration_desc is None"
+                        "Migration::migration_desc is None. replica={}, group={}",
+                        self.info.replica_id, self.info.group_id
                     );
                     return;
                 }
@@ -236,12 +233,8 @@ impl GroupStateMachine {
             "shard migrated in"
         };
         info!(
-            replica = self.info.replica_id,
-            group = self.info.group_id,
-            epoch = group_desc.epoch,
-            shard = shard_desc.id,
-            "apply migration: {}",
-            msg
+            "apply migration: {msg}. replica={}, group={}, epoch={}, shard={}",
+            self.info.replica_id, self.info.group_id, group_desc.epoch, shard_desc.id
         );
         self.desc_updated = true;
     }

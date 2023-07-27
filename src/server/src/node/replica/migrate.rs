@@ -1,3 +1,4 @@
+// Copyright 2023-present The Sekas Authors.
 // Copyright 2022 The Engula Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -12,8 +13,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use log::{debug, info};
 use sekas_api::server::v1::*;
-use tracing::{debug, info};
 
 use super::{LeaseState, Replica, ReplicaInfo};
 use crate::engine::WriteBatch;
@@ -103,11 +104,10 @@ impl Replica {
         desc: &MigrationDesc,
         event: MigrationEvent,
     ) -> Result<()> {
-        debug!(replica = self.info.replica_id,
-            group = self.info.group_id,
-            %desc,
-            ?event,
-            "update migration state");
+        debug!(
+            "update migration state. replica={}, group={}, desc={}, event={:?}",
+            self.info.replica_id, self.info.group_id, desc, event
+        );
 
         let _guard = self.take_write_acl_guard().await;
         if !self.check_migration_state_update_early(desc, event)? {
@@ -181,10 +181,9 @@ impl Replica {
             Err(Error::EpochNotMatch(lease_state.descriptor.clone()))
         } else {
             info!(
-                replica = info.replica_id,
-                group = info.group_id,
-                %desc,
-                "the same migration already exists");
+                "the same migration already exists. replica={}, group={}, desc={}",
+                info.replica_id, info.group_id, desc
+            );
             Ok(false)
         }
     }
@@ -196,10 +195,8 @@ impl Replica {
     ) -> Result<bool> {
         if is_migration_finished(info, desc, &lease_state.descriptor) {
             info!(
-                replica = info.replica_id,
-                group = info.group_id,
-                %desc,
-                "this migration has been committed, skip commit request");
+                "this migration has been committed, skip commit request. replica={}, group={}, desc={}",
+                    info.replica_id, info.group_id, desc);
             Ok(false)
         } else if lease_state.migration_state.is_none() || !lease_state.is_same_migration(desc) {
             info!(
@@ -211,10 +208,8 @@ impl Replica {
             == MigrationStep::Migrated as i32
         {
             info!(
-                replica = info.replica_id,
-                group = info.group_id,
-                %desc,
-                "this migration has been committed, skip commit request");
+                "this migration has been committed, skip commit request. replica={}, group={}, desc={}",
+                info.replica_id, info.group_id, desc);
             Ok(false)
         } else {
             Ok(true)

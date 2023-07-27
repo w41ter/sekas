@@ -15,12 +15,12 @@ mod helper;
 
 use std::time::Duration;
 
+use log::{debug, error, info, warn};
 use sekas_api::server::v1::group_request_union::Request;
 use sekas_api::server::v1::group_response_union::Response;
 use sekas_api::server::v1::*;
 use sekas_api::v1::{GetRequest, GetResponse, PutRequest};
 use sekas_client::RetryState;
-use tracing::{debug, error, info, warn};
 
 use crate::helper::client::*;
 use crate::helper::context::*;

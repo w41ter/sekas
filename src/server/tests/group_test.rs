@@ -14,8 +14,8 @@
 mod helper;
 
 use helper::context::TestContext;
+use log::info;
 use sekas_api::server::v1::*;
-use tracing::info;
 
 use crate::helper::client::*;
 use crate::helper::init::setup_panic_hook;

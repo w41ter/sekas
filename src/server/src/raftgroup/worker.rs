@@ -1,3 +1,4 @@
+// Copyright 2023-present The Sekas Authors.
 // Copyright 2022 The Engula Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -21,12 +22,12 @@ use std::time::{Duration, Instant};
 use futures::channel::{mpsc, oneshot};
 use futures::stream::FusedStream;
 use futures::{FutureExt, SinkExt, StreamExt};
+use log::{debug, info, warn};
 use raft::prelude::*;
 use raft::{SoftState, StateRole};
 use raft_engine::{Engine, LogBatch};
 use sekas_api::server::v1::{ChangeReplicas, RaftRole, ReplicaDesc};
 use tokio::time::{interval, Interval, MissedTickBehavior};
-use tracing::{debug, info, warn};
 
 use super::applier::{Applier, ReplicaCache};
 use super::fsm::StateMachine;
@@ -118,9 +119,8 @@ impl<'a> super::node::AdvanceTemplate for AdvanceImpl<'a> {
                 Some(to_replica) => to_replica,
                 None => {
                     warn!(
-                        group = self.group_id,
-                        target = target_id,
-                        "send message to unknown target"
+                        "send message to unknown target. group={}, target={target_id}",
+                        self.group_id
                     );
                     continue;
                 }

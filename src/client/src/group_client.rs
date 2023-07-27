@@ -17,12 +17,12 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::time::{Duration, Instant};
 
+use log::{debug, trace, warn};
 use sekas_api::server::v1::group_request_union::Request;
 use sekas_api::server::v1::group_response_union::Response;
 use sekas_api::server::v1::*;
 use sekas_schema::shard;
 use tonic::{Code, Status};
-use tracing::{debug, trace, warn};
 
 use crate::metrics::*;
 use crate::node_client::RpcTimeout;

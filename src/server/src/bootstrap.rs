@@ -1,3 +1,4 @@
+// Copyright 2023-present The Sekas Authors.
 // Copyright 2022 The Engula Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -16,11 +17,11 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::vec;
 
+use log::{debug, info, warn};
 use sekas_api::server::v1::node_server::NodeServer;
 use sekas_api::server::v1::root_server::RootServer;
 use sekas_api::server::v1::*;
 use sekas_client::RootClient;
-use tracing::{debug, info, warn};
 
 use crate::constants::*;
 use crate::engine::{Engines, StateEngine};
@@ -148,7 +149,7 @@ async fn try_join_cluster(
                 return node_ident;
             }
             Err(e) => {
-                warn!(err = ?e, join_list = ?join_list, "failed to join cluster");
+                warn!("failed to join cluster: {e:?}. join_list={join_list:?}");
             }
         }
         std::thread::sleep(Duration::from_secs(backoff));
