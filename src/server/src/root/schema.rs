@@ -194,7 +194,7 @@ impl Schema {
     }
 
     pub async fn get_node(&self, id: u64) -> Result<Option<NodeDesc>> {
-        let val = self.get(col::NODE_SHARD_ID, &id.to_le_bytes()).await?;
+        let val = self.get(col::NODE_ID, &id.to_le_bytes()).await?;
         if val.is_none() {
             return Ok(None);
         }
