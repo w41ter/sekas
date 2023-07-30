@@ -18,7 +18,7 @@ use sekas_api::server::v1::group_response_union::Response;
 use sekas_api::server::v1::*;
 use sekas_api::v1::*;
 use sekas_rock::time::timestamp_millis;
-use sekas_schema::txn_collection;
+use sekas_schema::system::col;
 
 use crate::{AppResult, ConnManager, Error, GroupClient, RootClient, Router};
 
@@ -61,8 +61,7 @@ impl TxnClient {
     }
 
     pub async fn start_txn(&mut self, txn_id: u64) -> crate::Result<()> {
-        let desc = txn_collection();
-        let (group, shard) = self.router.find_shard(desc, &txn_key_prefix(txn_id))?;
+        let (group, shard) = self.router.find_shard(col::txn_desc(), &txn_key_prefix(txn_id))?;
         let mut client = GroupClient::new(group, self.router.clone(), self.conn_manager.clone());
 
         let timeout = timestamp_millis() + 5000; // for 5 seconds
@@ -103,8 +102,7 @@ impl TxnClient {
     }
 
     pub async fn commit_txn(&mut self, txn_id: u64, version: u64) -> crate::Result<()> {
-        let desc = txn_collection();
-        let (group, shard) = self.router.find_shard(desc, &txn_key_prefix(txn_id))?;
+        let (group, shard) = self.router.find_shard(col::txn_desc(), &txn_key_prefix(txn_id))?;
         let mut client = GroupClient::new(group, self.router.clone(), self.conn_manager.clone());
 
         let req = Request::BatchWrite(BatchWriteRequest {
@@ -143,8 +141,7 @@ impl TxnClient {
     }
 
     pub async fn abort_txn(&mut self, txn_id: u64) -> crate::Result<()> {
-        let desc = txn_collection();
-        let (group, shard) = self.router.find_shard(desc, &txn_key_prefix(txn_id))?;
+        let (group, shard) = self.router.find_shard(col::txn_desc(), &txn_key_prefix(txn_id))?;
         let mut client = GroupClient::new(group, self.router.clone(), self.conn_manager.clone());
 
         let req = Request::Put(ShardPutRequest {
@@ -169,8 +166,7 @@ impl TxnClient {
     }
 
     pub async fn clean_txn(&mut self, txn_id: u64) -> crate::Result<()> {
-        let desc = txn_collection();
-        let (group, shard) = self.router.find_shard(desc, &txn_key_prefix(txn_id))?;
+        let (group, shard) = self.router.find_shard(col::txn_desc(), &txn_key_prefix(txn_id))?;
         let mut client = GroupClient::new(group, self.router.clone(), self.conn_manager.clone());
 
         let req = Request::BatchWrite(BatchWriteRequest {
@@ -207,9 +203,8 @@ impl TxnClient {
     }
 
     pub async fn get_txn_record(&self, txn_id: u64) -> crate::Result<Option<TxnRecord>> {
-        let desc = txn_collection();
         let prefix = txn_key_prefix(txn_id);
-        let (group, shard) = self.router.find_shard(desc, &prefix)?;
+        let (group, shard) = self.router.find_shard(col::txn_desc(), &prefix)?;
         let mut client = GroupClient::new(group, self.router.clone(), self.conn_manager.clone());
         let req = Request::Scan(ShardScanRequest {
             shard_id: shard.id,

@@ -111,7 +111,7 @@ impl Router {
             .get(&desc.id)
             .ok_or_else(|| crate::Error::NotFound(format!("shard (key={:?})", key)))?;
         for shard in shards {
-            if let Some(shard_desc::Partition::Range(shard_desc::RangePartition { start, end })) =
+            if let Some(shard_desc::Partition::Range(RangePartition { start, end })) =
                 shard.partition.clone()
             {
                 if start.as_slice() > key {
@@ -340,7 +340,8 @@ fn leader_state(group_state: &GroupState) -> Option<(u64, u64)> {
 
 #[cfg(test)]
 mod tests {
-    use sekas_api::server::v1::shard_desc::{HashPartition, Partition};
+    use sekas_api::server::v1::shard_desc::Partition;
+    use sekas_api::server::v1::HashPartition;
 
     use super::*;
 
@@ -348,7 +349,11 @@ mod tests {
         ShardDesc {
             id,
             collection_id: 1,
-            partition: Some(Partition::Hash(HashPartition { slot_id: 1, slots: 1 })),
+            partition: Some(Partition::Hash(HashPartition {
+                slot_id: 1,
+                end_slot_id: 2,
+                slots: 1,
+            })),
         }
     }
 

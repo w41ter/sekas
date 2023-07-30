@@ -15,6 +15,11 @@
 use sekas_api::server::v1::shard_desc::*;
 use sekas_api::server::v1::*;
 
+lazy_static::lazy_static! {
+    pub static ref SHARD_MIN: Vec<u8> = vec![];
+    pub static ref SHARD_MAX: Vec<u8> = vec![];
+}
+
 pub fn in_range(start: &[u8], end: &[u8], key: &[u8]) -> bool {
     start <= key && (key < end || end.is_empty())
 }
@@ -29,13 +34,12 @@ pub fn key_slot(key: &[u8], slots: u32) -> u32 {
 pub fn belong_to(shard: &ShardDesc, key: &[u8]) -> bool {
     match shard.partition.as_ref().unwrap() {
         Partition::Hash(hash) => {
-            // FIXME(walter) add schema module.
-            // FOR txn collection.
-            if shard.collection_id == 1 {
-                hash.slot_id == key_slot(&key[0..8], hash.slots)
+            let slot_id = if shard.collection_id == crate::system::col::TXN_ID {
+                key_slot(&key[0..8], hash.slots)
             } else {
-                hash.slot_id == key_slot(key, hash.slots)
-            }
+                key_slot(key, hash.slots)
+            };
+            hash.slot_id <= slot_id && slot_id < hash.end_slot_id
         }
         Partition::Range(RangePartition { start, end }) => in_range(start, end, key),
     }
@@ -51,19 +55,30 @@ pub fn start_key(shard: &ShardDesc) -> Vec<u8> {
 }
 
 /// Return the end key of the corresponding shard.
+///
+/// For now, it only support range shard.
 #[inline]
 pub fn end_key(shard: &ShardDesc) -> Vec<u8> {
     match shard.partition.as_ref().unwrap() {
-        Partition::Hash(hash) => (hash.slot_id + 1).to_le_bytes().as_slice().to_owned(),
+        Partition::Hash(_) => panic!("no end shard for hash shard"),
         Partition::Range(RangePartition { end, .. }) => end.as_slice().to_owned(),
     }
 }
 
 /// Return the slot of the corresponding shard.  `None` is returned if shard is
 /// range partition.
-pub fn slot(shard: &ShardDesc) -> Option<u32> {
+pub fn slot(shard: &ShardDesc, key: &[u8]) -> Option<u32> {
     match shard.partition.as_ref().unwrap() {
-        Partition::Hash(hash) => Some(hash.slot_id),
+        Partition::Hash(hash) => Some(key_slot(key, hash.slots)),
+        Partition::Range(_) => None,
+    }
+}
+
+/// Return the slot range of the corresponding shard.  `None` is returned if
+/// shard is range partition.
+pub fn slot_range(shard: &ShardDesc) -> Option<std::ops::Range<u32>> {
+    match shard.partition.as_ref().unwrap() {
+        Partition::Hash(hash) => Some(hash.slot_id..hash.end_slot_id),
         Partition::Range(_) => None,
     }
 }

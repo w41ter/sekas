@@ -21,12 +21,11 @@ use futures::lock::Mutex;
 use lazy_static::lazy_static;
 use log::{info, warn};
 use prost::Message;
-use sekas_api::server::v1::shard_desc::{Partition, RangePartition};
 use sekas_api::server::v1::watch_response::{delete_event, update_event, DeleteEvent, UpdateEvent};
 use sekas_api::server::v1::*;
-use sekas_api::v1::{collection_desc, CollectionDesc, DatabaseDesc, PutRequest};
+use sekas_api::v1::{CollectionDesc, DatabaseDesc, PutRequest};
 use sekas_rock::time::timestamp_nanos;
-use sekas_schema::*;
+use sekas_schema::system::col;
 
 use super::store::RootStore;
 use crate::constants::*;
@@ -89,7 +88,7 @@ impl Schema {
     }
 
     pub async fn get_database(&self, name: &str) -> Result<Option<DatabaseDesc>> {
-        let val = self.get(SYSTEM_DATABASE_COLLECTION_ID, name.as_bytes()).await?;
+        let val = self.get(col::DATABASE_ID, name.as_bytes()).await?;
         if val.is_none() {
             return Ok(None);
         }
@@ -103,12 +102,12 @@ impl Schema {
     }
 
     pub async fn delete_database(&self, db: &DatabaseDesc) -> Result<u64> {
-        self.delete(SYSTEM_DATABASE_COLLECTION_ID, db.name.as_bytes()).await?;
+        self.delete(col::DATABASE_ID, db.name.as_bytes()).await?;
         Ok(db.id)
     }
 
     pub async fn list_database(&self) -> Result<Vec<DatabaseDesc>> {
-        let vals = self.list(SYSTEM_DATABASE_COLLECTION_ID).await?;
+        let vals = self.list(col::DATABASE_ID).await?;
         let mut databases = Vec::new();
         for val in vals {
             databases.push(
@@ -130,8 +129,7 @@ impl Schema {
 
     pub async fn create_collection(&self, desc: CollectionDesc) -> Result<CollectionDesc> {
         assert!(self.get_collection(desc.db, &desc.name).await?.is_none());
-        self.batch_write(PutBatchBuilder::default().put_collection(desc.to_owned()).build())
-            .await?;
+        self.batch_write(PutBatchBuilder::default().put_col(desc.to_owned()).build()).await?;
         Ok(desc)
     }
 
@@ -140,9 +138,7 @@ impl Schema {
         database: u64,
         collection: &str,
     ) -> Result<Option<CollectionDesc>> {
-        let val = self
-            .get(SYSTEM_COLLECTION_COLLECTION_ID, &collection_key(database, collection))
-            .await?;
+        let val = self.get(col::COLLECTION_ID, &collection_key(database, collection)).await?;
         if val.is_none() {
             return Ok(None);
         }
@@ -153,8 +149,9 @@ impl Schema {
     }
 
     pub async fn get_collection_shards(&self, collection_id: u64) -> Result<Vec<(u64, ShardDesc)>> {
-        let groups = self.list_group().await?;
-        let group_shards = groups
+        Ok(self
+            .list_group()
+            .await?
             .iter()
             .flat_map(|g| {
                 g.shards
@@ -162,8 +159,7 @@ impl Schema {
                     .filter(|s| s.collection_id == collection_id)
                     .map(|s| (g.id, s.to_owned()))
             })
-            .collect::<Vec<_>>();
-        Ok(group_shards)
+            .collect::<Vec<_>>())
     }
 
     pub async fn update_collection(&self, _desc: CollectionDesc) -> Result<()> {
@@ -171,15 +167,11 @@ impl Schema {
     }
 
     pub async fn delete_collection(&self, collection: CollectionDesc) -> Result<()> {
-        self.delete(
-            SYSTEM_COLLECTION_COLLECTION_ID,
-            &collection_key(collection.db, &collection.name),
-        )
-        .await
+        self.delete(col::COLLECTION_ID, &collection_key(collection.db, &collection.name)).await
     }
 
     pub async fn list_collection(&self) -> Result<Vec<CollectionDesc>> {
-        let vals = self.list(SYSTEM_COLLECTION_COLLECTION_ID).await?;
+        let vals = self.list(col::COLLECTION_ID).await?;
         let mut collections = Vec::new();
         for val in vals {
             let c = CollectionDesc::decode(&*val)
@@ -202,7 +194,7 @@ impl Schema {
     }
 
     pub async fn get_node(&self, id: u64) -> Result<Option<NodeDesc>> {
-        let val = self.get(SYSTEM_NODE_COLLECTION_ID, &id.to_le_bytes()).await?;
+        let val = self.get(col::NODE_SHARD_ID, &id.to_le_bytes()).await?;
         if val.is_none() {
             return Ok(None);
         }
@@ -212,7 +204,7 @@ impl Schema {
     }
 
     pub async fn delete_node(&self, id: u64) -> Result<()> {
-        self.delete(SYSTEM_NODE_COLLECTION_ID, &id.to_le_bytes()).await
+        self.delete(col::NODE_ID, &id.to_le_bytes()).await
     }
 
     pub async fn update_node(&self, desc: NodeDesc) -> Result<()> {
@@ -221,7 +213,7 @@ impl Schema {
     }
 
     pub async fn list_node(&self) -> Result<Vec<NodeDesc>> {
-        let vals = self.list(SYSTEM_NODE_COLLECTION_ID).await?;
+        let vals = self.list(col::NODE_ID).await?;
         let mut nodes = Vec::new();
         for val in vals {
             nodes
@@ -231,7 +223,7 @@ impl Schema {
     }
 
     pub(crate) async fn list_node_raw(engine: GroupEngine) -> Result<Vec<NodeDesc>> {
-        let shard_id = system_shard_id(SYSTEM_NODE_COLLECTION_ID); // System collection only have one shard.
+        let shard_id = col::shard_id(col::NODE_ID);
         let mut snapshot = match engine.snapshot(shard_id, SnapshotMode::Prefix { key: &[] }) {
             Ok(snapshot) => snapshot,
             Err(Error::ShardNotFound(_)) => {
@@ -281,11 +273,11 @@ impl Schema {
 
     pub async fn remove_replica_state(&self, group_id: u64, replica_id: u64) -> Result<()> {
         let key = replica_key(group_id, replica_id);
-        self.delete(SYSTEM_REPLICA_STATE_COLLECTION_ID, &key).await
+        self.delete(col::REPLICA_STATE_ID, &key).await
     }
 
     pub async fn get_group(&self, id: u64) -> Result<Option<GroupDesc>> {
-        let val = self.get(SYSTEM_GROUP_COLLECTION_ID, &id.to_le_bytes()).await?;
+        let val = self.get(col::GROUP_ID, &id.to_le_bytes()).await?;
         if val.is_none() {
             return Ok(None);
         }
@@ -296,11 +288,11 @@ impl Schema {
 
     pub async fn delete_group(&self, id: u64) -> Result<()> {
         // TODO: prefix delete replica_state
-        self.delete(SYSTEM_GROUP_COLLECTION_ID, &id.to_le_bytes()).await
+        self.delete(col::GROUP_ID, &id.to_le_bytes()).await
     }
 
     pub async fn list_group(&self) -> Result<Vec<GroupDesc>> {
-        let vals = self.list(SYSTEM_GROUP_COLLECTION_ID).await?;
+        let vals = self.list(col::GROUP_ID).await?;
         let mut groups = Vec::new();
         for val in vals {
             groups.push(
@@ -316,7 +308,7 @@ impl Schema {
         replica_id: u64,
     ) -> Result<Option<ReplicaState>> {
         let key = replica_key(group_id, replica_id);
-        let val = self.get(SYSTEM_REPLICA_STATE_COLLECTION_ID, &key).await?;
+        let val = self.get(col::REPLICA_STATE_ID, &key).await?;
         if val.is_none() {
             return Ok(None);
         }
@@ -330,7 +322,7 @@ impl Schema {
     }
 
     pub async fn list_replica_state(&self) -> Result<Vec<ReplicaState>> {
-        let vals = self.list(SYSTEM_REPLICA_STATE_COLLECTION_ID).await?;
+        let vals = self.list(col::REPLICA_STATE_ID).await?;
         let mut states = Vec::with_capacity(vals.len());
         for val in vals {
             let state = ReplicaState::decode(&*val)
@@ -341,9 +333,8 @@ impl Schema {
     }
 
     pub async fn group_replica_states(&self, group_id: u64) -> Result<Vec<ReplicaState>> {
-        let vals = self
-            .list_prefix(SYSTEM_REPLICA_STATE_COLLECTION_ID, group_id.to_le_bytes().as_slice())
-            .await?;
+        let vals =
+            self.list_prefix(col::REPLICA_STATE_ID, group_id.to_le_bytes().as_slice()).await?;
         let mut states = Vec::with_capacity(vals.len());
         for val in vals {
             let state = ReplicaState::decode(&*val)
@@ -510,12 +501,12 @@ impl Schema {
     pub async fn remove_job(&self, job: &BackgroundJob) -> Result<()> {
         self.batch_write(PutBatchBuilder::default().put_job_history(job.to_owned()).build())
             .await?;
-        self.delete(SYSTEM_JOB_COLLECTION_ID, &job.id.to_le_bytes()).await?;
+        self.delete(col::JOB_ID, &job.id.to_le_bytes()).await?;
         Ok(())
     }
 
     pub async fn update_job(&self, desc: BackgroundJob) -> Result<bool> {
-        if self.get(SYSTEM_JOB_COLLECTION_ID, &desc.id.to_be_bytes()).await?.is_none() {
+        if self.get(col::JOB_ID, &desc.id.to_be_bytes()).await?.is_none() {
             // TODO: replace this with storage put_condition operation.
             return Ok(false);
         }
@@ -524,7 +515,7 @@ impl Schema {
     }
 
     pub async fn list_job(&self) -> Result<Vec<BackgroundJob>> {
-        let vals = self.list(SYSTEM_JOB_COLLECTION_ID).await?;
+        let vals = self.list(col::JOB_ID).await?;
         let mut jobs = Vec::with_capacity(vals.len());
         for val in vals {
             let job = BackgroundJob::decode(&*val)
@@ -535,7 +526,7 @@ impl Schema {
     }
 
     pub async fn list_history_job(&self) -> Result<Vec<BackgroundJob>> {
-        let vals = self.list(SYSTEM_JOB_HISTORY_COLLECTION_ID).await?;
+        let vals = self.list(col::JOB_HISTORY_ID).await?;
         let mut jobs = Vec::with_capacity(vals.len());
         for val in vals {
             let job = BackgroundJob::decode(&*val)
@@ -546,7 +537,7 @@ impl Schema {
     }
 
     pub async fn get_job_history(&self, id: &u64) -> Result<Option<BackgroundJob>> {
-        let val = self.get(SYSTEM_JOB_HISTORY_COLLECTION_ID, &id.to_le_bytes()).await?;
+        let val = self.get(col::JOB_HISTORY_ID, &id.to_le_bytes()).await?;
         if val.is_none() {
             return Ok(None);
         }
@@ -608,6 +599,11 @@ impl Schema {
 
         if let Some(exist_cluster_id) = self.cluster_id().await? {
             if exist_cluster_id != cluster_id {
+                warn!(
+                    "cluster not match. exist_cluster={}, new_cluster={}",
+                    String::from_utf8_lossy(&exist_cluster_id),
+                    String::from_utf8_lossy(&cluster_id)
+                );
                 return Err(Error::ClusterNotMatch);
             }
             return Ok(());
@@ -616,18 +612,11 @@ impl Schema {
         info!("start boostrap root. cluster={}", String::from_utf8_lossy(&cluster_id));
 
         let mut batch = PutBatchBuilder::default();
-
-        Self::init_system_collections(&mut batch);
-
-        let (shards, next_shard_id) = Schema::init_shards();
-
-        Self::init_meta_collection(&mut batch, next_shard_id, cluster_id.to_owned());
-
-        batch.put_database(DatabaseDesc {
-            id: SYSTEM_DATABASE_ID.to_owned(),
-            name: SYSTEM_DATABASE_NAME.to_owned(),
-        });
-
+        Self::init_meta_collection(&mut batch, cluster_id.to_owned());
+        batch.put_database(sekas_schema::system::db::database_desc());
+        for col in sekas_schema::system::collections() {
+            batch.put_col(col);
+        }
         batch.put_node(NodeDesc {
             id: FIRST_NODE_ID,
             addr: addr.into(),
@@ -647,18 +636,18 @@ impl Schema {
                 node_id: FIRST_NODE_ID,
                 role: ReplicaRole::Voter.into(),
             }],
-            shards,
+            shards: sekas_schema::system::unity_col_shards(),
         });
 
         batch.put_group(GroupDesc {
-            id: INIT_USER_GROUP_ID,
+            id: FIRST_GROUP_ID,
             epoch: INITIAL_EPOCH,
             replicas: vec![ReplicaDesc {
                 id: INIT_USER_REPLICA_ID,
                 node_id: FIRST_NODE_ID,
                 role: ReplicaRole::Voter.into(),
             }],
-            shards: vec![],
+            shards: sekas_schema::system::txn_col_shards(),
         });
 
         batch.put_replica_state(ReplicaState {
@@ -672,7 +661,7 @@ impl Schema {
 
         batch.put_replica_state(ReplicaState {
             replica_id: INIT_USER_REPLICA_ID,
-            group_id: INIT_USER_GROUP_ID,
+            group_id: FIRST_GROUP_ID,
             term: 0,
             voted_for: INIT_USER_REPLICA_ID,
             role: RaftRole::Leader.into(),
@@ -684,37 +673,6 @@ impl Schema {
         info!("boostrap root successfully. cluster={}", String::from_utf8_lossy(&cluster_id));
 
         Ok(())
-    }
-
-    pub fn init_shards() -> (Vec<ShardDesc>, u64) {
-        let mut desc = Vec::with_capacity(SYSTEM_COLLECTION_SHARD.len());
-        for (collect_id, shard_id) in SYSTEM_COLLECTION_SHARD.iter() {
-            desc.push(ShardDesc {
-                id: shard_id.to_owned(),
-                collection_id: collect_id.to_owned(),
-                partition: Some(Partition::Range(RangePartition {
-                    start: SHARD_MIN.to_owned(),
-                    end: SHARD_MAX.to_owned(),
-                })),
-            })
-        }
-
-        // Add shards for txn collection.
-        let mut next_shard_id = SYSTEM_JOB_HISTORY_COLLECTION_SHARD + 1;
-        for idx in 0..DEFAULT_TXN_COLLECTION_SLOTS {
-            let shard_id = next_shard_id;
-            next_shard_id += 1;
-            desc.push(ShardDesc {
-                id: shard_id,
-                collection_id: SYSTEM_TXN_COLLECTION_ID,
-                partition: Some(Partition::Hash(shard_desc::HashPartition {
-                    slot_id: idx,
-                    slots: DEFAULT_TXN_COLLECTION_SLOTS,
-                })),
-            });
-        }
-
-        (desc, next_shard_id)
     }
 
     pub async fn next_group_id(&self) -> Result<u64> {
@@ -729,89 +687,26 @@ impl Schema {
         self.next_id(META_SHARD_ID_KEY).await
     }
 
-    fn init_system_collections(batch: &mut PutBatchBuilder) {
-        batch.put_collection(txn_collection());
-
-        let self_collection = CollectionDesc {
-            id: SYSTEM_COLLECTION_COLLECTION_ID,
-            name: SYSTEM_COLLECTION_COLLECTION.to_owned(),
-            db: SYSTEM_DATABASE_ID,
-            partition: Some(collection_desc::Partition::Range(collection_desc::RangePartition {})),
-        };
-        batch.put_collection(self_collection);
-
-        let db_collection = CollectionDesc {
-            id: SYSTEM_DATABASE_COLLECTION_ID,
-            name: SYSTEM_DATABASE_COLLECTION.to_owned(),
-            db: SYSTEM_DATABASE_ID,
-            partition: Some(collection_desc::Partition::Range(collection_desc::RangePartition {})),
-        };
-        batch.put_collection(db_collection);
-
-        let meta_collection = CollectionDesc {
-            id: SYSTEM_MATE_COLLECTION_ID,
-            name: SYSTEM_MATE_COLLECTION.to_owned(),
-            db: SYSTEM_DATABASE_ID,
-            partition: Some(collection_desc::Partition::Range(collection_desc::RangePartition {})),
-        };
-        batch.put_collection(meta_collection);
-
-        let node_collection = CollectionDesc {
-            id: SYSTEM_NODE_COLLECTION_ID,
-            name: SYSTEM_NODE_COLLECTION.to_owned(),
-            db: SYSTEM_DATABASE_ID,
-            partition: Some(collection_desc::Partition::Range(collection_desc::RangePartition {})),
-        };
-        batch.put_collection(node_collection);
-
-        let group_collection = CollectionDesc {
-            id: SYSTEM_GROUP_COLLECTION_ID,
-            name: SYSTEM_GROUP_COLLECTION.to_owned(),
-            db: SYSTEM_DATABASE_ID,
-            partition: Some(collection_desc::Partition::Range(collection_desc::RangePartition {})),
-        };
-        batch.put_collection(group_collection);
-
-        let replica_state_collection = CollectionDesc {
-            id: SYSTEM_REPLICA_STATE_COLLECTION_ID,
-            name: SYSTEM_REPLICA_STATE_COLLECTION.to_owned(),
-            db: SYSTEM_DATABASE_ID,
-            partition: Some(collection_desc::Partition::Range(collection_desc::RangePartition {})),
-        };
-        batch.put_collection(replica_state_collection);
-
-        let job_collection = CollectionDesc {
-            id: SYSTEM_JOB_COLLECTION_ID,
-            name: SYSTEM_JOB_COLLECTION.to_owned(),
-            db: SYSTEM_DATABASE_ID,
-            partition: Some(collection_desc::Partition::Range(collection_desc::RangePartition {})),
-        };
-        batch.put_collection(job_collection);
-
-        let job_history_collection = CollectionDesc {
-            id: SYSTEM_JOB_HISTORY_COLLECTION_ID,
-            name: SYSTEM_JOB_HISTORY_COLLECTION.to_owned(),
-            db: SYSTEM_DATABASE_ID,
-            partition: Some(collection_desc::Partition::Range(collection_desc::RangePartition {})),
-        };
-        batch.put_collection(job_history_collection);
-    }
-
-    fn init_meta_collection(batch: &mut PutBatchBuilder, next_shard_id: u64, cluster_id: Vec<u8>) {
+    fn init_meta_collection(batch: &mut PutBatchBuilder, cluster_id: Vec<u8>) {
         batch.put_meta(META_CLUSTER_ID_KEY.into(), cluster_id);
-        batch
-            .put_meta(META_DATABASE_ID_KEY.into(), (SYSTEM_DATABASE_ID + 1).to_le_bytes().to_vec());
+        batch.put_meta(
+            META_DATABASE_ID_KEY.into(),
+            sekas_schema::FIRST_USER_DATABASE_ID.to_le_bytes().to_vec(),
+        );
         batch.put_meta(
             META_COLLECTION_ID_KEY.into(),
-            USER_COLLECTION_INIT_ID.to_le_bytes().to_vec(),
+            sekas_schema::FIRST_USER_COLLECTION_ID.to_le_bytes().to_vec(),
         );
-        batch.put_meta(META_GROUP_ID_KEY.into(), (INIT_USER_GROUP_ID + 1).to_le_bytes().to_vec());
+        batch.put_meta(META_GROUP_ID_KEY.into(), (FIRST_GROUP_ID + 1).to_le_bytes().to_vec());
         batch.put_meta(META_NODE_ID_KEY.into(), (FIRST_NODE_ID + 1).to_le_bytes().to_vec());
         batch.put_meta(
             META_REPLICA_ID_KEY.into(),
             (INIT_USER_REPLICA_ID + 1).to_le_bytes().to_vec(),
         );
-        batch.put_meta(META_SHARD_ID_KEY.into(), next_shard_id.to_le_bytes().to_vec());
+        batch.put_meta(
+            META_SHARD_ID_KEY.into(),
+            sekas_schema::FIRST_USER_SHARD_ID.to_le_bytes().to_vec(),
+        );
         batch.put_meta(META_JOB_ID_KEY.into(), INITIAL_JOB_ID.to_le_bytes().to_vec());
         batch.put_meta(META_TXN_ID_KEY.into(), timestamp_nanos().to_le_bytes().to_vec());
     }
@@ -820,7 +715,7 @@ impl Schema {
 // internal methods.
 impl Schema {
     async fn get_meta(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
-        self.get(SYSTEM_MATE_COLLECTION_ID, key).await
+        self.get(col::META_ID, key).await
     }
 
     async fn batch_write(&self, batch: BatchWriteRequest) -> Result<()> {
@@ -828,15 +723,13 @@ impl Schema {
     }
 
     async fn get(&self, collection_id: u64, key: &[u8]) -> Result<Option<Vec<u8>>> {
-        let shard_id = system_shard_id(collection_id);
-        let rs = self.store.get(shard_id, key).await;
+        let rs = self.store.get(col::shard_id(collection_id), key).await;
         crate::runtime::yield_now().await;
         rs
     }
 
     async fn delete(&self, collection_id: u64, key: &[u8]) -> Result<()> {
-        let shard_id = system_shard_id(collection_id);
-        self.store.delete(shard_id, key).await
+        self.store.delete(col::shard_id(collection_id), key).await
     }
 
     async fn list(&self, collection_id: u64) -> Result<Vec<Vec<u8>>> {
@@ -846,8 +739,7 @@ impl Schema {
     }
 
     async fn list_prefix(&self, collection_id: u64, prefix: &[u8]) -> Result<Vec<Vec<u8>>> {
-        let shard_id = system_shard_id(collection_id); // System collection only have one shard.
-        self.store.list(shard_id, prefix).await
+        self.store.list(col::shard_id(collection_id), prefix).await
     }
 
     async fn next_id(&self, id_type: &str) -> Result<u64> {
@@ -880,7 +772,7 @@ impl RemoteStore {
     }
 
     pub async fn list_replica_state(&self, group_id: u64) -> Result<Vec<ReplicaState>> {
-        let shard_id = system_shard_id(SYSTEM_REPLICA_STATE_COLLECTION_ID);
+        let shard_id = col::shard_id(col::REPLICA_STATE_ID);
         let prefix = group_key(group_id);
 
         let client = self.transport_manager.build_shard_client(ROOT_GROUP_ID, shard_id);
@@ -895,7 +787,7 @@ impl RemoteStore {
     }
 
     pub async fn clear_replica_state(&self, group_id: u64, replica_id: u64) -> Result<()> {
-        let shard_id = system_shard_id(SYSTEM_REPLICA_STATE_COLLECTION_ID);
+        let shard_id = col::shard_id(col::REPLICA_STATE_ID);
         let key = replica_key(group_id, replica_id);
         let client = self.transport_manager.build_shard_client(ROOT_GROUP_ID, shard_id);
         client.delete(&key).await?;
@@ -910,8 +802,7 @@ struct PutBatchBuilder {
 
 impl PutBatchBuilder {
     fn put(&mut self, collection_id: u64, key: Vec<u8>, val: Vec<u8>) {
-        let shard_id = system_shard_id(collection_id);
-        self.batch.push((shard_id, key, val));
+        self.batch.push((col::shard_id(collection_id), key, val));
     }
 
     fn build(&self) -> BatchWriteRequest {
@@ -928,18 +819,18 @@ impl PutBatchBuilder {
     }
 
     fn put_meta(&mut self, key: Vec<u8>, val: Vec<u8>) -> &mut Self {
-        self.put(SYSTEM_MATE_COLLECTION_ID, key, val);
+        self.put(col::META_ID, key, val);
         self
     }
 
     fn put_group(&mut self, desc: GroupDesc) -> &mut Self {
-        self.put(SYSTEM_GROUP_COLLECTION_ID, desc.id.to_le_bytes().to_vec(), desc.encode_to_vec());
+        self.put(col::GROUP_ID, desc.id.to_le_bytes().to_vec(), desc.encode_to_vec());
         self
     }
 
     fn put_replica_state(&mut self, state: ReplicaState) -> &mut Self {
         self.put(
-            SYSTEM_REPLICA_STATE_COLLECTION_ID,
+            col::REPLICA_STATE_ID,
             replica_key(state.group_id, state.replica_id),
             state.encode_to_vec(),
         );
@@ -947,39 +838,27 @@ impl PutBatchBuilder {
     }
 
     fn put_node(&mut self, desc: NodeDesc) -> &mut Self {
-        self.put(SYSTEM_NODE_COLLECTION_ID, desc.id.to_le_bytes().to_vec(), desc.encode_to_vec());
+        self.put(col::NODE_ID, desc.id.to_le_bytes().to_vec(), desc.encode_to_vec());
         self
     }
 
     fn put_database(&mut self, desc: DatabaseDesc) -> &mut Self {
-        self.put(
-            SYSTEM_DATABASE_COLLECTION_ID,
-            desc.name.as_bytes().to_vec(),
-            desc.encode_to_vec(),
-        );
+        self.put(col::DATABASE_ID, desc.name.as_bytes().to_vec(), desc.encode_to_vec());
         self
     }
 
-    fn put_collection(&mut self, desc: CollectionDesc) -> &mut Self {
-        self.put(
-            SYSTEM_COLLECTION_COLLECTION_ID,
-            collection_key(desc.db, &desc.name),
-            desc.encode_to_vec(),
-        );
+    fn put_col(&mut self, desc: CollectionDesc) -> &mut Self {
+        self.put(col::COLLECTION_ID, collection_key(desc.db, &desc.name), desc.encode_to_vec());
         self
     }
 
     fn put_job(&mut self, desc: BackgroundJob) -> &mut Self {
-        self.put(SYSTEM_JOB_COLLECTION_ID, desc.id.to_le_bytes().to_vec(), desc.encode_to_vec());
+        self.put(col::JOB_ID, desc.id.to_le_bytes().to_vec(), desc.encode_to_vec());
         self
     }
 
     fn put_job_history(&mut self, desc: BackgroundJob) -> &mut Self {
-        self.put(
-            SYSTEM_JOB_HISTORY_COLLECTION_ID,
-            desc.id.to_le_bytes().to_vec(),
-            desc.encode_to_vec(),
-        );
+        self.put(col::JOB_HISTORY_ID, desc.id.to_le_bytes().to_vec(), desc.encode_to_vec());
         self
     }
 

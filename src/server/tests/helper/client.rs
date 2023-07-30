@@ -17,7 +17,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use sekas_api::server::v1::*;
-use sekas_api::v1::{collection_desc, CollectionDesc};
+use sekas_api::v1::CollectionDesc;
 use sekas_client::{
     ClientOptions, ConnManager, GroupClient, NodeClient, RootClient, Router, RouterGroupState,
     SekasClient, StaticServiceDiscovery,
@@ -367,19 +367,10 @@ impl ClusterClient {
     }
 
     pub async fn assert_system_collection_ready(&self, required_voters: usize) {
-        // FIXME(walter) remove the collection desc definations.
-        let co_desc = CollectionDesc {
-            id: 1,
-            name: "txn".to_owned(),
-            db: 1,
-            partition: Some(collection_desc::Partition::Hash(collection_desc::HashPartition {
-                slots: 256,
-            })),
-        };
+        let co_desc = sekas_schema::system::col::txn_desc();
         let mut ready_group: HashSet<u64> = HashSet::default();
         for i in 0..256u64 {
             for _ in 0..1000 {
-                // tracing::info!("access by {i}");
                 let key = i.to_be_bytes().to_vec();
                 let state = match self.find_router_group_state_by_key(&co_desc, &key).await {
                     Some(state) => state,

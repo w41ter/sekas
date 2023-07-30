@@ -163,64 +163,7 @@ fn single_replica_empty_shard_migration() {
         let shard_desc = ShardDesc {
             id: shard_id,
             collection_id: shard_id,
-            partition: Some(shard_desc::Partition::Range(shard_desc::RangePartition::default())),
-        };
-        let replica_desc_1 =
-            ReplicaDesc { id: replica_1, node_id: node_1_id, role: ReplicaRole::Voter as i32 };
-        let group_desc_1 = GroupDesc {
-            id: group_id_1,
-            shards: vec![shard_desc.clone()],
-            replicas: vec![replica_desc_1.clone()],
-            ..Default::default()
-        };
-        c.create_replica(node_1_id, replica_1, group_desc_1.clone()).await;
-
-        info!("create group {} at node {} with replica {}", group_id_2, node_2_id, replica_2);
-        let replica_desc_2 =
-            ReplicaDesc { id: replica_2, node_id: node_2_id, role: ReplicaRole::Voter as i32 };
-        let group_desc_2 = GroupDesc {
-            id: group_id_2,
-            shards: vec![],
-            replicas: vec![replica_desc_2.clone()],
-            ..Default::default()
-        };
-        c.create_replica(node_2_id, replica_2, group_desc_2.clone()).await;
-        c.assert_group_leader(group_id_1).await;
-        c.assert_group_leader(group_id_2).await;
-
-        info!("issue accept shard {} request to group {}", shard_id, group_id_2);
-
-        move_shard(&c, &shard_desc, group_id_2, group_id_1).await;
-    });
-}
-
-/// Migration test within groups which have only one member, shard have 1000 key
-/// values.
-#[test]
-fn single_replica_migration() {
-    block_on_current(async {
-        let mut ctx = TestContext::new("single-replica-migration");
-        ctx.disable_all_balance();
-        ctx.disable_all_node_scheduler();
-        let nodes = ctx.bootstrap_servers(2).await;
-        let c = ClusterClient::new(nodes).await;
-        let node_1_id = 0;
-        let node_2_id = 1;
-        let group_id_1 = 100000;
-        let group_id_2 = 100001;
-        let replica_1 = 1000000;
-        let replica_2 = 2000000;
-        let shard_id = 10000000;
-
-        info!(
-            "create group {} at node {} with replica {} and shard {}",
-            group_id_1, node_1_id, replica_1, shard_id,
-        );
-
-        let shard_desc = ShardDesc {
-            id: shard_id,
-            collection_id: shard_id,
-            partition: Some(shard_desc::Partition::Range(shard_desc::RangePartition::default())),
+            partition: Some(shard_desc::Partition::Range(RangePartition::default())),
         };
         let replica_desc_1 =
             ReplicaDesc { id: replica_1, node_id: node_1_id, role: ReplicaRole::Voter as i32 };
@@ -285,7 +228,7 @@ async fn create_two_groups(
     let shard_desc = ShardDesc {
         id: shard_id,
         collection_id: shard_id,
-        partition: Some(shard_desc::Partition::Range(shard_desc::RangePartition::default())),
+        partition: Some(shard_desc::Partition::Range(RangePartition::default())),
     };
     create_group(c, group_id_1, nodes.clone(), vec![shard_desc.clone()]).await;
 
@@ -480,7 +423,7 @@ fn receive_forward_request_after_shard_migrated() {
         let shard_desc = ShardDesc {
             id: shard_id,
             collection_id: shard_id,
-            partition: Some(shard_desc::Partition::Range(shard_desc::RangePartition::default())),
+            partition: Some(shard_desc::Partition::Range(RangePartition::default())),
         };
         let replica_desc_1 =
             ReplicaDesc { id: replica_1, node_id: node_1_id, role: ReplicaRole::Voter as i32 };

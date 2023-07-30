@@ -646,8 +646,8 @@ mod tests {
 
     use sekas_api::server::v1::group_request_union::Request;
     use sekas_api::server::v1::report_request::GroupUpdates;
-    use sekas_api::server::v1::shard_desc::{Partition, RangePartition};
-    use sekas_api::server::v1::{ReplicaDesc, ReplicaRole};
+    use sekas_api::server::v1::shard_desc::Partition;
+    use sekas_api::server::v1::{RangePartition, ReplicaDesc, ReplicaRole};
     use sekas_api::v1::PutRequest;
     use tempdir::TempDir;
 

@@ -11,20 +11,13 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-pub mod shard;
-pub mod system;
 
-/// The collection id of local states, which allows commit without replicating.
-pub const LOCAL_COLLECTION_ID: u64 = 0;
+use sekas_api::v1::DatabaseDesc;
 
-/// The first id for non-system collections.
-pub const FIRST_USER_COLLECTION_ID: u64 = 1024;
+pub const NAME: &str = "__system__";
+pub const ID: u64 = 1;
 
-/// The first shard id for txn collection.
-pub const FIRST_TXN_SHARD_ID: u64 = 256;
-
-/// The first shard id for non-system collections.
-pub const FIRST_USER_SHARD_ID: u64 = 1024;
-
-/// The first id for non-system db.
-pub const FIRST_USER_DATABASE_ID: u64 = system::db::ID + 1;
+#[inline]
+pub fn database_desc() -> DatabaseDesc {
+    DatabaseDesc { id: ID, name: NAME.to_owned() }
+}
