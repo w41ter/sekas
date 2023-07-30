@@ -26,7 +26,7 @@ use sekas_client::RootClient;
 use crate::constants::*;
 use crate::engine::{Engines, StateEngine};
 use crate::node::Node;
-use crate::root::{Root, Schema};
+use crate::root::Root;
 use crate::runtime::{Executor, Shutdown};
 use crate::serverpb::v1::raft_server::RaftServer;
 use crate::serverpb::v1::NodeIdent;
@@ -187,14 +187,14 @@ async fn save_node_ident(
 }
 
 async fn write_initial_cluster_data(node: &Node, addr: &str) -> Result<()> {
+    // FIXME(walter): unitfy group desc with root schema!
+
     // Create the first raft group of cluster, this node is the only member of the
     // raft group.
-    let (shards, _) = Schema::init_shards();
-
     let group = GroupDesc {
         id: ROOT_GROUP_ID,
         epoch: INITIAL_EPOCH,
-        shards,
+        shards: sekas_schema::system::unity_col_shards(),
         replicas: vec![ReplicaDesc {
             id: FIRST_REPLICA_ID,
             node_id: FIRST_NODE_ID,
@@ -205,9 +205,9 @@ async fn write_initial_cluster_data(node: &Node, addr: &str) -> Result<()> {
 
     // Create another group with empty shard to prepare user usage.
     let init_group = GroupDesc {
-        id: INIT_USER_GROUP_ID,
+        id: FIRST_GROUP_ID,
         epoch: INITIAL_EPOCH,
-        shards: vec![],
+        shards: sekas_schema::system::txn_col_shards(),
         replicas: vec![ReplicaDesc {
             id: INIT_USER_REPLICA_ID,
             node_id: FIRST_NODE_ID,

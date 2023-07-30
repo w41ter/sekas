@@ -44,20 +44,20 @@ message RootDesc {
   repeated NodeDesc root_nodes = 2;
 }
 
+message HashPartition {
+  uint32 slot_id = 1;
+  uint32 end_slot_id = 2;
+  uint32 slots = 3;
+}
+
+message RangePartition {
+  bytes start = 1;
+  bytes end = 2;
+}
+
 message ShardDesc {
   uint64 id = 1;
   uint64 collection_id = 2;
-
-  message HashPartition {
-    // TODO: hash function
-    uint32 slot_id = 1;
-    uint32 slots = 2;
-  }
-
-  message RangePartition {
-    bytes start = 1;
-    bytes end = 2;
-  }
 
   oneof partition {
     HashPartition hash = 3;

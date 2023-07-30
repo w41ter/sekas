@@ -38,7 +38,7 @@ use sekas_api::v1::{
     collection_desc as co_desc, create_collection_request as co_req, CollectionDesc, DatabaseDesc,
 };
 use sekas_rock::time::timestamp_nanos;
-use sekas_schema::{SYSTEM_DATABASE_ID, USER_COLLECTION_INIT_ID};
+use sekas_schema::shard::{SHARD_MAX, SHARD_MIN};
 use tokio::time::Instant;
 use tokio_util::time::delay_queue;
 
@@ -51,7 +51,7 @@ use self::schema::ReplicaNodes;
 pub(crate) use self::schema::*;
 use self::store::RootStore;
 pub use self::watch::{WatchHub, Watcher, WatcherInitializer};
-use crate::constants::{ROOT_GROUP_ID, SHARD_MAX, SHARD_MIN};
+use crate::constants::ROOT_GROUP_ID;
 use crate::node::{Node, Replica, ReplicaRouteTable};
 use crate::runtime::{self, TaskPriority};
 use crate::serverpb::v1::background_job::Job;
@@ -612,16 +612,14 @@ impl Root {
                         .iter()
                         .map(|s| {
                             let part = match s.partition.as_ref().unwrap() {
-                                shard_desc::Partition::Hash(shard_desc::HashPartition {
+                                shard_desc::Partition::Hash(HashPartition {
                                     slot_id,
+                                    end_slot_id,
                                     slots,
                                 }) => {
-                                    format!("hash: {slot_id} of {slots}")
+                                    format!("hash: [{slot_id}, {end_slot_id}) of {slots}")
                                 }
-                                shard_desc::Partition::Range(shard_desc::RangePartition {
-                                    start,
-                                    end,
-                                }) => {
+                                shard_desc::Partition::Range(RangePartition { start, end }) => {
                                     format!("range: {start:?} to {end:?}")
                                 }
                             };
@@ -656,7 +654,7 @@ impl Root {
             return Err(Error::DatabaseNotFound(name.to_owned()));
         }
         let db = db.unwrap();
-        if db.id == SYSTEM_DATABASE_ID {
+        if db.id == sekas_schema::system::db::ID {
             return Err(Error::InvalidArgument("not support delete system database".into()));
         }
         self.jobs
@@ -733,36 +731,26 @@ impl Root {
                 .as_ref()
                 .unwrap_or(&co_desc::Partition::Hash(co_desc::HashPartition { slots: 1 }));
 
-            let partitions = match partition {
+            let partition = match partition {
                 co_desc::Partition::Hash(hash_partition) => {
-                    let mut ps = Vec::with_capacity(hash_partition.slots as usize);
-                    for id in 0..hash_partition.slots {
-                        ps.push(shard_desc::Partition::Hash(shard_desc::HashPartition {
-                            slot_id: id,
-                            slots: hash_partition.slots.to_owned(),
-                        }));
-                    }
-                    ps
+                    shard_desc::Partition::Hash(HashPartition {
+                        slot_id: 0,
+                        end_slot_id: hash_partition.slots,
+                        slots: hash_partition.slots,
+                    })
                 }
-                co_desc::Partition::Range(_) => {
-                    vec![shard_desc::Partition::Range(shard_desc::RangePartition {
-                        start: SHARD_MIN.to_owned(),
-                        end: SHARD_MAX.to_owned(),
-                    })]
-                }
+                co_desc::Partition::Range(_) => shard_desc::Partition::Range(RangePartition {
+                    start: SHARD_MIN.to_owned(),
+                    end: SHARD_MAX.to_owned(),
+                }),
             };
 
-            let mut wait_create = Vec::new();
-            for partition in partitions {
-                let id = schema.next_shard_id().await?;
-                let shard = ShardDesc {
-                    id,
-                    collection_id: collection.id.to_owned(),
-                    partition: Some(partition),
-                };
-                wait_create.push(shard);
-            }
-            wait_create
+            let id = schema.next_shard_id().await?;
+            vec![ShardDesc {
+                id,
+                collection_id: collection.id.to_owned(),
+                partition: Some(partition),
+            }]
         };
 
         self.jobs
@@ -793,7 +781,7 @@ impl Root {
             .ok_or_else(|| Error::DatabaseNotFound(database.name.clone()))?;
         let collection = schema.get_collection(db.id, name).await?;
         if let Some(collection) = collection {
-            if collection.id < USER_COLLECTION_INIT_ID {
+            if collection.id < sekas_schema::FIRST_USER_COLLECTION_ID {
                 return Err(Error::InvalidArgument("unsupported delete system collection".into()));
             }
             let collection_id = collection.id;

@@ -74,21 +74,10 @@ pub(crate) struct RawIterator<'a> {
 }
 
 enum SnapshotRange {
-    Target {
-        target_key: Vec<u8>,
-    },
-    Prefix {
-        prefix: Vec<u8>,
-    },
-    Range {
-        start: Vec<u8>,
-        end: Vec<u8>,
-    },
-    #[allow(dead_code)]
-    HashRange {
-        slot: u32,
-        start: Vec<u8>,
-    },
+    Target { target_key: Vec<u8> },
+    Prefix { prefix: Vec<u8> },
+    Range { start: Vec<u8>, end: Vec<u8> },
+    HashRange { slot: std::ops::Range<u32> },
 }
 
 pub(crate) struct Snapshot<'a> {
@@ -99,7 +88,7 @@ pub(crate) struct Snapshot<'a> {
 }
 
 pub(crate) struct SnapshotCore<'a> {
-    expect_slot: Option<u32>,
+    expect_slot: Option<std::ops::Range<u32>>,
     db_iter: rocksdb::DBIterator<'a>,
     current_key: Option<Vec<u8>>,
     cached_entry: Option<MvccEntry>,
@@ -125,8 +114,13 @@ pub(crate) struct MvccEntry {
 
 #[derive(Debug)]
 pub(crate) enum SnapshotMode<'a> {
+    /// Both range and hash shard.
+    ///
+    /// For hash shard, start key will be located by hash slot.
     Start { start_key: Option<&'a [u8]> },
+    /// Both range and hash shard.
     Key { key: &'a [u8] },
+    /// Only support range shard.
     Prefix { key: &'a [u8] },
 }
 
@@ -268,7 +262,7 @@ impl GroupEngine {
         debug_assert!(shard::belong_to(&desc, key));
 
         wb.put(
-            keys::mvcc_key(collection_id, shard::slot(&desc), key, version),
+            keys::mvcc_key(collection_id, shard::slot(&desc, key), key, version),
             values::data(value),
         );
 
@@ -289,7 +283,7 @@ impl GroupEngine {
         debug_assert!(shard::belong_to(&desc, key));
 
         wb.put(
-            keys::mvcc_key(collection_id, shard::slot(&desc), key, version),
+            keys::mvcc_key(collection_id, shard::slot(&desc, key), key, version),
             values::tombstone(),
         );
 
@@ -308,7 +302,7 @@ impl GroupEngine {
         debug_assert_ne!(collection_id, LOCAL_COLLECTION_ID);
         debug_assert!(shard::belong_to(&desc, key));
 
-        wb.delete(keys::mvcc_key(collection_id, shard::slot(&desc), key, version));
+        wb.delete(keys::mvcc_key(collection_id, shard::slot(&desc, key), key, version));
 
         Ok(())
     }
@@ -365,7 +359,7 @@ impl GroupEngine {
         let key = match &mode {
             SnapshotMode::Start { start_key: Some(start_key) } => {
                 debug_assert!(shard::belong_to(&desc, start_key));
-                keys::raw(collection_id, shard::slot(&desc), start_key)
+                keys::raw(collection_id, shard::slot(&desc, start_key), start_key)
             }
             SnapshotMode::Start { start_key: None } => {
                 // An empty key with hash slot is equivalent to range start key.
@@ -373,11 +367,12 @@ impl GroupEngine {
             }
             SnapshotMode::Key { key } => {
                 debug_assert!(shard::belong_to(&desc, key));
-                keys::raw(collection_id, shard::slot(&desc), key)
+                keys::raw(collection_id, shard::slot(&desc, key), key)
             }
             SnapshotMode::Prefix { key } => {
                 debug_assert!(shard::belong_to(&desc, key));
-                keys::raw(collection_id, shard::slot(&desc), key)
+                // Prefix only supports range shard.
+                keys::raw(collection_id, None, key)
             }
         };
         let inner_mode = IteratorMode::From(&key, Direction::Forward);
@@ -502,16 +497,12 @@ impl<'a> Snapshot<'a> {
         snapshot_mode: SnapshotMode<'b>,
         desc: &ShardDesc,
     ) -> Self {
-        let expect_slot = shard::slot(desc);
-
+        let expect_slot = shard::slot_range(desc);
         let range = match snapshot_mode {
             SnapshotMode::Key { key } => Some(SnapshotRange::Target { target_key: key.to_owned() }),
             SnapshotMode::Prefix { key } => Some(SnapshotRange::Prefix { prefix: key.to_owned() }),
-            SnapshotMode::Start { start_key } if expect_slot.is_some() => {
-                Some(SnapshotRange::HashRange {
-                    slot: expect_slot.unwrap(),
-                    start: start_key.map(ToOwned::to_owned).unwrap_or_else(Vec::default),
-                })
+            SnapshotMode::Start { start_key: _ } if expect_slot.is_some() => {
+                Some(SnapshotRange::HashRange { slot: expect_slot.clone().unwrap() })
             }
             SnapshotMode::Start { start_key } => Some(SnapshotRange::Range {
                 start: start_key.map(ToOwned::to_owned).unwrap_or_else(|| shard::start_key(desc)),
@@ -678,7 +669,7 @@ impl SnapshotRange {
             SnapshotRange::Prefix { prefix } if key.starts_with(prefix) => true,
             SnapshotRange::Range { start, end } if shard::in_range(start, end, key) => true,
             SnapshotRange::HashRange { slot, .. }
-                if parsed_slot.map(|s| s == *slot).unwrap_or_default() =>
+                if parsed_slot.map(|s| slot.contains(&s)).unwrap_or_default() =>
             {
                 true
             }
@@ -1304,6 +1295,7 @@ mod tests {
                         collection_id: 2,
                         partition: Some(Partition::Hash(HashPartition {
                             slot_id: shard_1_slot_id,
+                            end_slot_id: shard_1_slot_id + 1,
                             slots,
                         })),
                     },
@@ -1312,6 +1304,7 @@ mod tests {
                         collection_id: 2,
                         partition: Some(Partition::Hash(HashPartition {
                             slot_id: shard_2_slot_id,
+                            end_slot_id: shard_2_slot_id + 1,
                             slots,
                         })),
                     },

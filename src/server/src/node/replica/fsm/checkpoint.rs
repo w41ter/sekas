@@ -147,8 +147,8 @@ mod tests {
     use std::path::Path;
     use std::sync::Arc;
 
-    use sekas_api::server::v1::shard_desc::{Partition, RangePartition};
-    use sekas_api::server::v1::{GroupDesc, ShardDesc};
+    use sekas_api::server::v1::shard_desc::Partition;
+    use sekas_api::server::v1::{GroupDesc, RangePartition, ShardDesc};
     use tempdir::TempDir;
 
     use super::*;

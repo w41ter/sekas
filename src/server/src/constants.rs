@@ -17,15 +17,10 @@ pub use sekas_schema::LOCAL_COLLECTION_ID;
 pub const REPLICA_PER_GROUP: usize = 3;
 
 pub const ROOT_GROUP_ID: u64 = 0;
-pub const INIT_USER_GROUP_ID: u64 = ROOT_GROUP_ID + 1;
+pub const FIRST_GROUP_ID: u64 = ROOT_GROUP_ID + 1;
 pub const STATE_REPLICA_ID: u64 = 0;
 pub const FIRST_REPLICA_ID: u64 = 1;
 pub const INIT_USER_REPLICA_ID: u64 = FIRST_REPLICA_ID + 1;
 pub const FIRST_NODE_ID: u64 = 0;
 pub const INITIAL_EPOCH: u64 = 0;
 pub const INITIAL_JOB_ID: u64 = 0;
-
-lazy_static::lazy_static! {
-    pub static ref SHARD_MIN: Vec<u8> = vec![];
-    pub static ref SHARD_MAX: Vec<u8> = vec![];
-}

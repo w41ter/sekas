@@ -134,8 +134,12 @@ message ShardScanRequest {
   /// Shoud include end key in result?
   bool exclude_end_key = 5;
   /// Scan with prefix, if set then `start_key` and `end_key` will be ignored.
+  ///
+  /// The prefix only works with range shard, the behaviour of hash shard is undefined.
   optional bytes prefix = 6;
+  /// The start key for a hash shard will be locate with hash slot.
   optional bytes start_key = 7;
+  /// The end key only works with range shard, the behaviour of hash shard is undefined.
   optional bytes end_key = 8;
 }
 

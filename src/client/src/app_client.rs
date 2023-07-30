@@ -18,7 +18,6 @@ use std::time::Duration;
 use sekas_api::server::v1::group_request_union::Request;
 use sekas_api::server::v1::group_response_union::Response;
 use sekas_api::server::v1::*;
-use sekas_api::v1::create_collection_request::*;
 use sekas_api::v1::*;
 
 use crate::conn_manager::ConnManager;
@@ -145,10 +144,12 @@ pub enum Partition {
 impl From<Partition> for create_collection_request::Partition {
     fn from(p: Partition) -> Self {
         match p {
-            Partition::Hash { slots } => {
-                create_collection_request::Partition::Hash(HashPartition { slots })
-            }
-            Partition::Range => create_collection_request::Partition::Range(RangePartition {}),
+            Partition::Hash { slots } => create_collection_request::Partition::Hash(
+                create_collection_request::HashPartition { slots },
+            ),
+            Partition::Range => create_collection_request::Partition::Range(
+                create_collection_request::RangePartition {},
+            ),
         }
     }
 }
@@ -156,10 +157,12 @@ impl From<Partition> for create_collection_request::Partition {
 impl From<create_collection_request::Partition> for Partition {
     fn from(p: create_collection_request::Partition) -> Self {
         match p {
-            create_collection_request::Partition::Hash(HashPartition { slots }) => {
-                Partition::Hash { slots }
-            }
-            create_collection_request::Partition::Range(RangePartition {}) => Partition::Range,
+            create_collection_request::Partition::Hash(
+                create_collection_request::HashPartition { slots },
+            ) => Partition::Hash { slots },
+            create_collection_request::Partition::Range(
+                create_collection_request::RangePartition {},
+            ) => Partition::Range,
         }
     }
 }

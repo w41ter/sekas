@@ -86,7 +86,7 @@ fn send_snapshot() {
         let shard_desc = ShardDesc {
             id: shard_id,
             collection_id: shard_id,
-            partition: Some(shard_desc::Partition::Range(shard_desc::RangePartition::default())),
+            partition: Some(shard_desc::Partition::Range(RangePartition::default())),
         };
         create_group(&c, group_id, node_ids.clone(), vec![shard_desc]).await;
         insert(&c, group_id, shard_id, 1..100).await;
