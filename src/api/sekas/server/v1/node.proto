@@ -56,9 +56,6 @@ message GroupRequestUnion {
     ShardDeleteRequest delete = 3;
     ShardScanRequest scan = 4;
     BatchWriteRequest batch_write = 5;
-    // WriteIntentRequest write_intent = 6;
-    // CommitIntentRequest commit_intent = 7;
-    // ClearIntentRequest clear_intent = 8;
 
     /// Add a new shard to an existing group.
     CreateShardRequest create_shard = 6;
@@ -78,6 +75,10 @@ message GroupRequestUnion {
     /// Response once the group leader accepts the moving replicas request. When there exists
     /// some conflicts, such as group is in joint, `Error::AlreadyExists` is returned.
     MoveReplicasRequest move_replicas = 10;
+
+    WriteIntentRequest write_intent = 11;
+    CommitIntentRequest commit_intent = 12;
+    ClearIntentRequest clear_intent = 13;
   }
 }
 
@@ -93,6 +94,10 @@ message GroupResponseUnion {
     AcceptShardResponse accept_shard = 8;
     TransferResponse transfer = 9;
     MoveReplicasResponse move_replicas = 10;
+
+    WriteIntentResponse write_intent = 11;
+    CommitIntentResponse commit_intent = 12;
+    ClearIntentResponse clear_intent = 13;
   }
 }
 
@@ -144,6 +149,36 @@ message ShardScanRequest {
 }
 
 message ShardScanResponse { repeated ShardData data = 1; }
+
+message WriteIntentRequest {
+  uint64 shard_id = 1;
+  uint64 start_version = 2;
+  uint64 deadline = 3;
+
+  repeated sekas.v1.PutRequest puts = 4;
+  repeated sekas.v1.DeleteRequest deletes = 5;
+}
+
+message WriteIntentResponse {
+  repeated sekas.v1.PutResponse puts = 1;
+  repeated sekas.v1.DeleteResponse deletes = 2;
+}
+
+message CommitIntentRequest {
+  uint64 shard_id = 1;
+  uint64 start_version = 2;
+  repeated bytes keys = 3;
+}
+
+message CommitIntentResponse {}
+
+message ClearIntentRequest {
+  uint64 shard_id = 1;
+  uint64 start_version = 2;
+  repeated bytes keys = 3;
+}
+
+message ClearIntentResponse {}
 
 message NodeAdminRequest {
   oneof request {

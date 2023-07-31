@@ -352,6 +352,9 @@ impl Replica {
                 self.raft_node.clone().transfer_leader(req.transferee)?;
                 return Ok(Response::Transfer(TransferResponse {}));
             }
+            Request::WriteIntent(_) => todo!(),
+            Request::CommitIntent(_) => todo!(),
+            Request::ClearIntent(_) => todo!(),
         };
 
         if let Some(eval_result) = eval_result_opt {
@@ -495,6 +498,9 @@ pub(self) fn is_change_meta_request(request: &Request) -> bool {
         | Request::Put(_)
         | Request::Delete(_)
         | Request::BatchWrite(_)
-        | Request::Scan(_) => false,
+        | Request::Scan(_)
+        | Request::WriteIntent(_)
+        | Request::CommitIntent(_)
+        | Request::ClearIntent(_) => false,
     }
 }
