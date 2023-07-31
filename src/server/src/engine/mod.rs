@@ -13,7 +13,6 @@
 // limitations under the License.
 
 mod group;
-// mod group_filter;
 mod state;
 
 use std::path::{Path, PathBuf};

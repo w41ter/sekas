@@ -20,6 +20,7 @@ mod cmd_get;
 mod cmd_move_replicas;
 mod cmd_put;
 mod cmd_scan;
+mod intent;
 
 use std::collections::VecDeque;
 use std::sync::Arc;
