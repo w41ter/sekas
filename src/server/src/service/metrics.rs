@@ -114,6 +114,7 @@ pub fn take_group_request_metrics(request: &GroupRequest) -> Option<&'static His
             NODE_SERVICE_GROUP_REQUEST_TOTAL.move_replicas.inc();
             Some(&NODE_SERVICE_GROUP_REQUEST_DURATION_SECONDS.move_replicas)
         }
+        Some(_) => todo!(),
         None => None,
     }
 }

@@ -146,3 +146,13 @@ enum TxnState {
   ABORTED = 1;
   COMMITTED = 2;
 }
+
+message WriteIntent {
+  /// The txn start version.
+  uint64 start_version = 1;
+  bytes value = 2;
+  bool is_delete = 3;
+
+  // The deadline of txn.
+  uint64 deadline = 4;
+}

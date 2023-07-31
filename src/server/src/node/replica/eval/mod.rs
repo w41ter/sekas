@@ -1,3 +1,4 @@
+// Copyright 2023-present The Sekas Authors.
 // Copyright 2022 The Engula Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -41,6 +42,9 @@ pub(crate) use self::cmd_scan::scan;
 use crate::serverpb::v1::EvalResult;
 use crate::{Error, Result};
 
+/// The key version reserved for write intent.
+const INTENT_KEY_VERSION: u64 = u64::MAX;
+/// The key version reserved for flat written.
 const FLAT_KEY_VERSION: u64 = u64::MAX - 1;
 pub const MIGRATING_KEY_VERSION: u64 = 0;
 
@@ -211,5 +215,8 @@ pub async fn acquire_row_latches(
         | Request::AcceptShard(_)
         | Request::Transfer(_)
         | Request::MoveReplicas(_) => Ok(None),
+        Request::WriteIntent(_) => todo!(),
+        Request::CommitIntent(_) => todo!(),
+        Request::ClearIntent(_) => todo!(),
     }
 }
