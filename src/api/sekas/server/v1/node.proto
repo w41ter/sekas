@@ -167,7 +167,8 @@ message WriteIntentResponse {
 message CommitIntentRequest {
   uint64 shard_id = 1;
   uint64 start_version = 2;
-  repeated bytes keys = 3;
+  uint64 commit_version = 3;
+  repeated bytes keys = 4;
 }
 
 message CommitIntentResponse {}
