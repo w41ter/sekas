@@ -80,7 +80,7 @@ pub(crate) async fn commit_intent(
     let mut wb = WriteBatch::default();
     for key in &req.keys {
         // Skip not exists intent
-        let Some(value) = group_engine.get(req.shard_id, key).await? else {
+        let Some((value, super::INTENT_KEY_VERSION)) = group_engine.get(req.shard_id, key).await? else {
             continue
         };
 
@@ -112,7 +112,7 @@ pub(crate) async fn clear_intent(
     let mut wb = WriteBatch::default();
     for key in &req.keys {
         // Skip not exists intent
-        let Some(value) = group_engine.get(req.shard_id, key).await? else {
+        let Some((value, super::INTENT_KEY_VERSION)) = group_engine.get(req.shard_id, key).await? else {
             continue
         };
 

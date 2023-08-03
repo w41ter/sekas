@@ -95,7 +95,8 @@ async fn validate(c: &ClusterClient, group_id: u64, shard_id: u64, range: std::o
         let key = format!("key-{i}");
         let expected_value = format!("value-{i}").as_bytes().to_vec();
         let get = GetRequest { key: key.as_bytes().to_vec() };
-        let req = Request::Get(ShardGetRequest { shard_id, get: Some(get) });
+        let req =
+            Request::Get(ShardGetRequest { shard_id, start_version: u64::MAX, get: Some(get) });
 
         let mut retry_state = RetryState::default();
         loop {
@@ -529,6 +530,7 @@ fn receive_forward_request_after_shard_migrated() {
         let resp = group_client
             .request(&Request::Get(ShardGetRequest {
                 shard_id,
+                start_version: u64::MAX,
                 get: Some(GetRequest { key: b"a".to_vec() }),
             }))
             .await
@@ -543,6 +545,7 @@ fn receive_forward_request_after_shard_migrated() {
         let resp = group_client
             .request(&Request::Get(ShardGetRequest {
                 shard_id,
+                start_version: u64::MAX,
                 get: Some(GetRequest { key: b"b".to_vec() }),
             }))
             .await
