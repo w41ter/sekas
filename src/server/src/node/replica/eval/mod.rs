@@ -21,7 +21,6 @@ mod cmd_get;
 mod cmd_move_replicas;
 mod cmd_put;
 mod cmd_scan;
-mod intent;
 mod txn;
 
 use std::collections::VecDeque;
