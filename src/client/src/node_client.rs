@@ -184,6 +184,7 @@ impl RequestBatchBuilder {
             request: Some(GroupRequestUnion {
                 request: Some(group_request_union::Request::Get(ShardGetRequest {
                     shard_id,
+                    start_version: u64::MAX,
                     get: Some(GetRequest { key }),
                 })),
             }),

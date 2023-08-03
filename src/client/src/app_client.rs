@@ -407,6 +407,7 @@ impl Collection {
         );
         let req = Request::Get(ShardGetRequest {
             shard_id: shard.id,
+            start_version: u64::MAX,
             get: Some(GetRequest { key: key.to_owned() }),
         });
         if let Some(duration) = timeout {

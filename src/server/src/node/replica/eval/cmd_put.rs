@@ -48,7 +48,7 @@ pub(crate) async fn put(
     }
 
     let value_result = if !put.conditions.is_empty() || put.op != PutOperation::None as i32 {
-        group_engine.get(req.shard_id, &put.key).await?
+        group_engine.get(req.shard_id, &put.key).await?.map(|(val, _)| val)
     } else {
         None
     };

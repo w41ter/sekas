@@ -43,6 +43,7 @@ pub(crate) async fn delete(
 
     if !delete.conditions.is_empty() {
         let value_result = group_engine.get(req.shard_id, &delete.key).await?;
+        let value_result = value_result.map(|(val, _)| val);
         eval_conditions(value_result.as_deref(), &delete.conditions)?;
     }
 

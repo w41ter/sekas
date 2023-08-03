@@ -234,14 +234,14 @@ impl GroupEngine {
     }
 
     /// Get key value from the corresponding shard.
-    pub async fn get(&self, shard_id: u64, key: &[u8]) -> Result<Option<Vec<u8>>> {
+    pub async fn get(&self, shard_id: u64, key: &[u8]) -> Result<Option<(Vec<u8>, u64)>> {
         let snapshot_mode = SnapshotMode::Key { key };
         let mut snapshot = self.snapshot(shard_id, snapshot_mode)?;
         if let Some(iter) = snapshot.mvcc_iter() {
             let mut iter = iter?;
             if let Some(entry) = iter.next() {
                 let entry = entry?;
-                return Ok(entry.value().map(ToOwned::to_owned));
+                return Ok(entry.value().map(|value| (value.to_owned(), entry.version())));
             }
         }
         Ok(None)

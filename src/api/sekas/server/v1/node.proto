@@ -124,7 +124,8 @@ message ShardDeleteRequest {
 
 message ShardGetRequest {
   uint64 shard_id = 1;
-  sekas.v1.GetRequest get = 2;
+  uint64 start_version = 2;
+  sekas.v1.GetRequest get = 3;
 }
 
 message ShardScanRequest {

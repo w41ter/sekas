@@ -50,6 +50,7 @@ impl RootStore {
         let resp = self
             .submit_request(Get(ShardGetRequest {
                 shard_id,
+                start_version: u64::MAX,
                 get: Some(GetRequest { key: key.to_owned() }),
             }))
             .await?;
