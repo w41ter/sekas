@@ -65,7 +65,7 @@ pub(crate) async fn put(
     })
 }
 
-fn eval_put_op(put: &PutRequest, value_result: Option<&[u8]>) -> Result<Vec<u8>> {
+pub fn eval_put_op(put: &PutRequest, value_result: Option<&[u8]>) -> Result<Vec<u8>> {
     match PutOperation::from_i32(put.op) {
         Some(PutOperation::None) => Ok(put.value.clone()),
         Some(PutOperation::Add) => do_op(Op::Add, value_result, &put.value),

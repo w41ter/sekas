@@ -33,6 +33,7 @@ pub struct TxnRecord {
 }
 
 /// An client to access, manipulate txn collection.
+#[derive(Clone)]
 pub struct TxnClient {
     root_client: RootClient,
     router: Router,

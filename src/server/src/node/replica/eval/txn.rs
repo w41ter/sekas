@@ -14,15 +14,23 @@
 
 #![allow(unused)]
 
-use libc::group;
+use std::sync::Mutex;
+use std::time::{Duration, Instant, SystemTime};
+
+use dashmap::mapref::entry::Entry;
+use dashmap::DashMap;
+use futures::channel::oneshot;
 use prost::Message;
 use sekas_api::server::v1::{
-    ClearIntentRequest, CommitIntentRequest, ShardDeleteRequest, ShardPutRequest, WriteIntent,
-    WriteIntentRequest,
+    ClearIntentRequest, CommitIntentRequest, ShardDeleteRequest, ShardPutRequest, TxnState,
+    WriteIntent, WriteIntentRequest,
 };
 use sekas_api::v1::{DeleteRequest, PutOperation, PutRequest};
+use sekas_client::TxnClient;
 
 use super::cas::eval_conditions;
+use super::cmd_put::eval_put_op;
+use super::{LatchGuard, ShardKey};
 use crate::engine::{GroupEngine, WriteBatch};
 use crate::node::migrate::ForwardCtx;
 use crate::node::replica::ExecCtx;
@@ -35,16 +43,23 @@ pub(crate) async fn write_intent(
     req: &WriteIntentRequest,
 ) -> Result<EvalResult> {
     // TODO(walter) support migration?
-    let mut values = Vec::with_capacity(req.puts.len() + req.deletes.len());
-    for put in &req.puts {
-        values.push(group_engine.get(req.shard_id, &put.key).await?);
-    }
-    for del in &req.deletes {
-        values.push(group_engine.get(req.shard_id, &del.key).await?);
-    }
-
     let mut wb = WriteBatch::default();
     for put in &req.puts {
+        let value = group_engine.get(req.shard_id, &put.key).await?;
+        if let Some((encoded_intent, super::INTENT_KEY_VERSION)) = &value {
+            let intent = WriteIntent::decode(encoded_intent.as_slice())?;
+            if intent.start_version == req.start_version {
+                // To support idempotent.
+                continue;
+            }
+
+            // TODO: resolve intent.
+        }
+        if !put.conditions.is_empty() {
+            let value = value.as_ref().map(|(v, _)| v.as_slice());
+            eval_conditions(value, &put.conditions)?;
+            eval_put_op(put, value);
+        }
         let intent = WriteIntent {
             start_version: req.start_version,
             value: put.value.clone(),
@@ -55,6 +70,21 @@ pub(crate) async fn write_intent(
         group_engine.put(&mut wb, req.shard_id, &put.key, &value, super::INTENT_KEY_VERSION)?;
     }
     for del in &req.deletes {
+        let value = group_engine.get(req.shard_id, &del.key).await?;
+        if let Some((encoded_intent, super::INTENT_KEY_VERSION)) = &value {
+            let intent = WriteIntent::decode(encoded_intent.as_slice())?;
+            if intent.start_version == req.start_version {
+                // To support idempotent.
+                continue;
+            }
+
+            // TODO: resolve intent.
+        }
+        if !del.conditions.is_empty() {
+            let value = value.as_ref().map(|(v, _)| v.as_slice());
+            eval_conditions(value, &del.conditions)?;
+        }
+
         let intent = WriteIntent {
             start_version: req.start_version,
             value: vec![],
@@ -130,9 +160,91 @@ pub(crate) async fn clear_intent(
     })
 }
 
+#[derive(Default)]
+struct IntentRecord {
+    waiters: Vec<oneshot::Sender<()>>,
+}
+
+struct TxnResolveManager {
+    txn_client: TxnClient,
+    intent_records: DashMap<(u64, ShardKey), IntentRecord>,
+}
+
+impl TxnResolveManager {
+    /// Wait the txn intent to finish, return `None` if deadline is reached.
+    async fn wait_txn_intent(
+        &self,
+        start_version: u64,
+        deadline: u64,
+        shard_id: u64,
+        key: &[u8],
+        latch_guard: LatchGuard,
+    ) -> Result<LatchGuard, LatchGuard> {
+        let receiver = self.insert_waiter(start_version, shard_id, key);
+        let latch_mgr = &latch_guard.latch_manager;
+        assert_eq!(shard_id, latch_guard.shard_key.shard_id);
+        assert_eq!(key, latch_guard.shard_key.user_key);
+        latch_mgr.release(shard_id, key);
+
+        let now = sekas_rock::time::timestamp_millis();
+        let expired = if now < deadline {
+            // Need to sleep
+            let duration = Duration::from_millis(deadline - now);
+            crate::runtime::time::timeout(duration, receiver).await.is_err()
+        } else {
+            receiver.await;
+            false
+        };
+
+        let latch_guard = latch_mgr.acquire(shard_id, key, None).await.unwrap();
+        if expired {
+            Ok(latch_guard)
+        } else {
+            Err(latch_guard)
+        }
+    }
+
+    fn insert_waiter(
+        &self,
+        start_version: u64,
+        shard_id: u64,
+        key: &[u8],
+    ) -> oneshot::Receiver<()> {
+        let shard_key = ShardKey { shard_id, user_key: key.to_owned() };
+        let intent_key = (start_version, shard_key);
+        let (sender, receiver) = oneshot::channel();
+        let mut entry = self.intent_records.entry(intent_key).or_default();
+        let value = entry.value_mut();
+        value.waiters.push(sender);
+        receiver
+    }
+
+    /// Resolve the state of txn, abort or commit.
+    async fn resolve_txn(&self, start_version: u64, latch_guard: LatchGuard) -> Result<TxnState> {
+        let mut txn_client = self.txn_client.clone();
+        match txn_client.abort_txn(start_version).await {
+            Ok(_) => Ok(TxnState::Committed),
+            Err(sekas_client::Error::CasFailed(_)) => Ok(TxnState::Aborted),
+            Err(err) => Err(err.into()),
+        }
+    }
+
+    /// Notify the state of txn intent.
+    async fn notify_intent(&self, start_version: u64, shard_id: u64, key: &[u8]) {
+        let shard_key = ShardKey { shard_id, user_key: key.to_owned() };
+        let intent_key = (start_version, shard_key);
+        if let Some((_, intent_record)) = self.intent_records.remove(&intent_key) {
+            for waiter in intent_record.waiters {
+                let _ = waiter.send(());
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     // TODO: add test
     // 1. commit intent and clear intent is idempotent.
     // 2. only commit or clear intent with the same start_version.
+    // 3. insert intent is idempotent.
 }
