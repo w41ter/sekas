@@ -345,6 +345,7 @@ impl RequestBatchBuilder {
             request: Some(GroupRequestUnion {
                 request: Some(group_request_union::Request::Scan(ShardScanRequest {
                     shard_id,
+                    start_version: u64::MAX,
                     prefix: Some(prefix.to_owned()),
                     ..Default::default()
                 })),
@@ -372,6 +373,7 @@ impl RequestBatchBuilder {
             request: Some(GroupRequestUnion {
                 request: Some(group_request_union::Request::Scan(ShardScanRequest {
                     shard_id,
+                    start_version: u64::MAX,
                     limit,
                     limit_bytes,
                     exclude_start_key,

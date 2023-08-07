@@ -65,6 +65,7 @@ impl ShardClient {
     pub async fn pull(&self, last_key: Option<Vec<u8>>) -> Result<Vec<ShardData>> {
         let req = Request::Scan(ShardScanRequest {
             shard_id: self.shard_id,
+            start_version: u64::MAX,
             prefix: None,
             limit: 0,
             limit_bytes: 64 * 1024, // 64KB

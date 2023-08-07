@@ -12,6 +12,7 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+use prost::Message;
 use sekas_api::server::v1::*;
 
 use crate::engine::{GroupEngine, SnapshotMode};
@@ -23,7 +24,7 @@ pub(crate) async fn scan(
     req: &ShardScanRequest,
 ) -> Result<ShardScanResponse> {
     if let Some(prefix) = &req.prefix {
-        return scan_prefix(engine, req.shard_id, prefix).await;
+        return scan_prefix(engine, req.shard_id, req.start_version, prefix).await;
     }
 
     scan_range(engine, req).await
@@ -33,6 +34,7 @@ pub(crate) async fn scan(
 async fn scan_prefix(
     engine: &GroupEngine,
     shard_id: u64,
+    start_version: u64,
     prefix: &[u8],
 ) -> Result<ShardScanResponse> {
     // TODO(walter) shall I support migrating?
@@ -43,6 +45,18 @@ async fn scan_prefix(
         let mut mvcc_iter = mvcc_iter?;
         if let Some(entry) = mvcc_iter.next() {
             let entry = entry?;
+            if entry.version() == super::INTENT_KEY_VERSION {
+                let encoded_intent = entry.value().ok_or_else(|| {
+                    crate::Error::InvalidData(format!(
+                        "the value of intent key {:?} is not exists",
+                        entry.user_key()
+                    ))
+                })?;
+                let intent = WriteIntent::decode(encoded_intent)?;
+                if intent.start_version < start_version {
+                    // TODO: handle orphan write intent.
+                }
+            }
             if let Some(value) = entry.value().map(ToOwned::to_owned) {
                 data.push(ShardData {
                     key: entry.user_key().to_owned(),
@@ -77,6 +91,19 @@ async fn scan_range(engine: &GroupEngine, req: &ShardScanRequest) -> Result<Shar
 
             if is_exceeds(&req.end_key, entry.user_key()) {
                 break;
+            }
+
+            if entry.version() == super::INTENT_KEY_VERSION {
+                let encoded_intent = entry.value().ok_or_else(|| {
+                    crate::Error::InvalidData(format!(
+                        "the value of intent key {:?} is not exists",
+                        entry.user_key()
+                    ))
+                })?;
+                let intent = WriteIntent::decode(encoded_intent)?;
+                if intent.start_version < req.start_version {
+                    // TODO: handle orphan write intent.
+                }
             }
 
             if let Some(value) = entry.value().map(ToOwned::to_owned) {
