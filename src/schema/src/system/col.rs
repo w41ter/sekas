@@ -76,7 +76,7 @@ decl_unity_range_col!(meta, 3);
 decl_unity_range_col!(node, 4);
 decl_unity_range_col!(group, 5);
 decl_unity_range_col!(replica_state, 6);
-decl_unity_range_col!(job, 6);
+decl_unity_range_col!(job, 7);
 decl_unity_range_col!(job_history, 8);
 decl_unity_range_col!(end_unity_col, 100);
 

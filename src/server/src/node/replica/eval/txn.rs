@@ -223,7 +223,7 @@ impl TxnResolveManager {
     async fn resolve_txn(&self, start_version: u64, latch_guard: LatchGuard) -> Result<TxnState> {
         let mut txn_client = self.txn_client.clone();
         match txn_client.abort_txn(start_version).await {
-            Ok(_) => Ok(TxnState::Committed),
+            Ok(_) => Ok(TxnState::Aborted),
             Err(sekas_client::Error::CasFailed(_)) => Ok(TxnState::Aborted),
             Err(err) => Err(err.into()),
         }
