@@ -1,3 +1,4 @@
+// Copyright 2023-present The Engula Authors.
 // Copyright 2022 The Engula Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -17,142 +18,116 @@ syntax = "proto3";
 package sekas.server.v1;
 
 message NodeDesc {
-  uint64 id = 1;
-  string addr = 2;
-  NodeCapacity capacity = 3;
-  NodeStatus status = 4;
+	uint64 id = 1;
+	string addr = 2;
+	NodeCapacity capacity = 3;
+	NodeStatus status = 4;
 }
 
 enum NodeStatus {
-  ACTIVE = 0;
-  CORDONED = 1;
-  DRAINING = 2;
-  DRAINED = 3;
-  DECOMMISSIONING = 4;
-  DECOMMISSIONED = 5;
+	ACTIVE = 0;
+	CORDONED = 1;
+	DRAINING = 2;
+	DRAINED = 3;
+	DECOMMISSIONING = 4;
+	DECOMMISSIONED = 5;
 }
 
 message NodeCapacity {
-  double cpu_nums = 1;
-  uint64 replica_count = 2;
-  uint64 leader_count = 3;
+	double cpu_nums = 1;
+	uint64 replica_count = 2;
+	uint64 leader_count = 3;
 }
 
 message RootDesc {
-  /// The epoch of root group which indicates the freshness of root nodes.
-  uint64 epoch = 1;
-  repeated NodeDesc root_nodes = 2;
-}
-
-message HashPartition {
-  uint32 slot_id = 1;
-  uint32 end_slot_id = 2;
-  uint32 slots = 3;
+	/// The epoch of root group which indicates the freshness of root nodes.
+	uint64 epoch = 1;
+	repeated NodeDesc root_nodes = 2;
 }
 
 message RangePartition {
-  bytes start = 1;
-  bytes end = 2;
+	bytes start = 1;
+	bytes end = 2;
 }
 
 message ShardDesc {
-  uint64 id = 1;
-  uint64 collection_id = 2;
-
-  oneof partition {
-    HashPartition hash = 3;
-    RangePartition range = 4;
-  }
+	uint64 id = 1;
+	uint64 tablet_id = 2;
+    RangePartition range = 3;
 }
 
 message GroupDesc {
-  uint64 id = 1;
-  /// The version stamp of `GroupDesc`, increment when `shards` or `replicas`
-  /// changes. Used to quickly detect if `GroupDesc` has changed.
-  ///
-  /// If config changes, increment by 1 each time, if shard changes, increment
-  /// `1 << 32` each time. Therefore, the upper 32 bits and the lower 32 bits
-  /// represent different types of changes.
-  ///
-  /// The number of shard changes is placed in the upper 32 bits, so can judge
-  /// the freshness of shard meta between different groups by simply comparing
-  /// the size. This feature is very useful when shard migration, see
-  /// `GroupStateMachine` for details.
-  uint64 epoch = 2;
-  repeated ShardDesc shards = 3;
-  repeated ReplicaDesc replicas = 4;
+	uint64 id = 1;
+	/// The version stamp of `GroupDesc`, increment when `shards` or `replicas`
+	/// changes. Used to quickly detect if `GroupDesc` has changed.
+	///
+	/// If config changes, increment by 1 each time, if shard changes, increment
+	/// `1 << 32` each time. Therefore, the upper 32 bits and the lower 32 bits
+	/// represent different types of changes.
+	///
+	/// The number of shard changes is placed in the upper 32 bits, so can judge
+	/// the freshness of shard meta between different groups by simply comparing
+	/// the size. This feature is very useful when shard migration, see
+	/// `GroupStateMachine` for details.
+	uint64 epoch = 2;
+	repeated ShardDesc shards = 3;
+	repeated ReplicaDesc replicas = 4;
 }
 
 enum ReplicaRole {
-  VOTER = 0;
-  LEARNER = 1;
-  INCOMING_VOTER = 2;
-  DEMOTING_VOTER = 3;
+	VOTER = 0;
+	LEARNER = 1;
+	INCOMING_VOTER = 2;
+	DEMOTING_VOTER = 3;
 }
 
 message ReplicaDesc {
-  uint64 id = 1;
-  uint64 node_id = 2;
-  ReplicaRole role = 3;
+	uint64 id = 1;
+	uint64 node_id = 2;
+	ReplicaRole role = 3;
 }
 
 /// The volatile state of a group.
 message GroupState {
-  uint64 group_id = 1;
-  optional uint64 leader_id = 2;
-  repeated ReplicaState replicas = 3;
+	uint64 group_id = 1;
+	optional uint64 leader_id = 2;
+	repeated ReplicaState replicas = 3;
 }
 
 /// The volatile state of a replica. Reports to root when the state of each
 /// replica changes.
 message ReplicaState {
-  uint64 replica_id = 1;
-  uint64 group_id = 2;
-  uint64 term = 3;
-  uint64 voted_for = 4;
-  RaftRole role = 5;
-  uint64 node_id = 6;
+	uint64 replica_id = 1;
+	uint64 group_id = 2;
+	uint64 term = 3;
+	uint64 voted_for = 4;
+	RaftRole role = 5;
+	uint64 node_id = 6;
 }
 
 enum RaftRole {
-  FOLLOWER = 0;
-  CANDIDATE = 1;
-  LEADER = 2;
-  PRE_CANDIDATE = 3;
+	FOLLOWER = 0;
+	CANDIDATE = 1;
+	LEADER = 2;
+	PRE_CANDIDATE = 3;
 }
 
 message MigrationDesc {
-  /// The descriptor of migrating shard.
-  ShardDesc shard_desc = 1;
-  /// The source group of migration.
-  uint64 src_group_id = 2;
-  /// The epoch of source group when this migration is initialized.
-  uint64 src_group_epoch = 3;
-  /// The dest group id of migration.
-  uint64 dest_group_id = 4;
-  /// The epoch of dest group.
-  uint64 dest_group_epoch = 5;
+	/// The descriptor of migrating shard.
+	ShardDesc shard_desc = 1;
+	/// The source group of migration.
+	uint64 src_group_id = 2;
+	/// The epoch of source group when this migration is initialized.
+	uint64 src_group_epoch = 3;
+	/// The dest group id of migration.
+	uint64 dest_group_id = 4;
+	/// The epoch of dest group.
+	uint64 dest_group_epoch = 5;
 }
 
 message ScheduleState {
-  uint64 group_id = 1;
-  uint64 epoch = 2;
-  repeated ReplicaDesc incoming_replicas = 3;
-  repeated ReplicaDesc outgoing_replicas = 4;
-}
-
-enum TxnState {
-  RUNNING = 0;
-  ABORTED = 1;
-  COMMITTED = 2;
-}
-
-message WriteIntent {
-  /// The txn start version.
-  uint64 start_version = 1;
-  bytes value = 2;
-  bool is_delete = 3;
-
-  // The deadline of txn.
-  uint64 deadline = 4;
+	uint64 group_id = 1;
+	uint64 epoch = 2;
+	repeated ReplicaDesc incoming_replicas = 3;
+	repeated ReplicaDesc outgoing_replicas = 4;
 }

@@ -87,3 +87,14 @@ message ServerIsBusy {}
 message GroupNotFound {
     uint64 group_id = 1;
 }
+
+/// The cas operation is failed.
+message CasFailed {
+    /// The index of mutations.
+    /// It is the index of deletes if index < deletes.len(), otherwise it is the index of puts + deletes.len()
+    uint64 index = 1;
+    /// The index of conditions.
+    uint64 cond_index = 2;
+    /// The prev value of the cas touched key, if take_prev_value is set.
+    optional bytes prev_value = 3;
+}

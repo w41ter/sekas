@@ -1,3 +1,4 @@
+// Copyright 2023-present The Sekas Authors.
 // Copyright 2022 The Engula Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -16,196 +17,186 @@ syntax = "proto3";
 
 package sekas.server.v1;
 
-import "sekas/v1/sekas.proto";
 import "sekas/server/v1/error.proto";
 import "sekas/server/v1/metadata.proto";
+import "sekas/server/v1/types.proto";
+import "sekas/server/v1/write.proto";
 import "google/protobuf/field_mask.proto";
 
 service Node {
-  rpc Batch(BatchRequest) returns (BatchResponse) {}
-  /// A set methods to manipulate node.
-  rpc Admin(NodeAdminRequest) returns (NodeAdminResponse) {}
-  /// A set methods about shard migration.
-  rpc Migrate(MigrateRequest) returns (MigrateResponse) {}
+    rpc Batch(BatchRequest) returns (BatchResponse) {}
+    /// A set methods to manipulate node.
+    rpc Admin(NodeAdminRequest) returns (NodeAdminResponse) {}
+    /// A set methods about shard migration.
+    rpc Migrate(MigrateRequest) returns (MigrateResponse) {}
 }
 
 message BatchRequest {
-  uint64 node_id = 1;
-  repeated GroupRequest requests = 2;
+    uint64 node_id = 1;
+    repeated GroupRequest requests = 2;
 }
 
 message BatchResponse { repeated GroupResponse responses = 1; }
 
 message GroupRequest {
-  uint64 group_id = 1;
-  uint64 epoch = 2;
-  GroupRequestUnion request = 3;
+    uint64 group_id = 1;
+    uint64 epoch = 2;
+    GroupRequestUnion request = 3;
 }
 
 message GroupResponse {
-  GroupResponseUnion response = 1;
+    GroupResponseUnion response = 1;
 
-  /// Only used in BatchResponse.
-  Error error = 2;
+    /// Only used in BatchResponse.
+    Error error = 2;
 }
 
 message GroupRequestUnion {
-  oneof request {
-    ShardGetRequest get = 1;
-    ShardPutRequest put = 2;
-    ShardDeleteRequest delete = 3;
-    ShardScanRequest scan = 4;
-    BatchWriteRequest batch_write = 5;
+    oneof request {
+        // Single operation.
+        ShardGetRequest get = 1;
+        ShardScanRequest scan = 2;
+        ShardWriteRequest write = 3;
 
-    /// Add a new shard to an existing group.
-    CreateShardRequest create_shard = 6;
+        // Txn releated operation.
+        WriteIntentRequest write_intent = 4;
+        CommitIntentRequest commit_intent = 5;
+        ClearIntentRequest clear_intent = 6;
 
-    /// Change replicas of an existing group.
-    ChangeReplicasRequest change_replicas = 7;
+        /// Add a new shard to an existing group.
+        CreateShardRequest create_shard = 7;
 
-    /// Issue a migration request. This request need to send to the dest group.
-    AcceptShardRequest accept_shard = 8;
+        /// Change replicas of an existing group.
+        ChangeReplicasRequest change_replicas = 8;
 
-    /// Transfer leadership to another replicas. This request is executed as a notice, so
-    /// the response doesn't reflect the actual execution result of transferring.
-    TransferRequest transfer = 9;
+        /// Issue a migration request. This request need to send to the dest group.
+        AcceptShardRequest accept_shard = 9;
 
-    /// MoveReplicas delegates the replicas migration task to group leader.
-    ///
-    /// Response once the group leader accepts the moving replicas request. When there exists
-    /// some conflicts, such as group is in joint, `Error::AlreadyExists` is returned.
-    MoveReplicasRequest move_replicas = 10;
+        /// Transfer leadership to another replicas. This request is executed as a notice, so
+        /// the response doesn't reflect the actual execution result of transferring.
+        TransferRequest transfer = 10;
 
-    WriteIntentRequest write_intent = 11;
-    CommitIntentRequest commit_intent = 12;
-    ClearIntentRequest clear_intent = 13;
-  }
+        /// MoveReplicas delegates the replicas migration task to group leader.
+        ///
+        /// Response once the group leader accepts the moving replicas request. When there exists
+        /// some conflicts, such as group is in joint, `Error::AlreadyExists` is returned.
+        MoveReplicasRequest move_replicas = 11;
+    }
 }
 
 message GroupResponseUnion {
-  oneof response {
-    sekas.v1.GetResponse get = 1;
-    sekas.v1.PutResponse put = 2;
-    sekas.v1.DeleteResponse delete = 3;
-    ShardScanResponse scan = 4;
-    BatchWriteResponse batch_write = 5;
-    CreateShardResponse create_shard = 6;
-    ChangeReplicasResponse change_replicas = 7;
-    AcceptShardResponse accept_shard = 8;
-    TransferResponse transfer = 9;
-    MoveReplicasResponse move_replicas = 10;
+    oneof response {
+        ShardGetResponse get = 1;
+        ShardScanResponse scan = 2;
+        ShardWriteResponse write = 3;
+        WriteIntentResponse write_intent = 4;
+        CommitIntentResponse commit_intent = 5;
+        ClearIntentResponse clear_intent = 6;
 
-    WriteIntentResponse write_intent = 11;
-    CommitIntentResponse commit_intent = 12;
-    ClearIntentResponse clear_intent = 13;
-  }
+        CreateShardResponse create_shard = 7;
+        ChangeReplicasResponse change_replicas = 8;
+        AcceptShardResponse accept_shard = 9;
+        TransferResponse transfer = 10;
+        MoveReplicasResponse move_replicas = 11;
+    }
 }
 
-/// Execute batch write to a shard to ensure atomic writes.
-///
-/// Since the interface does not need to be exposed to users, the definition is
-/// placed in this file.
-message BatchWriteRequest {
-  repeated ShardDeleteRequest deletes = 1;
-  repeated ShardPutRequest puts = 2;
+/// The batch writes to a shard which ensure atomic writes.
+message ShardWriteRequest {
+    uint64 shard_id = 1;
+    repeated DeleteRequest deletes = 2;
+    repeated PutRequest puts = 3;
 }
 
-message BatchWriteResponse {}
-
-message ShardPutRequest {
-  uint64 shard_id = 1;
-  sekas.v1.PutRequest put = 2;
-}
-
-message ShardDeleteRequest {
-  uint64 shard_id = 1;
-  sekas.v1.DeleteRequest delete = 2;
+/// The response of batch writes to a shard.
+message ShardWriteResponse {
+    repeated WriteResponse deletes = 1;
+    repeated WriteResponse puts = 2;
 }
 
 message ShardGetRequest {
-  uint64 shard_id = 1;
-  uint64 start_version = 2;
-  sekas.v1.GetRequest get = 3;
+    uint64 shard_id = 1;
+    uint64 start_version = 2;
+    bytes key = 3;
+}
+
+message ShardGetResponse {
+    optional Value value = 1;
 }
 
 message ShardScanRequest {
-  /// The id of target shard.
-  uint64 shard_id = 1;
-  /// The start version of scan request.
-  uint64 start_version = 2;
-  /// The maxminum key-values pairs to fetch, 0 means no limit.
-  uint64 limit = 3;
-  /// The maxminum key-value bytes to fetch, 0 means no limit.
-  uint64 limit_bytes = 4;
-  /// Shoud include start key in result?
-  bool exclude_start_key = 5;
-  /// Shoud include end key in result?
-  bool exclude_end_key = 6;
-  /// Scan with prefix, if set then `start_key` and `end_key` will be ignored.
-  ///
-  /// The prefix only works with range shard, the behaviour of hash shard is undefined.
-  optional bytes prefix = 7;
-  /// The start key for a hash shard will be locate with hash slot.
-  optional bytes start_key = 8;
-  /// The end key only works with range shard, the behaviour of hash shard is undefined.
-  optional bytes end_key = 9;
+    /// The id of target shard.
+    uint64 shard_id = 1;
+    /// The start version of scan request.
+    uint64 start_version = 2;
+    /// The maxminum key-values pairs to fetch, 0 means no limit.
+    uint64 limit = 3;
+    /// The maxminum key-value bytes to fetch, 0 means no limit.
+    uint64 limit_bytes = 4;
+    /// Shoud include start key in result?
+    bool exclude_start_key = 5;
+    /// Shoud include end key in result?
+    bool exclude_end_key = 6;
+    /// Scan with prefix, if set then `start_key` and `end_key` will be ignored.
+    ///
+    /// The prefix only works with range shard, the behaviour of hash shard is undefined.
+    optional bytes prefix = 7;
+    /// The start key for a hash shard will be locate with hash slot.
+    optional bytes start_key = 8;
+    /// The end key only works with range shard, the behaviour of hash shard is undefined.
+    optional bytes end_key = 9;
 }
 
-message ShardScanResponse { repeated ShardData data = 1; }
+message ShardScanResponse { repeated ValueSet data = 1; }
 
 message WriteIntentRequest {
-  uint64 shard_id = 1;
-  uint64 start_version = 2;
-  uint64 deadline = 3;
-
-  repeated sekas.v1.PutRequest puts = 4;
-  repeated sekas.v1.DeleteRequest deletes = 5;
+    uint64 start_version = 1;
+    ShardWriteRequest write = 2;
 }
 
 message WriteIntentResponse {
-  repeated sekas.v1.PutResponse puts = 1;
-  repeated sekas.v1.DeleteResponse deletes = 2;
+    ShardWriteResponse write = 1;
 }
 
 message CommitIntentRequest {
-  uint64 shard_id = 1;
-  uint64 start_version = 2;
-  uint64 commit_version = 3;
-  repeated bytes keys = 4;
+    uint64 shard_id = 1;
+    uint64 start_version = 2;
+    uint64 commit_version = 3;
+    repeated bytes keys = 4;
 }
 
 message CommitIntentResponse {}
 
 message ClearIntentRequest {
-  uint64 shard_id = 1;
-  uint64 start_version = 2;
-  repeated bytes keys = 3;
+    uint64 shard_id = 1;
+    uint64 start_version = 2;
+    repeated bytes keys = 3;
 }
 
 message ClearIntentResponse {}
 
 message NodeAdminRequest {
-  oneof request {
-    GetRootRequest get_root = 1;
-    CreateReplicaRequest create_replica = 2;
+    oneof request {
+        GetRootRequest get_root = 1;
+        CreateReplicaRequest create_replica = 2;
 
-    /// RemoveReplica allows shuts down and deletes an orphan replica from the
-    /// specified node.
-    ///
-    /// It is only executed when the user specifies a newer `GroupDesc` and the
-    /// replica no longer belongs to the group.
-    RemoveReplicaRequest remove_replica = 3;
-    HeartbeatRequest heartbeat = 4;
-  }
+        /// RemoveReplica allows shuts down and deletes an orphan replica from the
+        /// specified node.
+        ///
+        /// It is only executed when the user specifies a newer `GroupDesc` and the
+        /// replica no longer belongs to the group.
+        RemoveReplicaRequest remove_replica = 3;
+        HeartbeatRequest heartbeat = 4;
+    }
 }
 
 message NodeAdminResponse {
-  oneof response {
-    GetRootResponse get_root = 1;
-    CreateReplicaResponse create_replica = 2;
-    RemoveReplicaResponse remove_replica = 3;
-    HeartbeatResponse heartbeat = 4;
-  }
+    oneof response {
+        GetRootResponse get_root = 1;
+        CreateReplicaResponse create_replica = 2;
+        RemoveReplicaResponse remove_replica = 3;
+        HeartbeatResponse heartbeat = 4;
+    }
 }
 
 message GetRootRequest {}
@@ -213,15 +204,15 @@ message GetRootRequest {}
 message GetRootResponse { RootDesc root = 1; }
 
 message CreateReplicaRequest {
-  uint64 replica_id = 1;
-  GroupDesc group = 2;
+    uint64 replica_id = 1;
+    GroupDesc group = 2;
 }
 
 message CreateReplicaResponse {}
 
 message RemoveReplicaRequest {
-  uint64 replica_id = 1;
-  GroupDesc group = 2;
+    uint64 replica_id = 1;
+    GroupDesc group = 2;
 }
 
 message RemoveReplicaResponse {}
@@ -237,65 +228,65 @@ message ChangeReplicasResponse {}
 message ChangeReplicas { repeated ChangeReplica changes = 1; }
 
 message ChangeReplica {
-  ChangeReplicaType change_type = 1;
+    ChangeReplicaType change_type = 1;
 
-  uint64 replica_id = 2;
-  uint64 node_id = 3;
+    uint64 replica_id = 2;
+    uint64 node_id = 3;
 }
 
 enum ChangeReplicaType {
-  ADD = 0;
-  REMOVE = 1;
-  ADD_LEARNER = 2;
+    ADD = 0;
+    REMOVE = 1;
+    ADD_LEARNER = 2;
 }
 
 message AcceptShardRequest {
-  /// The source group of this migration.
-  uint64 src_group_id = 1;
-  /// The epoch of source group when issuing this migration request.
-  uint64 src_group_epoch = 2;
-  /// The descriptor of migrating shard.
-  ShardDesc shard_desc = 3;
+    /// The source group of this migration.
+    uint64 src_group_id = 1;
+    /// The epoch of source group when issuing this migration request.
+    uint64 src_group_epoch = 2;
+    /// The descriptor of migrating shard.
+    ShardDesc shard_desc = 3;
 }
 
 message AcceptShardResponse {}
 
 message TransferRequest {
-  uint64 transferee = 1;
+    uint64 transferee = 1;
 }
 
 message TransferResponse {}
 
 message HeartbeatRequest {
-  uint64 timestamp = 1;
-  repeated PiggybackRequest piggybacks = 2;
+    uint64 timestamp = 1;
+    repeated PiggybackRequest piggybacks = 2;
 }
 
 message HeartbeatResponse {
-  uint64 timestamp = 1;
-  /// The epoch of root group which contained in node's `RootDesc`.
-  uint64 root_epoch = 2;
-  repeated PiggybackResponse piggybacks = 3;
+    uint64 timestamp = 1;
+    /// The epoch of root group which contained in node's `RootDesc`.
+    uint64 root_epoch = 2;
+    repeated PiggybackResponse piggybacks = 3;
 }
 
 message PiggybackRequest {
-  oneof info {
-    SyncRootRequest sync_root = 1;
-    CollectStatsRequest collect_stats = 2;
-    CollectGroupDetailRequest collect_group_detail = 3;
-    CollectScheduleStateRequest collect_schedule_state = 4;
-    CollectMigrationStateRequest collect_migration_state = 5;
-  }
+    oneof info {
+        SyncRootRequest sync_root = 1;
+        CollectStatsRequest collect_stats = 2;
+        CollectGroupDetailRequest collect_group_detail = 3;
+        CollectScheduleStateRequest collect_schedule_state = 4;
+        CollectMigrationStateRequest collect_migration_state = 5;
+    }
 }
 
 message PiggybackResponse {
-  oneof info {
-    SyncRootResponse sync_root = 1;
-    CollectStatsResponse collect_stats = 2;
-    CollectGroupDetailResponse collect_group_detail = 3;
-    CollectScheduleStateResponse collect_schedule_state = 4;
-    CollectMigrationStateResponse collect_migration_state = 5;
-  }
+    oneof info {
+        SyncRootResponse sync_root = 1;
+        CollectStatsResponse collect_stats = 2;
+        CollectGroupDetailResponse collect_group_detail = 3;
+        CollectScheduleStateResponse collect_schedule_state = 4;
+        CollectMigrationStateResponse collect_migration_state = 5;
+    }
 }
 
 message SyncRootRequest { RootDesc root = 1; }
@@ -305,119 +296,112 @@ message SyncRootResponse {}
 message CollectStatsRequest { google.protobuf.FieldMask field_mask = 1; }
 
 message CollectStatsResponse {
-  NodeStats node_stats = 1;
-  repeated GroupStats group_stats = 2;
-  repeated ReplicaStats replica_stats = 3;
+    NodeStats node_stats = 1;
+    repeated GroupStats group_stats = 2;
+    repeated ReplicaStats replica_stats = 3;
 }
 
 message NodeStats {
-  uint64 available_space = 1;
-  uint32 group_count = 2;
-  uint32 leader_count = 3;
-  /// The replicas field in `GroupDesc` is empty.
-  uint64 orphan_replica_count = 4;
-  float read_qps = 5;
-  float write_qps = 6;
+    uint64 available_space = 1;
+    uint32 group_count = 2;
+    uint32 leader_count = 3;
+    /// The replicas field in `GroupDesc` is empty.
+    uint64 orphan_replica_count = 4;
+    float read_qps = 5;
+    float write_qps = 6;
 }
 
 message GroupStats {
-  uint64 group_id = 1;
-  uint64 shard_count = 2;
-  float read_qps = 3;
-  float write_qps = 4;
+    uint64 group_id = 1;
+    uint64 shard_count = 2;
+    float read_qps = 3;
+    float write_qps = 4;
 }
 
 message ReplicaStats {
-  uint64 replica_id = 1;
-  uint64 group_id = 2;
-  float read_qps = 3;
-  float write_qps = 4;
+    uint64 replica_id = 1;
+    uint64 group_id = 2;
+    float read_qps = 3;
+    float write_qps = 4;
 }
 
 message CollectGroupDetailRequest {
-  /// The ID list of the group that needs to get the status, if it is empty, get
-  /// all the groups on the target machine.
-  repeated uint64 groups = 1;
+    /// The ID list of the group that needs to get the status, if it is empty, get
+    /// all the groups on the target machine.
+    repeated uint64 groups = 1;
 }
 
 message CollectGroupDetailResponse {
-  repeated ReplicaState replica_states = 1;
-  /// If a replica is the leader of group, it also needs to be responsible for
-  /// filling in the `GroupDesc`.
-  repeated GroupDesc group_descs = 2;
+    repeated ReplicaState replica_states = 1;
+    /// If a replica is the leader of group, it also needs to be responsible for
+    /// filling in the `GroupDesc`.
+    repeated GroupDesc group_descs = 2;
 }
 
 message CollectScheduleStateRequest {}
 
 message CollectScheduleStateResponse {
-  repeated ScheduleState schedule_states = 1;
+    repeated ScheduleState schedule_states = 1;
 }
 
 message CollectMigrationStateRequest { uint64 group = 1; }
 
 message CollectMigrationStateResponse {
-  enum State {
-    NONE = 0;
-    SETUP = 1;
-    MIGRATING = 2;
-    MIGRATED = 3;
-  }
+    enum State {
+        NONE = 0;
+        SETUP = 1;
+        MIGRATING = 2;
+        MIGRATED = 3;
+    }
 
-  State state = 1;
-  MigrationDesc desc = 2;
+    State state = 1;
+    MigrationDesc desc = 2;
 }
 
 message MoveReplicasRequest {
-  repeated ReplicaDesc incoming_voters = 1;
-  repeated ReplicaDesc outgoing_voters = 2;
+    repeated ReplicaDesc incoming_voters = 1;
+    repeated ReplicaDesc outgoing_voters = 2;
 }
 
 message MoveReplicasResponse {
-  ScheduleState schedule_state = 1;
-}
-
-message ShardData {
-  /// The user key.
-  bytes key = 1;
-  bytes value = 2;
-  uint64 version = 3;
+    ScheduleState schedule_state = 1;
 }
 
 message MigrateRequest {
-  oneof request {
-    ForwardRequest forward = 1;
-    SetupMigrationRequest setup = 2;
-    CommitMigrationRequest commit = 3;
-  }
+    oneof request {
+        ForwardRequest forward = 1;
+        SetupMigrationRequest setup = 2;
+        CommitMigrationRequest commit = 3;
+    }
 }
 
 message MigrateResponse {
-  oneof response {
-    ForwardResponse forward = 1;
-    SetupMigrationResponse setup = 2;
-    CommitMigrationResponse commit = 3;
-  }
+    oneof response {
+        ForwardResponse forward = 1;
+        SetupMigrationResponse setup = 2;
+        CommitMigrationResponse commit = 3;
+    }
 }
 
 message ForwardRequest {
-  uint64 group_id = 1;
-  uint64 shard_id = 2;
-  repeated ShardData forward_data = 3;
-  GroupRequestUnion request = 4;
+    uint64 group_id = 1;
+    uint64 shard_id = 2;
+    repeated ValueSet forward_data = 3;
+    GroupRequestUnion request = 4;
 }
 
 message ForwardResponse {
-  GroupResponseUnion response = 1;
+    GroupResponseUnion response = 1;
 }
 
 message SetupMigrationRequest {
-  MigrationDesc desc = 1;
+    MigrationDesc desc = 1;
 }
 
 message SetupMigrationResponse {}
 
 message CommitMigrationRequest {
-  MigrationDesc desc = 1;
+    MigrationDesc desc = 1;
 }
 
 message CommitMigrationResponse {}

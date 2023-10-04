@@ -20,7 +20,16 @@ fn main() -> Result<(), Box<dyn Error>> {
     std::env::set_var("PROTOC_INCLUDE", protoc_build::PROTOC_INCLUDE);
 
     tonic_build::configure().compile(
-        &["sekas/v1/sekas.proto", "sekas/server/v1/node.proto", "sekas/server/v1/root.proto"],
+        &[
+            "sekas/server/v1/catalog.proto",
+            "sekas/server/v1/error.proto",
+            "sekas/server/v1/metadata.proto",
+            "sekas/server/v1/node.proto",
+            "sekas/server/v1/root.proto",
+            "sekas/server/v1/txn_persistent.proto",
+            "sekas/server/v1/types.proto",
+            "sekas/server/v1/write.proto",
+        ],
         &["."],
     )?;
     Ok(())

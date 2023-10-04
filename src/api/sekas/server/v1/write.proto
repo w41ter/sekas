@@ -1,0 +1,93 @@
+// Copyright 2023-present The Sekas Authors.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+syntax = "proto3";
+
+package sekas.server.v1;
+
+import "sekas/server/v1/types.proto";
+
+/// The type of operations to execute.
+enum PutType {
+    /// Normal put operation.
+    NONE = 0;
+    /// Add an i64 value, warp if the result will exceeds range.
+    ADD_I64 = 1;
+    /// Write nothing.
+    NOP = 2;
+}
+
+/// The condition type of write.
+enum WriteConditionType {
+    /// The target key must exists.
+    EXPECT_EXISTS = 0;
+    /// The target key must not exists.
+    EXPECT_NOT_EXISTS = 1;
+    EXPECT_VALUE = 2;
+
+    // Version releated conditions.
+    EXPECT_VERSION = 3;
+    EXPECT_VERSION_LT = 4;
+    EXPECT_VERSION_LE = 5;
+    EXPECT_VERSION_GT = 6;
+    EXPECT_VERSION_GE = 7;
+
+    // slice related conditions.
+    EXPECT_STARTS_WITH = 8;
+    EXPECT_ENDS_WITH = 9;
+    EXPECT_SLICE = 10;
+    EXPECT_CONTAINS = 11;
+}
+
+/// The write conditions.
+message WriteCondition {
+    /// The type of condition.
+    WriteConditionType type = 1;
+    /// The value of this condition.
+    bytes value = 2;
+    uint64 version = 3;
+    uint64 begin = 4;
+}
+
+/// The put request.
+message PutRequest {
+    /// The put type.
+    PutType put_type = 1;
+    /// The key to write.
+    bytes key = 2;
+    /// The value to write.
+    bytes value = 3;
+    /// Time to live, in seconds.
+    uint64 ttl = 4;
+    /// The cas conditions.
+    repeated WriteCondition conditions = 5;
+    /// Whether to take previous value.
+    bool take_prev_value = 6;
+}
+
+/// The delete request.
+message DeleteRequest {
+    /// The key to delete.
+    bytes key = 1;
+    /// The cas conditions.
+    repeated WriteCondition conditions = 2;
+    /// Whether to take previous value.
+    bool take_prev_value = 3;
+}
+
+/// The write response.
+message WriteResponse {
+    /// The previous value of the target, only set if `take_prev_value` is true.
+    optional Value prev_value = 1;
+}
