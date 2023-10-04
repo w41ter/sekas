@@ -13,30 +13,8 @@
 // limitations under the License.
 use paste::paste;
 use sekas_api::server::v1::*;
-use sekas_api::v1::*;
 
 use crate::LOCAL_COLLECTION_ID;
-
-macro_rules! decl_hash_col {
-    ($name:ident, $col_id:expr, $slots:expr) => {
-        paste! {
-            pub const [<$name:upper _NAME>]: &str = stringify!($name);
-            pub const [<$name:upper _ID>]: u64 = $col_id;
-            pub const [<$name:upper _SLOTS>]: u32 = $slots;
-
-            pub fn [<$name:lower _desc>]() -> CollectionDesc {
-                CollectionDesc {
-                    id: $col_id,
-                    name: stringify!($name).to_owned(),
-                    db: crate::system::db::ID,
-                    partition: Some(collection_desc::Partition::Hash(collection_desc::HashPartition {
-                        slots: $slots,
-                    })),
-                }
-            }
-        }
-    };
-}
 
 macro_rules! decl_unity_range_col {
     ($name:ident, $col_id:expr) => {
@@ -50,7 +28,6 @@ macro_rules! decl_unity_range_col {
                     id: $col_id,
                     name: stringify!($name).to_owned(),
                     db: crate::system::db::ID,
-                    partition: Some(collection_desc::Partition::Range(collection_desc::RangePartition {})),
                 }
             }
 
@@ -58,10 +35,10 @@ macro_rules! decl_unity_range_col {
                 ShardDesc {
                     id: $col_id,
                     collection_id: $col_id,
-                    partition: Some(shard_desc::Partition::Range(RangePartition {
+                    range: Some(RangePartition {
                         start: crate::shard::SHARD_MIN.to_owned(),
                         end: crate::shard::SHARD_MAX.to_owned(),
-                    })),
+                    }),
                 }
             }
         }
@@ -80,7 +57,7 @@ decl_unity_range_col!(job, 7);
 decl_unity_range_col!(job_history, 8);
 decl_unity_range_col!(end_unity_col, 100);
 
-decl_hash_col!(txn, crate::FIRST_TXN_SHARD_ID, 256);
+decl_unity_range_col!(txn, crate::FIRST_TXN_SHARD_ID);
 
 /// Whether the collection is an unity col (which, only contains one shard).
 pub fn is_unity_col(col_id: u64) -> bool {

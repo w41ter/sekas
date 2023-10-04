@@ -11,8 +11,7 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-
-use sekas_api::v1::DatabaseDesc;
+use sekas_api::server::v1::DatabaseDesc;
 
 pub const NAME: &str = "__system__";
 pub const ID: u64 = 1;

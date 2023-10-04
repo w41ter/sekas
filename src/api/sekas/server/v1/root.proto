@@ -47,8 +47,8 @@ message WatchResponse {
 			NodeDesc node = 1;
 			GroupDesc group = 2;
 			GroupState group_state = 3;
-			Database database = 4;
-			Table table = 5;
+			DatabaseDesc database = 4;
+			CollectionDesc collection = 5;
 		}
 	}
 

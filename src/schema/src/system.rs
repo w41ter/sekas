@@ -15,7 +15,6 @@ pub mod col;
 pub mod db;
 
 use sekas_api::server::v1::*;
-use sekas_api::v1::CollectionDesc;
 
 /// Return the shards of the system unity collections.
 pub fn unity_col_shards() -> Vec<ShardDesc> {
@@ -28,20 +27,8 @@ pub fn unity_col_shards() -> Vec<ShardDesc> {
         col::replica_state_shard_desc(),
         col::job_shard_desc(),
         col::job_history_shard_desc(),
+        col::txn_shard_desc(),
     ]
-}
-
-/// Return the shards of the txn collection.
-pub fn txn_col_shards() -> Vec<ShardDesc> {
-    vec![ShardDesc {
-        id: crate::FIRST_TXN_SHARD_ID,
-        collection_id: col::TXN_ID,
-        partition: Some(shard_desc::Partition::Hash(HashPartition {
-            slot_id: 0,
-            end_slot_id: col::TXN_SLOTS,
-            slots: col::TXN_SLOTS,
-        })),
-    }]
 }
 
 /// Return the collections of the system database.

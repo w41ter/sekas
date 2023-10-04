@@ -52,7 +52,7 @@ message RangePartition {
 
 message ShardDesc {
 	uint64 id = 1;
-	uint64 tablet_id = 2;
+	uint64 collection_id = 2;
     RangePartition range = 3;
 }
 
