@@ -380,3 +380,257 @@ impl<T: Message> IntoRequest<T> for RpcTimeout<T> {
         req
     }
 }
+
+#[cfg(test)]
+mod timeout_error_tests {
+    use std::net::SocketAddr;
+    use std::time::Duration;
+
+    use socket2::{Domain, Socket, Type};
+    use tonic::transport::Endpoint;
+    use tonic::Code;
+
+    use super::{Client as NodeClient, *};
+    use crate::error::retryable_rpc_err;
+
+    #[tokio::test]
+    async fn connect_timeout_report_timed_out() {
+        // Connect to a non-routable IP address.
+        let channel = Endpoint::new("http://10.255.255.1:1234".to_owned())
+            .unwrap()
+            .connect_timeout(Duration::from_millis(100))
+            .connect_lazy();
+        let client = NodeClient::new(channel);
+        let req = RequestBatchBuilder::new(0).transfer_leader(1, 1, 1).build();
+        match client.batch_group_requests(RpcTimeout::new(Some(Duration::from_secs(3)), req)).await
+        {
+            Ok(_) => unreachable!(),
+            Err(status) => {
+                assert!(retryable_rpc_err(&status), "Expect Code::TimedOut, but got {status:?}");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn rpc_timeout_report_canceled() {
+        let socket = Socket::new(Domain::IPV4, Type::STREAM, None).unwrap();
+        socket.bind(&"127.0.0.1:0".parse::<SocketAddr>().unwrap().into()).unwrap();
+        socket.listen(1).unwrap();
+        let port = socket.local_addr().unwrap().as_socket_ipv4().unwrap().port();
+
+        let channel = Endpoint::new(format!("http://127.0.0.1:{port}"))
+            .unwrap()
+            .connect_timeout(Duration::from_millis(100))
+            .connect_lazy();
+        let client = NodeClient::new(channel);
+        let req = RequestBatchBuilder::new(0).transfer_leader(1, 1, 1).build();
+        match client
+            .batch_group_requests(RpcTimeout::new(Some(Duration::from_millis(100)), req))
+            .await
+        {
+            Ok(_) => unreachable!(),
+            Err(status) => {
+                assert!(
+                    matches!(status.code(), Code::Cancelled),
+                    "Expect Code::Cancelled, got {status:?}"
+                );
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod transport_error_tests {
+    use std::error::Error;
+    use std::io::ErrorKind;
+    use std::net::SocketAddr;
+    use std::os::unix::prelude::{FromRawFd, IntoRawFd};
+    use std::panic;
+    use std::time::Duration;
+
+    use log::info;
+    use sekas_api::server::v1::node_server::NodeServer;
+    use sekas_api::server::v1::*;
+    use socket2::{Domain, Socket, Type};
+    use tokio::sync::oneshot;
+    use tonic::transport::Endpoint;
+
+    use super::{Client as NodeClient, RequestBatchBuilder};
+    use crate::error::{find_io_error, retryable_rpc_err, transport_err};
+
+    struct MockedServer {}
+
+    #[allow(unused)]
+    #[tonic::async_trait]
+    impl node_server::Node for MockedServer {
+        async fn batch(
+            &self,
+            request: tonic::Request<sekas_api::server::v1::BatchRequest>,
+        ) -> Result<tonic::Response<sekas_api::server::v1::BatchResponse>, tonic::Status> {
+            todo!()
+        }
+
+        async fn admin(
+            &self,
+            request: tonic::Request<sekas_api::server::v1::NodeAdminRequest>,
+        ) -> Result<tonic::Response<sekas_api::server::v1::NodeAdminResponse>, tonic::Status>
+        {
+            todo!()
+        }
+
+        async fn migrate(
+            &self,
+            request: tonic::Request<sekas_api::server::v1::MigrateRequest>,
+        ) -> Result<tonic::Response<sekas_api::server::v1::MigrateResponse>, tonic::Status>
+        {
+            todo!()
+        }
+    }
+
+    #[tokio::test]
+    async fn broken_pipe() {
+        if cfg!(target_os = "macos") {
+            return;
+        }
+
+        let socket = Socket::new(Domain::IPV4, Type::STREAM, None).unwrap();
+        socket.set_linger(Some(Duration::ZERO)).unwrap();
+        socket.bind(&"127.0.0.1:0".parse::<SocketAddr>().unwrap().into()).unwrap();
+        socket.listen(1).unwrap();
+        let port = socket.local_addr().unwrap().as_socket_ipv4().unwrap().port();
+
+        let channel = Endpoint::new(format!("http://127.0.0.1:{port}"))
+            .unwrap()
+            .connect_timeout(Duration::from_millis(100))
+            .connect()
+            .await
+            .unwrap();
+        let client = NodeClient::new(channel);
+        let req = RequestBatchBuilder::new(0).transfer_leader(1, 1, 1).build();
+        drop(socket);
+        match client.batch_group_requests(req).await {
+            Ok(_) => unreachable!(),
+            Err(status) => {
+                info!("message {} details {status:?}", status.message());
+                assert!(!retryable_rpc_err(&status));
+                assert!(transport_err(&status));
+                let err = find_io_error(&status).unwrap();
+                assert!(matches!(err.kind(), ErrorKind::BrokenPipe));
+            }
+        }
+    }
+
+    // TODO: it is difficult to reproduce `connection reset` error in different env.
+    #[tokio::test]
+    #[ignore]
+    async fn connection_closed() {
+        if cfg!(target_os = "macos") {
+            return;
+        }
+
+        let socket = Socket::new(Domain::IPV4, Type::STREAM, None).unwrap();
+        socket.set_nodelay(true).unwrap();
+        socket.set_nonblocking(true).unwrap();
+        socket.bind(&"127.0.0.1:0".parse::<SocketAddr>().unwrap().into()).unwrap();
+        socket.listen(10).unwrap();
+        let port = socket.local_addr().unwrap().as_socket_ipv4().unwrap().port();
+
+        let (sender, receiver) = oneshot::channel::<()>();
+        let handle = std::thread::spawn(move || {
+            tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(
+                async move {
+                    use tokio::net::TcpListener;
+                    use tokio_stream::wrappers::TcpListenerStream;
+                    use tonic::transport::Server;
+
+                    let listener =
+                        unsafe { std::net::TcpListener::from_raw_fd(socket.into_raw_fd()) };
+                    let listener = TcpListener::from_std(listener).unwrap();
+                    let listener = TcpListenerStream::new(listener);
+                    info!("listen mocked service");
+                    let server = Server::builder()
+                        .add_service(NodeServer::new(MockedServer {}))
+                        .serve_with_incoming(listener);
+                    tokio::select! {
+                        _ = server => {}
+                        _ = receiver => {
+                            info!("shutdown");
+                        }
+                    };
+                },
+            );
+        });
+
+        let channel = Endpoint::new(format!("http://127.0.0.1:{port}"))
+            .unwrap()
+            .connect_timeout(Duration::from_millis(100))
+            .connect()
+            .await
+            .unwrap();
+
+        let client = NodeClient::new(channel);
+
+        drop(sender);
+        handle.join().unwrap();
+        match client.get_root().await {
+            Ok(_) => unreachable!(),
+            Err(status) => {
+                info!("message {} details {status:?}", status.message());
+                assert!(retryable_rpc_err(&status));
+
+                let mut cause = status.source();
+                let found = loop {
+                    if let Some(err) = cause {
+                        if err.to_string().starts_with("operation was canceled: connection closed")
+                        {
+                            break true;
+                        }
+                        cause = err.source();
+                    } else {
+                        break false;
+                    }
+                };
+                assert!(found, "status is {status:?}");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn connection_reset() {
+        if cfg!(target_os = "macos") {
+            return;
+        }
+
+        let socket = Socket::new(Domain::IPV4, Type::STREAM, None).unwrap();
+        socket.set_linger(Some(Duration::ZERO)).unwrap();
+        socket.bind(&"127.0.0.1:0".parse::<SocketAddr>().unwrap().into()).unwrap();
+        socket.listen(100).unwrap();
+        let port = socket.local_addr().unwrap().as_socket_ipv4().unwrap().port();
+
+        let handle = tokio::spawn(async move {
+            let channel = Endpoint::new(format!("http://127.0.0.1:{port}"))
+                .unwrap()
+                .connect_timeout(Duration::from_millis(100))
+                .connect()
+                .await
+                .unwrap();
+            let client = NodeClient::new(channel);
+            let req = RequestBatchBuilder::new(0).transfer_leader(1, 1, 1).build();
+            match client.batch_group_requests(req).await {
+                Ok(_) => unreachable!(),
+                Err(status) => {
+                    info!("message {} details {status:?}", status.message());
+                    assert!(!retryable_rpc_err(&status));
+                    assert!(transport_err(&status));
+                    let err = find_io_error(&status).unwrap();
+                    assert!(matches!(err.kind(), ErrorKind::ConnectionReset));
+                }
+            }
+        });
+
+        tokio::time::sleep(Duration::from_secs(1)).await;
+
+        drop(socket);
+        handle.await.unwrap();
+    }
+}

@@ -218,7 +218,12 @@ impl Collection {
         Ok(())
     }
 
-    pub async fn get(&self, key: Vec<u8>) -> AppResult<Option<Value>> {
+    pub async fn get(&self, key: Vec<u8>) -> AppResult<Option<Vec<u8>>> {
+        let value = self.get_raw_value(key).await?;
+        Ok(value.map(|v| v.content).flatten())
+    }
+
+    pub async fn get_raw_value(&self, key: Vec<u8>) -> AppResult<Option<Value>> {
         CLIENT_DATABASE_BYTES_TOTAL.rx.inc_by(key.len() as u64);
         CLIENT_DATABASE_REQUEST_TOTAL.get.inc();
         record_latency!(&CLIENT_DATABASE_REQUEST_DURATION_SECONDS.get);
