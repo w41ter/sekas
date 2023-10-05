@@ -20,7 +20,9 @@ use std::sync::Arc;
 
 use log::info;
 
-pub(crate) use self::group::{GroupEngine, RawIterator, SnapshotMode, WriteBatch, WriteStates};
+pub(crate) use self::group::{
+    GroupEngine, RawIterator, Snapshot, SnapshotMode, WriteBatch, WriteStates,
+};
 pub(crate) use self::state::StateEngine;
 use crate::{DbConfig, Result};
 

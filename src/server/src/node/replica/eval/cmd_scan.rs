@@ -15,7 +15,7 @@
 use prost::Message;
 use sekas_api::server::v1::*;
 
-use crate::engine::{GroupEngine, SnapshotMode};
+use crate::engine::{GroupEngine, Snapshot, SnapshotMode};
 use crate::Result;
 
 /// Scan the specified range.
@@ -23,57 +23,23 @@ pub(crate) async fn scan(
     engine: &GroupEngine,
     req: &ShardScanRequest,
 ) -> Result<ShardScanResponse> {
-    if let Some(prefix) = &req.prefix {
-        return scan_prefix(engine, req.shard_id, req.start_version, prefix).await;
-    }
-
-    scan_range(engine, req).await
-}
-
-/// Scan key-value pairs with the specified prefix.
-async fn scan_prefix(
-    engine: &GroupEngine,
-    shard_id: u64,
-    start_version: u64,
-    prefix: &[u8],
-) -> Result<ShardScanResponse> {
-    // TODO(walter) shall I support migrating?
-    let snapshot_mode = SnapshotMode::Prefix { key: prefix };
-    let mut snapshot = engine.snapshot(shard_id, snapshot_mode)?;
-    let mut data = Vec::new();
-    for mvcc_iter in snapshot.iter() {
-        let mut mvcc_iter = mvcc_iter?;
-        if let Some(entry) = mvcc_iter.next() {
-            let entry = entry?;
-            if entry.version() == super::INTENT_KEY_VERSION {
-                let encoded_intent = entry.value().ok_or_else(|| {
-                    crate::Error::InvalidData(format!(
-                        "the value of intent key {:?} is not exists",
-                        entry.user_key()
-                    ))
-                })?;
-                let intent = TxnIntent::decode(encoded_intent)?;
-                if intent.start_version < start_version {
-                    // TODO: handle orphan write intent.
-                }
-            }
-            if let Some(value) = entry.value().map(ToOwned::to_owned) {
-                data.push(ShardData {
-                    key: entry.user_key().to_owned(),
-                    value,
-                    version: entry.version(),
-                });
-            }
+    let mut req = req.clone();
+    let snapshot_mode = match req.prefix {
+        Some(prefix) => {
+            req.exclude_end_key = false;
+            req.exclude_start_key = false;
+            SnapshotMode::Prefix { key: &prefix }
         }
-    }
-    Ok(ShardScanResponse { data })
+        None => SnapshotMode::Start { start_key: req.start_key.as_ref().map(|v| v.as_ref()) },
+    };
+    let mut snapshot = engine.snapshot(req.shard_id, snapshot_mode)?;
+    scan_inner(snapshot, &req).await
 }
 
-/// Scan key-value pairs with the specified range.
-async fn scan_range(engine: &GroupEngine, req: &ShardScanRequest) -> Result<ShardScanResponse> {
-    let snapshot_mode =
-        SnapshotMode::Start { start_key: req.start_key.as_ref().map(|v| v.as_ref()) };
-    let mut snapshot = engine.snapshot(req.shard_id, snapshot_mode)?;
+async fn scan_inner(
+    mut snapshot: Snapshot<'_>,
+    req: &ShardScanRequest,
+) -> Result<ShardScanResponse> {
     let mut data = Vec::new();
     let mut total_bytes = 0;
     'OUTER: for mvcc_iter in snapshot.iter() {
@@ -82,6 +48,7 @@ async fn scan_range(engine: &GroupEngine, req: &ShardScanRequest) -> Result<Shar
         while let Some(entry) = mvcc_iter.next() {
             let entry = entry?;
 
+            // skip exclude keys.
             if req.exclude_start_key && is_equals(&req.start_key, entry.user_key()) {
                 continue 'OUTER;
             }
@@ -109,8 +76,13 @@ async fn scan_range(engine: &GroupEngine, req: &ShardScanRequest) -> Result<Shar
                 }
             }
 
+            // skip invisible versions.
+            if req.start_version < entry.version() {
+                continue;
+            }
+
             if let Some(value) = entry.value().map(ToOwned::to_owned) {
-                total_bytes += value.len() + key.len();
+                total_bytes += value.len();
                 value_set.values.push(Value { content: Some(value), version: entry.version() });
             } else if req.include_raw_data {
                 value_set.values.push(Value { content: None, version: entry.version() });
@@ -118,6 +90,7 @@ async fn scan_range(engine: &GroupEngine, req: &ShardScanRequest) -> Result<Shar
 
             if !value_set.values.is_empty() && value_set.user_key.is_empty() {
                 value_set.user_key = entry.user_key().to_owned();
+                total_bytes += value_set.user_key.len();
             }
 
             if !req.include_raw_data {
