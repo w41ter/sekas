@@ -15,7 +15,6 @@ use lazy_static::lazy_static;
 use prometheus::*;
 use prometheus_static_metric::make_static_metric;
 use sekas_api::server::v1::*;
-use sekas_api::v1::collection_request_union;
 
 make_static_metric! {
     pub struct GroupRequestTotal: IntCounter {
@@ -268,31 +267,6 @@ lazy_static! {
         .unwrap();
     pub static ref PROXY_SERVICE_DATABASE_REQUEST_DURATION_SECONDS: DatabaseRequestDuration =
         DatabaseRequestDuration::from(&PROXY_SERVICE_DATABASE_REQUEST_DURATION_SECONDS_VEC);
-}
-
-pub fn take_database_request_metrics(
-    request: &collection_request_union::Request,
-) -> &'static Histogram {
-    use collection_request_union::Request;
-
-    match request {
-        Request::Get(_) => {
-            PROXY_SERVICE_DATABASE_REQUEST_TOTAL.get.inc();
-            &PROXY_SERVICE_DATABASE_REQUEST_DURATION_SECONDS.get
-        }
-        Request::Put(_) => {
-            PROXY_SERVICE_DATABASE_REQUEST_TOTAL.put.inc();
-            &PROXY_SERVICE_DATABASE_REQUEST_DURATION_SECONDS.put
-        }
-        Request::Delete(_) => {
-            PROXY_SERVICE_DATABASE_REQUEST_TOTAL.delete.inc();
-            &PROXY_SERVICE_DATABASE_REQUEST_DURATION_SECONDS.delete
-        }
-        Request::Batch(_) => {
-            PROXY_SERVICE_DATABASE_REQUEST_TOTAL.batch.inc();
-            &PROXY_SERVICE_DATABASE_REQUEST_DURATION_SECONDS.batch
-        }
-    }
 }
 
 #[macro_export]

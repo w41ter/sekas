@@ -14,7 +14,6 @@
 pub mod admin;
 mod metrics;
 pub mod node;
-pub mod proxy;
 pub mod raft;
 pub mod root;
 

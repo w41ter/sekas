@@ -13,7 +13,6 @@
 // limitations under the License.
 
 use sekas_api::server::v1::*;
-use sekas_api::v1::*;
 use tonic::{Request, Response, Status};
 
 use super::metrics::*;
