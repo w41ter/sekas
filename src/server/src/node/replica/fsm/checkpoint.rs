@@ -147,7 +147,6 @@ mod tests {
     use std::path::Path;
     use std::sync::Arc;
 
-    use sekas_api::server::v1::shard_desc::Partition;
     use sekas_api::server::v1::{GroupDesc, RangePartition, ShardDesc};
     use tempdir::TempDir;
 
@@ -171,10 +170,7 @@ mod tests {
                 shards: vec![ShardDesc {
                     id: shard_id,
                     collection_id: 1,
-                    partition: Some(Partition::Range(RangePartition {
-                        start: vec![],
-                        end: vec![],
-                    })),
+                    range: Some(RangePartition { start: vec![], end: vec![] }),
                 }],
                 ..Default::default()
             }),
