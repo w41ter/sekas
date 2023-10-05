@@ -142,35 +142,53 @@ async fn execute_internal(
     }
 }
 
+// TODO(walter) move retryable logic to sekas client.
 fn is_executable(descriptor: &GroupDesc, request: &Request) -> bool {
     if !super::is_change_meta_request(request) {
         return match request {
-            Request::Get(req) => {
-                is_target_shard_exists(descriptor, req.shard_id, &req.get.as_ref().unwrap().key)
-            }
-            Request::Put(req) => {
-                is_target_shard_exists(descriptor, req.shard_id, &req.put.as_ref().unwrap().key)
-            }
-            Request::Delete(req) => {
-                is_target_shard_exists(descriptor, req.shard_id, &req.delete.as_ref().unwrap().key)
-            }
+            Request::Get(req) => is_target_shard_exists(descriptor, req.shard_id, &req.key),
             Request::Scan(req) => is_scan_retryable(descriptor, req),
-            Request::BatchWrite(req) => {
+            Request::Write(req) => {
                 for delete in &req.deletes {
-                    if !is_target_shard_exists(
-                        descriptor,
-                        delete.shard_id,
-                        &delete.delete.as_ref().unwrap().key,
-                    ) {
+                    if !is_target_shard_exists(descriptor, req.shard_id, &delete.key) {
                         return false;
                     }
                 }
                 for put in &req.puts {
-                    if !is_target_shard_exists(
-                        descriptor,
-                        put.shard_id,
-                        &put.put.as_ref().unwrap().key,
-                    ) {
+                    if !is_target_shard_exists(descriptor, req.shard_id, &put.key) {
+                        return false;
+                    }
+                }
+                true
+            }
+            Request::WriteIntent(req) => {
+                let Some(write) = req.write.as_ref() else {
+                    return false;
+                };
+                for delete in &write.deletes {
+                    if !is_target_shard_exists(descriptor, write.shard_id, &delete.key) {
+                        return false;
+                    }
+                }
+                for put in &write.puts {
+                    if !is_target_shard_exists(descriptor, write.shard_id, &put.key) {
+                        return false;
+                    }
+                }
+
+                true
+            }
+            Request::CommitIntent(req) => {
+                for key in req.keys {
+                    if !is_target_shard_exists(descriptor, req.shard_id, &key) {
+                        return false;
+                    }
+                }
+                true
+            }
+            Request::ClearIntent(req) => {
+                for key in req.keys {
+                    if !is_target_shard_exists(descriptor, req.shard_id, &key) {
                         return false;
                     }
                 }

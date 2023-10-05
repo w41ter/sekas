@@ -27,7 +27,6 @@ use log::info;
 use sekas_api::server::v1::group_request_union::Request;
 use sekas_api::server::v1::group_response_union::Response;
 use sekas_api::server::v1::*;
-use sekas_api::v1::{DeleteResponse, GetResponse, PutResponse};
 use serde::Serialize;
 
 pub use self::eval::LatchGuard;
@@ -298,24 +297,20 @@ impl Replica {
         let (eval_result_opt, resp) = match &request {
             Request::Get(req) => {
                 let value = eval::get(exec_ctx, &self.group_engine, req).await?;
-                let resp = GetResponse { value };
+                let resp = ShardGetResponse { value };
                 (None, Response::Get(resp))
             }
-            Request::Put(req) => {
-                let eval_result = eval::put(exec_ctx, &self.group_engine, req).await?;
-                (Some(eval_result), Response::Put(PutResponse {}))
+            Request::Write(req) => {
+                let (eval_result, resp) =
+                    eval::batch_write(exec_ctx, &self.group_engine, req).await?;
+                (eval_result, Response::Write(resp))
             }
-            Request::Delete(req) => {
-                let eval_result = eval::delete(exec_ctx, &self.group_engine, req).await?;
-                (Some(eval_result), Response::Delete(DeleteResponse {}))
-            }
+            Request::WriteIntent(_) => todo!(),
+            Request::CommitIntent(_) => todo!(),
+            Request::ClearIntent(_) => todo!(),
             Request::Scan(req) => {
                 let eval_result = eval::scan(&self.group_engine, req).await?;
                 (None, Response::Scan(eval_result))
-            }
-            Request::BatchWrite(req) => {
-                let eval_result = eval::batch_write(exec_ctx, &self.group_engine, req).await?;
-                (eval_result, Response::BatchWrite(BatchWriteResponse {}))
             }
             Request::CreateShard(req) => {
                 // TODO(walter) check the existing of shard.
@@ -352,9 +347,6 @@ impl Replica {
                 self.raft_node.clone().transfer_leader(req.transferee)?;
                 return Ok(Response::Transfer(TransferResponse {}));
             }
-            Request::WriteIntent(_) => todo!(),
-            Request::CommitIntent(_) => todo!(),
-            Request::ClearIntent(_) => todo!(),
         };
 
         if let Some(eval_result) = eval_result_opt {
@@ -495,9 +487,7 @@ pub(self) fn is_change_meta_request(request: &Request) -> bool {
         | Request::MoveReplicas(_)
         | Request::Transfer(_) => true,
         Request::Get(_)
-        | Request::Put(_)
-        | Request::Delete(_)
-        | Request::BatchWrite(_)
+        | Request::Write(_)
         | Request::Scan(_)
         | Request::WriteIntent(_)
         | Request::CommitIntent(_)

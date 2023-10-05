@@ -646,9 +646,7 @@ mod tests {
 
     use sekas_api::server::v1::group_request_union::Request;
     use sekas_api::server::v1::report_request::GroupUpdates;
-    use sekas_api::server::v1::shard_desc::Partition;
     use sekas_api::server::v1::{RangePartition, ReplicaDesc, ReplicaRole};
-    use sekas_api::v1::PutRequest;
     use tempdir::TempDir;
 
     use super::*;
@@ -874,7 +872,7 @@ mod tests {
                 shards: vec![ShardDesc {
                     id: shard_id,
                     collection_id: 123,
-                    partition: Some(Partition::Range(RangePartition::default())),
+                    range: Some(RangePartition::default()),
                 }],
                 replicas: vec![ReplicaDesc {
                     id: new_replica_id,
@@ -888,13 +886,15 @@ mod tests {
             replica.on_leader("test", false).await.unwrap();
             for _ in 0..100 {
                 let mut ctx = ExecCtx::with_epoch(replica.epoch());
-                let request = Request::Put(ShardPutRequest {
+                let request = Request::Write(ShardWriteRequest {
                     shard_id,
-                    put: Some(PutRequest {
+                    puts: vec![PutRequest {
+                        put_type: PutType::None.into(),
                         key: vec![0u8; 10],
                         value: vec![0u8; 10],
                         ..Default::default()
-                    }),
+                    }],
+                    ..Default::default()
                 });
                 replica.execute(&mut ctx, &request).await.unwrap();
             }
@@ -949,7 +949,7 @@ mod tests {
                 shards: vec![ShardDesc {
                     id: shard_id,
                     collection_id: 123,
-                    partition: Some(Partition::Range(RangePartition::default())),
+                    range: Some(RangePartition::default()),
                 }],
                 replicas: vec![ReplicaDesc {
                     id: new_replica_id,
@@ -963,13 +963,15 @@ mod tests {
             replica.on_leader("test", false).await.unwrap();
             for _ in 0..100 {
                 let mut ctx = ExecCtx::with_epoch(replica.epoch());
-                let request = Request::Put(ShardPutRequest {
+                let request = Request::Write(ShardWriteRequest {
                     shard_id,
-                    put: Some(PutRequest {
+                    puts: vec![PutRequest {
+                        put_type: PutType::None.into(),
                         key: vec![0u8; 10],
                         value: vec![0u8; 10],
                         ..Default::default()
-                    }),
+                    }],
+                    ..Default::default()
                 });
                 replica.execute(&mut ctx, &request).await.unwrap();
             }

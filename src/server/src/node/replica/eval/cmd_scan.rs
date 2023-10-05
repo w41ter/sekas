@@ -52,7 +52,7 @@ async fn scan_prefix(
                         entry.user_key()
                     ))
                 })?;
-                let intent = WriteIntent::decode(encoded_intent)?;
+                let intent = TxnIntent::decode(encoded_intent)?;
                 if intent.start_version < start_version {
                     // TODO: handle orphan write intent.
                 }
@@ -76,21 +76,22 @@ async fn scan_range(engine: &GroupEngine, req: &ShardScanRequest) -> Result<Shar
     let mut snapshot = engine.snapshot(req.shard_id, snapshot_mode)?;
     let mut data = Vec::new();
     let mut total_bytes = 0;
-    for mvcc_iter in snapshot.iter() {
+    'OUTER: for mvcc_iter in snapshot.iter() {
         let mut mvcc_iter = mvcc_iter?;
-        if let Some(entry) = mvcc_iter.next() {
+        let mut value_set = ValueSet::default();
+        while let Some(entry) = mvcc_iter.next() {
             let entry = entry?;
 
             if req.exclude_start_key && is_equals(&req.start_key, entry.user_key()) {
-                continue;
+                continue 'OUTER;
             }
 
             if req.exclude_end_key && is_equals(&req.end_key, entry.user_key()) {
-                continue;
+                continue 'OUTER;
             }
 
             if is_exceeds(&req.end_key, entry.user_key()) {
-                break;
+                break 'OUTER;
             }
 
             if entry.version() == super::INTENT_KEY_VERSION {
@@ -100,19 +101,35 @@ async fn scan_range(engine: &GroupEngine, req: &ShardScanRequest) -> Result<Shar
                         entry.user_key()
                     ))
                 })?;
-                let intent = WriteIntent::decode(encoded_intent)?;
+                let intent = TxnIntent::decode(encoded_intent)?;
                 if intent.start_version < req.start_version {
                     // TODO: handle orphan write intent.
+                    // TODO(walter) what happen if a intent is resolved before
+                    // ingest?
                 }
             }
 
             if let Some(value) = entry.value().map(ToOwned::to_owned) {
-                let key = entry.user_key().to_owned();
-                let version = entry.version();
                 total_bytes += value.len() + key.len();
-                data.push(ShardData { key, value, version });
+                value_set.values.push(Value { content: Some(value), version: entry.version() });
+            } else if req.include_raw_data {
+                value_set.values.push(Value { content: None, version: entry.version() });
             }
 
+            if !value_set.values.is_empty() && value_set.user_key.is_empty() {
+                value_set.user_key = entry.user_key().to_owned();
+            }
+
+            if !req.include_raw_data {
+                // only returns the first non-tombstone version.
+                break;
+            }
+        }
+
+        if !value_set.values.is_empty() {
+            data.push(value_set);
+
+            // ATTN: the iterator needs to ensure that all values of a key are returned.
             if (req.limit != 0 && req.limit as usize == data.len())
                 || (req.limit_bytes != 0 && req.limit_bytes as usize <= total_bytes)
             {

@@ -12,53 +12,52 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-use sekas_api::server::v1::BatchWriteRequest;
-use sekas_api::v1::PutOperation;
+
+use sekas_api::server::v1::{PutType, ShardWriteRequest, ShardWriteResponse, Value, WriteResponse};
 
 use super::cas::eval_conditions;
 use crate::engine::{GroupEngine, WriteBatch};
 use crate::node::replica::ExecCtx;
 use crate::serverpb::v1::{EvalResult, WriteBatchRep};
-use crate::{Error, Result};
+use crate::Result;
 
 pub(crate) async fn batch_write(
     exec_ctx: &ExecCtx,
     group_engine: &GroupEngine,
-    req: &BatchWriteRequest,
-) -> Result<Option<EvalResult>> {
+    req: &ShardWriteRequest,
+) -> Result<(Option<EvalResult>, ShardWriteResponse)> {
     if req.deletes.is_empty() && req.puts.is_empty() {
-        return Ok(None);
+        return Ok((None, ShardWriteResponse::deafult()));
     }
 
     let mut wb = WriteBatch::default();
-    for req in &req.deletes {
-        let del = req
-            .delete
-            .as_ref()
-            .ok_or_else(|| Error::InvalidArgument("ShardDeleteRequest::delete is None".into()))?;
-        if !del.conditions.is_empty() {
+    let mut resp = ShardWriteResponse::default();
+    for del in &req.deletes {
+        if !del.conditions.is_empty() || del.take_prev_value {
             // TODO(walter) support get value in parallel.
             let value_result = group_engine.get(req.shard_id, &del.key).await?;
             let value_result = value_result.map(|(val, _)| val);
             eval_conditions(value_result.as_deref(), &del.conditions)?;
+            resp.deletes.push(WriteResponse {
+                prev_value: value_result.map(|(data, version)| Value { content: data, version }),
+            });
         }
         if exec_ctx.is_migrating_shard(req.shard_id) {
             panic!("BatchWrite does not support migrating shard");
         }
         group_engine.delete(&mut wb, req.shard_id, &del.key, super::FLAT_KEY_VERSION)?;
     }
-    for req in &req.puts {
-        let put = req
-            .put
-            .as_ref()
-            .ok_or_else(|| Error::InvalidArgument("ShardPutRequest::put is None".into()))?;
-        if !put.conditions.is_empty() {
+    for put in &req.puts {
+        if !put.conditions.is_empty() || put.take_prev_value {
             // TODO(walter) support get value in parallel.
             let value_result = group_engine.get(req.shard_id, &put.key).await?;
             let value_result = value_result.map(|(val, _)| val);
             eval_conditions(value_result.as_deref(), &put.conditions)?;
+            resp.puts.push(WriteResponse {
+                prev_value: value_result.map(|(data, version)| Value { content: data, version }),
+            });
         }
-        if put.op != PutOperation::None as i32 {
+        if put.op != PutType::None as i32 {
             panic!("BatchWrite does not support put operation");
         }
         if exec_ctx.is_migrating_shard(req.shard_id) {
@@ -66,8 +65,9 @@ pub(crate) async fn batch_write(
         }
         group_engine.put(&mut wb, req.shard_id, &put.key, &put.value, super::FLAT_KEY_VERSION)?;
     }
-    Ok(Some(EvalResult {
+    let eval_result = EvalResult {
         batch: Some(WriteBatchRep { data: wb.data().to_owned() }),
         ..Default::default()
-    }))
+    };
+    Ok((Some(eval_result), resp))
 }

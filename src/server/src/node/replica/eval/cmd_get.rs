@@ -27,21 +27,16 @@ pub(crate) async fn get(
     engine: &GroupEngine,
     req: &ShardGetRequest,
 ) -> Result<Option<Vec<u8>>> {
-    let get = req
-        .get
-        .as_ref()
-        .ok_or_else(|| Error::InvalidArgument("ShardGetRequest::get is None".into()))?;
-
     if let Some(desc) = exec_ctx.migration_desc.as_ref() {
         let shard_id = desc.shard_desc.as_ref().unwrap().id;
         if shard_id == req.shard_id {
-            let payloads = read_shard_key_versions(engine, req.shard_id, &get.key).await?;
+            let payloads = read_shard_key_versions(engine, req.shard_id, &req.key).await?;
             let forward_ctx = ForwardCtx { shard_id, dest_group_id: desc.dest_group_id, payloads };
             return Err(Error::Forward(forward_ctx));
         }
     }
 
-    read_key(engine, req.shard_id, &get.key, req.start_version).await
+    read_key(engine, req.shard_id, &req.key, req.start_version).await
 }
 
 async fn read_key(
@@ -62,9 +57,9 @@ async fn read_key(
                         format!("the intent value of key: {key:?} not exists?")
                     ));
                 };
-                let intent = WriteIntent::decode(value)?;
+                let intent = TxnIntent::decode(value)?;
                 if intent.start_version <= start_version {
-                    // We need to wait intent lock to release!
+                    // TODO(walter) We need to wait intent lock to release!
                 }
             } else if entry.version() < start_version {
                 // This entry is safe for reading.
@@ -79,25 +74,25 @@ async fn read_shard_key_versions(
     engine: &GroupEngine,
     shard_id: u64,
     key: &[u8],
-) -> Result<Vec<ShardData>> {
+) -> Result<ValueSet> {
     let snapshot_mode = SnapshotMode::Key { key };
     let mut snapshot = engine.snapshot(shard_id, snapshot_mode)?;
-    let mut shard_data_list = vec![];
+    let mut value_set = ValueSet { user_key: key.to_owned(), values: vec![] };
     if let Some(iter) = snapshot.mvcc_iter() {
         for entry in iter? {
             let entry = entry?;
-            let Some(value) = entry.value() else {
-                // Now we don't need to send delete/tombstone to target.
-                break;
-            };
-
-            // FIXME(walter) maybe recent two version is enough?
-            shard_data_list.push(ShardData {
-                key: key.to_owned(),
-                value: value.to_owned(),
-                version: entry.version(),
-            });
+            match entry.value() {
+                Some(value) => {
+                    value_set
+                        .values
+                        .push(Value { content: Some(value.to_owned()), version: value.version() });
+                }
+                None => {
+                    // Send tombstone to target to support MVCC.
+                    value_set.values.push(Value { content: None, version: entry.version() });
+                }
+            }
         }
     }
-    Ok(shard_data_list)
+    Ok(value_set)
 }

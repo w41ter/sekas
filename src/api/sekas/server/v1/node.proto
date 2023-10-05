@@ -145,6 +145,8 @@ message ShardScanRequest {
     optional bytes start_key = 8;
     /// The end key only works with range shard, the behaviour of hash shard is undefined.
     optional bytes end_key = 9;
+    /// Include all data (tombstone) as return values.
+    bool include_raw_data = 10;
 }
 
 message ShardScanResponse { repeated ValueSet data = 1; }

@@ -226,6 +226,7 @@ impl GroupEngine {
     }
 
     /// Get key value from the corresponding shard.
+    /// FIXME(walter) it should return the tombstone.
     pub async fn get(&self, shard_id: u64, key: &[u8]) -> Result<Option<(Vec<u8>, u64)>> {
         let snapshot_mode = SnapshotMode::Key { key };
         let mut snapshot = self.snapshot(shard_id, snapshot_mode)?;

@@ -15,12 +15,10 @@
 
 mod cas;
 mod cmd_accept_shard;
-mod cmd_batch_write;
-mod cmd_delete;
 mod cmd_get;
 mod cmd_move_replicas;
-mod cmd_put;
 mod cmd_scan;
+mod cmd_write;
 mod txn;
 
 use std::collections::VecDeque;
@@ -30,15 +28,13 @@ use std::time::Duration;
 use dashmap::DashMap;
 use futures::channel::oneshot;
 use sekas_api::server::v1::group_request_union::Request;
-use sekas_api::server::v1::{ShardDeleteRequest, ShardDesc, ShardPutRequest};
+use sekas_api::server::v1::{ShardDesc, ShardWriteRequest};
 
 pub(crate) use self::cmd_accept_shard::accept_shard;
-pub(crate) use self::cmd_batch_write::batch_write;
-pub(crate) use self::cmd_delete::delete;
 pub(crate) use self::cmd_get::get;
 pub(crate) use self::cmd_move_replicas::move_replicas;
-pub(crate) use self::cmd_put::put;
 pub(crate) use self::cmd_scan::scan;
+pub(crate) use self::cmd_write::batch_write;
 use crate::serverpb::v1::EvalResult;
 use crate::{Error, Result};
 
@@ -168,55 +164,46 @@ pub async fn acquire_row_latches(
     request: &Request,
     timeout: Option<Duration>,
 ) -> Result<Option<Vec<LatchGuard>>> {
-    match request {
-        Request::Put(ShardPutRequest { shard_id, put }) => {
-            let put = put
-                .as_ref()
-                .ok_or_else(|| Error::InvalidArgument("ShardPutRequest::put is None".into()))?;
-
-            let guard = latch_mgr.acquire(*shard_id, &put.key, timeout).await?;
-            Ok(Some(vec![guard]))
-        }
-        Request::Delete(ShardDeleteRequest { shard_id, delete }) => {
-            let delete = delete.as_ref().ok_or_else(|| {
-                Error::InvalidArgument("ShardDeleteRequest::delete is None".into())
-            })?;
-            let guard = latch_mgr.acquire(*shard_id, &delete.key, timeout).await?;
-            Ok(Some(vec![guard]))
-        }
-        Request::BatchWrite(batch_writes) => {
-            let mut keys = Vec::with_capacity(batch_writes.puts.len() + batch_writes.deletes.len());
-            for req in &batch_writes.puts {
-                let put = req
-                    .put
-                    .as_ref()
-                    .ok_or_else(|| Error::InvalidArgument("ShardPutRequest::put is None".into()))?;
-                keys.push(ShardKey { shard_id: req.shard_id, user_key: put.key.clone() });
+    let (shard_id, mut keys) = match request {
+        Request::Write(req) => (req.shard_id, collect_shard_write_keys(req))?,
+        Request::WriteIntent(req) => {
+            if let Some(req) = req.write.as_ref() {
+                (req.shard_id, collect_shard_write_keys(req))
+            } else {
+                return Ok(None);
             }
-            for req in &batch_writes.deletes {
-                let delete = req.delete.as_ref().ok_or_else(|| {
-                    Error::InvalidArgument("ShardDeleteRequest::delete is None".into())
-                })?;
-                keys.push(ShardKey { shard_id: req.shard_id, user_key: delete.key.clone() });
-            }
-
-            // Sort shard keys before acquiring any latch, to avoid deadlock.
-            keys.sort_unstable();
-            let mut latches = Vec::with_capacity(keys.len());
-            for ShardKey { shard_id, user_key } in keys {
-                latches.push(latch_mgr.acquire(shard_id, &user_key, timeout).await?);
-            }
-            Ok(Some(latches))
         }
+        Request::CommitIntent(req) => (req.shard_id, req.keys.clone()),
+        Request::ClearIntent(req) => (req.shard_id, req.keys.clone()),
         Request::Scan(_)
         | Request::Get(_)
         | Request::CreateShard(_)
         | Request::ChangeReplicas(_)
         | Request::AcceptShard(_)
         | Request::Transfer(_)
-        | Request::MoveReplicas(_) => Ok(None),
-        Request::WriteIntent(_) => todo!(),
-        Request::CommitIntent(_) => todo!(),
-        Request::ClearIntent(_) => todo!(),
+        | Request::MoveReplicas(_) => return Ok(None),
+    };
+
+    if keys.is_empty() {
+        return Ok(None);
     }
+
+    // ATTN: Sort shard keys before acquiring any latch, to avoid deadlock.
+    keys.sort_unstable();
+    let mut latches = Vec::with_capacity(keys.len());
+    for user_key in keys {
+        latches.push(latch_mgr.acquire(shard_id, &user_key, timeout).await?);
+    }
+    Ok(Some(latches))
+}
+
+fn collect_shard_write_keys(req: &ShardWriteRequest) -> Result<Vec<Vec<u8>>> {
+    let mut keys = Vec::with_capacity(req.puts.len() + req.deletes.len());
+    for put in &req.puts {
+        keys.push(put.key.clone());
+    }
+    for delete in &req.deletes {
+        keys.push(delete.key.clone());
+    }
+    Ok(keys)
 }

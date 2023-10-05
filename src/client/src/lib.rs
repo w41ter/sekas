@@ -32,5 +32,5 @@ pub use crate::app_client::{Client as SekasClient, ClientOptions};
 pub use crate::collection::{Collection, WriteBatchRequest, WriteBatchResponse, WriteBuilder};
 pub use crate::database::Database;
 pub use crate::error::{AppError, AppResult, Error, Result};
-
-pub(crate) use crate::rpc::{NodeClient, RequestBatchBuilder, RpcTimeout};
+pub use crate::migrate_client::MigrateClient;
+pub use crate::rpc::{ConnManager, RootClient, Router};

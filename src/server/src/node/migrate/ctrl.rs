@@ -34,7 +34,7 @@ use crate::{record_latency, NodeConfig, Result};
 pub struct ForwardCtx {
     pub shard_id: u64,
     pub dest_group_id: u64,
-    pub payloads: Vec<ShardData>,
+    pub payloads: ValueSet,
 }
 
 struct MigrationCoordinator {

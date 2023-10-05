@@ -73,6 +73,7 @@ impl ShardClient {
             exclude_end_key: false,
             start_key: last_key,
             end_key: None,
+            include_raw_data: true,
         });
         let mut client = GroupClient::lazy(self.group_id, self.client.clone());
         match client.request(&req).await? {
