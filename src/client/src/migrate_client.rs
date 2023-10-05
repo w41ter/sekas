@@ -14,20 +14,23 @@
 
 use sekas_api::server::v1::*;
 
-use crate::{ConnManager, Error, GroupClient, Result, RetryState, Router, ShardClient};
+use crate::group_client::GroupClient;
+use crate::retry::RetryState;
+use crate::shard_client::ShardClient;
+use crate::{Error, Result, SekasClient};
 
 /// `MigrateClient` wraps `GroupClient` and provides retry for migration-related
 /// functions.
 pub struct MigrateClient {
     group_id: u64,
-    router: Router,
-    conn_manager: ConnManager,
+    client: SekasClient,
 }
 
 impl MigrateClient {
-    pub fn new(group_id: u64, router: Router, conn_manager: ConnManager) -> Self {
-        MigrateClient { group_id, router, conn_manager }
+    pub fn new(group_id: u64, client: SekasClient) -> Self {
+        MigrateClient { group_id, client }
     }
+
     pub async fn setup_migration(&mut self, desc: &MigrationDesc) -> Result<()> {
         let mut retry_state = RetryState::new(None);
 
@@ -61,16 +64,11 @@ impl MigrateClient {
         &self,
         shard_id: u64,
         last_key: Option<Vec<u8>>,
-    ) -> Result<Vec<ShardData>> {
+    ) -> Result<Vec<ValueSet>> {
         let mut retry_state = RetryState::new(None);
 
         loop {
-            let client = ShardClient::new(
-                self.group_id,
-                shard_id,
-                self.router.clone(),
-                self.conn_manager.clone(),
-            );
+            let client = ShardClient::new(self.group_id, shard_id, self.client.clone());
             match client.pull(last_key.clone()).await {
                 Ok(resp) => return Ok(resp),
                 Err(err) => {
@@ -96,6 +94,6 @@ impl MigrateClient {
 
     #[inline]
     fn group_client(&self) -> GroupClient {
-        GroupClient::lazy(self.group_id, self.router.clone(), self.conn_manager.clone())
+        GroupClient::lazy(self.group_id, self.client.clone())
     }
 }

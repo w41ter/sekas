@@ -1,3 +1,4 @@
+// Copyright 2023-present The Sekas Authors.
 // Copyright 2022 The Engula Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -20,7 +21,7 @@ import "sekas/server/v1/metadata.proto";
 import "sekas/server/v1/catalog.proto";
 
 service Root {
-	// rpc Admin(sekas.v1.AdminRequest) returns (sekas.v1.AdminResponse) {}
+	rpc Admin(AdminRequest) returns (AdminResponse) {}
 	rpc Watch(WatchRequest) returns (stream WatchResponse) {}
 
 	/// Join a bootstrapped cluster. If the target node is itself not part of a
@@ -119,3 +120,100 @@ message AllocTxnIdResponse {
 	uint64 base_txn_id = 1;
 	uint64 num = 2;
 }
+
+message AdminRequest { AdminRequestUnion request = 1; }
+
+message AdminResponse { AdminResponseUnion response = 1; }
+
+message AdminRequestUnion {
+    oneof request {
+        GetDatabaseRequest get_database = 1;
+        ListDatabasesRequest list_databases = 2;
+        CreateDatabaseRequest create_database = 3;
+        UpdateDatabaseRequest update_database = 4;
+        DeleteDatabaseRequest delete_database = 5;
+        GetCollectionRequest get_collection = 6;
+        ListCollectionsRequest list_collections = 7;
+        CreateCollectionRequest create_collection = 8;
+        UpdateCollectionRequest update_collection = 9;
+        DeleteCollectionRequest delete_collection = 10;
+    }
+}
+
+message AdminResponseUnion {
+    oneof response {
+        GetDatabaseResponse get_database = 1;
+        ListDatabasesResponse list_databases = 2;
+        CreateDatabaseResponse create_database = 3;
+        UpdateDatabaseResponse update_database = 4;
+        DeleteDatabaseResponse delete_database = 5;
+        GetCollectionResponse get_collection = 6;
+        ListCollectionsResponse list_collections = 7;
+        CreateCollectionResponse create_collection = 8;
+        UpdateCollectionResponse update_collection = 9;
+        DeleteCollectionResponse delete_collection = 10;
+    }
+}
+
+message GetDatabaseRequest {
+    // Required. The name of the database.
+    string name = 1;
+}
+
+message GetDatabaseResponse { DatabaseDesc database = 1; }
+
+message ListDatabasesRequest {}
+
+message ListDatabasesResponse { repeated DatabaseDesc databases = 1; }
+
+message CreateDatabaseRequest {
+    // Required. The name of the database.
+    string name = 1;
+}
+
+message CreateDatabaseResponse { DatabaseDesc database = 1; }
+
+message UpdateDatabaseRequest {}
+
+message UpdateDatabaseResponse {}
+
+message DeleteDatabaseRequest {
+    // Required. The name of the database.
+    string name = 1;
+}
+
+message DeleteDatabaseResponse {}
+
+message GetCollectionRequest {
+    // Required. The name of the collection.
+    string name = 1;
+    DatabaseDesc database = 2;
+}
+
+message GetCollectionResponse { CollectionDesc collection = 1; }
+
+message ListCollectionsRequest {
+    DatabaseDesc database = 1;
+}
+
+message ListCollectionsResponse { repeated CollectionDesc collections = 1; }
+
+message CreateCollectionRequest {
+    // Required. The name of the collection.
+    string name = 1;
+    DatabaseDesc database = 2;
+}
+
+message CreateCollectionResponse { CollectionDesc collection = 1; }
+
+message UpdateCollectionRequest {}
+
+message UpdateCollectionResponse {}
+
+message DeleteCollectionRequest {
+    // Required. The name of the collection.
+    string name = 1;
+    DatabaseDesc database = 2;
+}
+
+message DeleteCollectionResponse {}

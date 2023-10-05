@@ -16,6 +16,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
+use log::info;
 use sekas_api::server::v1::*;
 use sekas_api::v1::CollectionDesc;
 use sekas_client::{
@@ -360,6 +361,7 @@ impl ClusterClient {
                 };
                 if ready_group.insert(state.id) {
                     self.assert_num_group_voters(state.id, 3).await;
+                    info!("collection {} is ready", co_desc.id);
                     break;
                 }
             }

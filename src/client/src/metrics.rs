@@ -21,11 +21,14 @@ make_static_metric! {
     pub struct GroupRequestTotal: IntCounter {
         "type" => {
             get,
-            put,
-            delete,
             scan,
+            write,
+
+            prepare_intent,
+            commit_intent,
+            clear_intent,
+
             transfer,
-            batch_write,
             accept_shard,
             create_shard,
             move_replicas,
@@ -35,11 +38,14 @@ make_static_metric! {
     pub struct GroupRequestDuration: Histogram {
         "type" => {
             get,
-            put,
-            delete,
             scan,
+            write,
+
+            prepare_intent,
+            commit_intent,
+            clear_intent,
+
             transfer,
-            batch_write,
             accept_shard,
             create_shard,
             move_replicas,
@@ -83,21 +89,25 @@ pub fn take_group_request_metrics(
             GROUP_CLIENT_GROUP_REQUEST_TOTAL.get.inc();
             Some(&GROUP_CLIENT_GROUP_REQUEST_DURATION_SECONDS.get)
         }
-        Request::Put(_) => {
-            GROUP_CLIENT_GROUP_REQUEST_TOTAL.put.inc();
-            Some(&GROUP_CLIENT_GROUP_REQUEST_DURATION_SECONDS.put)
-        }
-        Request::Delete(_) => {
-            GROUP_CLIENT_GROUP_REQUEST_TOTAL.delete.inc();
-            Some(&GROUP_CLIENT_GROUP_REQUEST_DURATION_SECONDS.delete)
-        }
         Request::Scan(_) => {
             GROUP_CLIENT_GROUP_REQUEST_TOTAL.scan.inc();
             Some(&GROUP_CLIENT_GROUP_REQUEST_DURATION_SECONDS.scan)
         }
-        Request::BatchWrite(_) => {
-            GROUP_CLIENT_GROUP_REQUEST_TOTAL.batch_write.inc();
-            Some(&GROUP_CLIENT_GROUP_REQUEST_DURATION_SECONDS.batch_write)
+        Request::Write(_) => {
+            GROUP_CLIENT_GROUP_REQUEST_TOTAL.write.inc();
+            Some(&GROUP_CLIENT_GROUP_REQUEST_DURATION_SECONDS.write)
+        }
+        Request::WriteIntent(_) => {
+            GROUP_CLIENT_GROUP_REQUEST_TOTAL.prepare_intent.inc();
+            Some(&GROUP_CLIENT_GROUP_REQUEST_DURATION_SECONDS.prepare_intent)
+        }
+        Request::CommitIntent(_) => {
+            GROUP_CLIENT_GROUP_REQUEST_TOTAL.commit_intent.inc();
+            Some(&GROUP_CLIENT_GROUP_REQUEST_DURATION_SECONDS.commit_intent)
+        }
+        Request::ClearIntent(_) => {
+            GROUP_CLIENT_GROUP_REQUEST_TOTAL.clear_intent.inc();
+            Some(&GROUP_CLIENT_GROUP_REQUEST_DURATION_SECONDS.clear_intent)
         }
         Request::AcceptShard(_) => {
             GROUP_CLIENT_GROUP_REQUEST_TOTAL.accept_shard.inc();

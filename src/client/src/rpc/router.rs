@@ -21,10 +21,9 @@ use log::{info, trace, warn};
 use sekas_api::server::v1::watch_response::delete_event::Event as DeleteEvent;
 use sekas_api::server::v1::watch_response::update_event::Event as UpdateEvent;
 use sekas_api::server::v1::*;
-use sekas_api::v1::*;
 use tonic::Streaming;
 
-use crate::RootClient;
+use crate::rpc::RootClient;
 
 #[derive(Debug, Clone)]
 pub struct Router {
@@ -68,52 +67,13 @@ impl Router {
         desc: CollectionDesc,
         key: &[u8],
     ) -> Result<(RouterGroupState, ShardDesc), crate::Error> {
-        if let Some(collection_desc::Partition::Hash(collection_desc::HashPartition { slots })) =
-            desc.partition
-        {
-            // TODO: it's temp hash impl..
-            let crc = crc32fast::hash(key);
-            let slot = crc % slots;
-
-            let state = self.state.lock().unwrap();
-
-            let shards = state
-                .co_shards_lookup
-                .get(&desc.id)
-                .ok_or_else(|| crate::Error::NotFound(format!("co2shard (key={:?})", key)))?;
-
-            if slots != shards.len() as u32 {
-                return Err(crate::Error::NotFound("expired shard info".into()));
-            }
-
-            let shard = shards
-                .iter()
-                .find(|s| {
-                    if let shard_desc::Partition::Hash(p) = s.partition.as_ref().unwrap() {
-                        if p.slot_id == slot {
-                            return true;
-                        }
-                    }
-                    false
-                })
-                .unwrap();
-
-            let group_state = state
-                .find_group_by_shard(shard.id)
-                .ok_or_else(|| crate::Error::NotFound(format!("shard (key={key:?}) group")))?;
-
-            return Ok((group_state, shard.clone()));
-        }
-
         let state = self.state.lock().unwrap();
         let shards = state
             .co_shards_lookup
             .get(&desc.id)
             .ok_or_else(|| crate::Error::NotFound(format!("shard (key={:?})", key)))?;
         for shard in shards {
-            if let Some(shard_desc::Partition::Range(RangePartition { start, end })) =
-                shard.partition.clone()
-            {
+            if let Some(RangePartition { start, end }) = shard.range.clone() {
                 if start.as_slice() > key {
                     continue;
                 }
@@ -340,8 +300,6 @@ fn leader_state(group_state: &GroupState) -> Option<(u64, u64)> {
 
 #[cfg(test)]
 mod tests {
-    use sekas_api::server::v1::shard_desc::Partition;
-    use sekas_api::server::v1::HashPartition;
 
     use super::*;
 
@@ -349,11 +307,7 @@ mod tests {
         ShardDesc {
             id,
             collection_id: 1,
-            partition: Some(Partition::Hash(HashPartition {
-                slot_id: 1,
-                end_slot_id: 2,
-                slots: 1,
-            })),
+            range: Some(RangePartition { start: vec![], end: vec![] }),
         }
     }
 

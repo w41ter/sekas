@@ -1,3 +1,4 @@
+// Copyright 2023-present The Sekas Authors.
 // Copyright 2022 The Engula Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -15,25 +16,14 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use sekas_api::server::v1::group_request_union::Request;
-use sekas_api::server::v1::group_response_union::Response;
-use sekas_api::server::v1::*;
-use sekas_api::v1::*;
-
-use crate::conn_manager::ConnManager;
 use crate::discovery::StaticServiceDiscovery;
-use crate::group_client::GroupClient;
-use crate::metrics::*;
-use crate::txn_client::TxnClient;
-use crate::{
-    record_latency, AdminRequestBuilder, AdminResponseExtractor, AppError, AppResult, RetryState,
-    RootClient, Router,
-};
+use crate::rpc::{ConnManager, RootClient, Router};
+use crate::{AppError, AppResult, Database};
 
 #[derive(Debug, Clone, Default)]
 pub struct ClientOptions {
     /// The duration of connection timeout, an error is issued if establish
-    /// connection is not finished after so the duration.
+    /// connection is not finished after the duration.
     pub connect_timeout: Option<Duration>,
 
     /// The duration of RPC over this client.
@@ -77,405 +67,48 @@ impl Client {
     }
 
     pub async fn create_database(&self, name: String) -> AppResult<Database> {
-        let root_client = self.inner.root_client.clone();
-        let resp = root_client.admin(AdminRequestBuilder::create_database(name.clone())).await?;
-        match AdminResponseExtractor::create_database(resp) {
-            None => Err(AppError::NotFound(format!("database {name}"))),
-            Some(desc) => {
-                Ok(Database { rpc_timeout: self.inner.opts.timeout, desc, client: self.clone() })
-            }
-        }
+        let db_desc = self.inner.root_client.create_database(name).await?;
+        Ok(Database::new(self.clone(), db_desc, self.rpc_timeout()))
     }
 
     pub async fn delete_database(&self, name: String) -> AppResult<()> {
-        let root_client = self.inner.root_client.clone();
-        let resp = root_client.admin(AdminRequestBuilder::delete_database(name.clone())).await?;
-        match AdminResponseExtractor::delete_database(resp) {
-            Some(()) => Ok(()),
-            None => Err(AppError::NotFound(format!("database {name}"))),
-        }
+        self.inner.root_client.delete_database(name).await?;
+        Ok(())
     }
 
     pub async fn list_database(&self) -> AppResult<Vec<Database>> {
-        let root_client = self.inner.root_client.clone();
-        let resp = root_client.admin(AdminRequestBuilder::list_database()).await?;
-        Ok(AdminResponseExtractor::list_database(resp)
+        let databases = self.inner.root_client.list_database().await?;
+        Ok(databases
             .into_iter()
-            .map(|desc| Database {
-                rpc_timeout: self.inner.opts.timeout,
-                desc,
-                client: self.clone(),
-            })
+            .map(|desc| Database::new(self.clone(), desc, self.rpc_timeout()))
             .collect::<Vec<_>>())
     }
 
     pub async fn open_database(&self, name: String) -> AppResult<Database> {
-        let root_client = self.inner.root_client.clone();
-        let resp = root_client.admin(AdminRequestBuilder::get_database(name.clone())).await?;
-        match AdminResponseExtractor::get_database(resp) {
+        match self.inner.root_client.get_database(name.clone()).await? {
             None => Err(AppError::NotFound(format!("database {}", name))),
-            Some(desc) => {
-                Ok(Database { rpc_timeout: self.inner.opts.timeout, desc, client: self.clone() })
-            }
+            Some(desc) => Ok(Database::new(self.clone(), desc, self.rpc_timeout())),
         }
-    }
-
-    pub fn txn_client(&self) -> TxnClient {
-        TxnClient::new(
-            self.inner.root_client.clone(),
-            self.inner.router.clone(),
-            self.inner.conn_manager.clone(),
-        )
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct Database {
-    client: Client,
-    desc: DatabaseDesc,
-    rpc_timeout: Option<Duration>,
-}
-
-pub enum Partition {
-    Hash { slots: u32 },
-    Range,
-}
-
-impl From<Partition> for create_collection_request::Partition {
-    fn from(p: Partition) -> Self {
-        match p {
-            Partition::Hash { slots } => create_collection_request::Partition::Hash(
-                create_collection_request::HashPartition { slots },
-            ),
-            Partition::Range => create_collection_request::Partition::Range(
-                create_collection_request::RangePartition {},
-            ),
-        }
-    }
-}
-
-impl From<create_collection_request::Partition> for Partition {
-    fn from(p: create_collection_request::Partition) -> Self {
-        match p {
-            create_collection_request::Partition::Hash(
-                create_collection_request::HashPartition { slots },
-            ) => Partition::Hash { slots },
-            create_collection_request::Partition::Range(
-                create_collection_request::RangePartition {},
-            ) => Partition::Range,
-        }
-    }
-}
-
-impl Database {
-    pub fn new(client: Client, desc: DatabaseDesc, rpc_timeout: Option<Duration>) -> Self {
-        Database { client, desc, rpc_timeout }
-    }
-
-    pub async fn create_collection(
-        &self,
-        name: String,
-        partition: Option<Partition>,
-    ) -> AppResult<Collection> {
-        let client = self.client.clone();
-        let db_desc = self.desc.clone();
-        let root_client = client.inner.root_client.clone();
-        let resp = root_client
-            .admin(AdminRequestBuilder::create_collection(
-                db_desc,
-                name.clone(),
-                partition.map(Into::into),
-            ))
-            .await?;
-        match AdminResponseExtractor::create_collection(resp) {
-            None => Err(AppError::NotFound(format!("collection {name}"))),
-            Some(co_desc) => {
-                Ok(Collection { rpc_timeout: self.rpc_timeout, co_desc, client: client.clone() })
-            }
-        }
-    }
-
-    pub async fn delete_collection(&self, name: String) -> AppResult<()> {
-        let client = self.client.clone();
-        let db_desc = self.desc.clone();
-        let root_client = client.inner.root_client.clone();
-        let resp = root_client
-            .admin(AdminRequestBuilder::delete_collection(db_desc.clone(), name.clone()))
-            .await?;
-        match AdminResponseExtractor::delete_collection(resp) {
-            None => Err(AppError::NotFound(format!("collection {name}"))),
-            Some(_) => Ok(()),
-        }
-    }
-
-    pub async fn list_collection(&self) -> AppResult<Vec<Collection>> {
-        let client = self.client.clone();
-        let root_client = client.inner.root_client.clone();
-        let resp =
-            root_client.admin(AdminRequestBuilder::list_collection(self.desc.clone())).await?;
-        Ok(AdminResponseExtractor::list_collection(resp)
-            .into_iter()
-            .map(|co_desc| Collection {
-                rpc_timeout: self.rpc_timeout,
-                co_desc,
-                client: client.clone(),
-            })
-            .collect::<Vec<_>>())
-    }
-
-    pub async fn open_collection(&self, name: String) -> AppResult<Collection> {
-        let client = self.client.clone();
-        let db_desc = self.desc.clone();
-        let root_client = client.inner.root_client.clone();
-        let resp =
-            root_client.admin(AdminRequestBuilder::get_collection(db_desc, name.clone())).await?;
-        match AdminResponseExtractor::get_collection(resp) {
-            None => Err(AppError::NotFound(format!("collection {}", name))),
-            Some(co_desc) => {
-                Ok(Collection { rpc_timeout: self.rpc_timeout, co_desc, client: client.clone() })
-            }
-        }
-    }
-
-    #[allow(dead_code)]
-    pub fn name(&self) -> String {
-        self.desc.name.to_owned()
     }
 
     #[inline]
-    pub fn desc(&self) -> DatabaseDesc {
-        self.desc.clone()
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct Collection {
-    client: Client,
-    co_desc: CollectionDesc,
-    rpc_timeout: Option<Duration>,
-}
-
-impl Collection {
-    pub fn new(
-        client: Client,
-        co_desc: CollectionDesc,
-        rpc_timeout: Option<Duration>,
-    ) -> Collection {
-        Collection { client, co_desc, rpc_timeout }
-    }
-
-    pub async fn delete(&self, key: Vec<u8>, conditions: Vec<WriteCondition>) -> AppResult<()> {
-        CLIENT_DATABASE_BYTES_TOTAL.rx.inc_by(key.len() as u64);
-        CLIENT_DATABASE_REQUEST_TOTAL.delete.inc();
-        record_latency!(&CLIENT_DATABASE_REQUEST_DURATION_SECONDS.get);
-        let mut retry_state = RetryState::new(self.rpc_timeout);
-
-        loop {
-            match self.delete_inner(&key, &conditions, retry_state.timeout()).await {
-                Ok(()) => return Ok(()),
-                Err(err) => {
-                    retry_state.retry(err).await?;
-                }
-            }
-        }
-    }
-
-    pub async fn put(
-        &self,
-        key: Vec<u8>,
-        value: Vec<u8>,
-        ttl: Option<u64>,
-        operation: Option<PutOperation>,
-        conditions: Vec<WriteCondition>,
-    ) -> AppResult<()> {
-        CLIENT_DATABASE_BYTES_TOTAL.rx.inc_by((key.len() + value.len()) as u64);
-        CLIENT_DATABASE_REQUEST_TOTAL.put.inc();
-        record_latency!(&CLIENT_DATABASE_REQUEST_DURATION_SECONDS.put);
-        let mut retry_state = RetryState::new(self.rpc_timeout);
-
-        loop {
-            match self
-                .put_inner(&key, &value, ttl, operation, &conditions, retry_state.timeout())
-                .await
-            {
-                Ok(()) => return Ok(()),
-                Err(err) => {
-                    retry_state.retry(err).await?;
-                }
-            }
-        }
-    }
-
-    pub async fn get(&self, key: Vec<u8>) -> AppResult<Option<Vec<u8>>> {
-        CLIENT_DATABASE_BYTES_TOTAL.rx.inc_by(key.len() as u64);
-        CLIENT_DATABASE_REQUEST_TOTAL.get.inc();
-        record_latency!(&CLIENT_DATABASE_REQUEST_DURATION_SECONDS.get);
-        let mut retry_state = RetryState::new(self.rpc_timeout);
-
-        loop {
-            match self.get_inner(&key, retry_state.timeout()).await {
-                Ok(value) => {
-                    CLIENT_DATABASE_BYTES_TOTAL
-                        .tx
-                        .inc_by(value.as_ref().map(Vec::len).unwrap_or_default() as u64);
-                    return Ok(value);
-                }
-                Err(err) => {
-                    retry_state.retry(err).await?;
-                }
-            }
-        }
-    }
-
-    pub async fn write_batch(&self, req: WriteBatchRequest) -> AppResult<WriteBatchResponse> {
-        let mut client = TxnClient::new(
-            self.client.inner.root_client.clone(),
-            self.client.inner.router.clone(),
-            self.client.inner.conn_manager.clone(),
-        );
-        client.write(req).await
-    }
-
-    async fn delete_inner(
-        &self,
-        key: &[u8],
-        conditions: &[WriteCondition],
-        timeout: Option<Duration>,
-    ) -> crate::Result<()> {
-        let router = self.client.inner.router.clone();
-        let (group, shard) = router.find_shard(self.co_desc.clone(), key)?;
-        let mut client = GroupClient::new(
-            group,
-            self.client.inner.router.clone(),
-            self.client.inner.conn_manager.clone(),
-        );
-        let req = Request::Delete(ShardDeleteRequest {
-            shard_id: shard.id,
-            delete: Some(DeleteRequest { key: key.to_owned(), conditions: conditions.to_owned() }),
-        });
-        if let Some(duration) = timeout {
-            client.set_timeout(duration);
-        }
-        client.request(&req).await?;
-        Ok(())
-    }
-
-    async fn put_inner(
-        &self,
-        key: &[u8],
-        value: &[u8],
-        ttl: Option<u64>,
-        operation: Option<PutOperation>,
-        conditions: &[WriteCondition],
-        timeout: Option<Duration>,
-    ) -> crate::Result<()> {
-        let router = self.client.inner.router.clone();
-        let (group, shard) = router.find_shard(self.co_desc.clone(), key)?;
-        let mut client = GroupClient::new(
-            group,
-            self.client.inner.router.clone(),
-            self.client.inner.conn_manager.clone(),
-        );
-        let req = Request::Put(ShardPutRequest {
-            shard_id: shard.id,
-            put: Some(PutRequest {
-                key: key.to_owned(),
-                value: value.to_owned(),
-                ttl: ttl.unwrap_or(u64::MAX),
-                conditions: conditions.to_owned(),
-                op: operation.unwrap_or(PutOperation::None).into(),
-            }),
-        });
-        if let Some(duration) = timeout {
-            client.set_timeout(duration);
-        }
-        client.request(&req).await?;
-        Ok(())
-    }
-
-    async fn get_inner(
-        &self,
-        key: &[u8],
-        timeout: Option<Duration>,
-    ) -> crate::Result<Option<Vec<u8>>> {
-        let router = self.client.inner.router.clone();
-        let (group, shard) = router.find_shard(self.co_desc.clone(), key)?;
-        let mut client = GroupClient::new(
-            group,
-            self.client.inner.router.clone(),
-            self.client.inner.conn_manager.clone(),
-        );
-        let req = Request::Get(ShardGetRequest {
-            shard_id: shard.id,
-            start_version: u64::MAX,
-            get: Some(GetRequest { key: key.to_owned() }),
-        });
-        if let Some(duration) = timeout {
-            client.set_timeout(duration);
-        }
-        match client.request(&req).await? {
-            Response::Get(GetResponse { value }) => Ok(value),
-            _ => Err(crate::Error::Internal(wrap("invalid response type, Get is required"))),
-        }
-    }
-
-    #[allow(dead_code)]
-    fn name(&self) -> String {
-        self.co_desc.name.to_owned()
+    pub(crate) fn root_client(&self) -> RootClient {
+        self.inner.root_client.clone()
     }
 
     #[inline]
-    pub fn desc(&self) -> CollectionDesc {
-        self.co_desc.clone()
-    }
-}
-
-#[derive(Default)]
-pub struct WriteConditionBuilder {
-    conditions: Vec<WriteCondition>,
-    expect_value: u64,
-    #[allow(unused)]
-    expect_version: u64,
-    not_exists: u64,
-    exists: u64,
-}
-
-impl WriteConditionBuilder {
-    pub fn new() -> Self {
-        WriteConditionBuilder::default()
+    pub(crate) fn router(&self) -> Router {
+        self.inner.router.clone()
     }
 
-    pub fn expect_value(mut self, value: Vec<u8>) -> Self {
-        self.expect_value += 1;
-        self.conditions.push(WriteCondition {
-            r#type: WriteConditionType::ExpectValue.into(),
-            value,
-            ..Default::default()
-        });
-        self
+    #[inline]
+    pub(crate) fn conn_mgr(&self) -> ConnManager {
+        self.inner.conn_manager.clone()
     }
 
-    pub fn not_exists(mut self) -> Self {
-        self.not_exists += 1;
-        self.conditions.push(WriteCondition {
-            r#type: WriteConditionType::NotExists.into(),
-            ..Default::default()
-        });
-        self
-    }
-
-    pub fn exists(mut self) -> Self {
-        self.exists += 1;
-        self.conditions.push(WriteCondition {
-            r#type: WriteConditionType::Exists.into(),
-            ..Default::default()
-        });
-        self
-    }
-
-    pub fn build(self) -> AppResult<Vec<WriteCondition>> {
-        // TODO(w41ter) check conditions
-        Ok(self.conditions)
+    #[inline]
+    fn rpc_timeout(&self) -> Option<Duration> {
+        self.inner.opts.timeout
     }
 }
 

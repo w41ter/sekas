@@ -1,3 +1,4 @@
+// Copyright 2023-present The Engula Authors.
 // Copyright 2022 The Engula Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -16,7 +17,6 @@ use std::time::Duration;
 
 use prost::Message;
 use sekas_api::server::v1::*;
-use sekas_api::v1::*;
 use tonic::transport::Channel;
 use tonic::IntoRequest;
 
@@ -185,42 +185,7 @@ impl RequestBatchBuilder {
                 request: Some(group_request_union::Request::Get(ShardGetRequest {
                     shard_id,
                     start_version: u64::MAX,
-                    get: Some(GetRequest { key }),
-                })),
-            }),
-        });
-        self
-    }
-
-    pub fn put(
-        mut self,
-        group_id: u64,
-        epoch: u64,
-        shard_id: u64,
-        key: Vec<u8>,
-        value: Vec<u8>,
-    ) -> Self {
-        self.requests.push(GroupRequest {
-            group_id,
-            epoch,
-            request: Some(GroupRequestUnion {
-                request: Some(group_request_union::Request::Put(ShardPutRequest {
-                    shard_id,
-                    put: Some(PutRequest { key, value, ..Default::default() }),
-                })),
-            }),
-        });
-        self
-    }
-
-    pub fn delete(mut self, group_id: u64, epoch: u64, shard_id: u64, key: Vec<u8>) -> Self {
-        self.requests.push(GroupRequest {
-            group_id,
-            epoch,
-            request: Some(GroupRequestUnion {
-                request: Some(group_request_union::Request::Delete(ShardDeleteRequest {
-                    shard_id,
-                    delete: Some(DeleteRequest { key, ..Default::default() }),
+                    key,
                 })),
             }),
         });

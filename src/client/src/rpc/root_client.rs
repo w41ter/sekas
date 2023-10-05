@@ -20,18 +20,31 @@ use std::time::Duration;
 use derivative::Derivative;
 use log::trace;
 use prost::Message;
+use sekas_api::server::v1::admin_request_union::Request;
+use sekas_api::server::v1::admin_response_union::Response;
 use sekas_api::server::v1::root_client::RootClient;
 use sekas_api::server::v1::*;
-use sekas_api::v1::create_collection_request::Partition;
-use sekas_api::v1::*;
 use tokio::sync::Mutex;
 use tonic::transport::Channel;
 use tonic::{Code, Status, Streaming};
 
-use crate::conn_manager::ConnManager;
 use crate::discovery::ServiceDiscovery;
 use crate::error::retryable_rpc_err;
-use crate::{NodeClient, Result};
+use crate::rpc::{ConnManager, NodeClient};
+use crate::{Error as ClientError, Result};
+
+macro_rules! extract_admin_response {
+    ($resp:expr, $cond:path) => {
+        match $resp {
+            Some(AdminResponseUnion { response: Some($cond(resp)) }) => resp,
+            _ => {
+                return Err(ClientError::Internal(
+                    format!("Invalid response, `{}` is required", stringify!($cond)).into(),
+                ));
+            }
+        }
+    };
+}
 
 #[derive(thiserror::Error, Debug)]
 enum RootError {
@@ -43,8 +56,7 @@ enum RootError {
     Rpc(#[from] Status),
 }
 
-pub struct AdminRequestBuilder;
-pub struct AdminResponseExtractor;
+struct AdminRequestBuilder;
 
 #[derive(Debug, Clone)]
 pub struct Client {
@@ -102,6 +114,65 @@ impl Client {
             })
             .await?;
         Ok(res.into_inner())
+    }
+
+    pub async fn create_database(&self, name: String) -> Result<DatabaseDesc> {
+        let resp = self.admin(AdminRequestBuilder::create_database(name)).await?;
+        let resp = extract_admin_response!(resp.response, Response::CreateDatabase);
+        resp.database
+            .ok_or_else(|| ClientError::Internal("The database is not set".to_owned().into()))
+    }
+
+    pub async fn delete_database(&self, name: String) -> Result<()> {
+        let resp = self.admin(AdminRequestBuilder::delete_database(name)).await?;
+        extract_admin_response!(resp.response, Response::DeleteDatabase);
+        Ok(())
+    }
+
+    pub async fn list_database(&self) -> Result<Vec<DatabaseDesc>> {
+        let resp = self.admin(AdminRequestBuilder::list_database()).await?;
+        let resp = extract_admin_response!(resp.response, Response::ListDatabases);
+        Ok(resp.databases)
+    }
+
+    pub async fn get_database(&self, name: String) -> Result<Option<DatabaseDesc>> {
+        let resp = self.admin(AdminRequestBuilder::get_database(name.clone())).await?;
+        let resp = extract_admin_response!(resp.response, Response::GetDatabase);
+        Ok(resp.database)
+    }
+
+    pub async fn create_collection(
+        &self,
+        db_desc: DatabaseDesc,
+        name: String,
+    ) -> Result<CollectionDesc> {
+        let resp = self.admin(AdminRequestBuilder::create_collection(db_desc, name)).await?;
+        let resp = extract_admin_response!(resp.response, Response::CreateCollection);
+        resp.collection
+            .ok_or_else(|| ClientError::Internal("The collection is not set".to_owned().into()))
+    }
+
+    pub async fn delete_collection(&self, db_desc: DatabaseDesc, name: String) -> Result<()> {
+        let resp =
+            self.admin(AdminRequestBuilder::delete_collection(db_desc.clone(), name)).await?;
+        extract_admin_response!(resp.response, Response::DeleteCollection);
+        Ok(())
+    }
+
+    pub async fn list_collection(&self, db_desc: DatabaseDesc) -> Result<Vec<CollectionDesc>> {
+        let resp = self.admin(AdminRequestBuilder::list_collection(db_desc)).await?;
+        let resp = extract_admin_response!(resp.response, Response::ListCollections);
+        Ok(resp.collections)
+    }
+
+    pub async fn get_collection(
+        &self,
+        db_desc: DatabaseDesc,
+        name: String,
+    ) -> Result<Option<CollectionDesc>> {
+        let resp = self.admin(AdminRequestBuilder::get_collection(db_desc, name)).await?;
+        let resp = extract_admin_response!(resp.response, Response::GetCollection);
+        Ok(resp.collection)
     }
 
     pub async fn join_node(&self, req: JoinNodeRequest) -> Result<JoinNodeResponse> {
@@ -207,9 +278,7 @@ impl Client {
                         self.apply_core(core).await;
                         return Ok(res);
                     }
-                    Err(RootError::Rpc(status)) => {
-                        return Err(status.into());
-                    }
+                    Err(RootError::Rpc(status)) => return Err(status.into()),
                     Err(RootError::NotAvailable) => {
                         // Connect timeout or refused, try next address.
                     }
@@ -312,9 +381,7 @@ impl AdminRequestBuilder {
     pub fn create_database(name: String) -> AdminRequest {
         AdminRequest {
             request: Some(AdminRequestUnion {
-                request: Some(admin_request_union::Request::CreateDatabase(
-                    CreateDatabaseRequest { name },
-                )),
+                request: Some(Request::CreateDatabase(CreateDatabaseRequest { name })),
             }),
         }
     }
@@ -322,9 +389,7 @@ impl AdminRequestBuilder {
     pub fn delete_database(name: String) -> AdminRequest {
         AdminRequest {
             request: Some(AdminRequestUnion {
-                request: Some(admin_request_union::Request::DeleteDatabase(
-                    DeleteDatabaseRequest { name },
-                )),
+                request: Some(Request::DeleteDatabase(DeleteDatabaseRequest { name })),
             }),
         }
     }
@@ -332,7 +397,7 @@ impl AdminRequestBuilder {
     pub fn list_database() -> AdminRequest {
         AdminRequest {
             request: Some(AdminRequestUnion {
-                request: Some(admin_request_union::Request::ListDatabases(ListDatabasesRequest {})),
+                request: Some(Request::ListDatabases(ListDatabasesRequest {})),
             }),
         }
     }
@@ -340,23 +405,18 @@ impl AdminRequestBuilder {
     pub fn get_database(name: String) -> AdminRequest {
         AdminRequest {
             request: Some(AdminRequestUnion {
-                request: Some(admin_request_union::Request::GetDatabase(GetDatabaseRequest {
-                    name,
-                })),
+                request: Some(Request::GetDatabase(GetDatabaseRequest { name })),
             }),
         }
     }
 
-    pub fn create_collection(
-        database: DatabaseDesc,
-        co_name: String,
-        partition: Option<Partition>,
-    ) -> AdminRequest {
+    pub fn create_collection(database: DatabaseDesc, co_name: String) -> AdminRequest {
         AdminRequest {
             request: Some(AdminRequestUnion {
-                request: Some(admin_request_union::Request::CreateCollection(
-                    CreateCollectionRequest { name: co_name, database: Some(database), partition },
-                )),
+                request: Some(Request::CreateCollection(CreateCollectionRequest {
+                    name: co_name,
+                    database: Some(database),
+                })),
             }),
         }
     }
@@ -364,9 +424,10 @@ impl AdminRequestBuilder {
     pub fn delete_collection(database: DatabaseDesc, co_name: String) -> AdminRequest {
         AdminRequest {
             request: Some(AdminRequestUnion {
-                request: Some(admin_request_union::Request::DeleteCollection(
-                    DeleteCollectionRequest { name: co_name, database: Some(database) },
-                )),
+                request: Some(Request::DeleteCollection(DeleteCollectionRequest {
+                    name: co_name,
+                    database: Some(database),
+                })),
             }),
         }
     }
@@ -374,9 +435,9 @@ impl AdminRequestBuilder {
     pub fn list_collection(database: DatabaseDesc) -> AdminRequest {
         AdminRequest {
             request: Some(AdminRequestUnion {
-                request: Some(admin_request_union::Request::ListCollections(
-                    ListCollectionsRequest { database: Some(database) },
-                )),
+                request: Some(Request::ListCollections(ListCollectionsRequest {
+                    database: Some(database),
+                })),
             }),
         }
     }
@@ -384,101 +445,11 @@ impl AdminRequestBuilder {
     pub fn get_collection(database: DatabaseDesc, co_name: String) -> AdminRequest {
         AdminRequest {
             request: Some(AdminRequestUnion {
-                request: Some(admin_request_union::Request::GetCollection(GetCollectionRequest {
+                request: Some(Request::GetCollection(GetCollectionRequest {
                     name: co_name,
                     database: Some(database),
                 })),
             }),
-        }
-    }
-}
-
-impl AdminResponseExtractor {
-    pub fn create_database(resp: AdminResponse) -> Option<DatabaseDesc> {
-        if let Some(AdminResponseUnion {
-            response: Some(admin_response_union::Response::CreateDatabase(response)),
-        }) = resp.response
-        {
-            response.database
-        } else {
-            None
-        }
-    }
-
-    pub fn delete_database(resp: AdminResponse) -> Option<()> {
-        if let Some(AdminResponseUnion {
-            response: Some(admin_response_union::Response::DeleteDatabase(_)),
-        }) = resp.response
-        {
-            Some(())
-        } else {
-            None
-        }
-    }
-
-    pub fn list_database(resp: AdminResponse) -> Vec<DatabaseDesc> {
-        if let Some(AdminResponseUnion {
-            response: Some(admin_response_union::Response::ListDatabases(response)),
-        }) = resp.response
-        {
-            response.databases
-        } else {
-            vec![]
-        }
-    }
-
-    pub fn get_database(resp: AdminResponse) -> Option<DatabaseDesc> {
-        if let Some(AdminResponseUnion {
-            response: Some(admin_response_union::Response::GetDatabase(response)),
-        }) = resp.response
-        {
-            response.database
-        } else {
-            None
-        }
-    }
-
-    pub fn create_collection(resp: AdminResponse) -> Option<CollectionDesc> {
-        if let Some(AdminResponseUnion {
-            response: Some(admin_response_union::Response::CreateCollection(response)),
-        }) = resp.response
-        {
-            response.collection
-        } else {
-            None
-        }
-    }
-
-    pub fn delete_collection(resp: AdminResponse) -> Option<()> {
-        if let Some(AdminResponseUnion {
-            response: Some(admin_response_union::Response::DeleteCollection(_)),
-        }) = resp.response
-        {
-            Some(())
-        } else {
-            None
-        }
-    }
-
-    pub fn list_collection(resp: AdminResponse) -> Vec<CollectionDesc> {
-        if let Some(AdminResponseUnion {
-            response: Some(admin_response_union::Response::ListCollections(response)),
-        }) = resp.response
-        {
-            response.collections
-        } else {
-            vec![]
-        }
-    }
-
-    pub fn get_collection(resp: AdminResponse) -> Option<CollectionDesc> {
-        if let Some(AdminResponseUnion {
-            response: Some(admin_response_union::Response::GetCollection(response)),
-        }) = resp.response
-        {
-            response.collection
-        } else {
-            None
         }
     }
 }

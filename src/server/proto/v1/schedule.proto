@@ -17,7 +17,7 @@ syntax = "proto3";
 package serverpb.v1;
 
 import "sekas/server/v1/metadata.proto";
-import "sekas/v1/metadata.proto";
+import "sekas/server/v1/catalog.proto";
 
 message ScheduleTask {
   oneof value {
@@ -118,7 +118,7 @@ message CreateCollectionJob {
   repeated sekas.server.v1.ShardDesc wait_cleanup = 4;
   CreateCollectionJobStatus status = 5;
   string remark = 6;
-  sekas.v1.CollectionDesc desc = 7;
+  sekas.server.v1.CollectionDesc desc = 7;
   string created_time = 89;
 }
 

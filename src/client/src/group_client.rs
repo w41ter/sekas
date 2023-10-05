@@ -25,11 +25,8 @@ use sekas_schema::shard;
 use tonic::{Code, Status};
 
 use crate::metrics::*;
-use crate::node_client::RpcTimeout;
-use crate::{
-    record_latency_opt, ConnManager, Error, NodeClient, RequestBatchBuilder, Result, Router,
-    RouterGroupState,
-};
+use crate::rpc::{NodeClient, RequestBatchBuilder, RouterGroupState, RpcTimeout};
+use crate::{record_latency_opt, Error, Result, SekasClient};
 
 #[derive(Clone, Debug, Default)]
 struct InvokeOpt<'a> {
@@ -65,8 +62,7 @@ struct InvokeContext {
 #[derive(Clone)]
 pub struct GroupClient {
     group_id: u64,
-    router: Router,
-    conn_manager: ConnManager,
+    client: SekasClient,
     timeout: Option<Duration>,
 
     epoch: u64,
@@ -82,9 +78,10 @@ pub struct GroupClient {
 }
 
 impl GroupClient {
-    pub fn lazy(group_id: u64, router: Router, conn_manager: ConnManager) -> Self {
+    pub fn lazy(group_id: u64, client: SekasClient) -> Self {
         GroupClient {
             group_id,
+            client,
             timeout: None,
 
             node_clients: HashMap::default(),
@@ -93,15 +90,12 @@ impl GroupClient {
             access_node_id: None,
             replicas: Vec::default(),
             next_access_index: 0,
-
-            router,
-            conn_manager,
         }
     }
 
-    pub fn new(group_state: RouterGroupState, router: Router, conn_manager: ConnManager) -> Self {
+    pub fn new(group_state: RouterGroupState, client: SekasClient) -> Self {
         debug_assert!(!group_state.replicas.is_empty());
-        let mut c = GroupClient::lazy(group_state.id, router, conn_manager);
+        let mut c = GroupClient::lazy(group_state.id, client);
         c.apply_group_state(group_state);
         c
     }
@@ -167,7 +161,8 @@ impl GroupClient {
         debug_assert_eq!(self.epoch, 0);
         debug_assert!(self.replicas.is_empty());
         let group_state = self
-            .router
+            .client
+            .router()
             .find_group(self.group_id)
             .map_err(|_| Error::GroupNotAccessable(self.group_id))?;
         self.apply_group_state(group_state);
@@ -211,8 +206,8 @@ impl GroupClient {
             return Some(client.clone());
         }
 
-        if let Ok(addr) = self.router.find_node_addr(node_id) {
-            match self.conn_manager.get_node_client(addr.clone()) {
+        if let Ok(addr) = self.client.router().find_node_addr(node_id) {
+            match self.client.conn_mgr().get_node_client(addr.clone()) {
                 Ok(client) => {
                     trace!("connect node {node_id} with addr {addr}");
                     self.node_clients.insert(node_id, client.clone());
@@ -584,14 +579,18 @@ fn is_read_only_request(request: &Request) -> bool {
 
 fn is_executable(descriptor: &GroupDesc, request: &Request) -> bool {
     match request {
-        Request::Get(req) => {
-            is_target_shard_exists(descriptor, req.shard_id, &req.get.as_ref().unwrap().key)
+        Request::Get(req) => is_target_shard_exists(descriptor, req.shard_id, &req.key),
+        Request::Write(req) => {
+            is_all_target_shard_exists(descriptor, req.shard_id, &req.deletes, &req.puts)
         }
-        Request::Put(req) => {
-            is_target_shard_exists(descriptor, req.shard_id, &req.put.as_ref().unwrap().key)
+        Request::WriteIntent(WriteIntentRequest { write: Some(write), .. }) => {
+            is_all_target_shard_exists(descriptor, write.shard_id, &write.deletes, &write.puts)
         }
-        Request::Delete(req) => {
-            is_target_shard_exists(descriptor, req.shard_id, &req.delete.as_ref().unwrap().key)
+        Request::CommitIntent(req) => {
+            req.keys.iter().all(|key| is_target_shard_exists(descriptor, req.shard_id, key))
+        }
+        Request::ClearIntent(req) => {
+            req.keys.iter().all(|key| is_target_shard_exists(descriptor, req.shard_id, key))
         }
         _ => false,
     }
@@ -604,6 +603,22 @@ fn is_target_shard_exists(desc: &GroupDesc, shard_id: u64, key: &[u8]) -> bool {
         .find(|s| s.id == shard_id)
         .map(|s| shard::belong_to(s, key))
         .unwrap_or_default()
+}
+
+fn is_all_target_shard_exists(
+    descriptor: &GroupDesc,
+    shard_id: u64,
+    deletes: &[DeleteRequest],
+    puts: &[PutRequest],
+) -> bool {
+    if !deletes.iter().all(|delete| is_target_shard_exists(descriptor, shard_id, &delete.key)) {
+        return false;
+    }
+
+    if !puts.iter().all(|put| is_target_shard_exists(descriptor, shard_id, &put.key)) {
+        return false;
+    }
+    true
 }
 
 fn move_node_to_first_element(replicas: &mut [ReplicaDesc], node_id: u64) {

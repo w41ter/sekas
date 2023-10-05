@@ -15,9 +15,10 @@
 use sekas_api::server::v1::group_request_union::Request;
 use sekas_api::server::v1::group_response_union::Response;
 use sekas_api::server::v1::*;
-use sekas_api::v1::DeleteRequest;
 
-use crate::{ConnManager, Error, GroupClient, Result, RetryState, Router};
+use crate::group_client::GroupClient;
+use crate::retry::RetryState;
+use crate::{Error, Result, SekasClient, WriteBuilder};
 
 /// `ShardClient` wraps `GroupClient` and provides retry for shard-related
 /// functions.
@@ -27,13 +28,12 @@ use crate::{ConnManager, Error, GroupClient, Result, RetryState, Router};
 pub struct ShardClient {
     group_id: u64,
     shard_id: u64,
-    router: Router,
-    conn_manager: ConnManager,
+    client: SekasClient,
 }
 
 impl ShardClient {
-    pub fn new(group_id: u64, shard_id: u64, router: Router, conn_manager: ConnManager) -> Self {
-        ShardClient { group_id, shard_id, router, conn_manager }
+    pub fn new(group_id: u64, shard_id: u64, client: SekasClient) -> Self {
+        ShardClient { group_id, shard_id, client }
     }
 
     pub async fn prefix_list(&self, prefix: &[u8]) -> Result<Vec<Vec<u8>>> {
@@ -62,7 +62,7 @@ impl ShardClient {
         }
     }
 
-    pub async fn pull(&self, last_key: Option<Vec<u8>>) -> Result<Vec<ShardData>> {
+    pub async fn pull(&self, last_key: Option<Vec<u8>>) -> Result<Vec<ValueSet>> {
         let req = Request::Scan(ShardScanRequest {
             shard_id: self.shard_id,
             start_version: u64::MAX,
@@ -74,8 +74,7 @@ impl ShardClient {
             start_key: last_key,
             end_key: None,
         });
-        let mut client =
-            GroupClient::lazy(self.group_id, self.router.clone(), self.conn_manager.clone());
+        let mut client = GroupClient::lazy(self.group_id, self.client.clone());
         match client.request(&req).await? {
             Response::Scan(ShardScanResponse { data }) => Ok(data),
             _ => Err(Error::Internal(
@@ -90,11 +89,10 @@ impl ShardClient {
             prefix: Some(prefix.to_owned()),
             ..Default::default()
         });
-        let mut client =
-            GroupClient::lazy(self.group_id, self.router.clone(), self.conn_manager.clone());
+        let mut client = GroupClient::lazy(self.group_id, self.client.clone());
         match client.request(&req).await? {
             Response::Scan(ShardScanResponse { data }) => {
-                Ok(data.into_iter().map(|v| v.value).collect())
+                Ok(data.into_iter().map(|v| v.values).collect())
             }
             _ => Err(Error::Internal(
                 "invalid response type, `ShardScanResponse` is required".into(),
@@ -103,12 +101,12 @@ impl ShardClient {
     }
 
     async fn delete_inner(&self, key: &[u8]) -> Result<()> {
-        let req = Request::Delete(ShardDeleteRequest {
+        let req = Request::Write(ShardWriteRequest {
             shard_id: self.shard_id,
-            delete: Some(DeleteRequest { key: key.to_owned(), ..Default::default() }),
+            deletes: vec![WriteBuilder::new(key.to_owned()).ensure_delete()],
+            ..Default::default()
         });
-        let mut client =
-            GroupClient::lazy(self.group_id, self.router.clone(), self.conn_manager.clone());
+        let mut client = GroupClient::lazy(self.group_id, self.client.clone());
         client.request(&req).await?;
         Ok(())
     }

@@ -1,3 +1,4 @@
+// Copyright 2023-present The Sekas Authors.
 // Copyright 2022 The Engula Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -12,34 +13,22 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#![feature(map_try_insert)]
+pub mod error;
 
 mod app_client;
-mod conn_manager;
+mod collection;
+mod database;
 mod discovery;
-pub mod error;
 mod group_client;
 mod metrics;
 mod migrate_client;
-mod node_client;
 mod retry;
-mod root_client;
-mod router;
+mod rpc;
 mod shard_client;
-mod txn_client;
 
-pub use app_client::{
-    Client as SekasClient, ClientOptions, Collection, Database, Partition, WriteConditionBuilder,
-};
-pub use conn_manager::ConnManager;
-pub use discovery::{ServiceDiscovery, StaticServiceDiscovery};
-pub use error::{AppError, AppResult, Error, Result};
-pub use group_client::GroupClient;
-pub use migrate_client::MigrateClient;
-pub use node_client::{Client as NodeClient, RequestBatchBuilder, RpcTimeout};
-pub use retry::RetryState;
-pub use root_client::{AdminRequestBuilder, AdminResponseExtractor, Client as RootClient};
-pub use router::{Router, RouterGroupState};
-pub use shard_client::ShardClient;
 use tonic::async_trait;
-pub use txn_client::TxnClient;
+
+pub use crate::app_client::{Client as SekasClient, ClientOptions};
+pub use crate::collection::{Collection, WriteBatchRequest, WriteBatchResponse, WriteBuilder};
+pub use crate::database::Database;
+pub use crate::error::{AppError, AppResult, Error, Result};

@@ -1,4 +1,4 @@
-// Copyright 2022 The Engula Authors.
+// Copyright 2023-present The Engula Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,26 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-syntax = "proto3";
+mod conn_manager;
+mod node_client;
+mod root_client;
+mod router;
 
-package sekas.v1;
-
-message DatabaseDesc {
-  uint64 id = 1;
-  string name = 2;
-}
-
-message CollectionDesc {
-  uint64 id = 1;
-  string name = 2;
-  uint64 db = 3; // database id
-
-  message HashPartition { uint32 slots = 1; }
-
-  message RangePartition {}
-
-  oneof partition {
-    HashPartition hash = 4;
-    RangePartition range = 5;
-  }
-}
+pub use self::conn_manager::ConnManager;
+pub use self::node_client::{Client as NodeClient, RequestBatchBuilder, RpcTimeout};
+pub use self::root_client::Client as RootClient;
+pub use self::router::{Router, RouterGroupState};
