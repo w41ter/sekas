@@ -12,5 +12,19 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-pub mod time;
-pub mod lang;
+//! A mod to extend the language standard library.
+
+/// A macro to return the function name of invoker.
+#[macro_export]
+macro_rules! fn_name {
+    () => {{
+        fn f() {}
+        fn type_name_of<T>(_: T) -> &'static str {
+            std::any::type_name::<T>()
+        }
+        type_name_of(f)
+            .rsplit("::")
+            .find(|&part| part != "f" && part != "{{closure}}")
+            .expect("Function name should always exists")
+    }};
+}
