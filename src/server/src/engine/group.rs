@@ -226,7 +226,6 @@ impl GroupEngine {
     }
 
     /// Get key value from the corresponding shard.
-    /// FIXME(walter) it should return the tombstone.
     pub async fn get(&self, shard_id: u64, key: &[u8]) -> Result<Option<Value>> {
         let snapshot_mode = SnapshotMode::Key { key };
         let mut snapshot = self.snapshot(shard_id, snapshot_mode)?;
@@ -895,10 +894,51 @@ fn next_message<T: prost::Message + Default>(
 #[cfg(test)]
 mod tests {
     use sekas_api::server::v1::ShardDesc;
+    use sekas_rock::fn_name;
     use tempdir::TempDir;
 
     use super::*;
     use crate::runtime::{Executor, ExecutorOwner};
+
+    fn create_engine(executor: Executor, group_id: u64, shard_id: u64, path: &Path) -> GroupEngine {
+        create_engine_with_range(executor, group_id, shard_id, vec![], vec![], path)
+    }
+
+    fn create_engine_with_range(
+        executor: Executor,
+        group_id: u64,
+        shard_id: u64,
+        start: Vec<u8>,
+        end: Vec<u8>,
+        path: &Path,
+    ) -> GroupEngine {
+        use crate::bootstrap::open_engine_with_default_config;
+
+        let db_dir = path.join("db");
+        let db = open_engine_with_default_config(db_dir).unwrap();
+        let db = Arc::new(db);
+        let group_engine = executor.block_on(async move {
+            GroupEngine::create(&EngineConfig::default(), db.clone(), 1, 1).await.unwrap()
+        });
+
+        let wb = WriteBatch::default();
+        let states = WriteStates {
+            descriptor: Some(GroupDesc {
+                id: group_id,
+                shards: vec![ShardDesc {
+                    id: shard_id,
+                    collection_id: 1,
+                    range: Some(RangePartition { start, end }),
+                }],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        group_engine.commit(wb, states, false).unwrap();
+
+        group_engine
+    }
 
     #[test]
     fn memory_comparable_format() {
@@ -948,47 +988,6 @@ mod tests {
         }
     }
 
-    fn create_engine(executor: Executor, group_id: u64, shard_id: u64) -> GroupEngine {
-        create_engine_with_range(executor, group_id, shard_id, vec![], vec![])
-    }
-
-    fn create_engine_with_range(
-        executor: Executor,
-        group_id: u64,
-        shard_id: u64,
-        start: Vec<u8>,
-        end: Vec<u8>,
-    ) -> GroupEngine {
-        let tmp_dir = TempDir::new("sekas").unwrap().into_path();
-        let db_dir = tmp_dir.join("db");
-
-        use crate::bootstrap::open_engine_with_default_config;
-
-        let db = open_engine_with_default_config(db_dir).unwrap();
-        let db = Arc::new(db);
-        let group_engine = executor.block_on(async move {
-            GroupEngine::create(&EngineConfig::default(), db.clone(), 1, 1).await.unwrap()
-        });
-
-        let wb = WriteBatch::default();
-        let states = WriteStates {
-            descriptor: Some(GroupDesc {
-                id: group_id,
-                shards: vec![ShardDesc {
-                    id: shard_id,
-                    collection_id: 1,
-                    range: Some(RangePartition { start, end }),
-                }],
-                ..Default::default()
-            }),
-            ..Default::default()
-        };
-
-        group_engine.commit(wb, states, false).unwrap();
-
-        group_engine
-    }
-
     #[test]
     fn mvcc_iterator() {
         struct Payload {
@@ -1005,7 +1004,8 @@ mod tests {
 
         let executor_owner = ExecutorOwner::new(1);
         let executor = executor_owner.executor();
-        let group_engine = create_engine(executor, 1, 1);
+        let dir = TempDir::new(fn_name!()).unwrap();
+        let group_engine = create_engine(executor, 1, 1, dir.path());
         let mut wb = WriteBatch::default();
         for payload in &payloads {
             group_engine.put(&mut wb, 1, payload.key, b"", payload.version).unwrap();
@@ -1059,7 +1059,8 @@ mod tests {
 
         let executor_owner = ExecutorOwner::new(1);
         let executor = executor_owner.executor();
-        let group_engine = create_engine(executor, 1, 1);
+        let dir = TempDir::new(fn_name!()).unwrap();
+        let group_engine = create_engine(executor, 1, 1, dir.path());
         let mut wb = WriteBatch::default();
         for payload in &payloads {
             group_engine.put(&mut wb, 1, payload.key, b"", payload.version).unwrap();
@@ -1103,7 +1104,8 @@ mod tests {
 
         let executor_owner = ExecutorOwner::new(1);
         let executor = executor_owner.executor();
-        let group_engine = create_engine(executor, 1, 1);
+        let dir = TempDir::new(fn_name!()).unwrap();
+        let group_engine = create_engine(executor, 1, 1, dir.path());
         let mut wb = WriteBatch::default();
         for payload in &payloads {
             group_engine.put(&mut wb, 1, payload.key, b"", payload.version).unwrap();
@@ -1138,31 +1140,117 @@ mod tests {
     }
 
     #[test]
-    fn get_latest_version() {
+    fn iterate_with_prefix() {
+        struct Payload {
+            key: &'static [u8],
+            version: u64,
+        }
+
+        let payloads = vec![
+            Payload { key: b"123455", version: 1 },
+            Payload { key: b"123456", version: 1 },
+            Payload { key: b"123456", version: 5 },
+            Payload { key: b"123456", version: 256 },
+            Payload { key: b"123456789", version: 0 },
+            Payload { key: b"123457789", version: 0 },
+        ];
+
         let executor_owner = ExecutorOwner::new(1);
         let executor = executor_owner.executor();
-        let group_engine = create_engine(executor.clone(), 1, 1);
+        let dir = TempDir::new(fn_name!()).unwrap();
+        let group_engine = create_engine(executor, 1, 1, dir.path());
         let mut wb = WriteBatch::default();
-        group_engine.put(&mut wb, 1, b"a12345678", b"", 123).unwrap();
-        group_engine.tombstone(&mut wb, 1, b"a12345678", 124).unwrap();
-        group_engine.put(&mut wb, 1, b"b12345678", b"123", 123).unwrap();
-        group_engine.put(&mut wb, 1, b"b12345678", b"124", 124).unwrap();
+        for payload in &payloads {
+            group_engine.put(&mut wb, 1, payload.key, b"", payload.version).unwrap();
+        }
         group_engine.commit(wb, WriteStates::default(), false).unwrap();
 
-        executor.block_on(async move {
-            let v = group_engine.get(1, b"a12345678").await.unwrap();
-            assert!(v.is_none());
+        {
+            // Scan with prefix.
+            let prefix = b"123456";
+            let snapshot_mode = SnapshotMode::Prefix { key: prefix };
+            let mut snapshot = group_engine.snapshot(1, snapshot_mode).unwrap();
+            let mut user_data_iter = snapshot.iter();
 
-            let v = group_engine.get(1, b"b12345678").await.unwrap();
-            assert!(v.is_some());
-        });
+            let mut mvcc_iter = user_data_iter.next().unwrap().unwrap();
+            let first_key = mvcc_iter.next();
+            assert!(matches!(first_key, Some(Ok(entry)) if entry.user_key() == prefix));
+            assert!(mvcc_iter.next().is_some());
+
+            let mut mvcc_iter = user_data_iter.next().unwrap().unwrap();
+            assert!(matches!(mvcc_iter.next(), Some(Ok(entry)) if entry.user_key == b"123456789"));
+            assert!(mvcc_iter.next().is_none());
+        }
+
+        {
+            // Scan with non-exists prefix
+            let prefix = b"1234577890";
+            let snapshot_mode = SnapshotMode::Prefix { key: prefix };
+            let mut snapshot = group_engine.snapshot(1, snapshot_mode).unwrap();
+            let mut user_data_iter = snapshot.iter();
+            assert!(user_data_iter.next().is_none());
+        }
+    }
+
+    #[test]
+    fn iterate_from_start_point() {
+        struct Payload {
+            key: &'static [u8],
+            version: u64,
+        }
+
+        let payloads = vec![
+            Payload { key: b"123455", version: 1 },
+            Payload { key: b"123456", version: 1 },
+            Payload { key: b"123456", version: 5 },
+            Payload { key: b"123456", version: 256 },
+            Payload { key: b"123456789", version: 0 },
+            Payload { key: b"123457789", version: 0 },
+        ];
+
+        let executor_owner = ExecutorOwner::new(1);
+        let executor = executor_owner.executor();
+        let dir = TempDir::new(fn_name!()).unwrap();
+        let group_engine = create_engine(executor, 1, 1, dir.path());
+        let mut wb = WriteBatch::default();
+        for payload in &payloads {
+            group_engine.put(&mut wb, 1, payload.key, b"", payload.version).unwrap();
+        }
+        group_engine.commit(wb, WriteStates::default(), false).unwrap();
+
+        {
+            // Scan with prefix.
+            let prefix = b"123456";
+            let snapshot_mode = SnapshotMode::Start { start_key: Some(prefix) };
+            let mut snapshot = group_engine.snapshot(1, snapshot_mode).unwrap();
+            let mut user_data_iter = snapshot.iter();
+
+            let mut mvcc_iter = user_data_iter.next().unwrap().unwrap();
+            let first_key = mvcc_iter.next();
+            assert!(matches!(first_key, Some(Ok(entry)) if entry.user_key() == prefix));
+            assert!(mvcc_iter.next().is_some());
+
+            let mut mvcc_iter = user_data_iter.next().unwrap().unwrap();
+            assert!(matches!(mvcc_iter.next(), Some(Ok(entry)) if entry.user_key == b"123456789"));
+            assert!(mvcc_iter.next().is_none());
+        }
+
+        {
+            // Scan with non-exists key
+            let prefix = b"1234577890";
+            let snapshot_mode = SnapshotMode::Start { start_key: Some(prefix) };
+            let mut snapshot = group_engine.snapshot(1, snapshot_mode).unwrap();
+            let mut user_data_iter = snapshot.iter();
+            assert!(user_data_iter.next().is_none());
+        }
     }
 
     #[test]
     fn iterate_in_range() {
         let executor_owner = ExecutorOwner::new(1);
         let executor = executor_owner.executor();
-        let group_engine = create_engine(executor, 1, 1);
+        let dir = TempDir::new(fn_name!()).unwrap();
+        let group_engine = create_engine(executor, 1, 1, dir.path());
         let mut wb = WriteBatch::default();
         group_engine.put(&mut wb, 1, b"a", b"", 123).unwrap();
         group_engine.tombstone(&mut wb, 1, b"a", 124).unwrap();
@@ -1214,11 +1302,61 @@ mod tests {
     }
 
     #[test]
+    fn get_latest_version() {
+        let executor_owner = ExecutorOwner::new(1);
+        let executor = executor_owner.executor();
+        let dir = TempDir::new(fn_name!()).unwrap();
+        let group_engine = create_engine(executor.clone(), 1, 1, dir.path());
+
+        {
+            // Only return the last visible version.
+            let mut wb = WriteBatch::default();
+            group_engine.put(&mut wb, 1, b"a12345678", b"", 123).unwrap();
+            group_engine.tombstone(&mut wb, 1, b"a12345678", 124).unwrap();
+            group_engine.put(&mut wb, 1, b"b12345678", b"123", 123).unwrap();
+            group_engine.put(&mut wb, 1, b"b12345678", b"124", 124).unwrap();
+            group_engine.commit(wb, WriteStates::default(), false).unwrap();
+
+            let cloned_group_engine = group_engine.clone();
+            executor.block_on(async move {
+                let v = cloned_group_engine.get(1, b"a12345678").await.unwrap();
+                assert!(matches!(v, Some(value) if value.content.is_none()));
+
+                let v = cloned_group_engine.get(1, b"b12345678").await.unwrap();
+                assert!(matches!(v, Some(value) if value.content.is_some()));
+
+                let v = cloned_group_engine.get(1, b"c").await.unwrap();
+                assert!(v.is_none());
+            });
+        }
+
+        {
+            // Put with old version is not visible.
+            let mut wb = WriteBatch::default();
+            group_engine.put(&mut wb, 1, b"a12345678", b"123", 122).unwrap();
+            group_engine.delete(&mut wb, 1, b"b12345678", 122).unwrap();
+            group_engine.commit(wb, WriteStates::default(), false).unwrap();
+
+            let cloned_group_engine = group_engine.clone();
+            executor.block_on(async move {
+                let v = cloned_group_engine.get(1, b"a12345678").await.unwrap();
+                assert!(matches!(v, Some(value) if value.content.is_none()));
+
+                let v = cloned_group_engine.get(1, b"b12345678").await.unwrap();
+                assert!(
+                    matches!(v, Some(value) if value.version == 124 && value.content.is_some())
+                );
+            });
+        }
+    }
+
+    #[test]
     fn cf_id_irrelevant_write_batch() {
         let executor_owner = ExecutorOwner::new(1);
         let executor = executor_owner.executor();
-        let engine_1 = create_engine(executor.clone(), 1, 1);
-        let engine_2 = create_engine(executor, 1, 1);
+        let dir = TempDir::new(fn_name!()).unwrap();
+        let engine_1 = create_engine(executor.clone(), 1, 1, dir.path().join("1").as_path());
+        let engine_2 = create_engine(executor, 1, 1, dir.path().join("2").as_path());
 
         // Put in engine 1, commit in engine 2.
         let mut wb = WriteBatch::default();

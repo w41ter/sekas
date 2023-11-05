@@ -121,7 +121,7 @@ impl Engines {
     pub(crate) fn open(root_dir: &Path, db_cfg: &DbConfig) -> Result<Self> {
         let db_path = root_dir.join(LAYOUT_DATA);
         let log_path = root_dir.join(LAYOUT_LOG);
-        let db = Arc::new(open_engine(db_cfg, &db_path)?);
+        let db = Arc::new(open_raw_db(db_cfg, &db_path)?);
         let log = Arc::new(open_raft_engine(&log_path)?);
         let state = StateEngine::new(log.clone());
         Ok(Engines { log_path, _db_path: db_path, log, db, state })
@@ -148,7 +148,7 @@ impl Engines {
     }
 }
 
-pub(crate) fn open_engine<P: AsRef<Path>>(cfg: &DbConfig, path: P) -> Result<RawDb> {
+pub(crate) fn open_raw_db<P: AsRef<Path>>(cfg: &DbConfig, path: P) -> Result<RawDb> {
     use rocksdb::DB;
 
     std::fs::create_dir_all(&path)?;
@@ -197,5 +197,56 @@ fn create_dir_all_if_not_exists<P: AsRef<Path>>(dir: &P) -> Result<()> {
         Ok(()) => Ok(()),
         Err(err) if err.kind() == ErrorKind::AlreadyExists => Ok(()),
         Err(err) => Err(err.into()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use raft_engine::LogBatch;
+    use sekas_rock::fn_name;
+    use tempdir::TempDir;
+
+    use super::*;
+
+    #[test]
+    fn reopen_raw_db_with_families() {
+        let dir = TempDir::new(fn_name!()).unwrap();
+
+        {
+            // Create a lots column families.
+            let db = open_raw_db(&DbConfig::default(), dir.path()).unwrap();
+            db.create_cf("cf1").unwrap();
+            db.create_cf("cf2").unwrap();
+            db.create_cf("cf3").unwrap();
+            db.drop_cf("cf3").unwrap();
+        }
+
+        {
+            // Reopen db with columns.
+            let db = open_raw_db(&DbConfig::default(), dir.path()).unwrap();
+            assert!(db.cf_handle("cf1").is_some());
+            assert!(db.cf_handle("cf2").is_some());
+            assert!(db.cf_handle("cf3").is_none());
+        }
+    }
+
+    #[test]
+    fn reopen_raft_engine() {
+        let dir = TempDir::new(fn_name!()).unwrap();
+
+        {
+            let engine = open_raft_engine(dir.path()).unwrap();
+            let mut batch = LogBatch::default();
+            batch.put(1, vec![1, 2, 3], vec![4, 5, 6]);
+            engine.write(&mut batch, true).unwrap();
+        }
+
+        {
+            let engine = open_raft_engine(dir.path()).unwrap();
+            let result = engine.get(1, &[1, 2, 3]);
+            assert!(matches!(result, Some(x) if x == vec![4, 5, 6]));
+            let result = engine.get(1, &[4, 5, 6]);
+            assert!(result.is_none());
+        }
     }
 }

@@ -225,5 +225,5 @@ async fn write_initial_cluster_data(node: &Node, addr: &str) -> Result<()> {
 pub(crate) fn open_engine_with_default_config<P: AsRef<std::path::Path>>(
     path: P,
 ) -> Result<crate::engine::RawDb> {
-    crate::engine::open_engine(&crate::DbConfig::default(), path)
+    crate::engine::open_raw_db(&crate::DbConfig::default(), path)
 }
