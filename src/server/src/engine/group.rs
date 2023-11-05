@@ -918,7 +918,9 @@ mod tests {
         let db = open_engine_with_default_config(db_dir).unwrap();
         let db = Arc::new(db);
         let group_engine = executor.block_on(async move {
-            GroupEngine::create(&EngineConfig::default(), db.clone(), 1, 1).await.unwrap()
+            GroupEngine::create(&EngineConfig::default(), db.clone(), group_id, shard_id)
+                .await
+                .unwrap()
         });
 
         let wb = WriteBatch::default();
@@ -986,6 +988,48 @@ mod tests {
             let right = keys::mvcc_key(0, t.right, t.right_version);
             assert!(left < right, "index {}, left {:?}, right {:?}", idx, left, right);
         }
+    }
+
+    #[test]
+    fn create_and_drop_engine() {
+        let dir = TempDir::new(fn_name!()).unwrap();
+        let executor_owner = ExecutorOwner::new(1);
+        let executor = executor_owner.executor();
+        let dir = TempDir::new(fn_name!()).unwrap();
+
+        let group_id = 1;
+        let replica_id = 1;
+
+        // 1. create engine
+        let raw_db = {
+            let group_engine = create_engine(executor.clone(), group_id, replica_id, dir.path());
+            group_engine.raw_db.clone()
+        };
+
+        // 2. open engine
+        let raw_db_clone = raw_db.clone();
+        executor.block_on(async move {
+            let engine =
+                GroupEngine::open(&EngineConfig::default(), raw_db_clone, group_id, replica_id)
+                    .await
+                    .unwrap();
+            assert!(engine.is_some());
+        });
+
+        // 3. drop engine
+        let raw_db_clone = raw_db.clone();
+        executor.block_on(async move {
+            GroupEngine::destory(group_id, replica_id, raw_db_clone).await.unwrap();
+        });
+
+        let raw_db_clone = raw_db.clone();
+        executor.block_on(async move {
+            let engine =
+                GroupEngine::open(&EngineConfig::default(), raw_db_clone, group_id, replica_id)
+                    .await
+                    .unwrap();
+            assert!(engine.is_none());
+        });
     }
 
     #[test]
@@ -1302,6 +1346,54 @@ mod tests {
     }
 
     #[test]
+    fn raw_iterate_all() {
+        #[derive(Debug)]
+        struct Payload {
+            key: &'static [u8],
+            version: u64,
+        }
+
+        let payloads = vec![
+            Payload { key: b"123455", version: 1 },
+            Payload { key: b"123456", version: 256 },
+            Payload { key: b"123456", version: 5 },
+            Payload { key: b"123456", version: 1 },
+            Payload { key: b"123456789", version: 0 },
+            Payload { key: b"123457789", version: 0 },
+        ];
+
+        let executor_owner = ExecutorOwner::new(1);
+        let executor = executor_owner.executor();
+        let dir = TempDir::new(fn_name!()).unwrap();
+        let group_engine = create_engine(executor, 1, 1, dir.path());
+        let mut wb = WriteBatch::default();
+        for payload in &payloads {
+            group_engine.put(&mut wb, 1, payload.key, b"", payload.version).unwrap();
+        }
+        group_engine.commit(wb, WriteStates::default(), false).unwrap();
+
+        let mut iter = group_engine.raw_iter().unwrap();
+
+        // First is the local collection datum.
+        let (k, _) = iter.next().unwrap().unwrap();
+        assert!(&k[..] == &keys::apply_state());
+        let (k, _) = iter.next().unwrap().unwrap();
+        assert!(&k[..] == &keys::descriptor());
+
+        // The the user payloads.
+        for payload in &payloads {
+            let (k, _) = iter.next().unwrap().unwrap();
+            let col_id = group_engine.shard_desc(1).unwrap().collection_id;
+            let expect_key = keys::mvcc_key(col_id, payload.key, payload.version);
+            assert!(
+                &k[..] == &expect_key,
+                "expect {expect_key:?}, but got {k:?}, payload {payload:?}",
+            );
+        }
+        assert!(iter.next().is_none());
+    }
+
+    #[test]
     fn get_latest_version() {
         let executor_owner = ExecutorOwner::new(1);
         let executor = executor_owner.executor();
@@ -1364,5 +1456,43 @@ mod tests {
         engine_1.put(&mut wb, 1, b"b", b"123", 123).unwrap();
 
         engine_2.commit(wb, WriteStates::default(), false).unwrap();
+    }
+
+    #[test]
+    fn commit_with_write_states() {
+        let executor_owner = ExecutorOwner::new(1);
+        let executor = executor_owner.executor();
+        let dir = TempDir::new(fn_name!()).unwrap();
+        let engine = create_engine(executor.clone(), 1, 1, dir.path().join("1").as_path());
+
+        {
+            // with apply state.
+            let states = WriteStates {
+                apply_state: Some(ApplyState { index: 10, term: 10 }),
+                ..Default::default()
+            };
+            engine.commit(WriteBatch::default(), states, false).unwrap();
+        }
+
+        {
+            // with migrate state
+            let migrate_state = MigrationState {
+                migration_desc: Some(MigrationDesc {
+                    shard_desc: Some(ShardDesc { id: 1, collection_id: 1, range: None }),
+                    src_group_id: 1,
+                    src_group_epoch: 1,
+                    dest_group_id: 2,
+                    dest_group_epoch: 2,
+                }),
+                last_migrated_key: None,
+                step: MigrationStep::Prepare.into(),
+            };
+            let states =
+                WriteStates { migration_state: Some(migrate_state.clone()), ..Default::default() };
+            engine.commit(WriteBatch::default(), states, false).unwrap();
+
+            let read_state = engine.migration_state();
+            assert!(matches!(read_state, Some(state) if state == migrate_state));
+        }
     }
 }
