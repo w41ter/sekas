@@ -26,7 +26,7 @@ pub(crate) async fn get(
     exec_ctx: &ExecCtx,
     engine: &GroupEngine,
     req: &ShardGetRequest,
-) -> Result<Option<Vec<u8>>> {
+) -> Result<Option<Value>> {
     if let Some(desc) = exec_ctx.migration_desc.as_ref() {
         let shard_id = desc.shard_desc.as_ref().unwrap().id;
         if shard_id == req.shard_id {
@@ -44,7 +44,7 @@ async fn read_key(
     shard_id: u64,
     key: &[u8],
     start_version: u64,
-) -> Result<Option<Vec<u8>>> {
+) -> Result<Option<Value>> {
     let snapshot_mode = SnapshotMode::Key { key };
     let mut snapshot = engine.snapshot(shard_id, snapshot_mode)?;
     if let Some(iter) = snapshot.mvcc_iter() {
@@ -53,9 +53,9 @@ async fn read_key(
             if entry.version() == super::INTENT_KEY_VERSION {
                 // maybe we need to wait intent.
                 let Some(value) = entry.value() else {
-                    return Err(Error::InvalidData(
-                        format!("the intent value of key: {key:?} not exists?")
-                    ));
+                    return Err(Error::InvalidData(format!(
+                        "the intent value of key: {key:?} not exists?"
+                    )));
                 };
                 let intent = TxnIntent::decode(value)?;
                 if intent.start_version <= start_version {
@@ -63,7 +63,7 @@ async fn read_key(
                 }
             } else if entry.version() < start_version {
                 // This entry is safe for reading.
-                return Ok(entry.value().map(ToOwned::to_owned));
+                return Ok(Some(entry.into()));
             }
         }
     }
@@ -81,17 +81,7 @@ async fn read_shard_key_versions(
     if let Some(iter) = snapshot.mvcc_iter() {
         for entry in iter? {
             let entry = entry?;
-            match entry.value() {
-                Some(value) => {
-                    value_set
-                        .values
-                        .push(Value { content: Some(value.to_owned()), version: value.version() });
-                }
-                None => {
-                    // Send tombstone to target to support MVCC.
-                    value_set.values.push(Value { content: None, version: entry.version() });
-                }
-            }
+            value_set.values.push(entry.into());
         }
     }
     Ok(value_set)

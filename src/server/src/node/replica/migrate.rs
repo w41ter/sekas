@@ -22,12 +22,7 @@ use crate::serverpb::v1::*;
 use crate::{Error, Result};
 
 impl Replica {
-    pub async fn ingest(
-        &self,
-        shard_id: u64,
-        chunk: Vec<ShardData>,
-        forwarded: bool,
-    ) -> Result<()> {
+    pub async fn ingest(&self, shard_id: u64, chunk: Vec<ValueSet>, forwarded: bool) -> Result<()> {
         if chunk.is_empty() {
             return Ok(());
         }
@@ -36,18 +31,29 @@ impl Replica {
         self.check_migrating_request_early(shard_id)?;
 
         let mut wb = WriteBatch::default();
-        for data in &chunk {
-            self.group_engine.put(
-                &mut wb,
-                shard_id,
-                &data.key,
-                &data.value,
-                super::eval::MIGRATING_KEY_VERSION,
-            )?;
+        for value_set in &chunk {
+            for value in &value_set.values {
+                if let Some(content) = value.content.as_ref() {
+                    self.group_engine.put(
+                        &mut wb,
+                        shard_id,
+                        &value_set.user_key,
+                        content,
+                        value.version,
+                    )?;
+                } else {
+                    self.group_engine.tombstone(
+                        &mut wb,
+                        shard_id,
+                        &value_set.user_key,
+                        value.version,
+                    )?;
+                }
+            }
         }
 
         let sync_op = if !forwarded {
-            Some(SyncOp::ingest(chunk.last().as_ref().unwrap().key.clone()))
+            Some(SyncOp::ingest(chunk.last().as_ref().unwrap().user_key.clone()))
         } else {
             None
         };

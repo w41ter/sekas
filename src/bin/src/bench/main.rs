@@ -1,3 +1,4 @@
+// Copyright 2023-present The Sekas Authors.
 // Copyright 2022 The Engula Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -18,7 +19,7 @@ use clap::Parser;
 use log::{debug, info};
 use rand::rngs::OsRng;
 use rand::RngCore;
-use sekas_client::{AppError, ClientOptions, Collection, Database, Partition, SekasClient};
+use sekas_client::{AppError, ClientOptions, Collection, Database, SekasClient};
 use sekas_server::runtime::sync::WaitGroup;
 use sekas_server::runtime::{Shutdown, ShutdownNotifier};
 use tokio::runtime::Runtime;
@@ -123,13 +124,8 @@ async fn create_or_open_database(client: &SekasClient, database: &str) -> Result
     }
 }
 
-async fn create_or_open_collection(
-    db: &Database,
-    collection: &str,
-    num_shards: u32,
-) -> Result<Collection> {
-    let partition = Partition::Hash { slots: num_shards };
-    match db.create_collection(collection.to_owned(), Some(partition)).await {
+async fn create_or_open_collection(db: &Database, collection: &str) -> Result<Collection> {
+    match db.create_collection(collection.to_owned()).await {
         Ok(co) => Ok(co),
         Err(AppError::AlreadyExists(_)) => Ok(db.open_collection(collection.to_owned()).await?),
         Err(e) => Err(e.into()),
@@ -155,7 +151,7 @@ async fn open_collection(cfg: &AppConfig) -> Result<Collection> {
     let co = match database.open_collection(cfg.database.clone()).await {
         Ok(co) => co,
         Err(AppError::NotFound(_)) if cfg.create_if_missing => {
-            create_or_open_collection(&database, &cfg.collection, cfg.num_shards).await?
+            create_or_open_collection(&database, &cfg.collection).await?
         }
         Err(e) => {
             return Err(e.into());

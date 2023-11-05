@@ -1,3 +1,4 @@
+// Copyright 2023-present The Sekas Authors.
 // Copyright 2022 The Engula Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -20,7 +21,7 @@ use clap::Parser;
 use lazy_static::lazy_static;
 use rustyline::error::ReadlineError;
 use rustyline::Editor;
-use sekas_client::{AppError, ClientOptions, Collection, Database, Partition, SekasClient};
+use sekas_client::{AppError, ClientOptions, Collection, Database, SekasClient};
 
 type ParseResult<T = Request> = std::result::Result<T, String>;
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
@@ -98,13 +99,13 @@ impl Session {
             Request::Put { key, value, db, coll } => {
                 let db = self.open_database(&db).await?;
                 let coll = self.open_collection(&db, &coll).await?;
-                coll.put(key, value, None, None, vec![]).await?;
+                coll.put(key, value).await?;
                 Ok(())
             }
             Request::Delete { key, db, coll } => {
                 let db = self.open_database(&db).await?;
                 let coll = self.open_collection(&db, &coll).await?;
-                coll.delete(key, vec![]).await?;
+                coll.delete(key).await?;
                 Ok(())
             }
         }
@@ -248,10 +249,8 @@ impl Session {
         &mut self,
         db: &Database,
         collection: &str,
-        num_shards: u32,
     ) -> Result<Collection> {
-        let partition = Partition::Hash { slots: num_shards };
-        match db.create_collection(collection.to_owned(), Some(partition)).await {
+        match db.create_collection(collection.to_owned()).await {
             Ok(co) => {
                 self.collections.insert(format!("{}-{}", db.name(), collection), co.clone());
                 Ok(co)
@@ -297,7 +296,7 @@ impl Session {
                     co
                 }
                 Err(AppError::NotFound(_)) if create_if_missing => {
-                    self.create_or_open_collection(db, coll, 64).await?
+                    self.create_or_open_collection(db, coll).await?
                 }
                 Err(e) => {
                     return Err(e.into());

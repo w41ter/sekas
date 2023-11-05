@@ -254,13 +254,14 @@ impl<M: StateMachine> Applier<M> {
         read_requests: &mut HashMap<Vec<u8>, Vec<oneshot::Sender<Result<()>>>>,
         last_applied_index: u64,
     ) {
-        for rs in read_states.drain_filter(|rs| rs.index <= last_applied_index) {
+        for rs in read_states.iter().filter(|rs| rs.index <= last_applied_index) {
             if let Some(requests) = read_requests.remove(&rs.request_ctx) {
                 for request in requests {
                     request.send(Ok(())).unwrap_or_default();
                 }
             }
         }
+        read_states.retain(|rs| rs.index > last_applied_index);
     }
 }
 

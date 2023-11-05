@@ -22,14 +22,10 @@ use dashmap::DashMap;
 use futures::channel::oneshot;
 use prost::Message;
 use sekas_api::server::v1::{
-    ClearIntentRequest, CommitIntentRequest, ShardDeleteRequest, ShardPutRequest, TxnState,
-    WriteIntent, WriteIntentRequest,
+    ClearIntentRequest, CommitIntentRequest, TxnState, WriteIntentRequest,
 };
-use sekas_api::v1::{DeleteRequest, PutOperation, PutRequest};
-use sekas_client::TxnClient;
 
 use super::cas::eval_conditions;
-use super::cmd_put::eval_put_op;
 use super::{LatchGuard, ShardKey};
 use crate::engine::{GroupEngine, WriteBatch};
 use crate::node::migrate::ForwardCtx;
@@ -110,8 +106,9 @@ pub(crate) async fn commit_intent(
     let mut wb = WriteBatch::default();
     for key in &req.keys {
         // Skip not exists intent
-        let Some((value, super::INTENT_KEY_VERSION)) = group_engine.get(req.shard_id, key).await? else {
-            continue
+        let Some((value, super::INTENT_KEY_VERSION)) = group_engine.get(req.shard_id, key).await?
+        else {
+            continue;
         };
 
         // Avoid to commit other txn intents.
@@ -142,8 +139,9 @@ pub(crate) async fn clear_intent(
     let mut wb = WriteBatch::default();
     for key in &req.keys {
         // Skip not exists intent
-        let Some((value, super::INTENT_KEY_VERSION)) = group_engine.get(req.shard_id, key).await? else {
-            continue
+        let Some((value, super::INTENT_KEY_VERSION)) = group_engine.get(req.shard_id, key).await?
+        else {
+            continue;
         };
 
         // Avoid to commit other txn intents.

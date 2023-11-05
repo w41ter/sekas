@@ -20,11 +20,9 @@ make_static_metric! {
     pub struct GroupRequestTotal: IntCounter {
         "type" => {
             get,
-            put,
-            delete,
             scan,
+            write,
             transfer,
-            batch_write,
             accept_shard,
             create_shard,
             move_replicas,
@@ -34,11 +32,9 @@ make_static_metric! {
     pub struct GroupRequestDuration: Histogram {
         "type" => {
             get,
-            put,
-            delete,
             scan,
+            write,
             transfer,
-            batch_write,
             accept_shard,
             create_shard,
             move_replicas,
@@ -77,21 +73,13 @@ pub fn take_group_request_metrics(request: &GroupRequest) -> Option<&'static His
             NODE_SERVICE_GROUP_REQUEST_TOTAL.get.inc();
             Some(&NODE_SERVICE_GROUP_REQUEST_DURATION_SECONDS.get)
         }
-        Some(Request::Put(_)) => {
-            NODE_SERVICE_GROUP_REQUEST_TOTAL.put.inc();
-            Some(&NODE_SERVICE_GROUP_REQUEST_DURATION_SECONDS.put)
-        }
-        Some(Request::Delete(_)) => {
-            NODE_SERVICE_GROUP_REQUEST_TOTAL.delete.inc();
-            Some(&NODE_SERVICE_GROUP_REQUEST_DURATION_SECONDS.delete)
-        }
         Some(Request::Scan(_)) => {
             NODE_SERVICE_GROUP_REQUEST_TOTAL.scan.inc();
             Some(&NODE_SERVICE_GROUP_REQUEST_DURATION_SECONDS.scan)
         }
-        Some(Request::BatchWrite(_)) => {
-            NODE_SERVICE_GROUP_REQUEST_TOTAL.batch_write.inc();
-            Some(&NODE_SERVICE_GROUP_REQUEST_DURATION_SECONDS.batch_write)
+        Some(Request::Write(_)) => {
+            NODE_SERVICE_GROUP_REQUEST_TOTAL.write.inc();
+            Some(&NODE_SERVICE_GROUP_REQUEST_DURATION_SECONDS.write)
         }
         Some(Request::AcceptShard(_)) => {
             NODE_SERVICE_GROUP_REQUEST_TOTAL.accept_shard.inc();

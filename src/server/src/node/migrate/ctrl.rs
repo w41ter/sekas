@@ -122,7 +122,7 @@ impl MigrateController {
         let req = ForwardRequest {
             shard_id: forward_ctx.shard_id,
             group_id,
-            forward_data: forward_ctx.payloads.clone(),
+            forward_data: vec![forward_ctx.payloads.clone()],
             request: Some(GroupRequestUnion { request: Some(request.clone()) }),
         };
         let resp = client.forward(&req).await?;
@@ -312,10 +312,10 @@ pub async fn pull_shard(
         info!("pull shard chunk with last key {last_key:?}");
         let shard_chunk = client.pull_shard_chunk(shard_id, last_key.clone()).await?;
         info!("pull shard chunk with {} data", shard_chunk.len());
-        if shard_chunk.is_empty() {
-            finished = true;
+        if let Some(value_set) = shard_chunk.last() {
+            last_key = Some(value_set.user_key.clone());
         } else {
-            last_key = Some(shard_chunk.last().unwrap().key.clone());
+            finished = true;
         }
         NODE_INGEST_CHUNK_TOTAL.inc();
         replica.ingest(shard_id, shard_chunk, false).await?;

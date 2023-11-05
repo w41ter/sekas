@@ -34,9 +34,6 @@ use log::{error, info, trace, warn};
 use sekas_api::server::v1::report_request::GroupUpdates;
 use sekas_api::server::v1::watch_response::*;
 use sekas_api::server::v1::*;
-use sekas_api::v1::{
-    collection_desc as co_desc, create_collection_request as co_req, CollectionDesc, DatabaseDesc,
-};
 use sekas_rock::time::timestamp_nanos;
 use sekas_schema::shard::{SHARD_MAX, SHARD_MIN};
 use tokio::time::Instant;
@@ -50,7 +47,7 @@ use self::schedule::ReconcileScheduler;
 use self::schema::ReplicaNodes;
 pub(crate) use self::schema::*;
 use self::store::RootStore;
-pub use self::watch::{WatchHub, Watcher, WatcherInitializer};
+pub use self::watch::{WatchHub, Watcher};
 use crate::constants::ROOT_GROUP_ID;
 use crate::node::{Node, Replica, ReplicaRouteTable};
 use crate::runtime::{self, TaskPriority};
@@ -574,17 +571,7 @@ impl Root {
                     collections: collections
                         .iter()
                         .filter(|c| c.db == d.id)
-                        .map(|c| {
-                            let mode = match c.partition.as_ref().unwrap() {
-                                co_desc::Partition::Hash(co_desc::HashPartition { slots }) => {
-                                    format!("hash({slots})")
-                                }
-                                co_desc::Partition::Range(co_desc::RangePartition {}) => {
-                                    "range".to_owned()
-                                }
-                            };
-                            Collection { id: c.id, name: c.name.to_owned(), mode }
-                        })
+                        .map(|c| Collection { id: c.id, name: c.name.to_owned() })
                         .collect::<Vec<_>>(),
                 })
                 .collect::<Vec<_>>(),
@@ -611,19 +598,9 @@ impl Root {
                         .shards
                         .iter()
                         .map(|s| {
-                            let part = match s.partition.as_ref().unwrap() {
-                                shard_desc::Partition::Hash(HashPartition {
-                                    slot_id,
-                                    end_slot_id,
-                                    slots,
-                                }) => {
-                                    format!("hash: [{slot_id}, {end_slot_id}) of {slots}")
-                                }
-                                shard_desc::Partition::Range(RangePartition { start, end }) => {
-                                    format!("range: {start:?} to {end:?}")
-                                }
-                            };
-                            GroupShard { id: s.id, collection: s.collection_id, partition: part }
+                            let range = s.range.as_ref().unwrap();
+                            let range = format!("range: {:?} to {:?}", range.start, range.end);
+                            GroupShard { id: s.id, collection: s.collection_id, range }
                         })
                         .collect::<Vec<_>>(),
                 })
@@ -683,7 +660,6 @@ impl Root {
         &self,
         name: String,
         database: String,
-        partition: Option<co_req::Partition>,
     ) -> Result<CollectionDesc> {
         let schema = self.schema()?;
         let db = schema
@@ -695,14 +671,6 @@ impl Root {
             .prepare_create_collection(CollectionDesc {
                 name: name.to_owned(),
                 db: db.id,
-                partition: partition.map(|p| match p {
-                    co_req::Partition::Hash(hash) => {
-                        co_desc::Partition::Hash(co_desc::HashPartition { slots: hash.slots })
-                    }
-                    co_req::Partition::Range(_) => {
-                        co_desc::Partition::Range(co_desc::RangePartition {})
-                    }
-                }),
                 ..Default::default()
             })
             .await?;
@@ -726,31 +694,9 @@ impl Root {
         collection: CollectionDesc,
     ) -> Result<()> {
         let wait_create = {
-            let partition = collection
-                .partition
-                .as_ref()
-                .unwrap_or(&co_desc::Partition::Hash(co_desc::HashPartition { slots: 1 }));
-
-            let partition = match partition {
-                co_desc::Partition::Hash(hash_partition) => {
-                    shard_desc::Partition::Hash(HashPartition {
-                        slot_id: 0,
-                        end_slot_id: hash_partition.slots,
-                        slots: hash_partition.slots,
-                    })
-                }
-                co_desc::Partition::Range(_) => shard_desc::Partition::Range(RangePartition {
-                    start: SHARD_MIN.to_owned(),
-                    end: SHARD_MAX.to_owned(),
-                }),
-            };
-
+            let range = RangePartition { start: SHARD_MIN.to_owned(), end: SHARD_MAX.to_owned() };
             let id = schema.next_shard_id().await?;
-            vec![ShardDesc {
-                id,
-                collection_id: collection.id.to_owned(),
-                partition: Some(partition),
-            }]
+            vec![ShardDesc { id, collection_id: collection.id.to_owned(), range: Some(range) }]
         };
 
         self.jobs
@@ -1288,8 +1234,7 @@ impl SchedStats {
 mod root_test {
     use futures::StreamExt;
     use sekas_api::server::v1::watch_response::{update_event, UpdateEvent};
-    use sekas_api::server::v1::GroupDesc;
-    use sekas_api::v1::DatabaseDesc;
+    use sekas_api::server::v1::{DatabaseDesc, GroupDesc};
     use tempdir::TempDir;
 
     use super::Config;
@@ -1417,7 +1362,6 @@ pub mod diagnosis {
     #[derive(Serialize, Deserialize)]
     pub struct Collection {
         pub id: u64,
-        pub mode: String,
         pub name: String,
     }
 
@@ -1459,6 +1403,6 @@ pub mod diagnosis {
     pub struct GroupShard {
         pub collection: u64,
         pub id: u64,
-        pub partition: String,
+        pub range: String,
     }
 }

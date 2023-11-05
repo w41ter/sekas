@@ -18,7 +18,6 @@ use std::time::Duration;
 
 use log::info;
 use sekas_api::server::v1::*;
-use sekas_api::v1::CollectionDesc;
 use sekas_client::{
     ClientOptions, ConnManager, GroupClient, NodeClient, RootClient, Router, RouterGroupState,
     SekasClient, StaticServiceDiscovery,
@@ -42,6 +41,7 @@ pub struct ClusterClient {
     nodes: HashMap<u64, String>,
     router: Router,
     conn_manager: ConnManager,
+    client: SekasClient,
 }
 
 #[allow(unused)]
@@ -51,7 +51,9 @@ impl ClusterClient {
         let discovery = Arc::new(StaticServiceDiscovery::new(nodes.values().cloned().collect()));
         let root_client = RootClient::new(discovery, conn_manager.clone());
         let router = Router::new(root_client).await;
-        ClusterClient { nodes, router, conn_manager }
+        let addrs = nodes.values().cloned().collect::<Vec<_>>();
+        let client = SekasClient::new(ClientOptions::default(), addrs).await.unwrap();
+        ClusterClient { nodes, router, conn_manager, client }
     }
 
     pub async fn create_replica(&self, node_id: u64, replica_id: u64, desc: GroupDesc) {
@@ -61,12 +63,11 @@ impl ClusterClient {
     }
 
     pub fn group(&self, group_id: u64) -> GroupClient {
-        GroupClient::lazy(group_id, self.router.clone(), self.conn_manager.clone())
+        GroupClient::lazy(group_id, self.client.clone())
     }
 
     pub async fn app_client(&self) -> SekasClient {
-        let addrs = self.nodes.values().cloned().collect::<Vec<_>>();
-        SekasClient::new(ClientOptions::default(), addrs).await.unwrap()
+        self.client.clone()
     }
 
     pub async fn app_client_with_options(&self, opts: ClientOptions) -> SekasClient {

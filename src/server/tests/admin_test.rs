@@ -16,8 +16,8 @@ mod helper;
 use std::time::Duration;
 
 use log::info;
-use sekas_api::v1::{CollectionDesc, DatabaseDesc};
-use sekas_client::{ClientOptions, NodeClient, Partition, SekasClient};
+use sekas_api::server::v1::*;
+use sekas_client::{ClientOptions, NodeClient, SekasClient};
 use sekas_server::diagnosis;
 
 use crate::helper::context::*;
@@ -75,23 +75,18 @@ fn admin_delete() {
         let c = SekasClient::new(ClientOptions::default(), addrs.to_owned()).await.unwrap();
         {
             let db = c.create_database("test1".into()).await.unwrap();
-            let c1 = db
-                .create_collection("test_co1".into(), Some(Partition::Hash { slots: 1 }))
-                .await
-                .unwrap();
-            c1.put("k1".into(), "v1".into(), None, None, vec![]).await.unwrap();
+            let c1 = db.create_collection("test_co1".into()).await.unwrap();
+            c1.put("k1".into(), "v1".into()).await.unwrap();
             db.delete_collection("test_co1".into()).await.unwrap();
             assert!(db.open_collection("test_co1".into()).await.is_err());
-            db.create_collection("test_co1".into(), Some(Partition::Hash { slots: 1 }))
-                .await
-                .unwrap();
+            db.create_collection("test_co1".into()).await.unwrap();
             let oc2 = db.open_collection("test_co1".into()).await.unwrap();
             assert!(oc2.get("k1".into()).await.unwrap().is_none())
         }
         {
             c.create_database("test_db1".into()).await.unwrap();
             let db1 = c.open_database("test_db1".into()).await.unwrap();
-            db1.create_collection("co1".into(), Some(Partition::Hash { slots: 1 })).await.unwrap();
+            db1.create_collection("co1".into()).await.unwrap();
             assert!(db1.list_collection().await.unwrap().len() == 1);
             c.delete_database("test_db1".into()).await.unwrap();
             assert!(c.open_database("test_db1".into()).await.is_err());
@@ -148,13 +143,7 @@ fn admin_basic() {
                 .unwrap()
                 .is_none());
 
-            let new_col = new_db
-                .create_collection(
-                    new_collection_name.to_owned(),
-                    Some(Partition::Hash { slots: 2 }),
-                )
-                .await
-                .unwrap();
+            let new_col = new_db.create_collection(new_collection_name.to_owned()).await.unwrap();
 
             assert!(new_db.list_collection().await.unwrap().len() == pcnt + 1);
 

@@ -19,7 +19,7 @@ mod cmd_get;
 mod cmd_move_replicas;
 mod cmd_scan;
 mod cmd_write;
-mod txn;
+// mod txn;
 
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -42,7 +42,6 @@ use crate::{Error, Result};
 const INTENT_KEY_VERSION: u64 = u64::MAX;
 /// The key version reserved for flat written.
 const FLAT_KEY_VERSION: u64 = u64::MAX - 1;
-pub const MIGRATING_KEY_VERSION: u64 = 0;
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
 struct ShardKey {
@@ -165,10 +164,10 @@ pub async fn acquire_row_latches(
     timeout: Option<Duration>,
 ) -> Result<Option<Vec<LatchGuard>>> {
     let (shard_id, mut keys) = match request {
-        Request::Write(req) => (req.shard_id, collect_shard_write_keys(req))?,
+        Request::Write(req) => (req.shard_id, collect_shard_write_keys(req)?),
         Request::WriteIntent(req) => {
             if let Some(req) = req.write.as_ref() {
-                (req.shard_id, collect_shard_write_keys(req))
+                (req.shard_id, collect_shard_write_keys(req)?)
             } else {
                 return Ok(None);
             }

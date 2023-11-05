@@ -15,6 +15,7 @@
 
 mod error;
 mod migration;
+mod value;
 
 pub mod server {
     pub mod v1 {

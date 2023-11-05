@@ -11,28 +11,37 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-use sekas_api::v1::*;
+
+use sekas_api::server::v1::*;
 
 use crate::{Error, Result};
 
-pub(super) fn eval_conditions(
-    value_result: Option<&[u8]>,
-    conditions: &[WriteCondition],
-) -> Result<()> {
+pub(super) fn eval_conditions(value: Option<&Value>, conditions: &[WriteCondition]) -> Result<()> {
     for cond in conditions {
         match WriteConditionType::from_i32(cond.r#type) {
-            Some(WriteConditionType::Exists) if value_result.is_none() => {
+            Some(WriteConditionType::ExpectExists) if value.is_none() => {
                 return Err(Error::CasFailed("user key not exists".into()));
             }
-            Some(WriteConditionType::NotExists) if value_result.is_some() => {
+            Some(WriteConditionType::ExpectNotExists) if value.is_some() => {
                 return Err(Error::CasFailed("user key already exists".into()));
             }
             Some(WriteConditionType::ExpectValue)
-                if !value_result.map(|v| v == cond.value).unwrap_or_default() =>
+                if !value
+                    .and_then(|v| v.content.as_ref())
+                    .map(|v| v == &cond.value)
+                    .unwrap_or_default() =>
             {
                 return Err(Error::CasFailed("user key is not expected value".into()));
             }
+            // TODO(walter) support CAS
             Some(WriteConditionType::ExpectVersion) => {}
+            Some(WriteConditionType::ExpectVersionLt) => {}
+            Some(WriteConditionType::ExpectVersionLe) => {}
+            Some(WriteConditionType::ExpectVersionGt) => {}
+            Some(WriteConditionType::ExpectVersionGe) => {}
+            Some(WriteConditionType::ExpectStartsWith) => {}
+            Some(WriteConditionType::ExpectEndsWith) => {}
+            Some(WriteConditionType::ExpectSlice) => {}
             None => {
                 return Err(Error::InvalidArgument(format!(
                     "Invalid WriteConditionType {}",
@@ -47,17 +56,19 @@ pub(super) fn eval_conditions(
 
 #[cfg(test)]
 mod tests {
-    use sekas_api::v1::{WriteCondition, WriteConditionType};
+    use sekas_api::server::v1::{Value, WriteCondition, WriteConditionType};
 
     use super::eval_conditions;
     use crate::Error;
 
     #[test]
     fn eval_not_exists() {
-        let cond =
-            WriteCondition { r#type: WriteConditionType::NotExists.into(), ..Default::default() };
-        let value_result = Some(vec![b'1']);
-        let r = eval_conditions(value_result.as_deref(), &[cond.clone()]);
+        let cond = WriteCondition {
+            r#type: WriteConditionType::ExpectNotExists.into(),
+            ..Default::default()
+        };
+        let value_result = Some(Value::with_value(vec![b'1'], 0));
+        let r = eval_conditions(value_result.as_ref(), &[cond.clone()]);
         assert!(matches!(r, Err(Error::CasFailed(_))));
 
         let r = eval_conditions(None, &[cond]);
@@ -66,10 +77,12 @@ mod tests {
 
     #[test]
     fn eval_exists() {
-        let cond =
-            WriteCondition { r#type: WriteConditionType::Exists.into(), ..Default::default() };
-        let value_result = Some(vec![b'1']);
-        let r = eval_conditions(value_result.as_deref(), &[cond.clone()]);
+        let cond = WriteCondition {
+            r#type: WriteConditionType::ExpectExists.into(),
+            ..Default::default()
+        };
+        let value_result = Some(Value::with_value(vec![b'1'], 0));
+        let r = eval_conditions(value_result.as_ref(), &[cond.clone()]);
         assert!(r.is_ok());
 
         let r = eval_conditions(None, &[cond]);
@@ -87,13 +100,15 @@ mod tests {
         let r = eval_conditions(None, &[cond.clone()]);
         assert!(matches!(r, Err(Error::CasFailed(_))));
 
-        let r = eval_conditions(Some(&[]), &[cond.clone()]);
+        let r = eval_conditions(Some(&Value::with_value(vec![], 0)), &[cond.clone()]);
         assert!(matches!(r, Err(Error::CasFailed(_))));
 
-        let r = eval_conditions(Some(&[b'1', b'1']), &[cond.clone()]);
+        let r = eval_conditions(Some(&Value::with_value(vec![b'1', b'1'], 0)), &[cond.clone()]);
         assert!(matches!(r, Err(Error::CasFailed(_))));
 
-        let r = eval_conditions(Some(&[b'1']), &[cond]);
+        let r = eval_conditions(Some(&Value::with_value(vec![b'1'], 0)), &[cond]);
         assert!(r.is_ok());
     }
+
+    // TODO(walter) add more eval condition tests.
 }

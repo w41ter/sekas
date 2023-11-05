@@ -225,7 +225,7 @@ impl GroupStateMachine {
         let inherited_epoch = std::cmp::max(group_desc.epoch, inherited_epoch);
         group_desc.epoch = inherited_epoch + SHARD_UPDATE_DELTA;
         let msg = if desc.src_group_id == group_desc.id {
-            group_desc.shards.drain_filter(|r| r.id == shard_desc.id);
+            group_desc.shards.retain(|r| r.id != shard_desc.id);
             "shard migrated out"
         } else {
             debug_assert_eq!(desc.dest_group_id, group_desc.id);
@@ -379,7 +379,7 @@ fn apply_simple_change(local_id: u64, desc: &mut GroupDesc, change: &ChangeRepli
         }
         Some(ChangeReplicaType::Remove) => {
             info!("group {group_id} replica {local_id} remove voter {replica_id}");
-            desc.replicas.drain_filter(|rep| rep.id == replica_id);
+            desc.replicas.retain(|rep| rep.id != replica_id);
         }
         None => {
             panic!("such change replica operation isn't supported")
@@ -434,7 +434,7 @@ fn apply_enter_joint(local_id: u64, desc: &mut GroupDesc, changes: &[ChangeRepli
         }
     }
 
-    desc.replicas.drain_filter(|r| outgoing_learners.contains(&r.id));
+    desc.replicas.retain(|r| !outgoing_learners.contains(&r.id));
 
     let changes = change_replicas_digest(changes);
     info!("group {group_id} replica {local_id} enter join and {changes}, former {roles}");

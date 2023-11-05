@@ -22,8 +22,7 @@ use lazy_static::lazy_static;
 use log::{info, warn};
 use prost::Message;
 use sekas_api::server::v1::watch_response::{delete_event, update_event, DeleteEvent, UpdateEvent};
-use sekas_api::server::v1::*;
-use sekas_api::v1::{CollectionDesc, DatabaseDesc, PutRequest};
+use sekas_api::server::v1::{CollectionDesc, DatabaseDesc, PutRequest, *};
 use sekas_rock::time::timestamp_nanos;
 use sekas_schema::system::col;
 
@@ -83,7 +82,7 @@ impl Schema {
 
         let mut desc = desc.to_owned();
         desc.id = self.next_id(META_DATABASE_ID_KEY).await?;
-        self.batch_write(PutBatchBuilder::default().put_database(desc.to_owned()).build()).await?;
+        self.put_database(desc.clone()).await?;
         Ok(desc)
     }
 
@@ -107,9 +106,9 @@ impl Schema {
     }
 
     pub async fn list_database(&self) -> Result<Vec<DatabaseDesc>> {
-        let vals = self.list(col::DATABASE_ID).await?;
+        let values = self.list(col::DATABASE_ID).await?;
         let mut databases = Vec::new();
-        for val in vals {
+        for val in values {
             databases.push(
                 DatabaseDesc::decode(&*val)
                     .map_err(|_| Error::InvalidData("database desc".into()))?,
@@ -129,7 +128,7 @@ impl Schema {
 
     pub async fn create_collection(&self, desc: CollectionDesc) -> Result<CollectionDesc> {
         assert!(self.get_collection(desc.db, &desc.name).await?.is_none());
-        self.batch_write(PutBatchBuilder::default().put_col(desc.to_owned()).build()).await?;
+        self.put_col(desc.clone()).await?;
         Ok(desc)
     }
 
@@ -171,9 +170,9 @@ impl Schema {
     }
 
     pub async fn list_collection(&self) -> Result<Vec<CollectionDesc>> {
-        let vals = self.list(col::COLLECTION_ID).await?;
+        let values = self.list(col::COLLECTION_ID).await?;
         let mut collections = Vec::new();
-        for val in vals {
+        for val in values {
             let c = CollectionDesc::decode(&*val)
                 .map_err(|_| Error::InvalidData("collection desc".into()))?;
             collections.push(c);
@@ -189,7 +188,7 @@ impl Schema {
     pub async fn add_node(&self, desc: NodeDesc) -> Result<NodeDesc> {
         let mut desc = desc.to_owned();
         desc.id = self.next_id(META_NODE_ID_KEY).await?;
-        self.batch_write(PutBatchBuilder::default().put_node(desc.to_owned()).build()).await?;
+        self.put_node(desc.clone()).await?;
         Ok(desc)
     }
 
@@ -208,14 +207,14 @@ impl Schema {
     }
 
     pub async fn update_node(&self, desc: NodeDesc) -> Result<()> {
-        self.batch_write(PutBatchBuilder::default().put_node(desc.to_owned()).build()).await?;
+        self.put_node(desc).await?;
         Ok(())
     }
 
     pub async fn list_node(&self) -> Result<Vec<NodeDesc>> {
-        let vals = self.list(col::NODE_ID).await?;
+        let values = self.list(col::NODE_ID).await?;
         let mut nodes = Vec::new();
-        for val in vals {
+        for val in values {
             nodes
                 .push(NodeDesc::decode(&*val).map_err(|_| Error::InvalidData("node desc".into()))?);
         }
@@ -257,17 +256,12 @@ impl Schema {
         group: Option<GroupDesc>,
         replica: Option<ReplicaState>,
     ) -> Result<()> {
-        let mut builder = PutBatchBuilder::default();
-        if group.is_some() {
-            builder.put_group(group.unwrap());
+        if let Some(replica) = replica {
+            self.put_replica_state(replica).await?;
         }
-        if replica.is_some() {
-            builder.put_replica_state(replica.unwrap());
+        if let Some(group) = group {
+            self.put_group(group).await?;
         }
-        if builder.is_empty() {
-            return Ok(());
-        }
-        self.batch_write(builder.build()).await?;
         Ok(())
     }
 
@@ -292,9 +286,9 @@ impl Schema {
     }
 
     pub async fn list_group(&self) -> Result<Vec<GroupDesc>> {
-        let vals = self.list(col::GROUP_ID).await?;
+        let values = self.list(col::GROUP_ID).await?;
         let mut groups = Vec::new();
-        for val in vals {
+        for val in values {
             groups.push(
                 GroupDesc::decode(&*val).map_err(|_| Error::InvalidData("group desc".into()))?,
             );
@@ -322,9 +316,9 @@ impl Schema {
     }
 
     pub async fn list_replica_state(&self) -> Result<Vec<ReplicaState>> {
-        let vals = self.list(col::REPLICA_STATE_ID).await?;
-        let mut states = Vec::with_capacity(vals.len());
-        for val in vals {
+        let values = self.list(col::REPLICA_STATE_ID).await?;
+        let mut states = Vec::with_capacity(values.len());
+        for val in values {
             let state = ReplicaState::decode(&*val)
                 .map_err(|_| Error::InvalidData("replica state desc".into()))?;
             states.push(state.to_owned());
@@ -333,10 +327,10 @@ impl Schema {
     }
 
     pub async fn group_replica_states(&self, group_id: u64) -> Result<Vec<ReplicaState>> {
-        let vals =
+        let values =
             self.list_prefix(col::REPLICA_STATE_ID, group_id.to_le_bytes().as_slice()).await?;
-        let mut states = Vec::with_capacity(vals.len());
-        for val in vals {
+        let mut states = Vec::with_capacity(values.len());
+        for val in values {
             let state = ReplicaState::decode(&*val)
                 .map_err(|_| Error::InvalidData("replica state desc".into()))?;
             states.push(state);
@@ -494,13 +488,13 @@ impl Schema {
     pub async fn append_job(&self, desc: BackgroundJob) -> Result<BackgroundJob> {
         let mut desc = desc.to_owned();
         desc.id = self.next_id(META_JOB_ID_KEY).await?;
-        self.batch_write(PutBatchBuilder::default().put_job(desc.to_owned()).build()).await?;
+        self.put_job(desc.to_owned()).await?;
         Ok(desc)
     }
 
     pub async fn remove_job(&self, job: &BackgroundJob) -> Result<()> {
-        self.batch_write(PutBatchBuilder::default().put_job_history(job.to_owned()).build())
-            .await?;
+        // FIXME(walter) not atomic!!!
+        self.put_job_history(job.to_owned()).await?;
         self.delete(col::JOB_ID, &job.id.to_le_bytes()).await?;
         Ok(())
     }
@@ -510,27 +504,27 @@ impl Schema {
             // TODO: replace this with storage put_condition operation.
             return Ok(false);
         }
-        self.batch_write(PutBatchBuilder::default().put_job(desc).build()).await?;
+        self.put_job(desc).await?;
         Ok(true)
     }
 
     pub async fn list_job(&self) -> Result<Vec<BackgroundJob>> {
-        let vals = self.list(col::JOB_ID).await?;
-        let mut jobs = Vec::with_capacity(vals.len());
-        for val in vals {
+        let values = self.list(col::JOB_ID).await?;
+        let mut jobs = Vec::with_capacity(values.len());
+        for val in values {
             let job = BackgroundJob::decode(&*val)
-                .map_err(|_| Error::InvalidData("backgroud job".into()))?;
+                .map_err(|_| Error::InvalidData("background job".into()))?;
             jobs.push(job.to_owned());
         }
         Ok(jobs)
     }
 
     pub async fn list_history_job(&self) -> Result<Vec<BackgroundJob>> {
-        let vals = self.list(col::JOB_HISTORY_ID).await?;
-        let mut jobs = Vec::with_capacity(vals.len());
-        for val in vals {
+        let values = self.list(col::JOB_HISTORY_ID).await?;
+        let mut jobs = Vec::with_capacity(values.len());
+        for val in values {
             let job = BackgroundJob::decode(&*val)
-                .map_err(|_| Error::InvalidData("backgroud job".into()))?;
+                .map_err(|_| Error::InvalidData("background job".into()))?;
             jobs.push(job.to_owned());
         }
         Ok(jobs)
@@ -542,7 +536,7 @@ impl Schema {
             return Ok(None);
         }
         let job = BackgroundJob::decode(&*val.unwrap())
-            .map_err(|_| Error::InvalidData("backgroud job".into()))?;
+            .map_err(|_| Error::InvalidData("background job".into()))?;
         Ok(Some(job))
     }
 
@@ -558,12 +552,7 @@ impl Schema {
 
     pub async fn set_txn_id(&self, next_txn_id: u64) -> Result<()> {
         // TODO(walter) how about add a write condition here?
-        self.batch_write(
-            PutBatchBuilder::default()
-                .put_meta(META_TXN_ID_KEY.as_bytes().to_vec(), next_txn_id.to_le_bytes().to_vec())
-                .build(),
-        )
-        .await?;
+        self.put_meta(META_TXN_ID_KEY.as_bytes(), next_txn_id.to_le_bytes().to_vec()).await?;
         Ok(())
     }
 }
@@ -611,13 +600,8 @@ impl Schema {
 
         info!("start boostrap root. cluster={}", String::from_utf8_lossy(&cluster_id));
 
-        let mut batch = PutBatchBuilder::default();
-        Self::init_meta_collection(&mut batch, cluster_id.to_owned());
-        batch.put_database(sekas_schema::system::db::database_desc());
-        for col in sekas_schema::system::collections() {
-            batch.put_col(col);
-        }
-        batch.put_node(NodeDesc {
+        self.put_database(sekas_schema::system::db::database_desc()).await?;
+        let node_desc = NodeDesc {
             id: FIRST_NODE_ID,
             addr: addr.into(),
             capacity: Some(NodeCapacity {
@@ -626,9 +610,10 @@ impl Schema {
                 leader_count: 0,
             }),
             status: NodeStatus::Active as i32,
-        });
+        };
+        self.put_node(node_desc).await?;
 
-        batch.put_group(GroupDesc {
+        let group_desc = GroupDesc {
             id: ROOT_GROUP_ID,
             epoch: INITIAL_EPOCH,
             replicas: vec![ReplicaDesc {
@@ -637,38 +622,53 @@ impl Schema {
                 role: ReplicaRole::Voter.into(),
             }],
             shards: sekas_schema::system::unity_col_shards(),
-        });
+        };
+        self.put_group(group_desc).await?;
 
-        batch.put_group(GroupDesc {
-            id: FIRST_GROUP_ID,
-            epoch: INITIAL_EPOCH,
-            replicas: vec![ReplicaDesc {
-                id: INIT_USER_REPLICA_ID,
-                node_id: FIRST_NODE_ID,
-                role: ReplicaRole::Voter.into(),
-            }],
-            shards: sekas_schema::system::txn_col_shards(),
-        });
-
-        batch.put_replica_state(ReplicaState {
+        let replica_state = ReplicaState {
             replica_id: FIRST_REPLICA_ID,
             group_id: ROOT_GROUP_ID,
             term: 0,
             voted_for: FIRST_REPLICA_ID,
             role: RaftRole::Leader.into(),
             node_id: FIRST_NODE_ID,
-        });
+        };
+        self.put_replica_state(replica_state).await?;
 
-        batch.put_replica_state(ReplicaState {
-            replica_id: INIT_USER_REPLICA_ID,
-            group_id: FIRST_GROUP_ID,
-            term: 0,
-            voted_for: INIT_USER_REPLICA_ID,
-            role: RaftRole::Leader.into(),
-            node_id: FIRST_NODE_ID,
-        });
+        let mut batch =
+            ShardWriteRequest { shard_id: col::shard_id(col::COLLECTION_ID), ..Default::default() };
+        for col in sekas_schema::system::collections() {
+            batch.puts.push(PutRequest {
+                key: collection_key(col.db, &col.name),
+                value: col.encode_to_vec(),
+                ..Default::default()
+            });
+        }
+        self.batch_write(batch).await?;
 
-        self.batch_write(batch.build()).await?;
+        // ATTN: init meta collection will setup cluster id, so it must be the last step
+        // of bootstrap root.
+        self.init_meta_collection(cluster_id.to_owned()).await?;
+
+        // batch.put_group(GroupDesc {
+        //     id: FIRST_GROUP_ID,
+        //     epoch: INITIAL_EPOCH,
+        //     replicas: vec![ReplicaDesc {
+        //         id: INIT_USER_REPLICA_ID,
+        //         node_id: FIRST_NODE_ID,
+        //         role: ReplicaRole::Voter.into(),
+        //     }],
+        //     shards: sekas_schema::system::txn_col_shards(),
+        // });
+
+        // batch.put_replica_state(ReplicaState {
+        //     replica_id: INIT_USER_REPLICA_ID,
+        //     group_id: FIRST_GROUP_ID,
+        //     term: 0,
+        //     voted_for: INIT_USER_REPLICA_ID,
+        //     role: RaftRole::Leader.into(),
+        //     node_id: FIRST_NODE_ID,
+        // });
 
         info!("boostrap root successfully. cluster={}", String::from_utf8_lossy(&cluster_id));
 
@@ -687,28 +687,31 @@ impl Schema {
         self.next_id(META_SHARD_ID_KEY).await
     }
 
-    fn init_meta_collection(batch: &mut PutBatchBuilder, cluster_id: Vec<u8>) {
-        batch.put_meta(META_CLUSTER_ID_KEY.into(), cluster_id);
-        batch.put_meta(
+    async fn init_meta_collection(&self, cluster_id: Vec<u8>) -> Result<()> {
+        let mut batch =
+            ShardWriteRequest { shard_id: col::shard_id(col::META_ID), ..Default::default() };
+        let mut put_meta =
+            |key, value| batch.puts.push(PutRequest { key, value, ..Default::default() });
+        put_meta(META_CLUSTER_ID_KEY.into(), cluster_id);
+        put_meta(
             META_DATABASE_ID_KEY.into(),
             sekas_schema::FIRST_USER_DATABASE_ID.to_le_bytes().to_vec(),
         );
-        batch.put_meta(
+        put_meta(
             META_COLLECTION_ID_KEY.into(),
             sekas_schema::FIRST_USER_COLLECTION_ID.to_le_bytes().to_vec(),
         );
-        batch.put_meta(META_GROUP_ID_KEY.into(), (FIRST_GROUP_ID + 1).to_le_bytes().to_vec());
-        batch.put_meta(META_NODE_ID_KEY.into(), (FIRST_NODE_ID + 1).to_le_bytes().to_vec());
-        batch.put_meta(
-            META_REPLICA_ID_KEY.into(),
-            (INIT_USER_REPLICA_ID + 1).to_le_bytes().to_vec(),
-        );
-        batch.put_meta(
+        put_meta(META_GROUP_ID_KEY.into(), (FIRST_GROUP_ID + 1).to_le_bytes().to_vec());
+        put_meta(META_NODE_ID_KEY.into(), (FIRST_NODE_ID + 1).to_le_bytes().to_vec());
+        put_meta(META_REPLICA_ID_KEY.into(), (INIT_USER_REPLICA_ID + 1).to_le_bytes().to_vec());
+        put_meta(
             META_SHARD_ID_KEY.into(),
             sekas_schema::FIRST_USER_SHARD_ID.to_le_bytes().to_vec(),
         );
-        batch.put_meta(META_JOB_ID_KEY.into(), INITIAL_JOB_ID.to_le_bytes().to_vec());
-        batch.put_meta(META_TXN_ID_KEY.into(), timestamp_nanos().to_le_bytes().to_vec());
+        put_meta(META_JOB_ID_KEY.into(), INITIAL_JOB_ID.to_le_bytes().to_vec());
+        put_meta(META_TXN_ID_KEY.into(), timestamp_nanos().to_le_bytes().to_vec());
+        self.batch_write(batch).await?;
+        Ok(())
     }
 }
 
@@ -718,18 +721,25 @@ impl Schema {
         self.get(col::META_ID, key).await
     }
 
-    async fn batch_write(&self, batch: BatchWriteRequest) -> Result<()> {
+    async fn batch_write(&self, batch: ShardWriteRequest) -> Result<()> {
         self.store.batch_write(batch).await
     }
 
+    #[inline]
     async fn get(&self, collection_id: u64, key: &[u8]) -> Result<Option<Vec<u8>>> {
         let rs = self.store.get(col::shard_id(collection_id), key).await;
         crate::runtime::yield_now().await;
         rs
     }
 
+    #[inline]
     async fn delete(&self, collection_id: u64, key: &[u8]) -> Result<()> {
         self.store.delete(col::shard_id(collection_id), key).await
+    }
+
+    #[inline]
+    async fn put(&self, collection_id: u64, key: &[u8], value: Vec<u8>) -> Result<()> {
+        self.store.put(col::shard_id(collection_id), key.to_owned(), value).await
     }
 
     async fn list(&self, collection_id: u64) -> Result<Vec<Vec<u8>>> {
@@ -751,13 +761,56 @@ impl Schema {
         let id = u64::from_le_bytes(
             id.try_into().map_err(|_| Error::InvalidData(format!("{} id", id_type)))?,
         );
-        self.batch_write(
-            PutBatchBuilder::default()
-                .put_meta(id_type.as_bytes().to_vec(), (id + 1).to_le_bytes().to_vec())
-                .build(),
-        )
-        .await?;
+        self.put_meta(id_type.as_bytes(), (id + 1).to_le_bytes().to_vec()).await?;
         Ok(id)
+    }
+}
+
+/// A set of helper functions to simplify put logic.
+impl Schema {
+    #[inline]
+    async fn put_database(&self, desc: DatabaseDesc) -> Result<()> {
+        self.put(col::DATABASE_ID, desc.name.as_bytes(), desc.encode_to_vec()).await
+    }
+
+    #[inline]
+    async fn put_group(&self, desc: GroupDesc) -> Result<()> {
+        self.put(col::GROUP_ID, &desc.id.to_le_bytes(), desc.encode_to_vec()).await
+    }
+
+    #[inline]
+    async fn put_replica_state(&self, state: ReplicaState) -> Result<()> {
+        self.put(
+            col::REPLICA_STATE_ID,
+            &replica_key(state.group_id, state.replica_id),
+            state.encode_to_vec(),
+        )
+        .await
+    }
+
+    #[inline]
+    async fn put_meta(&self, key: &[u8], value: Vec<u8>) -> Result<()> {
+        self.put(col::META_ID, key, value).await
+    }
+
+    #[inline]
+    async fn put_node(&self, desc: NodeDesc) -> Result<()> {
+        self.put(col::NODE_ID, &desc.id.to_le_bytes(), desc.encode_to_vec()).await
+    }
+
+    #[inline]
+    async fn put_job(&self, desc: BackgroundJob) -> Result<()> {
+        self.put(col::JOB_ID, &desc.id.to_le_bytes(), desc.encode_to_vec()).await
+    }
+
+    #[inline]
+    async fn put_job_history(&self, desc: BackgroundJob) -> Result<()> {
+        self.put(col::JOB_HISTORY_ID, &desc.id.to_le_bytes(), desc.encode_to_vec()).await
+    }
+
+    #[inline]
+    async fn put_col(&self, col: CollectionDesc) -> Result<()> {
+        self.put(col::COLLECTION_ID, &collection_key(col.db, &col.name), col.encode_to_vec()).await
     }
 }
 
@@ -792,78 +845,6 @@ impl RemoteStore {
         let client = self.transport_manager.build_shard_client(ROOT_GROUP_ID, shard_id);
         client.delete(&key).await?;
         Ok(())
-    }
-}
-
-#[derive(Default)]
-struct PutBatchBuilder {
-    batch: Vec<(u64, Vec<u8>, Vec<u8>)>,
-}
-
-impl PutBatchBuilder {
-    fn put(&mut self, collection_id: u64, key: Vec<u8>, val: Vec<u8>) {
-        self.batch.push((col::shard_id(collection_id), key, val));
-    }
-
-    fn build(&self) -> BatchWriteRequest {
-        let puts = self
-            .batch
-            .iter()
-            .cloned()
-            .map(|(shard_id, key, value)| ShardPutRequest {
-                shard_id,
-                put: Some(PutRequest { key, value, ..Default::default() }),
-            })
-            .collect::<Vec<_>>();
-        BatchWriteRequest { puts, ..Default::default() }
-    }
-
-    fn put_meta(&mut self, key: Vec<u8>, val: Vec<u8>) -> &mut Self {
-        self.put(col::META_ID, key, val);
-        self
-    }
-
-    fn put_group(&mut self, desc: GroupDesc) -> &mut Self {
-        self.put(col::GROUP_ID, desc.id.to_le_bytes().to_vec(), desc.encode_to_vec());
-        self
-    }
-
-    fn put_replica_state(&mut self, state: ReplicaState) -> &mut Self {
-        self.put(
-            col::REPLICA_STATE_ID,
-            replica_key(state.group_id, state.replica_id),
-            state.encode_to_vec(),
-        );
-        self
-    }
-
-    fn put_node(&mut self, desc: NodeDesc) -> &mut Self {
-        self.put(col::NODE_ID, desc.id.to_le_bytes().to_vec(), desc.encode_to_vec());
-        self
-    }
-
-    fn put_database(&mut self, desc: DatabaseDesc) -> &mut Self {
-        self.put(col::DATABASE_ID, desc.name.as_bytes().to_vec(), desc.encode_to_vec());
-        self
-    }
-
-    fn put_col(&mut self, desc: CollectionDesc) -> &mut Self {
-        self.put(col::COLLECTION_ID, collection_key(desc.db, &desc.name), desc.encode_to_vec());
-        self
-    }
-
-    fn put_job(&mut self, desc: BackgroundJob) -> &mut Self {
-        self.put(col::JOB_ID, desc.id.to_le_bytes().to_vec(), desc.encode_to_vec());
-        self
-    }
-
-    fn put_job_history(&mut self, desc: BackgroundJob) -> &mut Self {
-        self.put(col::JOB_HISTORY_ID, desc.id.to_le_bytes().to_vec(), desc.encode_to_vec());
-        self
-    }
-
-    fn is_empty(&self) -> bool {
-        self.batch.is_empty()
     }
 }
 

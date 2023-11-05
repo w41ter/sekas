@@ -227,14 +227,14 @@ impl GroupEngine {
 
     /// Get key value from the corresponding shard.
     /// FIXME(walter) it should return the tombstone.
-    pub async fn get(&self, shard_id: u64, key: &[u8]) -> Result<Option<(Vec<u8>, u64)>> {
+    pub async fn get(&self, shard_id: u64, key: &[u8]) -> Result<Option<Value>> {
         let snapshot_mode = SnapshotMode::Key { key };
         let mut snapshot = self.snapshot(shard_id, snapshot_mode)?;
         if let Some(iter) = snapshot.mvcc_iter() {
             let mut iter = iter?;
             if let Some(entry) = iter.next() {
                 let entry = entry?;
-                return Ok(entry.value().map(|value| (value.to_owned(), entry.version())));
+                return Ok(Some(entry.into()));
             }
         }
         Ok(None)
@@ -633,6 +633,12 @@ impl MvccEntry {
     }
 }
 
+impl Into<Value> for MvccEntry {
+    fn into(self) -> Value {
+        Value { content: self.value().map(ToOwned::to_owned), version: self.version() }
+    }
+}
+
 impl SnapshotRange {
     #[inline]
     fn is_valid_key(&self, key: &[u8]) -> bool {
@@ -671,7 +677,7 @@ mod keys {
 
         debug_assert!(!key.is_empty());
         let actual_len = (((key.len() - 1) / 8) + 1) * 9;
-        let mut buf_len = 2 * core::mem::size_of::<u64>() + actual_len;
+        let buf_len = 2 * core::mem::size_of::<u64>() + actual_len;
         let mut buf = Vec::with_capacity(buf_len);
         buf.extend_from_slice(collection_id.to_le_bytes().as_slice());
         let mut cursor = Cursor::new(key);
@@ -695,7 +701,7 @@ mod keys {
         const L: usize = core::mem::size_of::<u64>();
         let len = key.len();
         debug_assert!(len > 2 * L);
-        let mut encoded_user_key = &key[L..(len - L)];
+        let encoded_user_key = &key[L..(len - L)];
 
         debug_assert_eq!(encoded_user_key.len() % 9, 0);
         let num_groups = encoded_user_key.len() / 9;

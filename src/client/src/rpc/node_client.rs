@@ -346,6 +346,7 @@ impl RequestBatchBuilder {
                     prefix: None,
                     start_key,
                     end_key,
+                    include_raw_data: false,
                 })),
             }),
         });

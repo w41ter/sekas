@@ -13,7 +13,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use sekas_api::server::v1::{PutType, ShardWriteRequest, ShardWriteResponse, Value, WriteResponse};
+use sekas_api::server::v1::{PutType, ShardWriteRequest, ShardWriteResponse, WriteResponse};
 
 use super::cas::eval_conditions;
 use crate::engine::{GroupEngine, WriteBatch};
@@ -27,7 +27,7 @@ pub(crate) async fn batch_write(
     req: &ShardWriteRequest,
 ) -> Result<(Option<EvalResult>, ShardWriteResponse)> {
     if req.deletes.is_empty() && req.puts.is_empty() {
-        return Ok((None, ShardWriteResponse::deafult()));
+        return Ok((None, ShardWriteResponse::default()));
     }
 
     let mut wb = WriteBatch::default();
@@ -35,12 +35,9 @@ pub(crate) async fn batch_write(
     for del in &req.deletes {
         if !del.conditions.is_empty() || del.take_prev_value {
             // TODO(walter) support get value in parallel.
-            let value_result = group_engine.get(req.shard_id, &del.key).await?;
-            let value_result = value_result.map(|(val, _)| val);
-            eval_conditions(value_result.as_deref(), &del.conditions)?;
-            resp.deletes.push(WriteResponse {
-                prev_value: value_result.map(|(data, version)| Value { content: data, version }),
-            });
+            let prev_value = group_engine.get(req.shard_id, &del.key).await?;
+            eval_conditions(prev_value.as_ref(), &del.conditions)?;
+            resp.deletes.push(WriteResponse { prev_value });
         }
         if exec_ctx.is_migrating_shard(req.shard_id) {
             panic!("BatchWrite does not support migrating shard");
@@ -50,19 +47,17 @@ pub(crate) async fn batch_write(
     for put in &req.puts {
         if !put.conditions.is_empty() || put.take_prev_value {
             // TODO(walter) support get value in parallel.
-            let value_result = group_engine.get(req.shard_id, &put.key).await?;
-            let value_result = value_result.map(|(val, _)| val);
-            eval_conditions(value_result.as_deref(), &put.conditions)?;
-            resp.puts.push(WriteResponse {
-                prev_value: value_result.map(|(data, version)| Value { content: data, version }),
-            });
+            let prev_value = group_engine.get(req.shard_id, &put.key).await?;
+            eval_conditions(prev_value.as_ref(), &put.conditions)?;
+            resp.puts.push(WriteResponse { prev_value });
         }
-        if put.op != PutType::None as i32 {
+        if put.put_type != PutType::None as i32 {
             panic!("BatchWrite does not support put operation");
         }
         if exec_ctx.is_migrating_shard(req.shard_id) {
             panic!("BatchWrite does not support migrating shard");
         }
+        // FIXME(walter) change flat version, to support move internal shards.
         group_engine.put(&mut wb, req.shard_id, &put.key, &put.value, super::FLAT_KEY_VERSION)?;
     }
     let eval_result = EvalResult {

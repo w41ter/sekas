@@ -180,7 +180,7 @@ impl Server {
         let database = req.database.ok_or_else(|| {
             Error::InvalidArgument("CreateCollectionRequest::database".to_owned())
         })?;
-        let desc = self.root.create_collection(req.name, database.name, req.partition).await?;
+        let desc = self.root.create_collection(req.name, database.name).await?;
         Ok(CreateCollectionResponse { collection: Some(desc) })
     }
 

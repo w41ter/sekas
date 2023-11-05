@@ -24,7 +24,7 @@ pub(crate) async fn scan(
     req: &ShardScanRequest,
 ) -> Result<ShardScanResponse> {
     let mut req = req.clone();
-    let snapshot_mode = match req.prefix {
+    let snapshot_mode = match &req.prefix {
         Some(prefix) => {
             req.exclude_end_key = false;
             req.exclude_start_key = false;
@@ -32,7 +32,7 @@ pub(crate) async fn scan(
         }
         None => SnapshotMode::Start { start_key: req.start_key.as_ref().map(|v| v.as_ref()) },
     };
-    let mut snapshot = engine.snapshot(req.shard_id, snapshot_mode)?;
+    let snapshot = engine.snapshot(req.shard_id, snapshot_mode)?;
     scan_inner(snapshot, &req).await
 }
 
@@ -122,3 +122,5 @@ fn is_equals(target: &Option<Vec<u8>>, user_key: &[u8]) -> bool {
 fn is_exceeds(target: &Option<Vec<u8>>, user_key: &[u8]) -> bool {
     target.as_ref().map(|target_key| target_key.as_slice() < user_key).unwrap_or_default()
 }
+
+// TODO(walter) add scan test

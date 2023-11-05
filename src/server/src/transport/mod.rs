@@ -19,10 +19,7 @@ mod resolver;
 
 use std::sync::Arc;
 
-use sekas_client::{
-    ClientOptions, ConnManager, GroupClient, MigrateClient, NodeClient, RootClient, Router,
-    RouterGroupState, SekasClient, ShardClient,
-};
+use sekas_client::*;
 
 pub(crate) use self::discovery::RootDiscovery;
 pub(crate) use self::resolver::AddressResolver;
@@ -80,7 +77,7 @@ impl TransportManager {
 
     #[inline]
     pub(crate) fn lazy_group_client(&self, group_id: u64) -> GroupClient {
-        GroupClient::lazy(group_id, self.router.clone(), self.conn_manager.clone())
+        GroupClient::lazy(group_id, self.build_client(ClientOptions::default()))
     }
 
     #[inline]
@@ -96,7 +93,7 @@ impl TransportManager {
 
     #[inline]
     pub(crate) fn build_shard_client(&self, group_id: u64, shard_id: u64) -> ShardClient {
-        ShardClient::new(group_id, shard_id, self.router.clone(), self.conn_manager.clone())
+        ShardClient::new(group_id, shard_id, self.build_client(ClientOptions::default()))
     }
 
     #[inline]
@@ -106,6 +103,6 @@ impl TransportManager {
 
     #[inline]
     pub(crate) fn build_migrate_client(&self, group_id: u64) -> MigrateClient {
-        MigrateClient::new(group_id, self.router.clone(), self.conn_manager.clone())
+        MigrateClient::new(group_id, self.build_client(ClientOptions::default()))
     }
 }

@@ -15,8 +15,7 @@ mod helper;
 
 use helper::context::TestContext;
 use sekas_api::server::v1::group_request_union::Request;
-use sekas_api::server::v1::*;
-use sekas_api::v1::PutRequest;
+use sekas_api::server::v1::{PutRequest, *};
 use sekas_client::RetryState;
 
 use crate::helper::client::*;
@@ -55,7 +54,8 @@ async fn insert(c: &ClusterClient, group_id: u64, shard_id: u64, range: std::ops
             value: value.as_bytes().to_vec(),
             ..Default::default()
         };
-        let req = Request::Put(ShardPutRequest { shard_id, put: Some(put) });
+        let req =
+            Request::Write(ShardWriteRequest { shard_id, puts: vec![put], ..Default::default() });
 
         let mut retry_state = RetryState::default();
         loop {
@@ -86,7 +86,7 @@ fn send_snapshot() {
         let shard_desc = ShardDesc {
             id: shard_id,
             collection_id: shard_id,
-            partition: Some(shard_desc::Partition::Range(RangePartition::default())),
+            range: Some(RangePartition { start: vec![], end: vec![] }),
         };
         create_group(&c, group_id, node_ids.clone(), vec![shard_desc]).await;
         insert(&c, group_id, shard_id, 1..100).await;

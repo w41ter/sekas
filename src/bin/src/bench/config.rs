@@ -26,7 +26,6 @@ pub struct AppConfig {
 
     pub database: String,
     pub collection: String,
-    pub num_shards: u32,
     pub create_if_missing: bool,
 
     pub seed: Option<u64>,
@@ -45,7 +44,6 @@ impl Default for AppConfig {
             addrs: vec!["0.0.0.0:21805".into()],
             database: "db".into(),
             collection: "table".into(),
-            num_shards: 64,
             create_if_missing: true,
             seed: None,
             data: DataConfig::default(),

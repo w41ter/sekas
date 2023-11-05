@@ -72,7 +72,6 @@ async fn bootstrap_services(
     proxy_server: Option<ProxyServer>,
     shutdown: Shutdown,
 ) -> Result<()> {
-    use sekas_api::v1::sekas_server::SekasServer;
     use tokio::net::TcpListener;
     use tonic::transport::Server;
 
@@ -88,7 +87,6 @@ async fn bootstrap_services(
         .add_service(RaftServer::new(server.clone()))
         .add_service(RootServer::new(server.clone()))
         .add_service(make_admin_service(server.clone()))
-        .add_optional_service(proxy_server.map(SekasServer::new))
         .serve_with_incoming(incoming);
 
     crate::runtime::select! {
@@ -187,7 +185,7 @@ async fn save_node_ident(
 }
 
 async fn write_initial_cluster_data(node: &Node, addr: &str) -> Result<()> {
-    // FIXME(walter): unitfy group desc with root schema!
+    // FIXME(walter): unify group desc with root schema!
 
     // Create the first raft group of cluster, this node is the only member of the
     // raft group.
@@ -204,17 +202,17 @@ async fn write_initial_cluster_data(node: &Node, addr: &str) -> Result<()> {
     node.create_replica(FIRST_REPLICA_ID, group).await?;
 
     // Create another group with empty shard to prepare user usage.
-    let init_group = GroupDesc {
-        id: FIRST_GROUP_ID,
-        epoch: INITIAL_EPOCH,
-        shards: sekas_schema::system::txn_col_shards(),
-        replicas: vec![ReplicaDesc {
-            id: INIT_USER_REPLICA_ID,
-            node_id: FIRST_NODE_ID,
-            role: ReplicaRole::Voter.into(),
-        }],
-    };
-    node.create_replica(INIT_USER_REPLICA_ID, init_group).await?;
+    // let init_group = GroupDesc {
+    //     id: FIRST_GROUP_ID,
+    //     epoch: INITIAL_EPOCH,
+    //     shards: sekas_schema::system::txn_col_shards(),
+    //     replicas: vec![ReplicaDesc {
+    //         id: INIT_USER_REPLICA_ID,
+    //         node_id: FIRST_NODE_ID,
+    //         role: ReplicaRole::Voter.into(),
+    //     }],
+    // };
+    // node.create_replica(INIT_USER_REPLICA_ID, init_group).await?;
 
     let root_node = NodeDesc { id: FIRST_NODE_ID, addr: addr.to_owned(), ..Default::default() };
     let root_desc = RootDesc { epoch: INITIAL_EPOCH, root_nodes: vec![root_node] };

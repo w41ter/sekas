@@ -133,9 +133,9 @@ message ShardScanRequest {
     uint64 limit = 3;
     /// The maxminum key-value bytes to fetch, 0 means no limit.
     uint64 limit_bytes = 4;
-    /// Shoud include start key in result?
+    /// Shoud include start key in result? not support in prefix scan.
     bool exclude_start_key = 5;
-    /// Shoud include end key in result?
+    /// Shoud include end key in result? not support in prefix scan.
     bool exclude_end_key = 6;
     /// Scan with prefix, if set then `start_key` and `end_key` will be ignored.
     ///

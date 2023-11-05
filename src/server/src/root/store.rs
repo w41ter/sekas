@@ -17,7 +17,6 @@ use std::sync::Arc;
 
 use sekas_api::server::v1::group_request_union::Request::{self, *};
 use sekas_api::server::v1::{GroupRequest, GroupRequestUnion, *};
-use sekas_api::v1::{DeleteRequest, GetRequest, PutRequest};
 
 use crate::constants::ROOT_GROUP_ID;
 use crate::node::replica::Replica;
@@ -32,46 +31,48 @@ impl RootStore {
         Self { replica }
     }
 
-    pub async fn batch_write(&self, batch: BatchWriteRequest) -> Result<()> {
-        self.submit_request(BatchWrite(batch)).await?;
+    pub async fn batch_write(&self, batch: ShardWriteRequest) -> Result<()> {
+        self.submit_request(Request::Write(batch)).await?;
         Ok(())
     }
 
     pub async fn put(&self, shard_id: u64, key: Vec<u8>, value: Vec<u8>) -> Result<()> {
-        self.submit_request(Put(ShardPutRequest {
+        let write = ShardWriteRequest {
             shard_id,
-            put: Some(PutRequest { key, value, ..Default::default() }),
-        }))
-        .await?;
+            puts: vec![PutRequest {
+                put_type: PutType::None.into(),
+                key,
+                value,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        self.submit_request(Request::Write(write)).await?;
         Ok(())
     }
 
     pub async fn get(&self, shard_id: u64, key: &[u8]) -> Result<Option<Vec<u8>>> {
-        let resp = self
-            .submit_request(Get(ShardGetRequest {
-                shard_id,
-                start_version: u64::MAX,
-                get: Some(GetRequest { key: key.to_owned() }),
-            }))
-            .await?;
+        let get = ShardGetRequest { shard_id, start_version: u64::MAX, key: key.to_owned() };
+        let resp = self.submit_request(Request::Get(get)).await?;
         let resp = resp
             .response
             .ok_or_else(|| Error::InvalidArgument("GetResponse".into()))?
             .response
             .ok_or_else(|| Error::InvalidArgument("GetResponseUnion".into()))?;
         if let group_response_union::Response::Get(resp) = resp {
-            Ok(resp.value)
+            Ok(resp.value.and_then(|v| v.content))
         } else {
             Err(Error::InvalidArgument("GetResponse".into()))
         }
     }
 
     pub async fn delete(&self, shard_id: u64, key: &[u8]) -> Result<()> {
-        self.submit_request(Delete(ShardDeleteRequest {
+        let write = ShardWriteRequest {
             shard_id,
-            delete: Some(DeleteRequest { key: key.to_owned(), ..Default::default() }),
-        }))
-        .await?;
+            deletes: vec![DeleteRequest { key: key.to_owned(), ..Default::default() }],
+            ..Default::default()
+        };
+        self.submit_request(Request::Write(write)).await?;
         Ok(())
     }
 
@@ -90,7 +91,11 @@ impl RootStore {
             .ok_or_else(|| Error::InvalidArgument("PrefixListUnionResponse".into()))?;
 
         if let group_response_union::Response::Scan(resp) = resp {
-            Ok(resp.data.into_iter().map(|v| v.value).collect())
+            Ok(resp
+                .data
+                .into_iter()
+                .filter_map(|v| v.values.last().and_then(|v| v.content.clone()))
+                .collect())
         } else {
             Err(Error::InvalidArgument("PrefixListResponse".into()))
         }

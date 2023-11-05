@@ -232,15 +232,24 @@ impl SnapManager {
 
             let replica = replica.unwrap();
             let snapshots = match mode {
-                RecycleSnapMode::RequiredIndex(required_index) => replica
-                    .snapshots
-                    .drain_filter(|info| {
-                        info.meta.apply_state.as_ref().unwrap().index < required_index
+                RecycleSnapMode::RequiredIndex(required_index) => {
+                    let snapshots = replica
+                        .snapshots
+                        .iter()
+                        .filter(|info| {
+                            info.meta.apply_state.as_ref().unwrap().index < required_index
+                                && info.created_at + self.shared.min_keep_intervals < now
+                                && info.ref_count == 0
+                        })
+                        .map(|info| info.base_dir.clone())
+                        .collect::<Vec<_>>();
+                    replica.snapshots.retain(|info| {
+                        !(info.meta.apply_state.as_ref().unwrap().index < required_index
                             && info.created_at + self.shared.min_keep_intervals < now
-                            && info.ref_count == 0
-                    })
-                    .map(|info| info.base_dir)
-                    .collect::<Vec<_>>(),
+                            && info.ref_count == 0)
+                    });
+                    snapshots
+                }
                 RecycleSnapMode::All => {
                     let snapshots = replica
                         .snapshots
