@@ -992,7 +992,6 @@ mod tests {
 
     #[test]
     fn create_and_drop_engine() {
-        let dir = TempDir::new(fn_name!()).unwrap();
         let executor_owner = ExecutorOwner::new(1);
         let executor = executor_owner.executor();
         let dir = TempDir::new(fn_name!()).unwrap();
