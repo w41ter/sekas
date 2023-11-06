@@ -147,12 +147,11 @@ mod tests {
     use std::path::Path;
     use std::sync::Arc;
 
-    use sekas_api::server::v1::{GroupDesc, RangePartition, ShardDesc};
+    use sekas_api::server::v1::{GroupDesc, ShardDesc};
     use tempdir::TempDir;
 
     use super::*;
     use crate::engine::{GroupEngine, WriteBatch, WriteStates};
-    use sekas_runtime::ExecutorOwner;
     use crate::EngineConfig;
 
     async fn create_engine(dir: &Path, group_id: u64, shard_id: u64) -> GroupEngine {
@@ -167,11 +166,7 @@ mod tests {
         let states = WriteStates {
             descriptor: Some(GroupDesc {
                 id: group_id,
-                shards: vec![ShardDesc {
-                    id: shard_id,
-                    collection_id: 1,
-                    range: Some(RangePartition { start: vec![], end: vec![] }),
-                }],
+                shards: vec![ShardDesc::whole(shard_id, 1)],
                 ..Default::default()
             }),
             ..Default::default()
@@ -196,25 +191,21 @@ mod tests {
     // `RocksDb(Error { message: "IO error: No such file or directory: While open a
     // file for appending: /tmp/xxx/snap/DATA/0.sst: No such file or directory"
     // })`
-    #[test]
-    fn checkpoint_create_dir() {
-        let executor_owner = ExecutorOwner::new(1);
-        let executor = executor_owner.executor();
-        executor.block_on(async {
-            let tmp_dir = TempDir::new("checkpoint_create_dir").unwrap().into_path();
-            let db_dir = tmp_dir.join("db");
-            let snap_dir = tmp_dir.join("snap");
-            let engine = create_engine(&db_dir, 1, 1).await;
+    #[sekas_macro::test]
+    async fn checkpoint_create_dir() {
+        let tmp_dir = TempDir::new("checkpoint_create_dir").unwrap().into_path();
+        let db_dir = tmp_dir.join("db");
+        let snap_dir = tmp_dir.join("snap");
+        let engine = create_engine(&db_dir, 1, 1).await;
 
-            // insert 128KB data.
-            put_data(&engine, 1, "key", 128);
+        // insert 128KB data.
+        put_data(&engine, 1, "key", 128);
 
-            let cfg = ReplicaConfig { snap_file_size: 64 * 1024, ..Default::default() };
-            std::fs::create_dir_all(&snap_dir).unwrap();
-            let data = snap_dir.join("DATA");
-            let builder = GroupSnapshotBuilder::new(cfg, engine);
-            builder.checkpoint(&data).await.unwrap();
-        });
+        let cfg = ReplicaConfig { snap_file_size: 64 * 1024, ..Default::default() };
+        std::fs::create_dir_all(&snap_dir).unwrap();
+        let data = snap_dir.join("DATA");
+        let builder = GroupSnapshotBuilder::new(cfg, engine);
+        builder.checkpoint(&data).await.unwrap();
     }
 
     // This tests aims to fix bugs:
@@ -222,22 +213,18 @@ mod tests {
     // `RocksDb(Error { message: "Invalid argument: external_files[0] is empty" })`
     // `RocksDb(Error { message: "Corruption: file is too short (0 bytes) to be an
     // sstable: /tmp/xxx/snap/DATA/0.sst" })`
-    #[test]
-    fn apply_empty_snapshot() {
-        let executor_owner = ExecutorOwner::new(1);
-        let executor = executor_owner.executor();
-        executor.block_on(async {
-            let tmp_dir = TempDir::new("apply_empty_snapshot").unwrap().into_path();
-            let db_dir = tmp_dir.join("db");
-            let snap_dir = tmp_dir.join("snap");
-            let engine = create_engine(&db_dir, 1, 1).await;
+    #[sekas_macro::test]
+    async fn apply_empty_snapshot() {
+        let tmp_dir = TempDir::new("apply_empty_snapshot").unwrap().into_path();
+        let db_dir = tmp_dir.join("db");
+        let snap_dir = tmp_dir.join("snap");
+        let engine = create_engine(&db_dir, 1, 1).await;
 
-            let cfg = ReplicaConfig { snap_file_size: 64 * 1024, ..Default::default() };
-            std::fs::create_dir_all(&snap_dir).unwrap();
-            let data = snap_dir.join("DATA");
-            let builder = GroupSnapshotBuilder::new(cfg, engine.clone());
-            builder.checkpoint(&data).await.unwrap();
-            apply_snapshot(&engine, 1, &data).unwrap();
-        });
+        let cfg = ReplicaConfig { snap_file_size: 64 * 1024, ..Default::default() };
+        std::fs::create_dir_all(&snap_dir).unwrap();
+        let data = snap_dir.join("DATA");
+        let builder = GroupSnapshotBuilder::new(cfg, engine.clone());
+        builder.checkpoint(&data).await.unwrap();
+        apply_snapshot(&engine, 1, &data).unwrap();
     }
 }

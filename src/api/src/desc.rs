@@ -1,5 +1,4 @@
 // Copyright 2023-present The Engula Authors.
-// Copyright 2022 The Engula Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -13,14 +12,20 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-mod error;
-mod migration;
-mod value;
-mod desc;
+//! A mod to hold the helper functions of XxxDesc.
 
-pub mod server {
-    pub mod v1 {
-        #![allow(clippy::all)]
-        tonic::include_proto!("sekas.server.v1");
+use crate::server::v1::{RangePartition, ShardDesc};
+
+impl ShardDesc {
+    pub fn whole(shard_id: u64, collection_id: u64) -> Self {
+        ShardDesc {
+            id: shard_id,
+            collection_id,
+            range: Some(RangePartition { start: vec![], end: vec![] }),
+        }
+    }
+
+    pub fn with_range(shard_id: u64, collection_id: u64, start: Vec<u8>, end: Vec<u8>) -> Self {
+        ShardDesc { id: shard_id, collection_id, range: Some(RangePartition { start, end }) }
     }
 }

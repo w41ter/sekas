@@ -924,11 +924,7 @@ mod tests {
         let states = WriteStates {
             descriptor: Some(GroupDesc {
                 id: group_id,
-                shards: vec![ShardDesc {
-                    id: shard_id,
-                    collection_id: 1,
-                    range: Some(RangePartition { start, end }),
-                }],
+                shards: vec![ShardDesc::with_range(shard_id, 1, start, end)],
                 ..Default::default()
             }),
             ..Default::default()
@@ -1281,16 +1277,8 @@ mod tests {
             descriptor: Some(GroupDesc {
                 id: 1,
                 shards: vec![
-                    ShardDesc {
-                        id: 1,
-                        collection_id: 1,
-                        range: Some(RangePartition { start: vec![], end: b"b".to_vec() }),
-                    },
-                    ShardDesc {
-                        id: 2,
-                        collection_id: 1,
-                        range: Some(RangePartition { start: b"b".to_vec(), end: vec![] }),
-                    },
+                    ShardDesc::with_range(1, 1, vec![], vec![b'b']),
+                    ShardDesc::with_range(2, 1, vec![b'b'], vec![]),
                 ],
                 ..Default::default()
             }),
@@ -1435,7 +1423,7 @@ mod tests {
             // with migrate state
             let migrate_state = MigrationState {
                 migration_desc: Some(MigrationDesc {
-                    shard_desc: Some(ShardDesc { id: 1, collection_id: 1, range: None }),
+                    shard_desc: Some(ShardDesc::whole(1, 1)),
                     src_group_id: 1,
                     src_group_epoch: 1,
                     dest_group_id: 2,
