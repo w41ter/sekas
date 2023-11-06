@@ -15,11 +15,11 @@
 use std::sync::Arc;
 
 use log::error;
+use sekas_runtime::TaskPriority;
 
 use crate::engine::{Engines, GroupEngine, RawDb, StateEngine};
 use crate::node::metrics::*;
 use crate::raftgroup::destory_storage;
-use sekas_runtime::TaskPriority;
 use crate::serverpb::v1::ReplicaLocalState;
 use crate::{record_latency, Error, Result};
 
@@ -58,24 +58,20 @@ async fn destory_replica(
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
-
+    use sekas_rock::fs::create_dir_all_if_not_exists;
     use tempdir::TempDir;
 
     use super::*;
     use crate::bootstrap::open_engine_with_default_config;
-    use sekas_runtime::ExecutorOwner;
 
-    #[test]
-    fn destory_replica_ignore_not_existed_column_families() {
+    #[sekas_macro::test]
+    async fn destory_replica_ignore_not_existed_column_families() {
         let tmp_dir = TempDir::new("destory_replica_ignore_not_existed_column_families").unwrap();
         let db_path = tmp_dir.path().join("db");
         let log_path = tmp_dir.path().join("log");
         let raw_db = Arc::new(open_engine_with_default_config(db_path).unwrap());
         let group_id = 1;
         let replica_id = 1;
-
-        let executor_owner = ExecutorOwner::new(1);
 
         use raft_engine::{Config, Engine};
         let engine_dir = log_path.join("engine");
@@ -86,17 +82,6 @@ mod tests {
             Config { dir: engine_dir.to_str().unwrap().to_owned(), ..Default::default() };
         let engine = Arc::new(Engine::open(engine_cfg).unwrap());
         let state_engine = StateEngine::new(engine.clone());
-        executor_owner.executor().block_on(async {
-            destory_replica(group_id, replica_id, state_engine, raw_db, engine).await.unwrap();
-        });
-    }
-
-    fn create_dir_all_if_not_exists<P: AsRef<Path>>(dir: &P) -> Result<()> {
-        use std::io::ErrorKind;
-        match std::fs::create_dir_all(dir.as_ref()) {
-            Ok(()) => Ok(()),
-            Err(err) if err.kind() == ErrorKind::AlreadyExists => Ok(()),
-            Err(err) => Err(err.into()),
-        }
+        destory_replica(group_id, replica_id, state_engine, raw_db, engine).await.unwrap();
     }
 }

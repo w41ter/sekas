@@ -1,4 +1,4 @@
-// Copyright 2023 The Sekas Authors.
+// Copyright 2023-present The Sekas Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,6 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-pub mod time;
-pub mod lang;
-pub mod fs;
+//! A mod to extend `std::fs`.
+use std::io::{ErrorKind, Result};
+use std::path::Path;
+
+/// Like `std::fs::create_dir_all` but ignore the already exists error.
+pub fn create_dir_all_if_not_exists<P: AsRef<Path>>(dir: &P) -> Result<()> {
+    match std::fs::create_dir_all(dir.as_ref()) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == ErrorKind::AlreadyExists => Ok(()),
+        Err(err) => Err(err),
+    }
+}

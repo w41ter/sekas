@@ -19,6 +19,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use log::info;
+use sekas_rock::fs::create_dir_all_if_not_exists;
 
 pub(crate) use self::group::{
     GroupEngine, RawIterator, Snapshot, SnapshotMode, WriteBatch, WriteStates,
@@ -189,15 +190,6 @@ fn open_raft_engine(log_path: &Path) -> Result<raft_engine::Engine> {
         ..Default::default()
     };
     Ok(Engine::open(engine_cfg)?)
-}
-
-fn create_dir_all_if_not_exists<P: AsRef<Path>>(dir: &P) -> Result<()> {
-    use std::io::ErrorKind;
-    match std::fs::create_dir_all(dir.as_ref()) {
-        Ok(()) => Ok(()),
-        Err(err) if err.kind() == ErrorKind::AlreadyExists => Ok(()),
-        Err(err) => Err(err.into()),
-    }
 }
 
 #[cfg(test)]
