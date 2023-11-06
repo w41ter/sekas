@@ -898,14 +898,12 @@ mod tests {
     use tempdir::TempDir;
 
     use super::*;
-    use crate::runtime::{Executor, ExecutorOwner};
 
-    fn create_engine(executor: Executor, group_id: u64, shard_id: u64, path: &Path) -> GroupEngine {
-        create_engine_with_range(executor, group_id, shard_id, vec![], vec![], path)
+    async fn create_engine(group_id: u64, shard_id: u64, path: &Path) -> GroupEngine {
+        create_engine_with_range(group_id, shard_id, vec![], vec![], path).await
     }
 
-    fn create_engine_with_range(
-        executor: Executor,
+    async fn create_engine_with_range(
         group_id: u64,
         shard_id: u64,
         start: Vec<u8>,
@@ -917,11 +915,10 @@ mod tests {
         let db_dir = path.join("db");
         let db = open_engine_with_default_config(db_dir).unwrap();
         let db = Arc::new(db);
-        let group_engine = executor.block_on(async move {
+        let group_engine =
             GroupEngine::create(&EngineConfig::default(), db.clone(), group_id, shard_id)
                 .await
-                .unwrap()
-        });
+                .unwrap();
 
         let wb = WriteBatch::default();
         let states = WriteStates {
@@ -990,10 +987,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn create_and_drop_engine() {
-        let executor_owner = ExecutorOwner::new(1);
-        let executor = executor_owner.executor();
+    #[sekas_macro::test]
+    async fn create_and_drop_engine() {
         let dir = TempDir::new(fn_name!()).unwrap();
 
         let group_id = 1;
@@ -1001,38 +996,29 @@ mod tests {
 
         // 1. create engine
         let raw_db = {
-            let group_engine = create_engine(executor.clone(), group_id, replica_id, dir.path());
+            let group_engine = create_engine(group_id, replica_id, dir.path()).await;
             group_engine.raw_db.clone()
         };
 
         // 2. open engine
-        let raw_db_clone = raw_db.clone();
-        executor.block_on(async move {
-            let engine =
-                GroupEngine::open(&EngineConfig::default(), raw_db_clone, group_id, replica_id)
-                    .await
-                    .unwrap();
-            assert!(engine.is_some());
-        });
+        let engine =
+            GroupEngine::open(&EngineConfig::default(), raw_db.clone(), group_id, replica_id)
+                .await
+                .unwrap();
+        assert!(engine.is_some());
 
         // 3. drop engine
-        let raw_db_clone = raw_db.clone();
-        executor.block_on(async move {
-            GroupEngine::destory(group_id, replica_id, raw_db_clone).await.unwrap();
-        });
+        GroupEngine::destory(group_id, replica_id, raw_db.clone()).await.unwrap();
 
-        let raw_db_clone = raw_db.clone();
-        executor.block_on(async move {
-            let engine =
-                GroupEngine::open(&EngineConfig::default(), raw_db_clone, group_id, replica_id)
-                    .await
-                    .unwrap();
-            assert!(engine.is_none());
-        });
+        let engine =
+            GroupEngine::open(&EngineConfig::default(), raw_db.clone(), group_id, replica_id)
+                .await
+                .unwrap();
+        assert!(engine.is_none());
     }
 
-    #[test]
-    fn mvcc_iterator() {
+    #[sekas_macro::test]
+    async fn mvcc_iterator() {
         struct Payload {
             key: &'static [u8],
             version: u64,
@@ -1045,10 +1031,8 @@ mod tests {
             Payload { key: b"123456789", version: 0 },
         ];
 
-        let executor_owner = ExecutorOwner::new(1);
-        let executor = executor_owner.executor();
         let dir = TempDir::new(fn_name!()).unwrap();
-        let group_engine = create_engine(executor, 1, 1, dir.path());
+        let group_engine = create_engine(1, 1, dir.path()).await;
         let mut wb = WriteBatch::default();
         for payload in &payloads {
             group_engine.put(&mut wb, 1, payload.key, b"", payload.version).unwrap();
@@ -1086,8 +1070,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn user_key_iterator() {
+    #[sekas_macro::test]
+    async fn user_key_iterator() {
         struct Payload {
             key: &'static [u8],
             version: u64,
@@ -1100,10 +1084,8 @@ mod tests {
             Payload { key: b"123456789", version: 0 },
         ];
 
-        let executor_owner = ExecutorOwner::new(1);
-        let executor = executor_owner.executor();
         let dir = TempDir::new(fn_name!()).unwrap();
-        let group_engine = create_engine(executor, 1, 1, dir.path());
+        let group_engine = create_engine(1, 1, dir.path()).await;
         let mut wb = WriteBatch::default();
         for payload in &payloads {
             group_engine.put(&mut wb, 1, payload.key, b"", payload.version).unwrap();
@@ -1131,8 +1113,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn iterate_target_key() {
+    #[sekas_macro::test]
+    async fn iterate_target_key() {
         struct Payload {
             key: &'static [u8],
             version: u64,
@@ -1145,10 +1127,8 @@ mod tests {
             Payload { key: b"123456789", version: 0 },
         ];
 
-        let executor_owner = ExecutorOwner::new(1);
-        let executor = executor_owner.executor();
         let dir = TempDir::new(fn_name!()).unwrap();
-        let group_engine = create_engine(executor, 1, 1, dir.path());
+        let group_engine = create_engine(1, 1, dir.path()).await;
         let mut wb = WriteBatch::default();
         for payload in &payloads {
             group_engine.put(&mut wb, 1, payload.key, b"", payload.version).unwrap();
@@ -1182,8 +1162,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn iterate_with_prefix() {
+    #[sekas_macro::test]
+    async fn iterate_with_prefix() {
         struct Payload {
             key: &'static [u8],
             version: u64,
@@ -1198,10 +1178,8 @@ mod tests {
             Payload { key: b"123457789", version: 0 },
         ];
 
-        let executor_owner = ExecutorOwner::new(1);
-        let executor = executor_owner.executor();
         let dir = TempDir::new(fn_name!()).unwrap();
-        let group_engine = create_engine(executor, 1, 1, dir.path());
+        let group_engine = create_engine(1, 1, dir.path()).await;
         let mut wb = WriteBatch::default();
         for payload in &payloads {
             group_engine.put(&mut wb, 1, payload.key, b"", payload.version).unwrap();
@@ -1235,8 +1213,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn iterate_from_start_point() {
+    #[sekas_macro::test]
+    async fn iterate_from_start_point() {
         struct Payload {
             key: &'static [u8],
             version: u64,
@@ -1251,10 +1229,8 @@ mod tests {
             Payload { key: b"123457789", version: 0 },
         ];
 
-        let executor_owner = ExecutorOwner::new(1);
-        let executor = executor_owner.executor();
         let dir = TempDir::new(fn_name!()).unwrap();
-        let group_engine = create_engine(executor, 1, 1, dir.path());
+        let group_engine = create_engine(1, 1, dir.path()).await;
         let mut wb = WriteBatch::default();
         for payload in &payloads {
             group_engine.put(&mut wb, 1, payload.key, b"", payload.version).unwrap();
@@ -1288,12 +1264,10 @@ mod tests {
         }
     }
 
-    #[test]
-    fn iterate_in_range() {
-        let executor_owner = ExecutorOwner::new(1);
-        let executor = executor_owner.executor();
+    #[sekas_macro::test]
+    async fn iterate_in_range() {
         let dir = TempDir::new(fn_name!()).unwrap();
-        let group_engine = create_engine(executor, 1, 1, dir.path());
+        let group_engine = create_engine(1, 1, dir.path()).await;
         let mut wb = WriteBatch::default();
         group_engine.put(&mut wb, 1, b"a", b"", 123).unwrap();
         group_engine.tombstone(&mut wb, 1, b"a", 124).unwrap();
@@ -1344,8 +1318,8 @@ mod tests {
         assert!(user_data_iter.next().is_none());
     }
 
-    #[test]
-    fn raw_iterate_all() {
+    #[sekas_macro::test]
+    async fn raw_iterate_all() {
         #[derive(Debug)]
         struct Payload {
             key: &'static [u8],
@@ -1361,10 +1335,8 @@ mod tests {
             Payload { key: b"123457789", version: 0 },
         ];
 
-        let executor_owner = ExecutorOwner::new(1);
-        let executor = executor_owner.executor();
         let dir = TempDir::new(fn_name!()).unwrap();
-        let group_engine = create_engine(executor, 1, 1, dir.path());
+        let group_engine = create_engine(1, 1, dir.path()).await;
         let mut wb = WriteBatch::default();
         for payload in &payloads {
             group_engine.put(&mut wb, 1, payload.key, b"", payload.version).unwrap();
@@ -1392,12 +1364,10 @@ mod tests {
         assert!(iter.next().is_none());
     }
 
-    #[test]
-    fn get_latest_version() {
-        let executor_owner = ExecutorOwner::new(1);
-        let executor = executor_owner.executor();
+    #[sekas_macro::test]
+    async fn get_latest_version() {
         let dir = TempDir::new(fn_name!()).unwrap();
-        let group_engine = create_engine(executor.clone(), 1, 1, dir.path());
+        let group_engine = create_engine(1, 1, dir.path()).await;
 
         {
             // Only return the last visible version.
@@ -1408,17 +1378,14 @@ mod tests {
             group_engine.put(&mut wb, 1, b"b12345678", b"124", 124).unwrap();
             group_engine.commit(wb, WriteStates::default(), false).unwrap();
 
-            let cloned_group_engine = group_engine.clone();
-            executor.block_on(async move {
-                let v = cloned_group_engine.get(1, b"a12345678").await.unwrap();
-                assert!(matches!(v, Some(value) if value.content.is_none()));
+            let v = group_engine.get(1, b"a12345678").await.unwrap();
+            assert!(matches!(v, Some(value) if value.content.is_none()));
 
-                let v = cloned_group_engine.get(1, b"b12345678").await.unwrap();
-                assert!(matches!(v, Some(value) if value.content.is_some()));
+            let v = group_engine.get(1, b"b12345678").await.unwrap();
+            assert!(matches!(v, Some(value) if value.content.is_some()));
 
-                let v = cloned_group_engine.get(1, b"c").await.unwrap();
-                assert!(v.is_none());
-            });
+            let v = group_engine.get(1, b"c").await.unwrap();
+            assert!(v.is_none());
         }
 
         {
@@ -1428,26 +1395,19 @@ mod tests {
             group_engine.delete(&mut wb, 1, b"b12345678", 122).unwrap();
             group_engine.commit(wb, WriteStates::default(), false).unwrap();
 
-            let cloned_group_engine = group_engine.clone();
-            executor.block_on(async move {
-                let v = cloned_group_engine.get(1, b"a12345678").await.unwrap();
-                assert!(matches!(v, Some(value) if value.content.is_none()));
+            let v = group_engine.get(1, b"a12345678").await.unwrap();
+            assert!(matches!(v, Some(value) if value.content.is_none()));
 
-                let v = cloned_group_engine.get(1, b"b12345678").await.unwrap();
-                assert!(
-                    matches!(v, Some(value) if value.version == 124 && value.content.is_some())
-                );
-            });
+            let v = group_engine.get(1, b"b12345678").await.unwrap();
+            assert!(matches!(v, Some(value) if value.version == 124 && value.content.is_some()));
         }
     }
 
-    #[test]
-    fn cf_id_irrelevant_write_batch() {
-        let executor_owner = ExecutorOwner::new(1);
-        let executor = executor_owner.executor();
+    #[sekas_macro::test]
+    async fn cf_id_irrelevant_write_batch() {
         let dir = TempDir::new(fn_name!()).unwrap();
-        let engine_1 = create_engine(executor.clone(), 1, 1, dir.path().join("1").as_path());
-        let engine_2 = create_engine(executor, 1, 1, dir.path().join("2").as_path());
+        let engine_1 = create_engine(1, 1, dir.path().join("1").as_path()).await;
+        let engine_2 = create_engine(1, 1, dir.path().join("2").as_path()).await;
 
         // Put in engine 1, commit in engine 2.
         let mut wb = WriteBatch::default();
@@ -1457,12 +1417,10 @@ mod tests {
         engine_2.commit(wb, WriteStates::default(), false).unwrap();
     }
 
-    #[test]
-    fn commit_with_write_states() {
-        let executor_owner = ExecutorOwner::new(1);
-        let executor = executor_owner.executor();
+    #[sekas_macro::test]
+    async fn commit_with_write_states() {
         let dir = TempDir::new(fn_name!()).unwrap();
-        let engine = create_engine(executor.clone(), 1, 1, dir.path().join("1").as_path());
+        let engine = create_engine(1, 1, dir.path().join("1").as_path()).await;
 
         {
             // with apply state.

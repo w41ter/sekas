@@ -35,6 +35,7 @@ use sekas_api::server::v1::report_request::GroupUpdates;
 use sekas_api::server::v1::watch_response::*;
 use sekas_api::server::v1::*;
 use sekas_rock::time::timestamp_nanos;
+use sekas_runtime::{self, TaskPriority};
 use sekas_schema::shard::{SHARD_MAX, SHARD_MIN};
 use tokio::time::Instant;
 use tokio_util::time::delay_queue;
@@ -50,7 +51,6 @@ use self::store::RootStore;
 pub use self::watch::{WatchHub, Watcher};
 use crate::constants::ROOT_GROUP_ID;
 use crate::node::{Node, Replica, ReplicaRouteTable};
-use crate::runtime::{self, TaskPriority};
 use crate::serverpb::v1::background_job::Job;
 use crate::serverpb::v1::{reconcile_task, *};
 use crate::transport::TransportManager;
@@ -168,7 +168,7 @@ impl Root {
 
     pub async fn bootstrap(&self, node: &Node) -> Result<Vec<NodeDesc>> {
         let root = self.clone();
-        let executor = crate::runtime::current();
+        let executor = sekas_runtime::current();
         executor.spawn(None, TaskPriority::Middle, async move {
             root.run_heartbeat().await;
         });
@@ -244,7 +244,7 @@ impl Root {
                     }
                 }
             }
-            runtime::time::sleep(Duration::from_secs(1)).await;
+            sekas_runtime::time::sleep(Duration::from_secs(1)).await;
         }
     }
 
@@ -253,12 +253,12 @@ impl Root {
             if self.schema().is_ok() {
                 if let Err(err) = self.jobs.advance_jobs().await {
                     warn!("run background job: {err:?}");
-                    runtime::time::sleep(Duration::from_secs(3)).await;
+                    sekas_runtime::time::sleep(Duration::from_secs(3)).await;
                     continue;
                 }
                 self.jobs.wait_more_jobs().await;
             } else {
-                runtime::time::sleep(Duration::from_secs(20)).await;
+                sekas_runtime::time::sleep(Duration::from_secs(20)).await;
             };
         }
     }
@@ -300,12 +300,12 @@ impl Root {
         };
         root_core.bump_txn_id().await?;
 
-        let executor = crate::runtime::current();
+        let executor = sekas_runtime::current();
         let cloned_root_core = root_core.clone();
         let txn_bumper_handle = executor.spawn(None, TaskPriority::High, async move {
             const INTERVAL: Duration = Duration::from_secs(30);
             loop {
-                crate::runtime::time::sleep(INTERVAL).await;
+                sekas_runtime::time::sleep(INTERVAL).await;
                 if let Err(err) = cloned_root_core.bump_txn_id().await {
                     warn!("bump txn id: {err:?}");
                     break;
@@ -342,7 +342,7 @@ impl Root {
 
         while let Ok(Some(_)) = root_replica.to_owned().on_leader("root", true).await {
             let next_interval = self.scheduler.step_one().await;
-            crate::runtime::time::sleep(next_interval).await;
+            sekas_runtime::time::sleep(next_interval).await;
             self.scheduler.wait_one_heartbeat_tick().await;
         }
         info!("node {node_id} current root node drop leader");
@@ -962,7 +962,7 @@ impl Root {
             }
 
             if next_txn_id + num_required > max_txn_id {
-                crate::runtime::yield_now().await;
+                sekas_runtime::yield_now().await;
                 continue;
             }
             if root_core
@@ -1043,7 +1043,7 @@ impl HeartbeatQueue {
                 trace!("schedule next heartbeat. node={node}, when={when:?}");
             }
             if i % 10 == 0 {
-                crate::runtime::yield_now().await;
+                sekas_runtime::yield_now().await;
             }
         }
     }
@@ -1235,6 +1235,7 @@ mod root_test {
     use futures::StreamExt;
     use sekas_api::server::v1::watch_response::{update_event, UpdateEvent};
     use sekas_api::server::v1::{DatabaseDesc, GroupDesc};
+    use sekas_runtime::ExecutorOwner;
     use tempdir::TempDir;
 
     use super::Config;
@@ -1243,7 +1244,6 @@ mod root_test {
     use crate::engine::Engines;
     use crate::node::Node;
     use crate::root::Root;
-    use crate::runtime::ExecutorOwner;
     use crate::serverpb::v1::NodeIdent;
     use crate::transport::TransportManager;
 

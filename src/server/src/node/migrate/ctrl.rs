@@ -25,7 +25,7 @@ use sekas_client::{MigrateClient, Router};
 
 use crate::node::metrics::*;
 use crate::node::Replica;
-use crate::runtime::sync::WaitGroup;
+use sekas_runtime::sync::WaitGroup;
 use crate::serverpb::v1::*;
 use crate::transport::TransportManager;
 use crate::{record_latency, NodeConfig, Result};
@@ -75,7 +75,7 @@ impl MigrateController {
         mut receiver: mpsc::UnboundedReceiver<MigrationState>,
         wait_group: WaitGroup,
     ) {
-        use crate::runtime::{current, TaskPriority};
+        use sekas_runtime::{current, TaskPriority};
 
         let info = replica.replica_info();
         let replica_id = info.replica_id;

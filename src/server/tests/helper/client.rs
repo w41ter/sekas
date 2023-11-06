@@ -1,3 +1,4 @@
+// Copyright 2023-present The Sekas Authors.
 // Copyright 2022 The Engula Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -22,14 +23,14 @@ use sekas_client::{
     ClientOptions, ConnManager, GroupClient, NodeClient, RootClient, Router, RouterGroupState,
     SekasClient, StaticServiceDiscovery,
 };
-use sekas_server::{runtime, Result};
+use sekas_server::Result;
 
 pub async fn node_client_with_retry(addr: &str) -> NodeClient {
     for _ in 0..10000 {
         match NodeClient::connect(addr.to_string()).await {
             Ok(client) => return client,
             Err(_) => {
-                runtime::time::sleep(Duration::from_millis(50)).await;
+                sekas_runtime::time::sleep(Duration::from_millis(50)).await;
             }
         };
     }

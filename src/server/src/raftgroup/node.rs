@@ -502,7 +502,7 @@ mod tests {
     use crate::node::RaftRouteTable;
     use crate::raftgroup::io::LogWriter;
     use crate::raftgroup::{write_initial_state, AddressResolver, ChannelManager};
-    use crate::runtime::ExecutorOwner;
+    use sekas_runtime::ExecutorOwner;
     use crate::serverpb::v1::{ApplyState, EvalResult, SnapshotMeta};
     use crate::RaftConfig;
 

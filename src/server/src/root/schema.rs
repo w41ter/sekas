@@ -728,7 +728,7 @@ impl Schema {
     #[inline]
     async fn get(&self, collection_id: u64, key: &[u8]) -> Result<Option<Vec<u8>>> {
         let rs = self.store.get(col::shard_id(collection_id), key).await;
-        crate::runtime::yield_now().await;
+        sekas_runtime::yield_now().await;
         rs
     }
 
@@ -744,7 +744,7 @@ impl Schema {
 
     async fn list(&self, collection_id: u64) -> Result<Vec<Vec<u8>>> {
         let rs = self.list_prefix(collection_id, &[]).await;
-        crate::runtime::yield_now().await;
+        sekas_runtime::yield_now().await;
         rs
     }
 

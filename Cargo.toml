@@ -4,7 +4,9 @@ members = [
     "src/bin",
     "src/client",
     "src/engine",
+    "src/macro",
     "src/rock",
+    "src/runtime",
     "src/schema",
     "src/server",
 ]

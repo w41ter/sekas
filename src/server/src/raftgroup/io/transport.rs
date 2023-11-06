@@ -21,7 +21,7 @@ use sekas_api::server::v1::{NodeDesc, ReplicaDesc};
 
 use crate::node::route_table::RaftRouteTable;
 use crate::raftgroup::RaftNodeFacade;
-use crate::runtime::TaskPriority;
+use sekas_runtime::TaskPriority;
 use crate::serverpb::v1::raft_client::RaftClient;
 use crate::serverpb::v1::{RaftMessage, SnapshotChunk, SnapshotRequest};
 use crate::Result;
@@ -102,7 +102,7 @@ impl ChannelManager {
         let mgr = ChannelManager { resolver, sender, route_table };
 
         let cloned_mgr = mgr.clone();
-        crate::runtime::current().spawn(None, TaskPriority::Low, async move {
+        sekas_runtime::current().spawn(None, TaskPriority::Low, async move {
             cloned_mgr.run(receiver).await;
         });
         mgr
@@ -129,7 +129,7 @@ impl ChannelManager {
             };
 
             let task = StreamingTask { resolver: self.resolver.clone(), raft_node, request };
-            crate::runtime::current().spawn(None, TaskPriority::IoHigh, async move {
+            sekas_runtime::current().spawn(None, TaskPriority::IoHigh, async move {
                 task.run().await;
             });
         }

@@ -11,6 +11,8 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+#![feature(const_type_name)]
+
 mod executor;
 mod incoming;
 mod metrics;
@@ -19,9 +21,19 @@ mod shutdown;
 pub mod sync;
 pub mod time;
 
+use serde::{Serialize, Deserialize};
+
 pub use tokio::select;
 pub use tokio::task::yield_now;
 
 pub use self::executor::*;
 pub use self::incoming::TcpIncoming;
 pub use self::shutdown::{Shutdown, ShutdownNotifier};
+
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct ExecutorConfig {
+    pub event_interval: Option<u32>,
+    pub global_event_interval: Option<u32>,
+    pub max_blocking_threads: Option<usize>,
+}

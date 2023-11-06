@@ -82,9 +82,9 @@ impl Root {
                 trace!("attempt send heartbeat. node={}, target={}", n.id, n.addr);
                 let piggybacks = piggybacks.to_owned();
                 let client = self.shared.transport_manager.get_node_client(n.addr.to_owned())?;
-                let handle = crate::runtime::current().dispatch(
+                let handle = sekas_runtime::current().dispatch(
                     None,
-                    crate::runtime::TaskPriority::Low,
+                    sekas_runtime::TaskPriority::Low,
                     async move {
                         client
                             .root_heartbeat(HeartbeatRequest {
@@ -137,7 +137,7 @@ impl Root {
             }
             heartbeat_tasks.push(HeartbeatTask { node_id: n.id });
             if i % 10 == 0 {
-                crate::runtime::yield_now().await;
+                sekas_runtime::yield_now().await;
             }
         }
         self.heartbeat_queue

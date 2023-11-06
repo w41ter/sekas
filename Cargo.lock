@@ -2257,6 +2257,7 @@ dependencies = [
  "rand 0.8.5",
  "rustyline",
  "sekas-client",
+ "sekas-runtime",
  "sekas-server",
  "serde",
  "tokio",
@@ -2309,6 +2310,16 @@ name = "sekas-engine"
 version = "0.5.0"
 
 [[package]]
+name = "sekas-macro"
+version = "0.5.0"
+dependencies = [
+ "quote",
+ "sekas-rock",
+ "sekas-runtime",
+ "syn 2.0.38",
+]
+
+[[package]]
 name = "sekas-rock"
 version = "0.5.0"
 dependencies = [
@@ -2320,6 +2331,34 @@ dependencies = [
  "prost 0.11.9",
  "rand 0.8.5",
  "thiserror",
+]
+
+[[package]]
+name = "sekas-runtime"
+version = "0.5.0"
+dependencies = [
+ "async-stream",
+ "const-str",
+ "crc32fast",
+ "futures",
+ "hyper",
+ "lazy_static",
+ "libc",
+ "log",
+ "num_cpus",
+ "paste",
+ "pin-project",
+ "prometheus",
+ "prometheus-static-metric",
+ "prost 0.11.9",
+ "rand 0.8.5",
+ "sekas-rock",
+ "serde",
+ "thiserror",
+ "tokio",
+ "tokio-util",
+ "tonic",
+ "tracing",
 ]
 
 [[package]]
@@ -2360,6 +2399,7 @@ dependencies = [
  "prost 0.11.9",
  "prost-build 0.11.9",
  "protoc-build",
+ "quote",
  "raft",
  "raft-engine",
  "rand 0.8.5",
@@ -2367,11 +2407,14 @@ dependencies = [
  "rocksdb",
  "sekas-api",
  "sekas-client",
+ "sekas-macro",
  "sekas-rock",
+ "sekas-runtime",
  "sekas-schema",
  "serde",
  "serde_json",
  "socket2 0.4.10",
+ "syn 2.0.38",
  "sysinfo",
  "tempdir",
  "thiserror",

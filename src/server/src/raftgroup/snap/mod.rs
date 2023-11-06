@@ -30,7 +30,7 @@ use raft::prelude::{Snapshot, SnapshotMetadata};
 
 pub use self::create::dispatch_creating_snap_task;
 pub use self::download::dispatch_downloading_snap_task;
-use crate::runtime::TaskPriority;
+use sekas_runtime::TaskPriority;
 use crate::serverpb::v1::SnapshotMeta;
 use crate::Result;
 
@@ -106,7 +106,7 @@ impl SnapManager {
         use prost::Message;
 
         let (mut sender, receiver) = mpsc::unbounded();
-        crate::runtime::current().spawn(None, TaskPriority::IoLow, async move {
+        sekas_runtime::current().spawn(None, TaskPriority::IoLow, async move {
             recycle_snapshot(receiver).await;
         });
 
@@ -384,8 +384,8 @@ mod tests {
 
     use super::*;
     use crate::raftgroup::SnapshotBuilder;
-    use crate::runtime::time::sleep;
-    use crate::runtime::ExecutorOwner;
+    use sekas_runtime::time::sleep;
+    use sekas_runtime::ExecutorOwner;
     use crate::serverpb::v1::ApplyState;
 
     struct SimpleSnapshotBuilder {

@@ -94,7 +94,7 @@ struct StartCommand {
 
 impl StartCommand {
     fn run(self) -> Result<()> {
-        use sekas_server::runtime::{ExecutorOwner, ShutdownNotifier, TaskPriority};
+        use sekas_runtime::{ExecutorOwner, ShutdownNotifier, TaskPriority};
 
         let mut config = match load_config(&self) {
             Ok(c) => c,

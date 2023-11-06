@@ -27,7 +27,7 @@ use super::SnapManager;
 use crate::raftgroup::metrics::*;
 use crate::raftgroup::worker::Request;
 use crate::raftgroup::{retrive_snapshot, ChannelManager};
-use crate::runtime::TaskPriority;
+use sekas_runtime::TaskPriority;
 use crate::serverpb::v1::{snapshot_chunk, SnapshotChunk, SnapshotFile, SnapshotMeta};
 use crate::{record_latency, Error, Result};
 
@@ -163,7 +163,7 @@ pub fn dispatch_downloading_snap_task(
     from_replica: ReplicaDesc,
     mut msg: Message,
 ) {
-    crate::runtime::current().spawn(None, TaskPriority::IoLow, async move {
+    sekas_runtime::current().spawn(None, TaskPriority::IoLow, async move {
         match download_snap(replica_id, tran_mgr, snap_mgr, from_replica, &msg).await {
             Ok(snap_id) => {
                 msg.snapshot.as_mut().unwrap().data = snap_id;

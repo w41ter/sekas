@@ -81,7 +81,7 @@ async fn write_partial_to_file(
 
         index += 1;
         if index % 1024 == 0 {
-            crate::runtime::yield_now().await;
+            sekas_runtime::yield_now().await;
         }
     }
 
@@ -152,7 +152,7 @@ mod tests {
 
     use super::*;
     use crate::engine::{GroupEngine, WriteBatch, WriteStates};
-    use crate::runtime::ExecutorOwner;
+    use sekas_runtime::ExecutorOwner;
     use crate::EngineConfig;
 
     async fn create_engine(dir: &Path, group_id: u64, shard_id: u64) -> GroupEngine {

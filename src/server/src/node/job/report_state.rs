@@ -23,7 +23,7 @@ use sekas_client::RootClient;
 
 use crate::node::metrics::take_report_metrics;
 use crate::record_latency;
-use crate::runtime::TaskPriority;
+use sekas_runtime::TaskPriority;
 use crate::transport::TransportManager;
 
 #[derive(Clone)]
@@ -35,7 +35,7 @@ pub(crate) fn setup(transport_manager: &TransportManager) -> StateChannel {
     let (sender, receiver) = mpsc::unbounded();
 
     let client = transport_manager.root_client().clone();
-    crate::runtime::current().spawn(None, TaskPriority::IoHigh, async move {
+    sekas_runtime::current().spawn(None, TaskPriority::IoHigh, async move {
         report_state_worker(receiver, client).await;
     });
 
@@ -91,7 +91,7 @@ async fn report_state_updates(root_client: &RootClient, request: ReportRequest) 
     let mut interval = 1;
     while let Err(e) = root_client.report(&request).await {
         warn!("report state updates: {e}");
-        crate::runtime::time::sleep(Duration::from_millis(interval)).await;
+        sekas_runtime::time::sleep(Duration::from_millis(interval)).await;
         interval = std::cmp::min(interval * 2, 120);
     }
 }

@@ -41,7 +41,7 @@ pub async fn do_migration(
             Err(Error::ServiceIsBusy(_)) | Err(Error::GroupNotReady(_)) => {
                 // sleep and retry.
                 NODE_RETRY_TOTAL.inc();
-                crate::runtime::time::sleep(Duration::from_micros(200)).await;
+                sekas_runtime::time::sleep(Duration::from_micros(200)).await;
             }
             Err(err) => return Err(err),
         }
@@ -108,7 +108,7 @@ async fn execute_internal(
             Err(Error::ServiceIsBusy(_)) | Err(Error::GroupNotReady(_)) => {
                 // sleep and retry.
                 NODE_RETRY_TOTAL.inc();
-                crate::runtime::time::sleep(Duration::from_micros(200)).await;
+                sekas_runtime::time::sleep(Duration::from_micros(200)).await;
             }
             Err(Error::EpochNotMatch(desc)) => {
                 if is_executable(&desc, request) {

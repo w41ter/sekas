@@ -17,6 +17,7 @@ use std::time::Duration;
 
 use rocksdb::DBCompressionType;
 use serde::{Deserialize, Serialize};
+use sekas_runtime::ExecutorConfig;
 
 use crate::constants::REPLICA_PER_GROUP;
 
@@ -204,13 +205,6 @@ pub struct RootConfig {
     pub heartbeat_timeout_sec: u64,
     pub schedule_interval_sec: u64,
     pub max_create_group_retry_before_rollback: u64,
-}
-
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
-pub struct ExecutorConfig {
-    pub event_interval: Option<u32>,
-    pub global_event_interval: Option<u32>,
-    pub max_blocking_threads: Option<usize>,
 }
 
 impl Default for NodeConfig {

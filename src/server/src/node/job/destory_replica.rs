@@ -19,14 +19,14 @@ use log::error;
 use crate::engine::{Engines, GroupEngine, RawDb, StateEngine};
 use crate::node::metrics::*;
 use crate::raftgroup::destory_storage;
-use crate::runtime::TaskPriority;
+use sekas_runtime::TaskPriority;
 use crate::serverpb::v1::ReplicaLocalState;
 use crate::{record_latency, Error, Result};
 
 /// Clean a group engine and save the replica state to
 /// `ReplicaLocalState::Tombstone`.
 pub(crate) fn setup(group_id: u64, replica_id: u64, engines: Engines) {
-    crate::runtime::current().spawn(Some(group_id), TaskPriority::IoLow, async move {
+    sekas_runtime::current().spawn(Some(group_id), TaskPriority::IoLow, async move {
         if let Err(err) =
             destory_replica(group_id, replica_id, engines.state(), engines.db(), engines.log())
                 .await
@@ -64,7 +64,7 @@ mod tests {
 
     use super::*;
     use crate::bootstrap::open_engine_with_default_config;
-    use crate::runtime::ExecutorOwner;
+    use sekas_runtime::ExecutorOwner;
 
     #[test]
     fn destory_replica_ignore_not_existed_column_families() {

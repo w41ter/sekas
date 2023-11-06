@@ -37,7 +37,7 @@ use crate::node::replica::fsm::GroupStateMachine;
 use crate::node::replica::{ExecCtx, LeaseState, LeaseStateObserver, ReplicaInfo};
 use crate::raftgroup::snap::RecycleSnapMode;
 use crate::raftgroup::{ChannelManager, RaftManager, RaftNodeFacade, SnapManager};
-use crate::runtime::sync::WaitGroup;
+use sekas_runtime::sync::WaitGroup;
 use crate::schedule::MoveReplicasProvider;
 use crate::serverpb::v1::*;
 use crate::transport::TransportManager;
@@ -357,7 +357,7 @@ impl Node {
             Ok(())
         } else {
             // TODO(walter) reject staled update root request.
-            self.state_engine().save_root_desc(root_desc).await?;
+            self.state_engine().save_root_desc(&root_desc).await?;
             self.reload_root_from_engine().await
         }
     }
@@ -651,7 +651,7 @@ mod tests {
 
     use super::*;
     use crate::constants::INITIAL_EPOCH;
-    use crate::runtime::ExecutorOwner;
+    use sekas_runtime::ExecutorOwner;
 
     async fn create_node(root_dir: PathBuf) -> Node {
         let config = Config { root_dir, ..Default::default() };
@@ -740,7 +740,7 @@ mod tests {
             let ident = NodeIdent { cluster_id: vec![], node_id: 1 };
             node.bootstrap(&ident).await.unwrap();
 
-            crate::runtime::time::sleep(Duration::from_millis(10)).await;
+            sekas_runtime::time::sleep(Duration::from_millis(10)).await;
 
             node.remove_replica(replica_id, &group).await.unwrap();
         });
@@ -763,11 +763,11 @@ mod tests {
             let ident = NodeIdent { cluster_id: vec![], node_id: 1 };
             node.bootstrap(&ident).await.unwrap();
 
-            crate::runtime::time::sleep(Duration::from_millis(10)).await;
+            sekas_runtime::time::sleep(Duration::from_millis(10)).await;
 
             node.remove_replica(replica_id, &group).await.unwrap();
 
-            crate::runtime::time::sleep(Duration::from_millis(10)).await;
+            sekas_runtime::time::sleep(Duration::from_millis(10)).await;
 
             let new_replica_id = 3;
             node.create_replica(new_replica_id, group.clone()).await.unwrap();

@@ -146,7 +146,7 @@ impl Scheduler {
         let mut pending_tasks: Vec<Box<dyn Task>> = vec![];
         for task_id in self.collect_active_tasks() {
             self.advance_task(current_term, task_id, &mut pending_tasks).await;
-            crate::runtime::yield_now().await;
+            sekas_runtime::yield_now().await;
         }
 
         self.install_tasks(std::mem::take(&mut pending_tasks));

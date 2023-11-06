@@ -188,7 +188,7 @@ impl TxnResolveManager {
         let expired = if now < deadline {
             // Need to sleep
             let duration = Duration::from_millis(deadline - now);
-            crate::runtime::time::timeout(duration, receiver).await.is_err()
+            sekas_runtime::time::timeout(duration, receiver).await.is_err()
         } else {
             receiver.await;
             false

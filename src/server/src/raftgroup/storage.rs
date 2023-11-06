@@ -574,7 +574,7 @@ mod tests {
     use tempdir::TempDir;
 
     use super::*;
-    use crate::runtime::*;
+    use sekas_runtime::*;
 
     fn mocked_entries(select_term: Option<u64>) -> Vec<(u64, u64)> {
         let entries = vec![

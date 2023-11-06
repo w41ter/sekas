@@ -25,7 +25,7 @@ use crate::raftgroup::metrics::*;
 use crate::raftgroup::snap::{SNAP_META, SNAP_TEMP};
 use crate::raftgroup::worker::Request;
 use crate::raftgroup::StateMachine;
-use crate::runtime::TaskPriority;
+use sekas_runtime::TaskPriority;
 use crate::serverpb::v1::{SnapshotFile, SnapshotMeta};
 use crate::{record_latency, Result};
 
@@ -36,7 +36,7 @@ pub fn dispatch_creating_snap_task(
     snap_mgr: SnapManager,
 ) {
     let builder = state_machine.snapshot_builder();
-    crate::runtime::current().spawn(None, TaskPriority::IoLow, async move {
+    sekas_runtime::current().spawn(None, TaskPriority::IoLow, async move {
         match create_snapshot(replica_id, &snap_mgr, builder).await {
             Ok(_) => {
                 info!("replica {replica_id} create snapshot success");
@@ -134,7 +134,7 @@ async fn read_file_meta(filename: &Path) -> Result<SnapshotFile> {
         count += 1;
         hasher.update(&buf[..n]);
         if count % 10 == 0 {
-            crate::runtime::yield_now().await;
+            sekas_runtime::yield_now().await;
         }
     }
 

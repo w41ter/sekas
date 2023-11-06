@@ -39,8 +39,8 @@ pub use self::storage::{destory as destory_storage, write_initial_state};
 use self::worker::RaftWorker;
 pub use self::worker::{RaftGroupState, StateObserver};
 use crate::raftgroup::io::start_purging_expired_files;
-use crate::runtime::sync::WaitGroup;
-use crate::runtime::TaskPriority;
+use sekas_runtime::sync::WaitGroup;
+use sekas_runtime::TaskPriority;
 use crate::{RaftConfig, Result};
 
 /// `ReadPolicy` is used to control `RaftNodeFacade::read` behavior.
@@ -104,7 +104,7 @@ impl RaftManager {
             RaftWorker::open(group_id, replica_id, node_id, state_machine, self, observer).await?;
         let facade = RaftNodeFacade::open(worker.request_sender());
         let log_writer = self.log_writer.clone();
-        crate::runtime::current().spawn(Some(group_id), TaskPriority::High, async move {
+        sekas_runtime::current().spawn(Some(group_id), TaskPriority::High, async move {
             // TODO(walter) handle result.
             worker.run(log_writer).await.unwrap();
             drop(wait_group);

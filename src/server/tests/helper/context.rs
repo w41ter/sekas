@@ -1,3 +1,4 @@
+// Copyright 2023-present The Sekas Authors.
 // Copyright 2022 The Engula Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -16,7 +17,7 @@ use std::thread;
 use std::time::Duration;
 
 use log::info;
-use sekas_server::runtime::{ExecutorOwner, ShutdownNotifier};
+use sekas_runtime::{ExecutorOwner, ShutdownNotifier, ExecutorConfig};
 use sekas_server::{Config, DbConfig, NodeConfig, RaftConfig, RootConfig, *};
 use tempdir::TempDir;
 

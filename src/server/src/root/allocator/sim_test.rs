@@ -22,7 +22,7 @@ use sekas_api::server::v1::*;
 use super::*;
 use crate::constants::REPLICA_PER_GROUP;
 use crate::root::allocator::source::NodeFilter;
-use crate::runtime::ExecutorOwner;
+use sekas_runtime::ExecutorOwner;
 
 #[test]
 fn sim_boostrap_join_node_balance() {

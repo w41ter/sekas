@@ -16,12 +16,12 @@ use std::time::Duration;
 
 use log::{debug, warn};
 
-use crate::runtime::{current, TaskPriority};
+use sekas_runtime::{current, TaskPriority};
 
 pub async fn start_purging_expired_files(engine: Arc<raft_engine::Engine>) {
     current().spawn(None, TaskPriority::IoLow, async move {
         loop {
-            crate::runtime::time::sleep(Duration::from_secs(10)).await;
+            sekas_runtime::time::sleep(Duration::from_secs(10)).await;
             let cloned_engine = engine.clone();
             match current().dispatch_blocking(move || cloned_engine.purge_expired_files()).await {
                 Err(e) => {

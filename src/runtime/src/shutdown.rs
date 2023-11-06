@@ -91,7 +91,7 @@ mod tests {
     use futures::channel::oneshot;
 
     use super::*;
-    use crate::runtime::*;
+    use crate::{*, executor::ExecutorOwner};
 
     #[test]
     fn shutdown() {

@@ -30,7 +30,6 @@ mod transport;
 
 pub mod node;
 pub mod raftgroup;
-pub mod runtime;
 pub mod serverpb;
 
 pub(crate) use tonic::async_trait;

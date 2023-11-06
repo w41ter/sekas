@@ -1,3 +1,4 @@
+// Copyright 2023 The Sekas Authors.
 // Copyright 2022 The Engula Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -156,79 +157,65 @@ mod tests {
 
     use super::*;
     use crate::engine::open_raft_engine;
-    use crate::runtime::ExecutorOwner;
 
-    #[test]
-    fn save_and_load_node_ident() {
-        let executor_owner = ExecutorOwner::new(1);
-        let executor = executor_owner.executor();
+    #[sekas_macro::test]
+    async fn save_and_load_node_ident() {
         let dir = TempDir::new(fn_name!()).unwrap();
         let engine = StateEngine::new(Arc::new(open_raft_engine(dir.path()).unwrap()));
 
-        executor.block_on(async move {
-            // Read ident not exists.
-            let ident = engine.read_ident().await.unwrap();
-            assert!(ident.is_none());
+        // Read ident not exists.
+        let ident = engine.read_ident().await.unwrap();
+        assert!(ident.is_none());
 
-            // Save ident
-            let ident = NodeIdent { cluster_id: vec![1, 7, 9, 3, 9, 4], node_id: 123321 };
-            engine.save_ident(&ident).await.unwrap();
+        // Save ident
+        let ident = NodeIdent { cluster_id: vec![1, 7, 9, 3, 9, 4], node_id: 123321 };
+        engine.save_ident(&ident).await.unwrap();
 
-            // Read ident again.
-            let ident_read = engine.read_ident().await.unwrap();
-            assert!(matches!(ident_read, Some(read) if read == ident));
-        });
+        // Read ident again.
+        let ident_read = engine.read_ident().await.unwrap();
+        assert!(matches!(ident_read, Some(read) if read == ident));
     }
 
-    #[test]
-    fn save_and_load_root_desc() {
-        let executor_owner = ExecutorOwner::new(1);
-        let executor = executor_owner.executor();
+    #[sekas_macro::test]
+    async fn save_and_load_root_desc() {
         let dir = TempDir::new(fn_name!()).unwrap();
         let engine = StateEngine::new(Arc::new(open_raft_engine(dir.path()).unwrap()));
 
-        executor.block_on(async move {
-            // Load node desc not exists.
-            let desc = engine.load_root_desc().await.unwrap();
-            assert!(desc.is_none());
+        // Load node desc not exists.
+        let desc = engine.load_root_desc().await.unwrap();
+        assert!(desc.is_none());
 
-            // Save node desc.
-            let desc = RootDesc {
-                epoch: 123123,
-                root_nodes: vec![NodeDesc {
-                    id: 123123,
-                    addr: "localhost:10011".into(),
-                    capacity: None,
-                    status: NodeStatus::Active.into(),
-                }],
-            };
-            engine.save_root_desc(&desc).await.unwrap();
+        // Save node desc.
+        let desc = RootDesc {
+            epoch: 123123,
+            root_nodes: vec![NodeDesc {
+                id: 123123,
+                addr: "localhost:10011".into(),
+                capacity: None,
+                status: NodeStatus::Active.into(),
+            }],
+        };
+        engine.save_root_desc(&desc).await.unwrap();
 
-            // Load root desc again.
-            let load_desc = engine.load_root_desc().await.unwrap();
-            assert!(matches!(load_desc, Some(read) if read == desc));
-        });
+        // Load root desc again.
+        let load_desc = engine.load_root_desc().await.unwrap();
+        assert!(matches!(load_desc, Some(read) if read == desc));
     }
 
-    #[test]
-    fn save_and_read_replica_states() {
-        let executor_owner = ExecutorOwner::new(1);
-        let executor = executor_owner.executor();
+    #[sekas_macro::test]
+    async fn save_and_read_replica_states() {
         let dir = TempDir::new(fn_name!()).unwrap();
         let engine = StateEngine::new(Arc::new(open_raft_engine(dir.path()).unwrap()));
-
-        executor.block_on(async move {
-            let expect_states = vec![
-                (1, 1, ReplicaLocalState::Normal),
-                (2, 2, ReplicaLocalState::Pending),
-                (3, 3, ReplicaLocalState::Terminated),
-                (3, 4, ReplicaLocalState::Tombstone),
-            ];
-            for (group_id, replica_id, state) in expect_states.clone() {
-                engine.save_replica_state(group_id, replica_id, state).await.unwrap();
-            }
-            let read_states = engine.replica_states().await.unwrap();
-            assert_eq!(expect_states, read_states);
-        });
+        let expect_states = vec![
+            (1, 1, ReplicaLocalState::Normal),
+            (2, 2, ReplicaLocalState::Pending),
+            (3, 3, ReplicaLocalState::Terminated),
+            (3, 4, ReplicaLocalState::Tombstone),
+        ];
+        for (group_id, replica_id, state) in expect_states.clone() {
+            engine.save_replica_state(group_id, replica_id, state).await.unwrap();
+        }
+        let read_states = engine.replica_states().await.unwrap();
+        assert_eq!(expect_states, read_states);
     }
 }

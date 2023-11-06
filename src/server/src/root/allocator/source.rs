@@ -82,11 +82,11 @@ impl SysAllocSource {
 impl AllocSource for SysAllocSource {
     async fn refresh_all(&self) -> Result<()> {
         self.reload_nodes().await?;
-        crate::runtime::yield_now().await;
+        sekas_runtime::yield_now().await;
         self.reload_groups().await?;
-        crate::runtime::yield_now().await;
+        sekas_runtime::yield_now().await;
         self.reload_replica_status().await?;
-        crate::runtime::yield_now().await;
+        sekas_runtime::yield_now().await;
         Ok(())
     }
 

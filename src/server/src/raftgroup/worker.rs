@@ -260,7 +260,7 @@ where
         interval: &mut Interval,
     ) -> Result<()> {
         if !self.raft_node.has_ready() {
-            crate::runtime::select! {
+            sekas_runtime::select! {
                 biased;
                 _ = interval.tick().fuse() => {
                     self.on_tick_fire(ctx);

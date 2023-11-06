@@ -16,7 +16,7 @@ use sekas_api::server::v1::*;
 use tonic::{Request, Response, Status};
 
 use super::metrics::*;
-use crate::runtime::{DispatchHandle, TaskPriority};
+use sekas_runtime::{DispatchHandle, TaskPriority};
 use crate::serverpb::v1::MigrationEvent;
 use crate::{record_latency, record_latency_opt, Error, Server};
 
@@ -198,7 +198,7 @@ impl Server {
         for request in requests.into_iter() {
             let server = self.clone();
             let group_id = request.group_id;
-            let handle = crate::runtime::current().dispatch(
+            let handle = sekas_runtime::current().dispatch(
                 Some(group_id),
                 TaskPriority::Middle,
                 async move { server.submit_group_request(&request).await },
