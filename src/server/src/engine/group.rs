@@ -103,6 +103,7 @@ pub(crate) struct MvccIterator<'a, 'b> {
     snapshot: &'b Snapshot<'a>,
 }
 
+#[derive(Debug, Eq, PartialEq)]
 pub(crate) struct MvccEntry {
     key: Box<[u8]>,
     user_key: Vec<u8>,

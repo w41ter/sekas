@@ -158,7 +158,7 @@ pub(crate) fn open_raw_db<P: AsRef<Path>>(cfg: &DbConfig, path: P) -> Result<Raw
     // List column families and open database with column families.
     match DB::list_cf(&options, &path) {
         Ok(cfs) => {
-            info!("open local db with {} column families", cfs.len());
+            info!("open local db {} with {} column families", path.as_ref().display(), cfs.len());
             let db = DB::open_cf_with_opts(
                 &options,
                 path,
@@ -168,7 +168,7 @@ pub(crate) fn open_raw_db<P: AsRef<Path>>(cfg: &DbConfig, path: P) -> Result<Raw
         }
         Err(e) => {
             if e.as_ref().ends_with("CURRENT: No such file or directory") {
-                info!("create new local db");
+                info!("create new local db: {}", path.as_ref().display());
                 let db = DB::open(&options, &path)?;
                 Ok(RawDb { db, options })
             } else {
@@ -190,6 +190,38 @@ fn open_raft_engine(log_path: &Path) -> Result<raft_engine::Engine> {
         ..Default::default()
     };
     Ok(Engine::open(engine_cfg)?)
+}
+
+#[cfg(test)]
+/// A helper function to create [`GroupEngine`].
+pub async fn create_group_engine(
+    dir: &Path,
+    group_id: u64,
+    shard_id: u64,
+    replica_id: u64,
+) -> GroupEngine {
+    use sekas_api::server::v1::*;
+
+    use crate::EngineConfig;
+
+    const COL_ID: u64 = 1;
+    let db = Arc::new(open_raw_db(&DbConfig::default(), dir).unwrap());
+
+    let group_engine =
+        GroupEngine::create(&EngineConfig::default(), db.clone(), group_id, replica_id)
+            .await
+            .unwrap();
+    let wb = WriteBatch::default();
+    let states = WriteStates {
+        descriptor: Some(GroupDesc {
+            id: group_id,
+            shards: vec![ShardDesc::whole(shard_id, COL_ID)],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    group_engine.commit(wb, states, false).unwrap();
+    group_engine
 }
 
 #[cfg(test)]

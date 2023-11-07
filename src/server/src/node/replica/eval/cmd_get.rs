@@ -30,7 +30,7 @@ pub(crate) async fn get(
     if let Some(desc) = exec_ctx.migration_desc.as_ref() {
         let shard_id = desc.shard_desc.as_ref().unwrap().id;
         if shard_id == req.shard_id {
-            let payloads = read_shard_key_versions(engine, req.shard_id, &req.key).await?;
+            let payloads = read_shard_all_versions(engine, req.shard_id, &req.key).await?;
             let forward_ctx = ForwardCtx { shard_id, dest_group_id: desc.dest_group_id, payloads };
             return Err(Error::Forward(forward_ctx));
         }
@@ -61,7 +61,7 @@ async fn read_key(
                 if intent.start_version <= start_version {
                     // TODO(walter) We need to wait intent lock to release!
                 }
-            } else if entry.version() < start_version {
+            } else if entry.version() <= start_version {
                 // This entry is safe for reading.
                 return Ok(Some(entry.into()));
             }
@@ -70,7 +70,7 @@ async fn read_key(
     Ok(None)
 }
 
-async fn read_shard_key_versions(
+async fn read_shard_all_versions(
     engine: &GroupEngine,
     shard_id: u64,
     key: &[u8],
@@ -85,4 +85,153 @@ async fn read_shard_key_versions(
         }
     }
     Ok(value_set)
+}
+
+#[cfg(test)]
+mod tests {
+    use sekas_api::server::v1::Value;
+    use sekas_rock::fn_name;
+    use tempdir::TempDir;
+
+    use super::*;
+    use crate::engine::{create_group_engine, WriteBatch, WriteStates};
+
+    fn commit_values(engine: &GroupEngine, key: &[u8], values: &[Value]) {
+        let mut wb = WriteBatch::default();
+        for Value { version, content } in values {
+            if let Some(value) = content {
+                engine.put(&mut wb, 1, key, &value, *version).unwrap();
+            } else {
+                engine.tombstone(&mut wb, 1, key, *version).unwrap();
+            }
+        }
+        engine.commit(wb, WriteStates::default(), false).unwrap();
+    }
+
+    #[sekas_macro::test]
+    async fn test_read_shard_all_versions() {
+        let cases = vec![
+            // empty values.
+            vec![],
+            // a tombstone.
+            vec![Value { version: 1, content: None }],
+            // a write.
+            vec![Value { version: 1, content: Some(vec![b'1']) }],
+            // a write overwrite a tombstone.
+            vec![
+                Value { version: 2, content: Some(vec![b'1']) },
+                Value { version: 1, content: None },
+            ],
+            // a tombstone overwrite a write.
+            vec![
+                Value { version: 2, content: None },
+                Value { version: 1, content: Some(vec![b'1']) },
+            ],
+        ];
+
+        let dir = TempDir::new(fn_name!()).unwrap();
+        let engine = create_group_engine(dir.path(), 1, 1, 1).await;
+        let mut idx = 0;
+        for case in cases {
+            let key = idx.to_string();
+            commit_values(&engine, key.as_bytes(), &case);
+
+            let value_set = read_shard_all_versions(&engine, 1, key.as_bytes()).await.unwrap();
+            assert_eq!(value_set.values, case, "idx = {idx}");
+
+            idx += 1;
+        }
+    }
+
+    #[sekas_macro::test]
+    async fn read_key_without_intent() {
+        // read_key should return the first value, including tombstone.
+        struct TestCase {
+            values: Vec<Value>,
+            expect: Option<Value>,
+        }
+        let cases = vec![
+            // empty values.
+            TestCase { values: vec![], expect: None },
+            // a tombstone.
+            TestCase { values: vec![Value::tombstone(1)], expect: Some(Value::tombstone(1)) },
+            // a write.
+            TestCase {
+                values: vec![Value::with_value(vec![b'1'], 1)],
+                expect: Some(Value::with_value(vec![b'1'], 1)),
+            },
+            // a write overwrite a tombstone.
+            TestCase {
+                values: vec![Value::with_value(vec![b'1'], 2), Value::tombstone(1)],
+                expect: Some(Value::with_value(vec![b'1'], 2)),
+            },
+            // a tombstone overwrite a write.
+            TestCase {
+                values: vec![Value::with_value(vec![b'1'], 1), Value::tombstone(2)],
+                expect: Some(Value::tombstone(2)),
+            },
+        ];
+
+        let dir = TempDir::new(fn_name!()).unwrap();
+        let engine = create_group_engine(dir.path(), 1, 1, 1).await;
+        let mut idx = 0;
+        for TestCase { values, expect } in cases {
+            let key = idx.to_string();
+            commit_values(&engine, key.as_bytes(), &values);
+
+            let got = read_key(&engine, 1, key.as_bytes(), 3).await.unwrap();
+            assert_eq!(got, expect, "idx = {idx}");
+
+            idx += 1;
+        }
+    }
+
+    #[sekas_macro::test]
+    async fn read_key_with_version_but_without_intent() {
+        // read_key should return the first value in the target version, including
+        // tombstone.
+        struct TestCase {
+            values: Vec<Value>,
+            expect: Option<Value>,
+        }
+        let txn_version = 10;
+        let cases = vec![
+            // empty values.
+            TestCase { values: vec![], expect: None },
+            // a visible tombstone.
+            TestCase { values: vec![Value::tombstone(10)], expect: Some(Value::tombstone(10)) },
+            // a non-visible tombstone.
+            TestCase { values: vec![Value::tombstone(11)], expect: None },
+            // a visible write.
+            TestCase {
+                values: vec![Value::with_value(vec![b'1'], 1)],
+                expect: Some(Value::with_value(vec![b'1'], 1)),
+            },
+            // a non-visible write.
+            TestCase { values: vec![Value::with_value(vec![b'1'], 11)], expect: None },
+            // a write overwrite a visible tombstone.
+            TestCase {
+                values: vec![Value::with_value(vec![b'1'], 11), Value::tombstone(1)],
+                expect: Some(Value::tombstone(1)),
+            },
+            // a tombstone overwrite a visible write.
+            TestCase {
+                values: vec![Value::with_value(vec![b'1'], 1), Value::tombstone(20)],
+                expect: Some(Value::with_value(vec![b'1'], 1)),
+            },
+        ];
+
+        let dir = TempDir::new(fn_name!()).unwrap();
+        let engine = create_group_engine(dir.path(), 1, 1, 1).await;
+        let mut idx = 0;
+        for TestCase { values, expect } in cases {
+            let key = idx.to_string();
+            commit_values(&engine, key.as_bytes(), &values);
+
+            let got = read_key(&engine, 1, key.as_bytes(), txn_version).await.unwrap();
+            assert_eq!(got, expect, "idx = {idx}");
+
+            idx += 1;
+        }
+    }
 }
