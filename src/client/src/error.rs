@@ -1,3 +1,4 @@
+// Copyright 2023-present The Sekas Authors.
 // Copyright 2022 The Engula Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -14,7 +15,7 @@
 
 use std::error::Error as StdError;
 
-use sekas_api::server::v1::{GroupDesc, ReplicaDesc, RootDesc};
+use sekas_api::server::v1::{GroupDesc, ReplicaDesc, RootDesc, Value};
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 pub type AppResult<T> = std::result::Result<T, AppError>;
@@ -33,8 +34,8 @@ pub enum AppError {
     #[error("deadline exceeded {0}")]
     DeadlineExceeded(String),
 
-    #[error("{0}")]
-    CasFailed(String),
+    #[error("cas condition {1} not satisfied, operation index {0}")]
+    CasFailed(u64, u64, Option<Value>),
 
     #[error("network: {0}")]
     Network(tonic::Status),
@@ -60,8 +61,8 @@ pub enum Error {
     #[error("{0} is exhausted")]
     ResourceExhausted(String),
 
-    #[error("{0}")]
-    CasFailed(String),
+    #[error("cas condition {1} not satisfied, operation index {0}")]
+    CasFailed(u64, u64, Option<Value>),
 
     #[error("group epoch not match")]
     EpochNotMatch(GroupDesc),
@@ -111,7 +112,6 @@ impl From<tonic::Status> for Error {
             }
             Code::AlreadyExists => Error::AlreadyExists(status.message().into()),
             Code::ResourceExhausted => Error::ResourceExhausted(status.message().into()),
-            Code::FailedPrecondition => Error::CasFailed(status.message().into()),
             Code::NotFound => Error::NotFound(status.message().into()),
             Code::Internal => Error::Internal(status.message().into()),
             Code::Unknown => from_source_or_details(status),
@@ -153,7 +153,9 @@ impl From<Error> for AppError {
             Error::DeadlineExceeded(v) => AppError::DeadlineExceeded(v),
             Error::NotFound(v) => AppError::NotFound(v),
             Error::AlreadyExists(v) => AppError::AlreadyExists(v),
-            Error::CasFailed(v) => AppError::CasFailed(v),
+            Error::CasFailed(index, cond_index, prev_value) => {
+                AppError::CasFailed(index, cond_index, prev_value)
+            }
             Error::Internal(v) => AppError::Internal(v),
 
             Error::Transport(status) => AppError::Network(status),
@@ -179,7 +181,7 @@ impl From<AppError> for tonic::Status {
             AppError::AlreadyExists(msg) => Status::already_exists(msg),
             AppError::InvalidArgument(msg) => Status::invalid_argument(msg),
             AppError::DeadlineExceeded(msg) => Status::deadline_exceeded(msg),
-            AppError::CasFailed(msg) => Status::failed_precondition(msg),
+            AppError::CasFailed(_, _, _) => todo!("not supported"),
             AppError::Network(status) => status, // as proxy
             AppError::Internal(err) => Status::internal(err.to_string()),
         }

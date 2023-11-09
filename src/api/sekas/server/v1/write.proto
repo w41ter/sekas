@@ -37,11 +37,11 @@ enum WriteConditionType {
     EXPECT_VALUE = 2;
 
     // Version releated conditions.
-    EXPECT_VERSION = 3;
-    EXPECT_VERSION_LT = 4;
-    EXPECT_VERSION_LE = 5;
-    EXPECT_VERSION_GT = 6;
-    EXPECT_VERSION_GE = 7;
+    EXPECT_VERSION = 3;         // A specified version exists, including tombstone.
+    EXPECT_VERSION_LT = 4;      // All exists version less than, including tombstone.
+    EXPECT_VERSION_LE = 5;      // All exists version less than or equals to, including tombstone.
+    EXPECT_VERSION_GT = 6;      // Any exists version great than, including tombstone.
+    EXPECT_VERSION_GE = 7;      // Any exists version great than or equals to, including tombstone.
 
     // slice related conditions.
     EXPECT_STARTS_WITH = 8;

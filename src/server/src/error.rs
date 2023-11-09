@@ -1,3 +1,4 @@
+// Copyright 2023-present The Sekas Authors.
 // Copyright 2022 The Engula Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -11,7 +12,7 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-use sekas_api::server::v1::{GroupDesc, ReplicaDesc, RootDesc};
+use sekas_api::server::v1::{GroupDesc, ReplicaDesc, RootDesc, Value};
 
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
@@ -34,8 +35,8 @@ pub enum Error {
     #[error("{0} is exhausted")]
     ResourceExhausted(String),
 
-    #[error("{0}")]
-    CasFailed(String),
+    #[error("condition {1} not satisfied, operation index {0}")]
+    CasFailed(/* index */ u64, /* cond_index */ u64, Option<Value>),
 
     // internal errors
     #[error("shard {0} not found")]
@@ -138,7 +139,11 @@ impl From<Error> for tonic::Status {
             err @ Error::DatabaseNotFound(_) => Status::not_found(err.to_string()),
             err @ Error::AlreadyExists(_) => Status::already_exists(err.to_string()),
             Error::ResourceExhausted(msg) => Status::resource_exhausted(msg),
-            Error::CasFailed(msg) => Status::failed_precondition(msg),
+            Error::CasFailed(index, cond_index, prev_value) => Status::with_details(
+                Code::Unknown,
+                "cas failed".to_string(),
+                v1::Error::cas_failed(index, cond_index, prev_value).encode_to_vec().into(),
+            ),
 
             Error::GroupNotFound(group_id) => Status::with_details(
                 Code::Unknown,
@@ -216,7 +221,9 @@ impl From<Error> for sekas_api::server::v1::Error {
 
             Error::InvalidArgument(msg) => v1::Error::status(Code::InvalidArgument.into(), msg),
             Error::DeadlineExceeded(msg) => v1::Error::status(Code::DeadlineExceeded.into(), msg),
-            Error::CasFailed(msg) => v1::Error::status(Code::FailedPrecondition.into(), msg),
+            Error::CasFailed(index, cond_index, prev_value) => {
+                v1::Error::cas_failed(index, cond_index, prev_value)
+            }
 
             Error::Forward(_) => panic!("Forward only used inside node"),
             Error::ServiceIsBusy(_) => panic!("ServiceIsBusy only used inside node"),
@@ -254,7 +261,9 @@ impl From<sekas_client::Error> for Error {
             sekas_client::Error::DeadlineExceeded(v) => Error::DeadlineExceeded(v),
             sekas_client::Error::AlreadyExists(v) => Error::AlreadyExists(v),
             sekas_client::Error::ResourceExhausted(v) => Error::ResourceExhausted(v),
-            sekas_client::Error::CasFailed(v) => Error::CasFailed(v),
+            sekas_client::Error::CasFailed(index, cond_index, prev_value) => {
+                Error::CasFailed(index, cond_index, prev_value)
+            }
             sekas_client::Error::Rpc(err) => Error::Rpc(err),
             sekas_client::Error::Connect(err) => Error::Rpc(err),
             sekas_client::Error::Transport(err) => Error::Rpc(err),

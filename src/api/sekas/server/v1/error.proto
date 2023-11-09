@@ -1,3 +1,4 @@
+// Copyright 2023-present The Sekas Authors.
 // Copyright 2022 The Engula Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -17,6 +18,7 @@ syntax = "proto3";
 package sekas.server.v1;
 
 import "sekas/server/v1/metadata.proto";
+import "sekas/server/v1/types.proto";
 
 /// This file complements some errors that cannot be expressed by grpc status code,
 /// which is usually used with Status::unknown.
@@ -37,19 +39,20 @@ message Error {
 }
 
 message ErrorDetail {
-    string message = 1;
+  string message = 1;
 
     ErrorDetailUnion detail = 2;
 }
-
+  
 message ErrorDetailUnion {
     oneof value {
-        NotLeader not_leader = 1;
-        EpochNotMatch not_match = 2;
-        ServerIsBusy server_is_busy = 3;
-        GroupNotFound group_not_found = 4;
-        NotRoot not_root = 5;
-        int32 status_code = 6;
+        int32 status_code = 1;
+        NotLeader not_leader = 2;
+        EpochNotMatch not_match = 3;
+        ServerIsBusy server_is_busy = 4;
+        GroupNotFound group_not_found = 5;
+        NotRoot not_root = 6;
+        CasFailed cas_failed = 7;
     }
 }
 
@@ -96,5 +99,5 @@ message CasFailed {
     /// The index of conditions.
     uint64 cond_index = 2;
     /// The prev value of the cas touched key, if take_prev_value is set.
-    optional bytes prev_value = 3;
+    optional Value prev_value = 3;
 }

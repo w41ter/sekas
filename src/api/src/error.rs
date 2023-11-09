@@ -1,3 +1,4 @@
+// Copyright 2023 The Sekas Authors.
 // Copyright 2022 The Engula Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -133,6 +134,15 @@ impl Error {
     pub fn group_not_found(group_id: u64) -> Self {
         Self::with_detail_value(error_detail_union::Value::GroupNotFound(GroupNotFound {
             group_id,
+        }))
+    }
+
+    #[inline]
+    pub fn cas_failed(index: u64, cond_index: u64, prev_value: Option<Value>) -> Self {
+        Self::with_detail_value(error_detail_union::Value::CasFailed(CasFailed {
+            index,
+            cond_index,
+            prev_value,
         }))
     }
 
