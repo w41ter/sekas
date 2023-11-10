@@ -68,6 +68,7 @@ where
     channel: Option<StateChannel>,
 }
 
+/// Node is used to manage replicas lifecycle, and provides replica query.
 #[derive(Clone)]
 pub struct Node
 where
@@ -641,19 +642,27 @@ async fn start_raft_group(
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
+    use std::path::Path;
     use std::time::Duration;
 
     use sekas_api::server::v1::group_request_union::Request;
+    use sekas_api::server::v1::group_response_union::Response;
     use sekas_api::server::v1::report_request::GroupUpdates;
-    use sekas_api::server::v1::{RangePartition, ReplicaDesc, ReplicaRole};
-    use sekas_runtime::ExecutorOwner;
+    use sekas_api::server::v1::{ReplicaDesc, ReplicaRole};
+    use sekas_rock::fn_name;
     use tempdir::TempDir;
 
     use super::*;
     use crate::constants::INITIAL_EPOCH;
 
-    async fn create_node(root_dir: PathBuf) -> Node {
+    const COLLECTION_ID: u64 = 1;
+    const NODE_ID: u64 = 2;
+    const GROUP_ID: u64 = 3;
+    const SHARD_ID: u64 = 4;
+    const REPLICA_ID: u64 = 5;
+
+    async fn create_node<P: AsRef<Path>>(root_dir: P) -> Node {
+        let root_dir = root_dir.as_ref().to_owned();
         let config = Config { root_dir, ..Default::default() };
 
         let engines = Engines::open(&config.root_dir, &config.db).unwrap();
@@ -661,7 +670,20 @@ mod tests {
         Node::new(config, engines, transport_manager).await.unwrap()
     }
 
-    async fn replica_state(node: Node, replica_id: u64) -> Option<ReplicaLocalState> {
+    async fn bootstrap_node<P: AsRef<Path>>(root_dir: P) -> Node {
+        let node = create_node(root_dir).await;
+        let node_ident = NodeIdent { cluster_id: vec![], node_id: NODE_ID };
+        node.bootstrap(&node_ident).await.unwrap();
+        node
+    }
+
+    async fn create_first_replica(node: &Node) -> Arc<Replica> {
+        let group_desc = group_descriptor();
+        node.create_replica(REPLICA_ID, group_desc).await.unwrap();
+        node.replica_table().find(GROUP_ID).unwrap()
+    }
+
+    async fn get_replica_state(node: Node, replica_id: u64) -> Option<ReplicaLocalState> {
         node.state_engine()
             .replica_states()
             .await
@@ -672,309 +694,264 @@ mod tests {
             .next()
     }
 
-    #[test]
-    fn create_replica() {
-        let executor_owner = ExecutorOwner::new(1);
-        let tmp_dir = TempDir::new("create_replica").unwrap();
-
-        executor_owner.executor().block_on(async {
-            let node = create_node(tmp_dir.path().to_owned()).await;
-
-            let group_id = 2;
-            let replica_id = 2;
-            let group = GroupDesc {
-                id: group_id,
-                epoch: INITIAL_EPOCH,
-                shards: vec![],
-                replicas: vec![ReplicaDesc {
-                    id: replica_id,
-                    node_id: 1,
-                    role: ReplicaRole::Voter.into(),
-                }],
-            };
-            node.create_replica(replica_id, group).await.unwrap();
-
-            assert!(matches!(
-                replica_state(node, replica_id).await,
-                Some(ReplicaLocalState::Initial),
-            ));
-        });
+    fn group_descriptor() -> GroupDesc {
+        GroupDesc {
+            id: GROUP_ID,
+            epoch: INITIAL_EPOCH,
+            shards: vec![ShardDesc::whole(SHARD_ID, COLLECTION_ID)],
+            replicas: vec![ReplicaDesc {
+                id: REPLICA_ID,
+                node_id: NODE_ID,
+                role: ReplicaRole::Voter.into(),
+            }],
+        }
     }
 
-    #[test]
-    fn recover() {
-        let tmp_dir = TempDir::new("recover-replica").unwrap();
-        let executor_owner = ExecutorOwner::new(1);
-        executor_owner.executor().block_on(async {
-            let node = create_node(tmp_dir.path().to_owned()).await;
+    #[sekas_macro::test]
+    async fn create_replica_set_initial_state() {
+        let dir = TempDir::new(fn_name!()).unwrap();
+        let node = create_node(dir.path()).await;
 
-            let group_id = 2;
-            let replica_id = 2;
-            let group =
-                GroupDesc { id: group_id, epoch: INITIAL_EPOCH, shards: vec![], replicas: vec![] };
-            node.create_replica(replica_id, group).await.unwrap();
-        });
-        drop(executor_owner);
+        let group_desc = group_descriptor();
+        node.create_replica(REPLICA_ID, group_desc).await.unwrap();
 
-        let executor_owner = ExecutorOwner::new(1);
-        executor_owner.executor().block_on(async {
-            let node = create_node(tmp_dir.path().to_owned()).await;
-            let ident = NodeIdent { cluster_id: vec![], node_id: 1 };
-            node.bootstrap(&ident).await.unwrap();
-        });
+        assert!(matches!(
+            get_replica_state(node, REPLICA_ID).await,
+            Some(ReplicaLocalState::Initial),
+        ));
     }
 
-    #[test]
-    fn remove_replica() {
-        let executor_owner = ExecutorOwner::new(1);
+    #[sekas_macro::test]
+    async fn create_then_bootstrap_replica() {
+        let dir = TempDir::new(fn_name!()).unwrap();
+        {
+            // Create new replica.
+            let node = create_node(dir.path()).await;
 
-        let tmp_dir = TempDir::new("remove_replica").unwrap();
-        executor_owner.executor().block_on(async {
-            let node = create_node(tmp_dir.path().to_owned()).await;
+            let group_desc = group_descriptor();
+            node.create_replica(REPLICA_ID, group_desc).await.unwrap();
+        }
 
-            let group_id = 2;
-            let replica_id = 2;
-            let group =
-                GroupDesc { id: group_id, epoch: INITIAL_EPOCH, shards: vec![], replicas: vec![] };
-            node.create_replica(replica_id, group.clone()).await.unwrap();
-            let ident = NodeIdent { cluster_id: vec![], node_id: 1 };
+        {
+            // Bootstrap replica after restart node.
+            let node = create_node(dir.path()).await;
+            let ident = NodeIdent { cluster_id: vec![], node_id: NODE_ID };
             node.bootstrap(&ident).await.unwrap();
+        }
+    }
 
-            sekas_runtime::time::sleep(Duration::from_millis(10)).await;
+    #[sekas_macro::test]
+    async fn remove_replica() {
+        let dir = TempDir::new(fn_name!()).unwrap();
+        let node = create_node(dir.path()).await;
 
-            node.remove_replica(replica_id, &group).await.unwrap();
-        });
+        let group = group_descriptor();
+        node.create_replica(REPLICA_ID, group.clone()).await.unwrap();
+        let ident = NodeIdent { cluster_id: vec![], node_id: NODE_ID };
+        node.bootstrap(&ident).await.unwrap();
+
+        sekas_runtime::time::sleep(Duration::from_millis(10)).await;
+
+        node.remove_replica(REPLICA_ID, &group).await.unwrap();
     }
 
     /// After removing a replica, rejoin a new replica of the same group.
-    #[test]
-    fn remove_and_add_replicas_in_the_same_group() {
-        let executor_owner = ExecutorOwner::new(1);
+    #[sekas_macro::test]
+    async fn remove_and_add_new_replicas() {
+        let dir = TempDir::new(fn_name!()).unwrap();
+        let node = create_node(dir.path()).await;
 
-        let tmp_dir = TempDir::new("remove_replica_of_same_group").unwrap();
-        executor_owner.executor().block_on(async {
-            let node = create_node(tmp_dir.path().to_owned()).await;
+        let group = GroupDesc { id: GROUP_ID, epoch: INITIAL_EPOCH, ..Default::default() };
+        node.create_replica(REPLICA_ID, group.clone()).await.unwrap();
+        let ident = NodeIdent { cluster_id: vec![], node_id: NODE_ID };
+        node.bootstrap(&ident).await.unwrap();
 
-            let group_id = 2;
-            let replica_id = 2;
-            let group =
-                GroupDesc { id: group_id, epoch: INITIAL_EPOCH, shards: vec![], replicas: vec![] };
-            node.create_replica(replica_id, group.clone()).await.unwrap();
-            let ident = NodeIdent { cluster_id: vec![], node_id: 1 };
-            node.bootstrap(&ident).await.unwrap();
+        sekas_runtime::time::sleep(Duration::from_millis(10)).await;
 
-            sekas_runtime::time::sleep(Duration::from_millis(10)).await;
+        node.remove_replica(REPLICA_ID, &group).await.unwrap();
 
-            node.remove_replica(replica_id, &group).await.unwrap();
+        sekas_runtime::time::sleep(Duration::from_millis(10)).await;
 
-            sekas_runtime::time::sleep(Duration::from_millis(10)).await;
-
-            let new_replica_id = 3;
-            node.create_replica(new_replica_id, group.clone()).await.unwrap();
-        });
+        let new_replica_id = REPLICA_ID + 1;
+        node.create_replica(new_replica_id, group.clone()).await.unwrap();
     }
 
-    #[test]
-    fn try_add_replicas_in_the_same_group() {
-        let executor_owner = ExecutorOwner::new(1);
+    #[sekas_macro::test]
+    async fn reject_add_two_replica_on_same_location() {
+        let dir = TempDir::new(fn_name!()).unwrap();
+        let node = create_node(dir.path()).await;
 
-        let tmp_dir = TempDir::new("try_add_replicas_in_the_same_group").unwrap();
-        executor_owner.executor().block_on(async {
-            let node = create_node(tmp_dir.path().to_owned()).await;
+        let group = GroupDesc { id: GROUP_ID, epoch: INITIAL_EPOCH, ..Default::default() };
+        node.create_replica(REPLICA_ID, group.clone()).await.unwrap();
+        let ident = NodeIdent { cluster_id: vec![], node_id: NODE_ID };
+        node.bootstrap(&ident).await.unwrap();
 
-            let group_id = 2;
-            let replica_id = 2;
-            let group =
-                GroupDesc { id: group_id, epoch: INITIAL_EPOCH, shards: vec![], replicas: vec![] };
-            node.create_replica(replica_id, group.clone()).await.unwrap();
-            let ident = NodeIdent { cluster_id: vec![], node_id: 1 };
-            node.bootstrap(&ident).await.unwrap();
-
-            let new_replica_id = 3;
-            let result = node.create_replica(new_replica_id, group.clone()).await;
-            assert!(matches!(result, Err(Error::AlreadyExists(msg)) if msg.contains("group")));
-        });
+        let new_replica_id = REPLICA_ID + 1;
+        let result = node.create_replica(new_replica_id, group.clone()).await;
+        assert!(matches!(result, Err(Error::AlreadyExists(msg)) if msg.contains("group")));
     }
 
-    #[test]
-    fn report_replica_state_after_creating_replica() {
-        let executor_owner = ExecutorOwner::new(1);
+    #[sekas_macro::test]
+    async fn report_replica_state_after_creating_replica() {
+        let dir = TempDir::new(fn_name!()).unwrap();
+        let node = create_node(dir.path()).await;
 
-        let tmp_dir = TempDir::new("report_replica_state_after_creating_replica").unwrap();
-        executor_owner.executor().block_on(async {
-            let node = create_node(tmp_dir.path().to_owned()).await;
+        let group = GroupDesc { id: GROUP_ID, epoch: INITIAL_EPOCH, ..Default::default() };
+        node.create_replica(REPLICA_ID, group.clone()).await.unwrap();
 
-            let group_id = 2;
-            let replica_id = 2;
-            let group = GroupDesc {
-                id: group_id,
-                epoch: INITIAL_EPOCH,
-                shards: vec![],
-                replicas: vec![],
-            };
-            node.create_replica(replica_id, group.clone())
-                .await
-                .unwrap();
-
-            let (sender, mut receiver) = mpsc::unbounded();
-            node.serve_replica(
-                group_id,
-                ReplicaDesc {
-                    id: replica_id,
-                    ..Default::default()
-                },
-                ReplicaLocalState::Initial,
-                StateChannel::new(sender),
-            )
+        let (sender, mut receiver) = mpsc::unbounded();
+        let replica_desc = ReplicaDesc { id: REPLICA_ID, ..Default::default() };
+        let state_channel = StateChannel::new(sender);
+        node.serve_replica(GROUP_ID, replica_desc, ReplicaLocalState::Initial, state_channel)
             .await
             .unwrap();
 
-            use futures::stream::StreamExt;
+        use futures::stream::StreamExt;
 
-            let result = receiver.next().await;
-            assert!(
-                matches!(result, Some(GroupUpdates{ replica_state: Some(v), .. }) if v.replica_id == replica_id)
-            );
-        });
+        let result = receiver.next().await;
+        assert!(
+            matches!(result, Some(GroupUpdates{ replica_state: Some(v), .. }) if v.replica_id == REPLICA_ID)
+        );
     }
 
-    #[test]
-    fn create_after_removing_replica_with_same_group() {
-        let tmp_dir = TempDir::new("create_after_removing_replica_with_same_group").unwrap();
-        let executor_owner = ExecutorOwner::new(1);
-        executor_owner.executor().block_on(async {
-            let node = create_node(tmp_dir.path().to_owned()).await;
-            node.bootstrap(&NodeIdent::default()).await.unwrap();
-
-            let group_id = 2;
-            let replica_id = 2;
-            info!("create replica {replica_id} and remove it immediately");
-            let group = GroupDesc {
-                id: group_id,
-                epoch: INITIAL_EPOCH,
-                shards: vec![],
-                replicas: vec![ReplicaDesc {
-                    id: replica_id,
-                    node_id: 1,
-                    role: ReplicaRole::Voter as i32,
-                }],
-            };
-            node.create_replica(replica_id, group.clone()).await.unwrap();
-
-            node.remove_replica(replica_id, &group).await.unwrap();
-
-            let shard_id = 1;
-            let new_replica_id = 3;
-            info!("create new replica {new_replica_id}");
-            let group = GroupDesc {
-                id: group_id,
-                epoch: INITIAL_EPOCH,
-                shards: vec![ShardDesc {
-                    id: shard_id,
-                    collection_id: 123,
-                    range: Some(RangePartition::default()),
-                }],
-                replicas: vec![ReplicaDesc {
-                    id: new_replica_id,
-                    node_id: 1,
-                    role: ReplicaRole::Voter as i32,
-                }],
-            };
-            node.create_replica(new_replica_id, group.clone()).await.unwrap();
-
-            let replica = node.replica_table().find(group_id).unwrap();
-            replica.on_leader("test", false).await.unwrap();
-            for _ in 0..100 {
-                let mut ctx = ExecCtx::with_epoch(replica.epoch());
-                let request = Request::Write(ShardWriteRequest {
-                    shard_id,
-                    puts: vec![PutRequest {
-                        put_type: PutType::None.into(),
-                        key: vec![0u8; 10],
-                        value: vec![0u8; 10],
-                        ..Default::default()
-                    }],
-                    ..Default::default()
-                });
-                replica.execute(&mut ctx, &request).await.unwrap();
-            }
-        });
+    fn build_put_request(key: &[u8], value: &[u8]) -> Request {
+        Request::Write(ShardWriteRequest {
+            shard_id: SHARD_ID,
+            puts: vec![PutRequest {
+                put_type: PutType::None.into(),
+                key: key.to_vec(),
+                value: value.to_vec(),
+                take_prev_value: true,
+                ..Default::default()
+            }],
+            ..Default::default()
+        })
     }
 
-    #[test]
-    fn bootstrap_and_create_after_removing_replica_with_same_group() {
-        let tmp_dir =
-            TempDir::new("bootstrap_and_create_after_removing_replica_with_same_group").unwrap();
+    fn build_delete_request(key: &[u8]) -> Request {
+        Request::Write(ShardWriteRequest {
+            shard_id: SHARD_ID,
+            deletes: vec![DeleteRequest {
+                key: key.to_vec(),
+                take_prev_value: true,
+                ..Default::default()
+            }],
+            ..Default::default()
+        })
+    }
 
-        let group_id = 2;
-        let executor_owner = ExecutorOwner::new(1);
-        executor_owner.executor().block_on(async {
-            let node = create_node(tmp_dir.path().to_owned()).await;
-            node.bootstrap(&NodeIdent::default()).await.unwrap();
+    fn build_read_request(key: &[u8]) -> Request {
+        Request::Get(ShardGetRequest {
+            shard_id: SHARD_ID,
+            start_version: u64::MAX - 1,
+            key: key.to_vec(),
+        })
+    }
 
-            let replica_id = 2;
-            info!("create replica {replica_id} and remove it immediately");
-            let group = GroupDesc {
-                id: group_id,
-                epoch: INITIAL_EPOCH,
-                shards: vec![],
-                replicas: vec![ReplicaDesc {
-                    id: replica_id,
-                    node_id: 1,
-                    role: ReplicaRole::Voter as i32,
-                }],
-            };
-            node.create_replica(replica_id, group.clone()).await.unwrap();
+    async fn execute_on_leader(replica: &Replica, request: Request) -> Response {
+        replica.on_leader("execute_on_leader", false).await.unwrap();
+        let mut exec_ctx = ExecCtx::with_epoch(replica.epoch());
+        replica.execute(&mut exec_ctx, &request).await.unwrap()
+    }
 
+    async fn execute_read_request(replica: &Replica, key: &[u8]) -> Option<Value> {
+        let read_req = build_read_request(key);
+        let response = execute_on_leader(&replica, read_req).await;
+        assert!(matches!(response, Response::Get(_)));
+        let Response::Get(response) = response else { unreachable!() };
+        response.value
+    }
+
+    // execute put request and return prev values.
+    async fn execute_put_request(replica: &Replica, key: &[u8], value: &[u8]) -> Option<Value> {
+        let write_req = build_put_request(key, value);
+        let response = execute_on_leader(&replica, write_req).await;
+        assert!(matches!(response, Response::Write(_)));
+        let Response::Write(response) = response else { unreachable!() };
+        assert_eq!(response.puts.len(), 1);
+        response.puts[0].prev_value.clone()
+    }
+
+    // execute delete request and return prev values.
+    async fn execute_delete_request(replica: &Replica, key: &[u8]) -> Option<Value> {
+        let write_req = build_delete_request(key);
+        let response = execute_on_leader(&replica, write_req).await;
+        assert!(matches!(response, Response::Write(_)));
+        let Response::Write(response) = response else { unreachable!() };
+        assert_eq!(response.deletes.len(), 1);
+        response.deletes[0].prev_value.clone()
+    }
+
+    #[sekas_macro::test]
+    async fn replica_read_and_write() {
+        let dir = TempDir::new(fn_name!()).unwrap();
+        let node = bootstrap_node(dir.path()).await;
+        let replica = create_first_replica(&node).await;
+
+        // Key not found
+        let value = execute_read_request(&replica, b"123").await;
+        assert!(value.is_none());
+
+        execute_put_request(&replica, b"123", b"456").await;
+
+        // read again.
+        let value = execute_read_request(&replica, b"123").await;
+        assert!(matches!(value, Some(v) if v.content.as_ref().unwrap() == b"456"));
+    }
+
+    #[sekas_macro::test]
+    async fn replica_put_with_prev_value_and_read_tombstone() {
+        let dir = TempDir::new(fn_name!()).unwrap();
+        let node = bootstrap_node(dir.path()).await;
+        let replica = create_first_replica(&node).await;
+
+        let prev_value = execute_put_request(&replica, b"123", b"456").await;
+        assert!(prev_value.is_none());
+
+        let prev_value = execute_delete_request(&replica, b"123").await;
+        assert!(matches!(prev_value, Some(v) if v.content.as_ref().unwrap() == b"456"));
+
+        // Read a tombstone.
+        let value = execute_read_request(&replica, b"123").await;
+        assert!(matches!(&value, Some(v) if v.content.is_none()), "value: {value:?}");
+    }
+
+    #[sekas_macro::test]
+    async fn create_after_removing_replica_with_same_group() {
+        let dir = TempDir::new(fn_name!()).unwrap();
+        let node = bootstrap_node(dir.path()).await;
+        let group_desc = GroupDesc { id: GROUP_ID, epoch: INITIAL_EPOCH, ..Default::default() };
+        let removed_replica_id = REPLICA_ID + 1;
+        info!("create replica {removed_replica_id} and remove it immediately");
+        node.create_replica(removed_replica_id, group_desc.clone()).await.unwrap();
+        node.remove_replica(removed_replica_id, &group_desc).await.unwrap();
+
+        info!("create first replica {REPLICA_ID}");
+        let replica = create_first_replica(&node).await;
+        execute_put_request(&replica, b"123", b"456").await;
+    }
+
+    #[sekas_macro::test]
+    async fn bootstrap_and_create_after_removing_replica_with_same_group() {
+        let dir = TempDir::new(fn_name!()).unwrap();
+        {
+            let node = bootstrap_node(dir.path()).await;
+            let replica_id = REPLICA_ID + 1;
+            let group_desc = GroupDesc { id: GROUP_ID, epoch: INITIAL_EPOCH, ..Default::default() };
+            node.create_replica(replica_id, group_desc).await.unwrap();
+
+            // Mark it as terminated.
             node.state_engine
-                .save_replica_state(group_id, replica_id, ReplicaLocalState::Terminated)
+                .save_replica_state(GROUP_ID, REPLICA_ID, ReplicaLocalState::Terminated)
                 .await
                 .unwrap();
-        });
+        }
 
-        drop(executor_owner);
-
-        // Mock reboot.
-        let executor_owner = ExecutorOwner::new(1);
-        executor_owner.executor().block_on(async {
-            let node = create_node(tmp_dir.path().to_owned()).await;
-            node.bootstrap(&NodeIdent::default()).await.unwrap();
-
-            let shard_id = 1;
-            let new_replica_id = 3;
-            info!("create new replica {new_replica_id}");
-            let group = GroupDesc {
-                id: group_id,
-                epoch: INITIAL_EPOCH,
-                shards: vec![ShardDesc {
-                    id: shard_id,
-                    collection_id: 123,
-                    range: Some(RangePartition::default()),
-                }],
-                replicas: vec![ReplicaDesc {
-                    id: new_replica_id,
-                    node_id: 1,
-                    role: ReplicaRole::Voter as i32,
-                }],
-            };
-            node.create_replica(new_replica_id, group.clone()).await.unwrap();
-
-            let replica = node.replica_table().find(group_id).unwrap();
-            replica.on_leader("test", false).await.unwrap();
-            for _ in 0..100 {
-                let mut ctx = ExecCtx::with_epoch(replica.epoch());
-                let request = Request::Write(ShardWriteRequest {
-                    shard_id,
-                    puts: vec![PutRequest {
-                        put_type: PutType::None.into(),
-                        key: vec![0u8; 10],
-                        value: vec![0u8; 10],
-                        ..Default::default()
-                    }],
-                    ..Default::default()
-                });
-                replica.execute(&mut ctx, &request).await.unwrap();
-            }
-        });
+        {
+            // Mock reboot.
+            let node = bootstrap_node(dir.path()).await;
+            let replica = create_first_replica(&node).await;
+            execute_put_request(&replica, b"123", b"456").await;
+        }
     }
 }

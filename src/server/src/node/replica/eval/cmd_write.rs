@@ -42,7 +42,7 @@ pub(crate) async fn batch_write(
         if exec_ctx.is_migrating_shard(req.shard_id) {
             panic!("BatchWrite does not support migrating shard");
         }
-        group_engine.delete(&mut wb, req.shard_id, &del.key, super::FLAT_KEY_VERSION)?;
+        group_engine.tombstone(&mut wb, req.shard_id, &del.key, super::FLAT_KEY_VERSION)?;
     }
     for put in &req.puts {
         if !put.conditions.is_empty() || put.take_prev_value {

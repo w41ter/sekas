@@ -13,6 +13,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use log::trace;
 use prost::Message;
 use sekas_api::server::v1::*;
 
@@ -36,6 +37,7 @@ pub(crate) async fn get(
         }
     }
 
+    trace!("read key {:?} at shard {} with version {}", req.key, req.shard_id, req.start_version);
     read_key(engine, req.shard_id, &req.key, req.start_version).await
 }
 
@@ -50,6 +52,7 @@ async fn read_key(
     if let Some(iter) = snapshot.mvcc_iter() {
         for entry in iter? {
             let entry = entry?;
+            trace!("read key entry with version: {}", entry.version());
             if entry.version() == super::INTENT_KEY_VERSION {
                 // maybe we need to wait intent.
                 let Some(value) = entry.value() else {
