@@ -24,19 +24,19 @@ use crate::error::BusyReason;
 use crate::serverpb::v1::{EvalResult, RaftMessage};
 use crate::{record_latency, Result};
 
-/// `RaftNodeFacade` wraps the operations of raft.
+/// `RaftGroup` wraps the operations of raft.
 #[derive(Clone)]
-pub struct RaftNodeFacade
+pub struct RaftGroup
 where
     Self: Send,
 {
     request_sender: mpsc::Sender<Request>,
 }
 
-impl RaftNodeFacade {
-    /// Open the existed raft node.
+impl RaftGroup {
+    /// Open the existed raft group.
     pub fn open(sender: mpsc::Sender<Request>) -> Self {
-        RaftNodeFacade { request_sender: sender }
+        RaftGroup { request_sender: sender }
     }
 
     /// Submit a data to replicate, and returns corresponding future value.
@@ -46,7 +46,7 @@ impl RaftNodeFacade {
     /// the data cannot be applied.
     ///
     /// TODO(walter) support return user defined error.
-    pub async fn propose(&mut self, eval_result: EvalResult) -> Result<()> {
+    pub async fn propose(&self, eval_result: EvalResult) -> Result<()> {
         let start_at = Instant::now();
         let (sender, receiver) = oneshot::channel();
 
@@ -57,7 +57,7 @@ impl RaftNodeFacade {
     }
 
     /// Execute reading operations with the specified read policy.
-    pub async fn read(&mut self, policy: ReadPolicy) -> Result<()> {
+    pub async fn read(&self, policy: ReadPolicy) -> Result<()> {
         if matches!(policy, ReadPolicy::Relaxed) {
             Ok(())
         } else {
@@ -69,16 +69,16 @@ impl RaftNodeFacade {
     }
 
     /// Step raft messages.
-    pub fn step(&mut self, msg: RaftMessage) -> Result<()> {
+    pub fn step(&self, msg: RaftMessage) -> Result<()> {
         self.send(Request::Message(msg))
     }
 
-    pub fn transfer_leader(&mut self, transferee: u64) -> Result<()> {
+    pub fn transfer_leader(&self, transferee: u64) -> Result<()> {
         RAFTGROUP_TRANSFER_LEADER_TOTAL.inc();
         self.send(Request::Transfer { transferee })
     }
 
-    pub async fn change_config(&mut self, change: ChangeReplicas) -> Result<()> {
+    pub async fn change_config(&self, change: ChangeReplicas) -> Result<()> {
         RAFTGROUP_CONFIG_CHANGE_TOTAL.inc();
         let (sender, receiver) = oneshot::channel();
 
@@ -88,10 +88,10 @@ impl RaftNodeFacade {
         receiver.await?
     }
 
-    pub async fn raft_group_state(&mut self) -> Option<RaftGroupState> {
+    pub async fn raft_group_state(&self) -> Option<RaftGroupState> {
         let (sender, receiver) = oneshot::channel();
         let request = Request::State(sender);
-        match self.request_sender.try_send(request) {
+        match self.request_sender.clone().try_send(request) {
             Ok(()) => {}
             Err(_) => return None,
         }
@@ -102,12 +102,12 @@ impl RaftNodeFacade {
         }
     }
 
-    pub fn report_unreachable(&mut self, target_id: u64) {
+    pub fn report_unreachable(&self, target_id: u64) {
         RAFTGROUP_UNREACHABLE_TOTAL.inc();
         self.send(Request::Unreachable { target_id }).unwrap_or_default()
     }
 
-    pub async fn monitor(&mut self) -> Result<Box<WorkerPerfContext>> {
+    pub async fn monitor(&self) -> Result<Box<WorkerPerfContext>> {
         let (sender, receiver) = oneshot::channel();
         if self.send(Request::Monitor(sender)).is_err() {
             return Err(crate::Error::ServiceIsBusy(BusyReason::RequestChannelFulled));
@@ -115,14 +115,14 @@ impl RaftNodeFacade {
         Ok(receiver.await?)
     }
 
-    pub fn terminate(&mut self) {
-        self.request_sender.close_channel();
+    pub fn terminate(&self) {
+        self.request_sender.clone().close_channel();
     }
 
-    fn send(&mut self, req: Request) -> Result<()> {
+    fn send(&self, req: Request) -> Result<()> {
         use crate::Error;
 
-        if self.request_sender.try_send(req).is_err() {
+        if self.request_sender.clone().try_send(req).is_err() {
             // The target raft group is shutdown.
             return Err(Error::ServiceIsBusy(BusyReason::RequestChannelFulled));
         }

@@ -34,14 +34,12 @@ use self::eval::{acquire_row_latches, RowLatchManager};
 pub use self::state::{LeaseState, LeaseStateObserver};
 use crate::engine::GroupEngine;
 use crate::error::BusyReason;
-pub use crate::raftgroup::RaftNodeFacade as RaftSender;
 use crate::raftgroup::{
-    perf_point_micros, write_initial_state, RaftManager, RaftNodeFacade, ReadPolicy,
-    WorkerPerfContext,
+    perf_point_micros, write_initial_state, RaftGroup, ReadPolicy, WorkerPerfContext,
 };
 use crate::schedule::MoveReplicasProvider;
 use crate::serverpb::v1::*;
-use crate::{Error, Result};
+use crate::{Error, RaftConfig, Result};
 
 #[derive(Debug, Default, Clone, Serialize)]
 pub struct ReplicaPerfContext {
@@ -83,7 +81,7 @@ where
 {
     info: Arc<ReplicaInfo>,
     group_engine: GroupEngine,
-    raft_node: RaftNodeFacade,
+    raft_group: RaftGroup,
     lease_state: Arc<Mutex<LeaseState>>,
     move_replicas_provider: Arc<MoveReplicasProvider>,
     meta_acl: Arc<tokio::sync::RwLock<()>>,
@@ -91,17 +89,18 @@ where
 }
 
 impl Replica {
-    /// Create new instance of the specified raft node.
+    /// Create new instance of the specified raft group.
     pub async fn create(
         replica_id: u64,
         target_desc: &GroupDesc,
-        raft_mgr: &RaftManager,
+        raft_config: &RaftConfig,
+        raft_engine: &raft_engine::Engine,
     ) -> Result<()> {
         let eval_results =
             target_desc.shards.iter().cloned().map(eval::add_shard).collect::<Vec<_>>();
         write_initial_state(
-            &raft_mgr.cfg,
-            &raft_mgr.engine(),
+            raft_config,
+            raft_engine,
             replica_id,
             target_desc.replicas.clone(),
             eval_results,
@@ -114,14 +113,14 @@ impl Replica {
     pub(crate) fn new(
         info: Arc<ReplicaInfo>,
         lease_state: Arc<Mutex<LeaseState>>,
-        raft_node: RaftNodeFacade,
+        raft_group: RaftGroup,
         group_engine: GroupEngine,
         move_replicas_provider: Arc<MoveReplicasProvider>,
     ) -> Self {
         Replica {
             info,
             group_engine,
-            raft_node,
+            raft_group,
             lease_state,
             move_replicas_provider,
             meta_acl: Arc::default(),
@@ -133,7 +132,7 @@ impl Replica {
     pub async fn shutdown(&self, _actual_desc: &GroupDesc) -> Result<()> {
         // TODO(walter) check actual desc.
         self.info.terminate();
-        self.raft_node.clone().terminate();
+        self.raft_group.terminate();
 
         {
             let mut lease_state = self.lease_state.lock().unwrap();
@@ -203,7 +202,7 @@ impl Replica {
     /// Check if the leader still hold the lease?
     pub async fn check_lease(&self) -> Result<()> {
         self.check_leader_early()?;
-        self.raft_node.clone().read(ReadPolicy::ReadIndex).await?;
+        self.raft_group.read(ReadPolicy::ReadIndex).await?;
         Ok(())
     }
 
@@ -218,8 +217,8 @@ impl Replica {
     }
 
     #[inline]
-    pub fn raft_node(&self) -> RaftNodeFacade {
-        self.raft_node.clone()
+    pub fn raft_node(&self) -> RaftGroup {
+        self.raft_group.clone()
     }
 
     #[inline]
@@ -251,7 +250,7 @@ impl Replica {
         let take_acl_guard = perf_point_micros();
         let _acl_guard = self.take_read_acl_guard().await;
         let propose = perf_point_micros();
-        let raft = self.raft_node.clone().monitor().await?;
+        let raft = self.raft_group.monitor().await?;
         Ok(ReplicaPerfContext { take_acl_guard, propose, raft })
     }
 }
@@ -293,7 +292,8 @@ impl Replica {
         // Acquire row latches one by one. The implementation guarantees that there will
         // be no deadlock, so waiting while holding `read/write_acl_guard` will
         // not affect other requests.
-        let _latches = acquire_row_latches(&self.latch_mgr, request, None).await?;
+        // TODO(walter) support row latches.
+        // let _latches = acquire_row_latches(&self.latch_mgr, request, None).await?;
         let (eval_result_opt, resp) = match &request {
             Request::Get(req) => {
                 let value = eval::get(exec_ctx, &self.group_engine, req).await?;
@@ -324,7 +324,7 @@ impl Replica {
             }
             Request::ChangeReplicas(req) => {
                 if let Some(change) = &req.change_replicas {
-                    self.raft_node.clone().change_config(change.clone()).await?;
+                    self.raft_group.change_config(change.clone()).await?;
                 }
                 let resp = ChangeReplicasResponse {};
                 (None, Response::ChangeReplicas(resp))
@@ -344,13 +344,13 @@ impl Replica {
                     "transfer leadership to {}. replica={}, group={}",
                     req.transferee, self.info.replica_id, self.info.group_id
                 );
-                self.raft_node.clone().transfer_leader(req.transferee)?;
+                self.raft_group.transfer_leader(req.transferee)?;
                 return Ok(Response::Transfer(TransferResponse {}));
             }
         };
 
         if let Some(eval_result) = eval_result_opt {
-            self.raft_node.clone().propose(eval_result).await?;
+            self.raft_group.propose(eval_result).await?;
         }
 
         Ok(resp)

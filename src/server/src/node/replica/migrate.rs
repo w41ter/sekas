@@ -60,7 +60,7 @@ impl Replica {
 
         let eval_result =
             EvalResult { batch: Some(WriteBatchRep { data: wb.data().to_owned() }), op: sync_op };
-        self.raft_node.clone().propose(eval_result).await?;
+        self.raft_group.propose(eval_result).await?;
 
         Ok(())
     }
@@ -80,7 +80,7 @@ impl Replica {
 
         let eval_result =
             EvalResult { batch: Some(WriteBatchRep { data: wb.data().to_owned() }), op: None };
-        self.raft_node.clone().propose(eval_result).await?;
+        self.raft_group.propose(eval_result).await?;
 
         Ok(())
     }
@@ -122,7 +122,7 @@ impl Replica {
 
         let sync_op = SyncOp::migration(event, desc.clone());
         let eval_result = EvalResult { batch: None, op: Some(sync_op) };
-        self.raft_node.clone().propose(eval_result).await?;
+        self.raft_group.propose(eval_result).await?;
 
         Ok(())
     }

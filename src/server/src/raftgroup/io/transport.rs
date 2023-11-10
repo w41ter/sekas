@@ -20,7 +20,7 @@ use log::{debug, warn};
 use sekas_api::server::v1::{NodeDesc, ReplicaDesc};
 
 use crate::node::route_table::RaftRouteTable;
-use crate::raftgroup::RaftNodeFacade;
+use crate::raftgroup::RaftGroup;
 use sekas_runtime::TaskPriority;
 use crate::serverpb::v1::raft_client::RaftClient;
 use crate::serverpb::v1::{RaftMessage, SnapshotChunk, SnapshotRequest};
@@ -35,7 +35,7 @@ struct StreamingRequest {
 
 struct StreamingTask {
     resolver: Arc<dyn AddressResolver>,
-    raft_node: RaftNodeFacade,
+    raft_node: RaftGroup,
     request: StreamingRequest,
 }
 

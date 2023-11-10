@@ -26,6 +26,7 @@ use futures::channel::mpsc;
 use futures::lock::Mutex;
 use log::{debug, info, warn};
 use sekas_api::server::v1::*;
+use sekas_runtime::sync::WaitGroup;
 
 use self::job::StateChannel;
 use self::migrate::MigrateController;
@@ -36,8 +37,7 @@ use crate::engine::{Engines, GroupEngine, RawDb, StateEngine};
 use crate::node::replica::fsm::GroupStateMachine;
 use crate::node::replica::{ExecCtx, LeaseState, LeaseStateObserver, ReplicaInfo};
 use crate::raftgroup::snap::RecycleSnapMode;
-use crate::raftgroup::{ChannelManager, RaftManager, RaftNodeFacade, SnapManager};
-use sekas_runtime::sync::WaitGroup;
+use crate::raftgroup::{ChannelManager, RaftGroup, RaftManager, SnapManager};
 use crate::schedule::MoveReplicasProvider;
 use crate::serverpb::v1::*;
 use crate::transport::TransportManager;
@@ -179,7 +179,7 @@ impl Node {
         // save replica state. In this way, even if the node is restarted before
         // the group is successfully created, a replica can be recreated by
         // retrying.
-        Replica::create(replica_id, &group, &self.raft_mgr).await?;
+        Replica::create(replica_id, &group, &self.raft_mgr.cfg, &self.raft_mgr.engine()).await?;
         self.state_engine
             .save_replica_state(group_id, replica_id, ReplicaLocalState::Initial)
             .await?;
@@ -617,7 +617,7 @@ async fn start_raft_group(
     channel: StateChannel,
     group_engine: GroupEngine,
     wait_group: WaitGroup,
-) -> Result<RaftNodeFacade> {
+) -> Result<RaftGroup> {
     let group_id = info.group_id;
     let state_observer =
         Box::new(LeaseStateObserver::new(info.clone(), lease_state.clone(), channel));
@@ -647,11 +647,11 @@ mod tests {
     use sekas_api::server::v1::group_request_union::Request;
     use sekas_api::server::v1::report_request::GroupUpdates;
     use sekas_api::server::v1::{RangePartition, ReplicaDesc, ReplicaRole};
+    use sekas_runtime::ExecutorOwner;
     use tempdir::TempDir;
 
     use super::*;
     use crate::constants::INITIAL_EPOCH;
-    use sekas_runtime::ExecutorOwner;
 
     async fn create_node(root_dir: PathBuf) -> Node {
         let config = Config { root_dir, ..Default::default() };

@@ -178,7 +178,7 @@ pub(crate) fn open_raw_db<P: AsRef<Path>>(cfg: &DbConfig, path: P) -> Result<Raw
     }
 }
 
-fn open_raft_engine(log_path: &Path) -> Result<raft_engine::Engine> {
+pub(crate) fn open_raft_engine(log_path: &Path) -> Result<raft_engine::Engine> {
     use raft_engine::{Config, Engine};
     let engine_dir = log_path.join("engine");
     let snap_dir = log_path.join("snap");

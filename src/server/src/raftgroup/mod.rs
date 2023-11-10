@@ -1,3 +1,4 @@
+// Copyright 2023 The Sekas Authors.
 // Copyright 2022 The Engula Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -12,8 +13,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 mod applier;
-mod facade;
 mod fsm;
+mod group;
 mod io;
 mod metrics;
 mod monitor;
@@ -28,9 +29,11 @@ use raft::prelude::{
     ConfChangeSingle, ConfChangeTransition, ConfChangeType, ConfChangeV2, ConfState,
 };
 use sekas_api::server::v1::*;
+use sekas_runtime::sync::WaitGroup;
+use sekas_runtime::TaskPriority;
 
-pub use self::facade::RaftNodeFacade;
 pub use self::fsm::{ApplyEntry, SnapshotBuilder, StateMachine};
+pub use self::group::RaftGroup;
 use self::io::LogWriter;
 pub use self::io::{retrive_snapshot, AddressResolver, ChannelManager};
 pub use self::monitor::*;
@@ -39,8 +42,6 @@ pub use self::storage::{destory as destory_storage, write_initial_state};
 use self::worker::RaftWorker;
 pub use self::worker::{RaftGroupState, StateObserver};
 use crate::raftgroup::io::start_purging_expired_files;
-use sekas_runtime::sync::WaitGroup;
-use sekas_runtime::TaskPriority;
 use crate::{RaftConfig, Result};
 
 /// `ReadPolicy` is used to control `RaftNodeFacade::read` behavior.
@@ -99,17 +100,17 @@ impl RaftManager {
         state_machine: M,
         observer: Box<dyn StateObserver>,
         wait_group: WaitGroup,
-    ) -> Result<RaftNodeFacade> {
+    ) -> Result<RaftGroup> {
         let worker =
             RaftWorker::open(group_id, replica_id, node_id, state_machine, self, observer).await?;
-        let facade = RaftNodeFacade::open(worker.request_sender());
+        let raft_group = RaftGroup::open(worker.request_sender());
         let log_writer = self.log_writer.clone();
         sekas_runtime::current().spawn(Some(group_id), TaskPriority::High, async move {
             // TODO(walter) handle result.
             worker.run(log_writer).await.unwrap();
             drop(wait_group);
         });
-        Ok(facade)
+        Ok(raft_group)
     }
 }
 

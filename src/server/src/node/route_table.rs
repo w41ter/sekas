@@ -20,7 +20,7 @@ use dashmap::DashMap;
 
 use super::Replica;
 use crate::constants::ROOT_GROUP_ID;
-use crate::raftgroup::RaftNodeFacade;
+use crate::raftgroup::RaftGroup;
 
 /// A structure support replica route queries.
 #[derive(Clone)]
@@ -85,7 +85,7 @@ pub struct RaftRouteTable
 where
     Self: Send + Sync,
 {
-    senders: Arc<DashMap<u64, RaftNodeFacade>>,
+    senders: Arc<DashMap<u64, RaftGroup>>,
 }
 
 impl RaftRouteTable {
@@ -96,12 +96,12 @@ impl RaftRouteTable {
     }
 
     #[inline]
-    pub fn find(&self, replica_id: u64) -> Option<RaftNodeFacade> {
+    pub fn find(&self, replica_id: u64) -> Option<RaftGroup> {
         self.senders.get(&replica_id).map(|entry| entry.value().clone())
     }
 
     #[inline]
-    pub fn update(&self, replica_id: u64, sender: RaftNodeFacade) {
+    pub fn update(&self, replica_id: u64, sender: RaftGroup) {
         self.senders.insert(replica_id, sender);
     }
 
