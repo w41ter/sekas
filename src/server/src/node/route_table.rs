@@ -16,6 +16,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use std::task::Waker;
 
+use dashmap::DashMap;
+
 use super::Replica;
 use crate::constants::ROOT_GROUP_ID;
 use crate::raftgroup::RaftNodeFacade;
@@ -83,25 +85,28 @@ pub struct RaftRouteTable
 where
     Self: Send + Sync,
 {
-    // FIXME(walter) more efficient implementation.
-    senders: Arc<RwLock<HashMap<u64, RaftNodeFacade>>>,
+    senders: Arc<DashMap<u64, RaftNodeFacade>>,
 }
 
 impl RaftRouteTable {
     #[allow(clippy::new_without_default)]
+    #[inline]
     pub fn new() -> Self {
         RaftRouteTable { senders: Arc::default() }
     }
 
+    #[inline]
     pub fn find(&self, replica_id: u64) -> Option<RaftNodeFacade> {
-        self.senders.read().unwrap().get(&replica_id).cloned()
+        self.senders.get(&replica_id).map(|entry| entry.value().clone())
     }
 
+    #[inline]
     pub fn update(&self, replica_id: u64, sender: RaftNodeFacade) {
-        self.senders.write().unwrap().insert(replica_id, sender);
+        self.senders.insert(replica_id, sender);
     }
 
+    #[inline]
     pub fn delete(&self, replica_id: u64) {
-        self.senders.write().unwrap().remove(&replica_id);
+        self.senders.remove(&replica_id);
     }
 }
