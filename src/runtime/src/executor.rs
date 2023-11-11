@@ -42,7 +42,7 @@ enum TaskState {
 /// Dropping a [`JoinHandle`] will detach the task, meaning that there is no
 /// longer a handle to the task and no way to `join` on it. If you want cancel
 /// tasks when dropping a handle, use [`DispatchHandle`].
-type JoinHandle<T> = tokio::task::JoinHandle<T>;
+pub type JoinHandle<T> = tokio::task::JoinHandle<T>;
 
 /// A handle that awaits the result of a task.
 ///

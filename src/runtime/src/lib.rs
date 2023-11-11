@@ -14,6 +14,7 @@
 #![feature(const_type_name)]
 
 mod executor;
+mod group;
 mod incoming;
 mod metrics;
 mod shutdown;
@@ -21,15 +22,14 @@ mod shutdown;
 pub mod sync;
 pub mod time;
 
-use serde::{Serialize, Deserialize};
-
+use serde::{Deserialize, Serialize};
 pub use tokio::select;
 pub use tokio::task::yield_now;
 
 pub use self::executor::*;
+pub use self::group::TaskGroup;
 pub use self::incoming::TcpIncoming;
 pub use self::shutdown::{Shutdown, ShutdownNotifier};
-
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct ExecutorConfig {

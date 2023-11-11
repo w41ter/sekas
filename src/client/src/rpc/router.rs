@@ -21,12 +21,19 @@ use log::{info, trace, warn};
 use sekas_api::server::v1::watch_response::delete_event::Event as DeleteEvent;
 use sekas_api::server::v1::watch_response::update_event::Event as UpdateEvent;
 use sekas_api::server::v1::*;
+use tokio::task::JoinHandle;
 use tonic::Streaming;
 
 use crate::rpc::RootClient;
 
 #[derive(Debug, Clone)]
 pub struct Router {
+    core: Arc<RouterCore>,
+}
+
+#[derive(Debug)]
+pub struct RouterCore {
+    handle: JoinHandle<()>,
     state: Arc<Mutex<State>>,
 }
 
@@ -56,10 +63,12 @@ impl Router {
     pub async fn new(root_client: RootClient) -> Self {
         let state = Arc::new(Mutex::new(State::default()));
         let state_clone = state.clone();
-        tokio::spawn(async move {
+        let handle = tokio::spawn(async move {
+            log::info!("router start");
             state_main(state_clone, root_client).await;
+            log::info!("router end");
         });
-        Self { state }
+        Router { core: Arc::new(RouterCore { handle, state }) }
     }
 
     pub fn find_shard(
@@ -67,7 +76,7 @@ impl Router {
         desc: CollectionDesc,
         key: &[u8],
     ) -> Result<(RouterGroupState, ShardDesc), crate::Error> {
-        let state = self.state.lock().unwrap();
+        let state = self.core.state.lock().unwrap();
         let shards = state
             .co_shards_lookup
             .get(&desc.id)
@@ -91,26 +100,32 @@ impl Router {
     }
 
     pub fn find_group_by_shard(&self, shard: u64) -> Result<RouterGroupState, crate::Error> {
-        let state = self.state.lock().unwrap();
+        let state = self.core.state.lock().unwrap();
         state
             .find_group_by_shard(shard)
             .ok_or_else(|| crate::Error::NotFound(format!("group (shard={shard:?})")))
     }
 
     pub fn find_group(&self, id: u64) -> Result<RouterGroupState, crate::Error> {
-        let state = self.state.lock().unwrap();
+        let state = self.core.state.lock().unwrap();
         let group = state.group_id_lookup.get(&id).cloned();
         group.ok_or_else(|| crate::Error::NotFound(format!("group (id={:?})", id)))
     }
 
     pub fn find_node_addr(&self, id: u64) -> Result<String, crate::Error> {
-        let state = self.state.lock().unwrap();
+        let state = self.core.state.lock().unwrap();
         let addr = state.node_id_lookup.get(&id).cloned();
         addr.ok_or_else(|| crate::Error::NotFound(format!("node_addr (node_id={:?})", id)))
     }
 
     pub fn total_nodes(&self) -> usize {
-        self.state.lock().unwrap().node_id_lookup.len()
+        self.core.state.lock().unwrap().node_id_lookup.len()
+    }
+}
+
+impl Drop for RouterCore {
+    fn drop(&mut self) {
+        self.handle.abort();
     }
 }
 

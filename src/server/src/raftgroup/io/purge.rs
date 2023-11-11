@@ -15,10 +15,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use log::{debug, warn};
+use sekas_runtime::{current, JoinHandle, TaskPriority};
 
-use sekas_runtime::{current, TaskPriority};
-
-pub async fn start_purging_expired_files(engine: Arc<raft_engine::Engine>) {
+pub fn start_purging_expired_files(engine: Arc<raft_engine::Engine>) -> JoinHandle<()> {
     current().spawn(None, TaskPriority::IoLow, async move {
         loop {
             sekas_runtime::time::sleep(Duration::from_secs(10)).await;
@@ -34,5 +33,5 @@ pub async fn start_purging_expired_files(engine: Arc<raft_engine::Engine>) {
                 }
             }
         }
-    });
+    })
 }

@@ -102,7 +102,7 @@ struct AdvanceImpl<'a> {
     replica_id: u64,
     desc: ReplicaDesc,
     channels: &'a mut HashMap<u64, Channel>,
-    trans_mgr: &'a ChannelManager,
+    trans_mgr: &'a Arc<ChannelManager>,
     snap_mgr: &'a SnapManager,
     observer: &'a mut Box<dyn StateObserver>,
     replica_cache: &'a mut ReplicaCache,
@@ -165,7 +165,7 @@ where
     raft_node: RaftNode<M>,
 
     channels: HashMap<u64, Channel>,
-    trans_mgr: ChannelManager,
+    trans_mgr: Arc<ChannelManager>,
     snap_mgr: SnapManager,
     engine: Arc<Engine>,
     observer: Box<dyn StateObserver>,

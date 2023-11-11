@@ -48,7 +48,7 @@ pub struct LeaseState {
 pub struct LeaseStateObserver {
     info: Arc<ReplicaInfo>,
     lease_state: Arc<Mutex<LeaseState>>,
-    state_channel: StateChannel,
+    state_channel: Arc<StateChannel>,
 }
 
 impl LeaseState {
@@ -123,7 +123,7 @@ impl LeaseStateObserver {
     pub fn new(
         info: Arc<ReplicaInfo>,
         lease_state: Arc<Mutex<LeaseState>>,
-        state_channel: StateChannel,
+        state_channel: Arc<StateChannel>,
     ) -> Self {
         LeaseStateObserver { info, lease_state, state_channel }
     }

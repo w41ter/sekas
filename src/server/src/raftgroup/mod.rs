@@ -29,8 +29,7 @@ use raft::prelude::{
     ConfChangeSingle, ConfChangeTransition, ConfChangeType, ConfChangeV2, ConfState,
 };
 use sekas_api::server::v1::*;
-use sekas_runtime::sync::WaitGroup;
-use sekas_runtime::TaskPriority;
+use sekas_runtime::{JoinHandle, TaskGroup, TaskPriority};
 
 pub use self::fsm::{ApplyEntry, SnapshotBuilder, StateMachine};
 pub use self::group::RaftGroup;
@@ -56,13 +55,13 @@ pub enum ReadPolicy {
     ReadIndex,
 }
 
-#[derive(Clone)]
 pub struct RaftManager {
     pub cfg: RaftConfig,
     engine: Arc<raft_engine::Engine>,
     log_writer: LogWriter,
-    transport_mgr: ChannelManager,
+    transport_mgr: Arc<ChannelManager>,
     snap_mgr: SnapManager,
+    task_handle: JoinHandle<()>,
 }
 
 impl RaftManager {
@@ -70,11 +69,11 @@ impl RaftManager {
         cfg: RaftConfig,
         engine: Arc<raft_engine::Engine>,
         snap_mgr: SnapManager,
-        transport_mgr: ChannelManager,
+        transport_mgr: Arc<ChannelManager>,
     ) -> Result<Self> {
-        start_purging_expired_files(engine.clone()).await;
+        let task_handle = start_purging_expired_files(engine.clone());
         let log_writer = LogWriter::new(cfg.max_io_batch_size, engine.clone());
-        Ok(RaftManager { cfg, engine, transport_mgr, snap_mgr, log_writer })
+        Ok(RaftManager { cfg, engine, transport_mgr, snap_mgr, log_writer, task_handle })
     }
 
     #[inline]
@@ -99,18 +98,27 @@ impl RaftManager {
         node_id: u64,
         state_machine: M,
         observer: Box<dyn StateObserver>,
-        wait_group: WaitGroup,
+        task_group: &TaskGroup,
     ) -> Result<RaftGroup> {
         let worker =
             RaftWorker::open(group_id, replica_id, node_id, state_machine, self, observer).await?;
         let raft_group = RaftGroup::open(worker.request_sender());
         let log_writer = self.log_writer.clone();
-        sekas_runtime::current().spawn(Some(group_id), TaskPriority::High, async move {
-            // TODO(walter) handle result.
-            worker.run(log_writer).await.unwrap();
-            drop(wait_group);
-        });
+        let task_handle =
+            sekas_runtime::current().spawn(Some(group_id), TaskPriority::High, async move {
+                if let Err(err) = worker.run(log_writer).await {
+                    // TODO(walter) handle result.
+                    panic!("run raft group worker: {err:?}");
+                }
+            });
+        task_group.add_task(task_handle);
         Ok(raft_group)
+    }
+}
+
+impl Drop for RaftManager {
+    fn drop(&mut self) {
+        self.task_handle.abort();
     }
 }
 

@@ -20,26 +20,26 @@ use log::warn;
 use sekas_api::server::v1::report_request::GroupUpdates;
 use sekas_api::server::v1::{GroupDesc, ReplicaState, ReportRequest, ScheduleState};
 use sekas_client::RootClient;
+use sekas_runtime::{JoinHandle, TaskPriority};
 
 use crate::node::metrics::take_report_metrics;
 use crate::record_latency;
-use sekas_runtime::TaskPriority;
 use crate::transport::TransportManager;
 
-#[derive(Clone)]
 pub struct StateChannel {
     sender: mpsc::UnboundedSender<GroupUpdates>,
+    task_handle: Option<JoinHandle<()>>,
 }
 
 pub(crate) fn setup(transport_manager: &TransportManager) -> StateChannel {
     let (sender, receiver) = mpsc::unbounded();
 
     let client = transport_manager.root_client().clone();
-    sekas_runtime::current().spawn(None, TaskPriority::IoHigh, async move {
+    let task_handle = sekas_runtime::current().spawn(None, TaskPriority::IoHigh, async move {
         report_state_worker(receiver, client).await;
     });
 
-    StateChannel::new(sender)
+    StateChannel::new(sender, task_handle)
 }
 
 async fn report_state_worker(
@@ -97,21 +97,26 @@ async fn report_state_updates(root_client: &RootClient, request: ReportRequest) 
 }
 
 impl StateChannel {
-    pub fn new(sender: mpsc::UnboundedSender<GroupUpdates>) -> Self {
-        StateChannel { sender }
+    pub fn new(sender: mpsc::UnboundedSender<GroupUpdates>, task_handle: JoinHandle<()>) -> Self {
+        StateChannel { sender, task_handle: Some(task_handle) }
+    }
+
+    #[cfg(test)]
+    pub fn without_handle(sender: mpsc::UnboundedSender<GroupUpdates>) -> Self {
+        StateChannel { sender, task_handle: None }
     }
 
     #[inline]
-    pub fn broadcast_replica_state(&mut self, group_id: u64, replica_state: ReplicaState) {
+    pub fn broadcast_replica_state(&self, group_id: u64, replica_state: ReplicaState) {
         let update =
             GroupUpdates { group_id, replica_state: Some(replica_state), ..Default::default() };
-        self.sender.start_send(update).unwrap_or_default();
+        self.sender.clone().start_send(update).unwrap_or_default();
     }
 
     #[inline]
-    pub fn broadcast_group_descriptor(&mut self, group_id: u64, group_desc: GroupDesc) {
+    pub fn broadcast_group_descriptor(&self, group_id: u64, group_desc: GroupDesc) {
         let update = GroupUpdates { group_id, group_desc: Some(group_desc), ..Default::default() };
-        self.sender.start_send(update).unwrap_or_default();
+        self.sender.clone().start_send(update).unwrap_or_default();
     }
 
     #[inline]
@@ -119,5 +124,13 @@ impl StateChannel {
         let update =
             GroupUpdates { group_id, schedule_state: Some(schedule_state), ..Default::default() };
         self.sender.clone().start_send(update).unwrap_or_default();
+    }
+}
+
+impl Drop for StateChannel {
+    fn drop(&mut self) {
+        if let Some(task_handle) = self.task_handle.as_ref() {
+            task_handle.abort();
+        }
     }
 }

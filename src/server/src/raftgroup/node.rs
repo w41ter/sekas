@@ -497,12 +497,12 @@ mod tests {
 
     use raft_engine::*;
     use sekas_api::server::v1::{GroupDesc, NodeDesc, ReplicaDesc, ReplicaRole};
+    use sekas_runtime::ExecutorOwner;
 
     use super::*;
     use crate::node::RaftRouteTable;
     use crate::raftgroup::io::LogWriter;
     use crate::raftgroup::{write_initial_state, AddressResolver, ChannelManager};
-    use sekas_runtime::ExecutorOwner;
     use crate::serverpb::v1::{ApplyState, EvalResult, SnapshotMeta};
     use crate::RaftConfig;
 
@@ -817,6 +817,7 @@ mod tests {
         }
 
         let owner = ExecutorOwner::new(1);
+        let executor = owner.executor();
         owner.executor().block_on(async {
             use raft_engine::Config;
 
@@ -829,14 +830,16 @@ mod tests {
             let snap_dir = dir.path().join("snap");
             let snap_mgr = SnapManager::new(snap_dir.clone());
             let resolver = Arc::new(MockedAddressResolver {});
-            let transport_mgr = ChannelManager::build(resolver, RaftRouteTable::new()).await;
+            let transport_mgr = Arc::new(ChannelManager::new(resolver, RaftRouteTable::new()));
             let log_writer = LogWriter::new(64 << 10, engine.clone());
+            let task_handle = executor.spawn(None, sekas_runtime::TaskPriority::High, async {});
             let raft_mgr = RaftManager {
                 cfg: RaftConfig::default(),
                 engine: engine.clone(),
                 transport_mgr,
                 snap_mgr: snap_mgr.clone(),
                 log_writer,
+                task_handle,
             };
 
             // 1. initial storage with log entries in [0, 100), all entries are committed.

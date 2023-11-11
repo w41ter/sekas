@@ -22,10 +22,10 @@ use sekas_api::server::v1::group_request_union::Request;
 use sekas_api::server::v1::group_response_union::Response;
 use sekas_api::server::v1::*;
 use sekas_client::{MigrateClient, Router};
+use sekas_runtime::JoinHandle;
 
 use crate::node::metrics::*;
 use crate::node::Replica;
-use sekas_runtime::sync::WaitGroup;
 use crate::serverpb::v1::*;
 use crate::transport::TransportManager;
 use crate::{record_latency, NodeConfig, Result};
@@ -69,12 +69,11 @@ impl MigrateController {
     }
 
     /// Watch migration state and do the corresponding step.
-    pub async fn watch_state_changes(
+    pub fn watch_state_changes(
         &self,
         replica: Arc<Replica>,
         mut receiver: mpsc::UnboundedReceiver<MigrationState>,
-        wait_group: WaitGroup,
-    ) {
+    ) -> JoinHandle<()> {
         use sekas_runtime::{current, TaskPriority};
 
         let info = replica.replica_info();
@@ -112,8 +111,7 @@ impl MigrateController {
             debug!(
                 "migration state watcher is stopped. replica_id={replica_id}, group_id={group_id}"
             );
-            drop(wait_group);
-        });
+        })
     }
 
     pub async fn forward(&self, forward_ctx: ForwardCtx, request: &Request) -> Result<Response> {

@@ -16,18 +16,19 @@ use std::ffi::OsString;
 use std::fs::File;
 use std::os::unix::ffi::OsStringExt;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use futures::channel::mpsc;
 use futures::{SinkExt, StreamExt};
 use log::{debug, error, info};
 use raft::eraftpb::Message;
 use sekas_api::server::v1::ReplicaDesc;
+use sekas_runtime::TaskPriority;
 
 use super::SnapManager;
 use crate::raftgroup::metrics::*;
 use crate::raftgroup::worker::Request;
 use crate::raftgroup::{retrive_snapshot, ChannelManager};
-use sekas_runtime::TaskPriority;
 use crate::serverpb::v1::{snapshot_chunk, SnapshotChunk, SnapshotFile, SnapshotMeta};
 use crate::{record_latency, Error, Result};
 
@@ -159,7 +160,7 @@ pub fn dispatch_downloading_snap_task(
     replica_id: u64,
     mut sender: mpsc::Sender<Request>,
     snap_mgr: SnapManager,
-    tran_mgr: ChannelManager,
+    tran_mgr: Arc<ChannelManager>,
     from_replica: ReplicaDesc,
     mut msg: Message,
 ) {
@@ -182,7 +183,7 @@ pub fn dispatch_downloading_snap_task(
 /// Download snapshot from target and returns the local snapshot id.
 async fn download_snap(
     replica_id: u64,
-    tran_mgr: ChannelManager,
+    tran_mgr: Arc<ChannelManager>,
     snap_mgr: SnapManager,
     from_replica: ReplicaDesc,
     msg: &Message,

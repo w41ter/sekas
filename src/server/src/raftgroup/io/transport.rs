@@ -18,10 +18,10 @@ use futures::channel::mpsc;
 use futures::StreamExt;
 use log::{debug, warn};
 use sekas_api::server::v1::{NodeDesc, ReplicaDesc};
+use sekas_runtime::{JoinHandle, TaskGroup, TaskPriority};
 
 use crate::node::route_table::RaftRouteTable;
 use crate::raftgroup::RaftGroup;
-use sekas_runtime::TaskPriority;
 use crate::serverpb::v1::raft_client::RaftClient;
 use crate::serverpb::v1::{RaftMessage, SnapshotChunk, SnapshotRequest};
 use crate::Result;
@@ -49,25 +49,24 @@ pub trait AddressResolver: Send + Sync {
 /// target, the name lookup are finished by internal machenism.
 #[derive(Clone)]
 pub struct Channel {
-    transport_mgr: ChannelManager,
+    transport_mgr: Arc<ChannelManager>,
     sender: Option<mpsc::UnboundedSender<RaftMessage>>,
 }
 
 /// Manage transports. This structure is used by all groups.
 ///
 /// A transport is recycled by manager, if it exceeds the idle intervals.
-#[derive(Clone)]
 pub struct ChannelManager
 where
     Self: Send + Sync,
 {
     resolver: Arc<dyn AddressResolver>,
     sender: mpsc::UnboundedSender<StreamingRequest>,
-    route_table: RaftRouteTable,
+    handle: JoinHandle<()>,
 }
 
 impl Channel {
-    pub fn new(mgr: ChannelManager) -> Self {
+    pub fn new(mgr: Arc<ChannelManager>) -> Self {
         Channel { transport_mgr: mgr, sender: None }
     }
 
@@ -97,15 +96,13 @@ impl Channel {
 }
 
 impl ChannelManager {
-    pub async fn build(resolver: Arc<dyn AddressResolver>, route_table: RaftRouteTable) -> Self {
+    pub fn new(resolver: Arc<dyn AddressResolver>, route_table: RaftRouteTable) -> Self {
         let (sender, receiver) = mpsc::unbounded();
-        let mgr = ChannelManager { resolver, sender, route_table };
-
-        let cloned_mgr = mgr.clone();
-        sekas_runtime::current().spawn(None, TaskPriority::Low, async move {
-            cloned_mgr.run(receiver).await;
+        let resolver_clone = resolver.clone();
+        let handle = sekas_runtime::current().spawn(None, TaskPriority::Low, async move {
+            Self::run(resolver_clone, route_table, receiver).await;
         });
-        mgr
+        ChannelManager { resolver, sender, handle }
     }
 
     #[inline]
@@ -115,9 +112,14 @@ impl ChannelManager {
             .expect("transport worker lifetime should large that replicas");
     }
 
-    async fn run(self, mut receiver: mpsc::UnboundedReceiver<StreamingRequest>) {
+    async fn run(
+        resolver: Arc<dyn AddressResolver>,
+        route_table: RaftRouteTable,
+        mut receiver: mpsc::UnboundedReceiver<StreamingRequest>,
+    ) {
+        let task_group = TaskGroup::default();
         while let Some(request) = receiver.next().await {
-            let raft_node = match self.route_table.find(request.from.id) {
+            let raft_node = match route_table.find(request.from.id) {
                 Some(raft_node) => raft_node,
                 None => {
                     debug!(
@@ -128,18 +130,25 @@ impl ChannelManager {
                 }
             };
 
-            let task = StreamingTask { resolver: self.resolver.clone(), raft_node, request };
-            sekas_runtime::current().spawn(None, TaskPriority::IoHigh, async move {
+            let task = StreamingTask { resolver: resolver.clone(), raft_node, request };
+            let handle = sekas_runtime::current().spawn(None, TaskPriority::IoHigh, async move {
                 task.run().await;
             });
+            task_group.add_task(handle);
         }
+    }
+}
+
+impl Drop for ChannelManager {
+    fn drop(&mut self) {
+        self.handle.abort();
     }
 }
 
 impl StreamingTask {
     async fn run(self) {
         let target_id = self.request.to.id;
-        let mut raft_node = self.raft_node.clone();
+        let raft_node = self.raft_node.clone();
         if self.serve_streaming_request().await.is_err() {
             raft_node.report_unreachable(target_id);
         }

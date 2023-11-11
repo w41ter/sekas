@@ -26,7 +26,7 @@ use futures::channel::mpsc;
 use futures::lock::Mutex;
 use log::{debug, info, warn};
 use sekas_api::server::v1::*;
-use sekas_runtime::sync::WaitGroup;
+use sekas_runtime::TaskGroup;
 
 use self::job::StateChannel;
 use self::migrate::MigrateController;
@@ -46,7 +46,7 @@ use crate::{Config, EngineConfig, Error, NodeConfig, Result};
 struct ReplicaContext {
     #[allow(dead_code)]
     info: Arc<ReplicaInfo>,
-    wait_group: WaitGroup,
+    task_group: TaskGroup,
 }
 
 /// A structure holds the states of node. Eg create replica.
@@ -65,7 +65,7 @@ where
     serving_groups: HashSet<u64>,
 
     root: RootDesc,
-    channel: Option<StateChannel>,
+    channel: Option<Arc<StateChannel>>,
 }
 
 /// Node is used to manage replicas lifecycle, and provides replica query.
@@ -78,7 +78,7 @@ where
     raft_route_table: RaftRouteTable,
     replica_route_table: ReplicaRouteTable,
 
-    raft_mgr: RaftManager,
+    raft_mgr: Arc<RaftManager>,
     migrate_ctrl: MigrateController,
     transport_manager: TransportManager,
     engines: Engines,
@@ -99,13 +99,15 @@ impl Node {
         transport_manager: TransportManager,
     ) -> Result<Self> {
         let raft_route_table = RaftRouteTable::new();
-        let trans_mgr =
-            ChannelManager::build(transport_manager.address_resolver(), raft_route_table.clone())
-                .await;
+        let trans_mgr = Arc::new(ChannelManager::new(
+            transport_manager.address_resolver(),
+            raft_route_table.clone(),
+        ));
         let snap_dir = engines.snap_dir();
         let snap_mgr = SnapManager::recovery(snap_dir).await?;
-        let raft_mgr =
-            RaftManager::open(cfg.raft.clone(), engines.log(), snap_mgr, trans_mgr).await?;
+        let raft_mgr = Arc::new(
+            RaftManager::open(cfg.raft.clone(), engines.log(), snap_mgr, trans_mgr).await?,
+        );
         let migrate_ctrl = MigrateController::new(cfg.node.clone(), transport_manager.clone());
         let state_engine = engines.state();
         Ok(Node {
@@ -133,7 +135,7 @@ impl Node {
         );
 
         node_state.ident = Some(node_ident.to_owned());
-        node_state.channel = Some(setup_report_state(&self.transport_manager));
+        let state_channel = Arc::new(setup_report_state(&self.transport_manager));
 
         let node_id = node_ident.node_id;
         for (group_id, replica_id, state) in self.state_engine.replica_states().await? {
@@ -148,12 +150,11 @@ impl Node {
             }
 
             let desc = ReplicaDesc { id: replica_id, node_id, ..Default::default() };
-            let context = self
-                .serve_replica(group_id, desc, state, node_state.channel.as_ref().unwrap().clone())
-                .await?;
+            let context = self.serve_replica(group_id, desc, state, state_channel.clone()).await?;
             node_state.serving_replicas.insert(replica_id, context);
             node_state.serving_groups.insert(group_id);
         }
+        node_state.channel = Some(state_channel);
 
         Ok(())
     }
@@ -245,17 +246,16 @@ impl Node {
         self.replica_route_table.remove(group_id);
         self.raft_route_table.delete(replica_id);
 
-        let wait_group = {
+        let task_group = {
             let mut node_state = self.node_state.lock().await;
             node_state.serving_groups.remove(&group_id);
             let ctx = node_state
                 .serving_replicas
                 .remove(&replica_id)
                 .expect("replica should exists before removing");
-            ctx.wait_group
+            ctx.task_group
         };
-
-        wait_group.wait().await;
+        drop(task_group);
 
         // This replica is shutdowned, we need to update and persisted states.
         self.state_engine
@@ -278,14 +278,14 @@ impl Node {
         group_id: u64,
         desc: ReplicaDesc,
         local_state: ReplicaLocalState,
-        channel: StateChannel,
+        channel: Arc<StateChannel>,
     ) -> Result<ReplicaContext> {
         use crate::schedule::setup_scheduler;
 
         let group_engine =
             open_group_engine(&self.cfg.engine, self.engines.db(), group_id, desc.id, local_state)
                 .await?;
-        let wait_group = WaitGroup::new();
+        let task_group = TaskGroup::default();
         let (sender, receiver) = mpsc::unbounded();
 
         let info = Arc::new(ReplicaInfo::new(&desc, group_id, local_state));
@@ -301,7 +301,7 @@ impl Node {
             lease_state.clone(),
             channel.clone(),
             group_engine.clone(),
-            wait_group.clone(),
+            &task_group,
         )
         .await?;
 
@@ -321,16 +321,17 @@ impl Node {
         self.raft_route_table.update(replica_id, raft_node);
 
         // Setup jobs
-        self.migrate_ctrl.watch_state_changes(replica.clone(), receiver, wait_group.clone()).await;
+        let migrate_handle = self.migrate_ctrl.watch_state_changes(replica.clone(), receiver);
+        task_group.add_task(migrate_handle);
 
-        setup_scheduler(
+        let scheduler_handle = setup_scheduler(
             self.cfg.replica.clone(),
             replica.clone(),
             self.transport_manager.clone(),
             move_replicas_provider,
             schedule_state_observer,
-            wait_group.clone(),
         );
+        task_group.add_task(scheduler_handle);
 
         // Now that all initialization work is done, the replica is ready to serve, mark
         // it as normal state.
@@ -343,7 +344,7 @@ impl Node {
 
         info!("group {group_id} replica {replica_id} is ready for serving");
 
-        Ok(ReplicaContext { info, wait_group })
+        Ok(ReplicaContext { info, task_group })
     }
 
     /// Get root desc that known by node.
@@ -615,9 +616,9 @@ async fn start_raft_group(
     raft_mgr: &RaftManager,
     info: Arc<ReplicaInfo>,
     lease_state: Arc<std::sync::Mutex<LeaseState>>,
-    channel: StateChannel,
+    channel: Arc<StateChannel>,
     group_engine: GroupEngine,
-    wait_group: WaitGroup,
+    task_group: &TaskGroup,
 ) -> Result<RaftGroup> {
     let group_id = info.group_id;
     let state_observer =
@@ -629,14 +630,7 @@ async fn start_raft_group(
         state_observer.clone(),
     );
     raft_mgr
-        .start_raft_group(
-            group_id,
-            info.replica_id,
-            info.node_id,
-            fsm,
-            state_observer,
-            wait_group.clone(),
-        )
+        .start_raft_group(group_id, info.replica_id, info.node_id, fsm, state_observer, task_group)
         .await
 }
 
@@ -801,7 +795,7 @@ mod tests {
 
         let (sender, mut receiver) = mpsc::unbounded();
         let replica_desc = ReplicaDesc { id: REPLICA_ID, ..Default::default() };
-        let state_channel = StateChannel::new(sender);
+        let state_channel = Arc::new(StateChannel::without_handle(sender));
         node.serve_replica(GROUP_ID, replica_desc, ReplicaLocalState::Initial, state_channel)
             .await
             .unwrap();
@@ -849,7 +843,7 @@ mod tests {
     }
 
     async fn execute_on_leader(replica: &Replica, request: Request) -> Response {
-        replica.on_leader("execute_on_leader", false).await.unwrap();
+        assert!(replica.on_leader(fn_name!(), false).await.unwrap().is_some());
         let mut exec_ctx = ExecCtx::with_epoch(replica.epoch());
         replica.execute(&mut exec_ctx, &request).await.unwrap()
     }
@@ -880,6 +874,16 @@ mod tests {
         let Response::Write(response) = response else { unreachable!() };
         assert_eq!(response.deletes.len(), 1);
         response.deletes[0].prev_value.clone()
+    }
+
+    #[sekas_macro::test]
+    async fn create_replica_after_node_bootstraped() {
+        // If node is bootstraped, create replica will start in auto.
+        let dir = TempDir::new(fn_name!()).unwrap();
+        let node = bootstrap_node(dir.path()).await;
+        let replica = create_first_replica(&node).await;
+        let term = replica.on_leader(fn_name!(), false).await.unwrap();
+        assert!(term.is_some());
     }
 
     #[sekas_macro::test]
@@ -942,7 +946,7 @@ mod tests {
 
             // Mark it as terminated.
             node.state_engine
-                .save_replica_state(GROUP_ID, REPLICA_ID, ReplicaLocalState::Terminated)
+                .save_replica_state(GROUP_ID, replica_id, ReplicaLocalState::Terminated)
                 .await
                 .unwrap();
         }

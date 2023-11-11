@@ -60,6 +60,12 @@ impl LogWriter {
     }
 }
 
+impl Drop for LogWriter {
+    fn drop(&mut self) {
+        let _ = self.sender.clone();
+    }
+}
+
 impl Drop for WriterInner {
     fn drop(&mut self) {
         if let Some(handle) = self.handle.take() {

@@ -16,11 +16,10 @@ use std::sync::Arc;
 
 use log::debug;
 use sekas_api::server::v1::ScheduleState;
+use sekas_runtime::{JoinHandle, TaskPriority};
 
 use super::ScheduleStateObserver;
 use crate::node::Replica;
-use sekas_runtime::sync::WaitGroup;
-use sekas_runtime::TaskPriority;
 use crate::schedule::event_source::EventSource;
 use crate::schedule::provider::{GroupProviders, MoveReplicasProvider};
 use crate::schedule::scheduler::Scheduler;
@@ -34,8 +33,7 @@ pub(crate) fn setup_scheduler(
     transport_manager: TransportManager,
     move_replicas_provider: Arc<MoveReplicasProvider>,
     schedule_state_observer: Arc<dyn ScheduleStateObserver>,
-    wait_group: WaitGroup,
-) {
+) -> JoinHandle<()> {
     let group_providers = Arc::new(GroupProviders::new(
         replica.clone(),
         transport_manager.router().clone(),
@@ -46,8 +44,7 @@ pub(crate) fn setup_scheduler(
     sekas_runtime::current().spawn(Some(group_id), TaskPriority::Low, async move {
         scheduler_main(cfg, replica, transport_manager, group_providers, schedule_state_observer)
             .await;
-        drop(wait_group);
-    });
+    })
 }
 
 async fn scheduler_main(
