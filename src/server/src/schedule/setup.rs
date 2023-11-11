@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 use log::debug;
 use sekas_api::server::v1::ScheduleState;
-use sekas_runtime::{JoinHandle, TaskPriority};
+use sekas_runtime::JoinHandle;
 
 use super::ScheduleStateObserver;
 use crate::node::Replica;
@@ -40,8 +40,7 @@ pub(crate) fn setup_scheduler(
         move_replicas_provider,
     ));
 
-    let group_id = replica.replica_info().group_id;
-    sekas_runtime::current().spawn(Some(group_id), TaskPriority::Low, async move {
+    sekas_runtime::spawn(async move {
         scheduler_main(cfg, replica, transport_manager, group_providers, schedule_state_observer)
             .await;
     })

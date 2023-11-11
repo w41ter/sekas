@@ -19,7 +19,6 @@ use tonic::codegen::*;
 
 use crate::node::replica::ReplicaPerfContext;
 use crate::raftgroup::perf_point_micros;
-use sekas_runtime::TaskPriority;
 use crate::{Error, Result, Server};
 
 #[derive(Default, Debug, Clone, Serialize)]
@@ -62,9 +61,8 @@ impl super::service::HttpHandle for MonitorHandle {
         let start = perf_point_micros();
 
         // We also need to record the delay from task spawn to execute.
-        let replica_perf_ctx = sekas_runtime::current()
-            .dispatch(None, TaskPriority::Low, async move { replica.monitor().await })
-            .await?;
+        let replica_perf_ctx =
+            sekas_runtime::spawn(async move { replica.monitor().await }).await??;
 
         let monitor = PerfContext { start, replica: replica_perf_ctx, end: perf_point_micros() };
         Ok(http::Response::builder()

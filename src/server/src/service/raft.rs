@@ -47,7 +47,7 @@ impl raft_server::Raft for Server {
                     let replica = msg.from_replica.as_ref().unwrap();
                     let from_replica_id = replica.id;
                     let from_node_id = replica.node_id;
-                    if let Some(mut sender) = self.node.raft_route_table().find(target_replica_id) {
+                    if let Some(sender) = self.node.raft_route_table().find(target_replica_id) {
                         if sender.step(msg).is_ok() {
                             continue;
                         }

@@ -27,6 +27,7 @@ use raft::prelude::*;
 use raft::{SoftState, StateRole};
 use raft_engine::{Engine, LogBatch};
 use sekas_api::server::v1::{ChangeReplicas, RaftRole, ReplicaDesc};
+use sekas_runtime::TaskGroup;
 use tokio::time::{interval, Interval, MissedTickBehavior};
 
 use super::applier::{Applier, ReplicaCache};
@@ -171,6 +172,7 @@ where
     observer: Box<dyn StateObserver>,
     replica_cache: ReplicaCache,
 
+    task_group: TaskGroup,
     marker: PhantomData<M>,
 }
 
@@ -223,6 +225,7 @@ where
             engine: raft_mgr.engine.clone(),
             observer,
             replica_cache,
+            task_group: TaskGroup::default(),
             marker: PhantomData,
         })
     }
@@ -334,12 +337,13 @@ where
 
         if self.raft_node.mut_store().create_snapshot.get() {
             self.raft_node.mut_store().create_snapshot.set(false);
-            super::snap::dispatch_creating_snap_task(
+            let handle = super::snap::dispatch_creating_snap_task(
                 self.desc.id,
                 self.request_sender.clone(),
                 self.raft_node.mut_state_machine(),
                 self.snap_mgr.clone(),
             );
+            self.task_group.add_task(handle);
         }
 
         Ok(())
@@ -416,7 +420,7 @@ where
             if msg.get_msg_type() == MessageType::MsgSnapshot {
                 // TODO(walter) In order to avoid useless downloads, should check whether this
                 // snapshot will be accept.
-                super::snap::dispatch_downloading_snap_task(
+                let handle = super::snap::dispatch_downloading_snap_task(
                     self.desc.id,
                     self.request_sender.clone(),
                     self.snap_mgr.clone(),
@@ -424,6 +428,7 @@ where
                     from_replica.clone(),
                     msg,
                 );
+                self.task_group.add_task(handle);
             } else {
                 ctx.accumulated_bytes += msg.entries.iter().map(|e| e.data.len()).sum::<usize>();
                 ctx.perf_ctx.num_step_msg += 1;

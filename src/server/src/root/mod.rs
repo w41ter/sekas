@@ -35,7 +35,7 @@ use sekas_api::server::v1::report_request::GroupUpdates;
 use sekas_api::server::v1::watch_response::*;
 use sekas_api::server::v1::*;
 use sekas_rock::time::timestamp_nanos;
-use sekas_runtime::{self, TaskPriority};
+use sekas_runtime::TaskGroup;
 use sekas_schema::shard::{SHARD_MAX, SHARD_MIN};
 use tokio::time::Instant;
 use tokio_util::time::delay_queue;
@@ -66,6 +66,7 @@ pub struct Root {
     heartbeat_queue: Arc<HeartbeatQueue>,
     ongoing_stats: Arc<OngoingStats>,
     jobs: Arc<Jobs>,
+    task_group: TaskGroup,
 }
 
 pub struct RootShared {
@@ -146,7 +147,7 @@ impl Root {
             cfg.root.to_owned(),
         );
         let scheduler = Arc::new(schedule::ReconcileScheduler::new(sched_ctx));
-        Self {
+        Root {
             cfg: cfg.root,
             alloc,
             shared,
@@ -155,6 +156,7 @@ impl Root {
             heartbeat_queue,
             ongoing_stats,
             jobs,
+            task_group: TaskGroup::default(),
         }
     }
 
@@ -168,19 +170,18 @@ impl Root {
 
     pub async fn bootstrap(&self, node: &Node) -> Result<Vec<NodeDesc>> {
         let root = self.clone();
-        let executor = sekas_runtime::current();
-        executor.spawn(None, TaskPriority::Middle, async move {
+        self.task_group.add_task(sekas_runtime::spawn(async move {
             root.run_heartbeat().await;
-        });
+        }));
         let root = self.clone();
-        executor.spawn(None, TaskPriority::Low, async move {
+        self.task_group.add_task(sekas_runtime::spawn(async move {
             root.run_background_jobs().await;
-        });
+        }));
         let replica_table = node.replica_table().clone();
         let root = self.clone();
-        executor.spawn(None, TaskPriority::Middle, async move {
+        self.task_group.add_task(sekas_runtime::spawn(async move {
             root.run_schedule(replica_table).await;
-        });
+        }));
 
         if let Some(replica) = node.replica_table().current_root_replica(None) {
             let engine = replica.group_engine();
@@ -300,9 +301,8 @@ impl Root {
         };
         root_core.bump_txn_id().await?;
 
-        let executor = sekas_runtime::current();
         let cloned_root_core = root_core.clone();
-        let txn_bumper_handle = executor.spawn(None, TaskPriority::High, async move {
+        let txn_bumper_handle = sekas_runtime::spawn(async move {
             const INTERVAL: Duration = Duration::from_secs(30);
             loop {
                 sekas_runtime::time::sleep(INTERVAL).await;
@@ -348,7 +348,7 @@ impl Root {
         info!("node {node_id} current root node drop leader");
 
         // After that, RootCore needs to be set to None before returning.
-        txn_bumper_handle.abort();
+        drop(txn_bumper_handle);
         // Notify txn allocators to exit.
         root_core.max_txn_id.store(0, Ordering::Release);
         self.heartbeat_queue.enable(false).await;

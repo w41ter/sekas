@@ -16,7 +16,6 @@
 mod executor;
 mod group;
 mod incoming;
-mod metrics;
 mod shutdown;
 
 pub mod sync;

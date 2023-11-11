@@ -19,36 +19,21 @@ use std::time::{Duration, Instant};
 
 use pin_project::pin_project;
 
-use super::metrics::*;
 use crate::ExecutorConfig;
-
-#[derive(Debug)]
-pub enum TaskPriority {
-    Real,
-    High,
-    Middle,
-    Low,
-    IoLow,
-    IoHigh,
-}
 
 enum TaskState {
     First(Instant),
     Polled(Duration),
 }
 
-/// A handle that awaits the result of a task.
-///
-/// Dropping a [`JoinHandle`] will detach the task, meaning that there is no
-/// longer a handle to the task and no way to `join` on it. If you want cancel
-/// tasks when dropping a handle, use [`DispatchHandle`].
-pub type JoinHandle<T> = tokio::task::JoinHandle<T>;
+pub type JoinError = tokio::task::JoinError;
 
 /// A handle that awaits the result of a task.
 ///
 /// Dropping a [`DispatchHandle`] will abort the underlying task.
+#[must_use = "Drop this `JoinHandle` will abort the underlying task"]
 #[derive(Debug)]
-pub struct DispatchHandle<T> {
+pub struct JoinHandle<T> {
     inner: tokio::task::JoinHandle<T>,
 }
 
@@ -87,12 +72,6 @@ impl ExecutorOwner {
             .global_queue_interval(cfg.global_event_interval.unwrap_or(64))
             .max_blocking_threads(cfg.max_blocking_threads.unwrap_or(2))
             .thread_keep_alive(Duration::from_secs(60))
-            .on_thread_park(|| {
-                EXECUTOR_PARK_TOTAL.inc();
-            })
-            .on_thread_unpark(|| {
-                EXECUTOR_UNPARK_TOTAL.inc();
-            })
             .build()
             .expect("build tokio runtime");
         ExecutorOwner { runtime }
@@ -105,46 +84,12 @@ impl ExecutorOwner {
 
 impl Executor {
     /// Spawns a task.
-    ///
-    /// [`tag`]: specify the tag of task, the underlying scheduler should ensure that all tasks
-    ///          with the same tag will be scheduled on the same core.
-    /// [`priority`]: specify the task priority.
-    pub fn spawn<F, T>(
-        &self,
-        tag: Option<u64>,
-        priority: TaskPriority,
-        future: F,
-    ) -> JoinHandle<F::Output>
+    pub fn spawn<F, T>(&self, future: F) -> JoinHandle<F::Output>
     where
         F: Future<Output = T> + Send + 'static,
         T: Send + 'static,
     {
-        // TODO(walter) support per thread task set.
-        let _ = tag;
-        take_spawn_metrics(priority);
-        self.handle.spawn(FutureWrapper::new(future))
-    }
-
-    /// Dispatch a task.
-    ///
-    /// [`tag`]: specify the tag of task, the underlying scheduler should ensure that all tasks
-    ///          with the same tag will be scheduled on the same core.
-    /// [`priority`]: specify the task priority.
-    pub fn dispatch<F, T>(
-        &self,
-        tag: Option<u64>,
-        priority: TaskPriority,
-        future: F,
-    ) -> DispatchHandle<F::Output>
-    where
-        F: Future<Output = T> + Send + 'static,
-        T: Send + 'static,
-    {
-        // TODO(walter) support per thread task set.
-        let _ = tag;
-        take_spawn_metrics(priority);
-        let inner = self.handle.spawn(FutureWrapper::new(future));
-        DispatchHandle { inner }
+        JoinHandle { inner: self.handle.spawn(FutureWrapper::new(future)) }
     }
 
     /// Runs a future to completion on the executor. This is the executor’s
@@ -164,33 +109,28 @@ impl Executor {
         F: FnOnce() -> R + Send + 'static,
         R: Send + 'static,
     {
-        self.handle.spawn_blocking(func)
+        JoinHandle { inner: self.handle.spawn_blocking(func) }
     }
+}
+
+impl<T> Future for JoinHandle<T> {
+    type Output = Result<T, JoinError>;
 
     #[inline]
-    pub fn dispatch_blocking<F, R>(&self, func: F) -> DispatchHandle<R>
-    where
-        F: FnOnce() -> R + Send + 'static,
-        R: Send + 'static,
-    {
-        let inner = self.handle.spawn_blocking(func);
-        DispatchHandle { inner }
-    }
-}
-
-impl<T> Future for DispatchHandle<T> {
-    type Output = T;
-
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        match Pin::new(&mut self.inner).poll(cx) {
-            Poll::Pending => Poll::Pending,
-            Poll::Ready(Ok(v)) => Poll::Ready(v),
-            Poll::Ready(Err(e)) => panic!("{:?}", e),
-        }
+        Pin::new(&mut self.inner).poll(cx)
     }
 }
 
-impl<T> Drop for DispatchHandle<T> {
+impl<T> JoinHandle<T> {
+    /// Checks if the task associated with this `JoinHandle` has finished.
+    #[inline]
+    pub fn is_finished(&self) -> bool {
+        self.inner.is_finished()
+    }
+}
+
+impl<T> Drop for JoinHandle<T> {
     fn drop(&mut self) {
         self.inner.abort();
     }
@@ -208,17 +148,13 @@ impl<F: Future> Future for FutureWrapper<F> {
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut this = self.project();
         let mut duration = match this.state {
-            TaskState::First(create) => {
-                EXECUTOR_TASK_FIRST_POLL_DURATION_SECONDS.observe(create.elapsed().as_secs_f64());
-                Duration::ZERO
-            }
+            TaskState::First(_) => Duration::ZERO,
             TaskState::Polled(duration) => *duration,
         };
 
         let start = Instant::now();
         let output = Pin::new(&mut this.inner).poll(cx);
         let elapsed = start.elapsed();
-        EXECUTOR_TASK_POLL_DURATION_SECONDS.observe(elapsed.as_secs_f64());
         if !should_skip_slow_log::<F>() && elapsed >= Duration::from_micros(1000) {
             tracing::warn!(
                 "future poll() execute total {elapsed:?}: {}",
@@ -228,9 +164,6 @@ impl<F: Future> Future for FutureWrapper<F> {
 
         duration += elapsed;
         *this.state = TaskState::Polled(duration);
-        if !matches!(&output, Poll::Pending) {
-            EXECUTOR_TASK_EXECUTE_DURATION_SECONDS.observe(duration.as_secs_f64());
-        }
 
         output
     }
@@ -241,8 +174,32 @@ impl<F: Future> Future for FutureWrapper<F> {
 /// # Panics
 ///
 /// This will panic if called outside the context of a runtime.
+#[inline]
 pub fn current() -> Executor {
     Executor { handle: tokio::runtime::Handle::current() }
+}
+
+/// Spawns a task with current `Executor`.
+///
+/// # Panics
+///
+/// This will panic if called outside the context of a runtime.
+#[inline]
+pub fn spawn<F, T>(future: F) -> JoinHandle<F::Output>
+where
+    F: Future<Output = T> + Send + 'static,
+    T: Send + 'static,
+{
+    current().spawn(future)
+}
+
+#[inline]
+pub fn spawn_blocking<F, R>(func: F) -> JoinHandle<R>
+where
+    F: FnOnce() -> R + Send + 'static,
+    R: Send + 'static,
+{
+    current().spawn_blocking(func)
 }
 
 #[inline]

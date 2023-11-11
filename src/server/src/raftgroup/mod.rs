@@ -29,7 +29,7 @@ use raft::prelude::{
     ConfChangeSingle, ConfChangeTransition, ConfChangeType, ConfChangeV2, ConfState,
 };
 use sekas_api::server::v1::*;
-use sekas_runtime::{JoinHandle, TaskGroup, TaskPriority};
+use sekas_runtime::{JoinHandle, TaskGroup};
 
 pub use self::fsm::{ApplyEntry, SnapshotBuilder, StateMachine};
 pub use self::group::RaftGroup;
@@ -61,7 +61,7 @@ pub struct RaftManager {
     log_writer: LogWriter,
     transport_mgr: Arc<ChannelManager>,
     snap_mgr: SnapManager,
-    task_handle: JoinHandle<()>,
+    _task_handle: Option<JoinHandle<()>>,
 }
 
 impl RaftManager {
@@ -73,7 +73,14 @@ impl RaftManager {
     ) -> Result<Self> {
         let task_handle = start_purging_expired_files(engine.clone());
         let log_writer = LogWriter::new(cfg.max_io_batch_size, engine.clone());
-        Ok(RaftManager { cfg, engine, transport_mgr, snap_mgr, log_writer, task_handle })
+        Ok(RaftManager {
+            cfg,
+            engine,
+            transport_mgr,
+            snap_mgr,
+            log_writer,
+            _task_handle: Some(task_handle),
+        })
     }
 
     #[inline]
@@ -104,21 +111,14 @@ impl RaftManager {
             RaftWorker::open(group_id, replica_id, node_id, state_machine, self, observer).await?;
         let raft_group = RaftGroup::open(worker.request_sender());
         let log_writer = self.log_writer.clone();
-        let task_handle =
-            sekas_runtime::current().spawn(Some(group_id), TaskPriority::High, async move {
-                if let Err(err) = worker.run(log_writer).await {
-                    // TODO(walter) handle result.
-                    panic!("run raft group worker: {err:?}");
-                }
-            });
+        let task_handle = sekas_runtime::spawn(async move {
+            if let Err(err) = worker.run(log_writer).await {
+                // TODO(walter) handle result.
+                panic!("run raft group worker: {err:?}");
+            }
+        });
         task_group.add_task(task_handle);
         Ok(raft_group)
-    }
-}
-
-impl Drop for RaftManager {
-    fn drop(&mut self) {
-        self.task_handle.abort();
     }
 }
 

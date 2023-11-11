@@ -20,7 +20,7 @@ use log::warn;
 use sekas_api::server::v1::report_request::GroupUpdates;
 use sekas_api::server::v1::{GroupDesc, ReplicaState, ReportRequest, ScheduleState};
 use sekas_client::RootClient;
-use sekas_runtime::{JoinHandle, TaskPriority};
+use sekas_runtime::JoinHandle;
 
 use crate::node::metrics::take_report_metrics;
 use crate::record_latency;
@@ -28,14 +28,14 @@ use crate::transport::TransportManager;
 
 pub struct StateChannel {
     sender: mpsc::UnboundedSender<GroupUpdates>,
-    task_handle: Option<JoinHandle<()>>,
+    _worker_handle: Option<JoinHandle<()>>,
 }
 
 pub(crate) fn setup(transport_manager: &TransportManager) -> StateChannel {
     let (sender, receiver) = mpsc::unbounded();
 
     let client = transport_manager.root_client().clone();
-    let task_handle = sekas_runtime::current().spawn(None, TaskPriority::IoHigh, async move {
+    let task_handle = sekas_runtime::spawn(async move {
         report_state_worker(receiver, client).await;
     });
 
@@ -98,12 +98,12 @@ async fn report_state_updates(root_client: &RootClient, request: ReportRequest) 
 
 impl StateChannel {
     pub fn new(sender: mpsc::UnboundedSender<GroupUpdates>, task_handle: JoinHandle<()>) -> Self {
-        StateChannel { sender, task_handle: Some(task_handle) }
+        StateChannel { sender, _worker_handle: Some(task_handle) }
     }
 
     #[cfg(test)]
     pub fn without_handle(sender: mpsc::UnboundedSender<GroupUpdates>) -> Self {
-        StateChannel { sender, task_handle: None }
+        StateChannel { sender, _worker_handle: None }
     }
 
     #[inline]
@@ -124,13 +124,5 @@ impl StateChannel {
         let update =
             GroupUpdates { group_id, schedule_state: Some(schedule_state), ..Default::default() };
         self.sender.clone().start_send(update).unwrap_or_default();
-    }
-}
-
-impl Drop for StateChannel {
-    fn drop(&mut self) {
-        if let Some(task_handle) = self.task_handle.as_ref() {
-            task_handle.abort();
-        }
     }
 }

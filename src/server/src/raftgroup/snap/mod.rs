@@ -27,10 +27,10 @@ use futures::channel::mpsc;
 use futures::StreamExt;
 use log::{error, info, warn};
 use raft::prelude::{Snapshot, SnapshotMetadata};
+use sekas_runtime::JoinHandle;
 
 pub use self::create::dispatch_creating_snap_task;
 pub use self::download::dispatch_downloading_snap_task;
-use sekas_runtime::TaskPriority;
 use crate::serverpb::v1::SnapshotMeta;
 use crate::Result;
 
@@ -81,6 +81,7 @@ where
 struct SnapManagerShared {
     root_dir: PathBuf,
     min_keep_intervals: Duration,
+    _recycler_handle: Option<JoinHandle<()>>,
     inner: Mutex<SnapManagerInner>,
 }
 
@@ -97,6 +98,7 @@ impl SnapManager {
             shared: Arc::new(SnapManagerShared {
                 root_dir: dir,
                 min_keep_intervals: Duration::from_secs(0),
+                _recycler_handle: None,
                 inner: Mutex::new(SnapManagerInner { sender, replicas: HashMap::default() }),
             }),
         }
@@ -106,7 +108,7 @@ impl SnapManager {
         use prost::Message;
 
         let (mut sender, receiver) = mpsc::unbounded();
-        sekas_runtime::current().spawn(None, TaskPriority::IoLow, async move {
+        let recycler_handle = sekas_runtime::spawn(async move {
             recycle_snapshot(receiver).await;
         });
 
@@ -158,6 +160,7 @@ impl SnapManager {
             shared: Arc::new(SnapManagerShared {
                 root_dir: root_dir.to_owned(),
                 min_keep_intervals: Duration::from_secs(180),
+                _recycler_handle: Some(recycler_handle),
                 inner: Mutex::new(SnapManagerInner { sender, replicas }),
             }),
         })
@@ -380,12 +383,12 @@ async fn recycle_snapshot(mut receiver: mpsc::UnboundedReceiver<(u64, PathBuf)>)
 #[cfg(test)]
 mod tests {
     use sekas_api::server::v1::GroupDesc;
+    use sekas_runtime::time::sleep;
+    use sekas_runtime::ExecutorOwner;
     use tempdir::TempDir;
 
     use super::*;
     use crate::raftgroup::SnapshotBuilder;
-    use sekas_runtime::time::sleep;
-    use sekas_runtime::ExecutorOwner;
     use crate::serverpb::v1::ApplyState;
 
     struct SimpleSnapshotBuilder {

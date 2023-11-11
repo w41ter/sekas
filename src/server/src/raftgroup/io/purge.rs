@@ -15,14 +15,15 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use log::{debug, warn};
-use sekas_runtime::{current, JoinHandle, TaskPriority};
+use sekas_runtime::JoinHandle;
+
+use crate::Result;
 
 pub fn start_purging_expired_files(engine: Arc<raft_engine::Engine>) -> JoinHandle<()> {
-    current().spawn(None, TaskPriority::IoLow, async move {
+    sekas_runtime::spawn(async move {
         loop {
             sekas_runtime::time::sleep(Duration::from_secs(10)).await;
-            let cloned_engine = engine.clone();
-            match current().dispatch_blocking(move || cloned_engine.purge_expired_files()).await {
+            match purge_expired_files(engine.clone()).await {
                 Err(e) => {
                     warn!("raft engine purge expired files: {e:?}")
                 }
@@ -34,4 +35,11 @@ pub fn start_purging_expired_files(engine: Arc<raft_engine::Engine>) -> JoinHand
             }
         }
     })
+}
+
+#[inline]
+async fn purge_expired_files(
+    engine: Arc<raft_engine::Engine>,
+) -> Result<Vec<u64>, raft_engine::Error> {
+    sekas_runtime::spawn_blocking(move || engine.purge_expired_files()).await.unwrap()
 }

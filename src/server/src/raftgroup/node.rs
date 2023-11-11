@@ -817,7 +817,6 @@ mod tests {
         }
 
         let owner = ExecutorOwner::new(1);
-        let executor = owner.executor();
         owner.executor().block_on(async {
             use raft_engine::Config;
 
@@ -832,14 +831,13 @@ mod tests {
             let resolver = Arc::new(MockedAddressResolver {});
             let transport_mgr = Arc::new(ChannelManager::new(resolver, RaftRouteTable::new()));
             let log_writer = LogWriter::new(64 << 10, engine.clone());
-            let task_handle = executor.spawn(None, sekas_runtime::TaskPriority::High, async {});
             let raft_mgr = RaftManager {
                 cfg: RaftConfig::default(),
                 engine: engine.clone(),
                 transport_mgr,
                 snap_mgr: snap_mgr.clone(),
                 log_writer,
-                task_handle,
+                _task_handle: None,
             };
 
             // 1. initial storage with log entries in [0, 100), all entries are committed.

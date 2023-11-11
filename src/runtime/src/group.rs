@@ -32,12 +32,3 @@ impl TaskGroup {
         handles.push(handle);
     }
 }
-
-impl Drop for TaskGroup {
-    fn drop(&mut self) {
-        let mut handles = self.handles.lock().expect("Poisoned");
-        for handle in std::mem::take(&mut *handles) {
-            handle.abort();
-        }
-    }
-}

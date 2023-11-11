@@ -23,7 +23,7 @@ use futures::{SinkExt, StreamExt};
 use log::{debug, error, info};
 use raft::eraftpb::Message;
 use sekas_api::server::v1::ReplicaDesc;
-use sekas_runtime::TaskPriority;
+use sekas_runtime::JoinHandle;
 
 use super::SnapManager;
 use crate::raftgroup::metrics::*;
@@ -163,8 +163,8 @@ pub fn dispatch_downloading_snap_task(
     tran_mgr: Arc<ChannelManager>,
     from_replica: ReplicaDesc,
     mut msg: Message,
-) {
-    sekas_runtime::current().spawn(None, TaskPriority::IoLow, async move {
+) -> JoinHandle<()> {
+    sekas_runtime::spawn(async move {
         match download_snap(replica_id, tran_mgr, snap_mgr, from_replica, &msg).await {
             Ok(snap_id) => {
                 msg.snapshot.as_mut().unwrap().data = snap_id;
@@ -177,7 +177,7 @@ pub fn dispatch_downloading_snap_task(
                 sender.send(request).await.unwrap_or_default();
             }
         };
-    });
+    })
 }
 
 /// Download snapshot from target and returns the local snapshot id.

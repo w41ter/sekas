@@ -13,10 +13,10 @@
 // limitations under the License.
 
 use sekas_api::server::v1::*;
+use sekas_runtime::JoinHandle;
 use tonic::{Request, Response, Status};
 
 use super::metrics::*;
-use sekas_runtime::{DispatchHandle, TaskPriority};
 use crate::serverpb::v1::MigrationEvent;
 use crate::{record_latency, record_latency_opt, Error, Server};
 
@@ -38,7 +38,7 @@ impl node_server::Node for Server {
             let handles = self.submit_group_requests(batch_request.requests);
             let mut responses = Vec::with_capacity(handles.len());
             for handle in handles {
-                responses.push(handle.await);
+                responses.push(handle.await.map_err(Error::from)?);
             }
 
             Ok(Response::new(BatchResponse { responses }))
@@ -84,7 +84,9 @@ impl node_server::Node for Server {
             }
             migrate_request::Request::Setup(req) => {
                 let Some(desc) = req.desc else {
-                    return Err(Status::invalid_argument("SetupMigrationRequest::desc is empty".to_owned()));
+                    return Err(Status::invalid_argument(
+                        "SetupMigrationRequest::desc is empty".to_owned(),
+                    ));
                 };
                 record_latency!(take_migrate_request_metrics());
                 self.node.migrate(MigrationEvent::Setup, desc).await?;
@@ -92,7 +94,9 @@ impl node_server::Node for Server {
             }
             migrate_request::Request::Commit(req) => {
                 let Some(desc) = req.desc else {
-                    return Err(Status::invalid_argument("CommitMigrationRequest::desc is empty".to_owned()));
+                    return Err(Status::invalid_argument(
+                        "CommitMigrationRequest::desc is empty".to_owned(),
+                    ));
                 };
                 record_latency!(take_migrate_request_metrics());
                 self.node.migrate(MigrationEvent::Commit, desc).await?;
@@ -190,19 +194,12 @@ impl Server {
         self.node.execute_request(request).await.unwrap_or_else(error_to_response)
     }
 
-    fn submit_group_requests(
-        &self,
-        requests: Vec<GroupRequest>,
-    ) -> Vec<DispatchHandle<GroupResponse>> {
+    fn submit_group_requests(&self, requests: Vec<GroupRequest>) -> Vec<JoinHandle<GroupResponse>> {
         let mut handles = Vec::with_capacity(requests.len());
         for request in requests.into_iter() {
             let server = self.clone();
-            let group_id = request.group_id;
-            let handle = sekas_runtime::current().dispatch(
-                Some(group_id),
-                TaskPriority::Middle,
-                async move { server.submit_group_request(&request).await },
-            );
+            let handle =
+                sekas_runtime::spawn(async move { server.submit_group_request(&request).await });
             handles.push(handle);
         }
         handles

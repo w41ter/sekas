@@ -127,6 +127,16 @@ impl std::fmt::Display for BusyReason {
     }
 }
 
+impl From<sekas_runtime::JoinError> for Error {
+    fn from(err: sekas_runtime::JoinError) -> Self {
+        if err.is_cancelled() {
+            Error::Canceled
+        } else {
+            std::panic::resume_unwind(err.into_panic());
+        }
+    }
+}
+
 impl From<Error> for tonic::Status {
     fn from(e: Error) -> Self {
         use prost::Message;

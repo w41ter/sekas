@@ -15,7 +15,6 @@
 use std::sync::Arc;
 
 use log::error;
-use sekas_runtime::TaskPriority;
 
 use crate::engine::{Engines, GroupEngine, RawDb, StateEngine};
 use crate::node::metrics::*;
@@ -26,7 +25,7 @@ use crate::{record_latency, Error, Result};
 /// Clean a group engine and save the replica state to
 /// `ReplicaLocalState::Tombstone`.
 pub(crate) fn setup(group_id: u64, replica_id: u64, engines: Engines) {
-    sekas_runtime::current().spawn(Some(group_id), TaskPriority::IoLow, async move {
+    sekas_runtime::spawn(async move {
         if let Err(err) =
             destory_replica(group_id, replica_id, engines.state(), engines.db(), engines.log())
                 .await

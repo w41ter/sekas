@@ -94,7 +94,7 @@ struct StartCommand {
 
 impl StartCommand {
     fn run(self) -> Result<()> {
-        use sekas_runtime::{ExecutorOwner, ShutdownNotifier, TaskPriority};
+        use sekas_runtime::{ExecutorOwner, ShutdownNotifier};
 
         let mut config = match load_config(&self) {
             Ok(c) => c,
@@ -119,7 +119,7 @@ impl StartCommand {
         let shutdown = notifier.subscribe();
         let owner = ExecutorOwner::with_config(config.cpu_nums as usize, config.executor.clone());
         let executor = owner.executor();
-        executor.spawn(None, TaskPriority::Low, async move {
+        let _handle = executor.spawn(async move {
             notifier.ctrl_c().await;
         });
         sekas_server::run(config, executor, shutdown)

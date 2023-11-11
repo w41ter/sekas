@@ -18,7 +18,7 @@ use futures::channel::mpsc;
 use futures::StreamExt;
 use log::{debug, warn};
 use sekas_api::server::v1::{NodeDesc, ReplicaDesc};
-use sekas_runtime::{JoinHandle, TaskGroup, TaskPriority};
+use sekas_runtime::{JoinHandle, TaskGroup};
 
 use crate::node::route_table::RaftRouteTable;
 use crate::raftgroup::RaftGroup;
@@ -62,7 +62,7 @@ where
 {
     resolver: Arc<dyn AddressResolver>,
     sender: mpsc::UnboundedSender<StreamingRequest>,
-    handle: JoinHandle<()>,
+    _handle: JoinHandle<()>,
 }
 
 impl Channel {
@@ -99,10 +99,10 @@ impl ChannelManager {
     pub fn new(resolver: Arc<dyn AddressResolver>, route_table: RaftRouteTable) -> Self {
         let (sender, receiver) = mpsc::unbounded();
         let resolver_clone = resolver.clone();
-        let handle = sekas_runtime::current().spawn(None, TaskPriority::Low, async move {
+        let handle = sekas_runtime::spawn(async move {
             Self::run(resolver_clone, route_table, receiver).await;
         });
-        ChannelManager { resolver, sender, handle }
+        ChannelManager { resolver, sender, _handle: handle }
     }
 
     #[inline]
@@ -131,17 +131,11 @@ impl ChannelManager {
             };
 
             let task = StreamingTask { resolver: resolver.clone(), raft_node, request };
-            let handle = sekas_runtime::current().spawn(None, TaskPriority::IoHigh, async move {
+            let handle = sekas_runtime::spawn(async move {
                 task.run().await;
             });
             task_group.add_task(handle);
         }
-    }
-}
-
-impl Drop for ChannelManager {
-    fn drop(&mut self) {
-        self.handle.abort();
     }
 }
 

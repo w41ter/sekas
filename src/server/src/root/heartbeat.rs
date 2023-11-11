@@ -82,23 +82,19 @@ impl Root {
                 trace!("attempt send heartbeat. node={}, target={}", n.id, n.addr);
                 let piggybacks = piggybacks.to_owned();
                 let client = self.shared.transport_manager.get_node_client(n.addr.to_owned())?;
-                let handle = sekas_runtime::current().dispatch(
-                    None,
-                    sekas_runtime::TaskPriority::Low,
-                    async move {
-                        client
-                            .root_heartbeat(HeartbeatRequest {
-                                piggybacks,
-                                timestamp: 0, // TODO: use hlc
-                            })
-                            .await
-                    },
-                );
+                let handle = sekas_runtime::spawn(async move {
+                    client
+                        .root_heartbeat(HeartbeatRequest {
+                            piggybacks,
+                            timestamp: 0, // TODO: use hlc
+                        })
+                        .await
+                });
                 handles.push(handle);
             }
             let mut resps = Vec::with_capacity(handles.len());
             for handle in handles.into_iter() {
-                resps.push(handle.await)
+                resps.push(handle.await?)
             }
             resps
         };

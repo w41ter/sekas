@@ -18,6 +18,7 @@ use futures::channel::mpsc;
 use futures::SinkExt;
 use log::{error, info};
 use prost::Message;
+use sekas_runtime::JoinHandle;
 
 use super::{SnapManager, SNAP_DATA};
 use crate::raftgroup::fsm::SnapshotBuilder;
@@ -25,7 +26,6 @@ use crate::raftgroup::metrics::*;
 use crate::raftgroup::snap::{SNAP_META, SNAP_TEMP};
 use crate::raftgroup::worker::Request;
 use crate::raftgroup::StateMachine;
-use sekas_runtime::TaskPriority;
 use crate::serverpb::v1::{SnapshotFile, SnapshotMeta};
 use crate::{record_latency, Result};
 
@@ -34,9 +34,9 @@ pub fn dispatch_creating_snap_task(
     mut sender: mpsc::Sender<Request>,
     state_machine: &impl StateMachine,
     snap_mgr: SnapManager,
-) {
+) -> JoinHandle<()> {
     let builder = state_machine.snapshot_builder();
-    sekas_runtime::current().spawn(None, TaskPriority::IoLow, async move {
+    sekas_runtime::spawn(async move {
         match create_snapshot(replica_id, &snap_mgr, builder).await {
             Ok(_) => {
                 info!("replica {replica_id} create snapshot success");
@@ -47,7 +47,7 @@ pub fn dispatch_creating_snap_task(
         };
 
         sender.send(Request::CreateSnapshotFinished).await.unwrap_or_default();
-    });
+    })
 }
 
 /// Create new snapshot and returns snapshot id.

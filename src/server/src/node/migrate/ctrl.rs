@@ -74,14 +74,12 @@ impl MigrateController {
         replica: Arc<Replica>,
         mut receiver: mpsc::UnboundedReceiver<MigrationState>,
     ) -> JoinHandle<()> {
-        use sekas_runtime::{current, TaskPriority};
-
         let info = replica.replica_info();
         let replica_id = info.replica_id;
         let group_id = info.group_id;
 
         let ctrl = self.clone();
-        current().spawn(Some(group_id), TaskPriority::High, async move {
+        sekas_runtime::spawn(async move {
             let mut coord: Option<MigrationCoordinator> = None;
             while let Some(state) = receiver.next().await {
                 debug!(
