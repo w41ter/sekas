@@ -25,6 +25,7 @@ mod migrate_client;
 mod retry;
 mod rpc;
 mod shard_client;
+mod txn_client;
 
 use tonic::async_trait;
 
