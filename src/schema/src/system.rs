@@ -13,6 +13,7 @@
 // limitations under the License.
 pub mod col;
 pub mod db;
+pub mod keys;
 
 use sekas_api::server::v1::*;
 

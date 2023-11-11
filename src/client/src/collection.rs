@@ -16,10 +16,7 @@ use std::time::Duration;
 
 use sekas_api::server::v1::group_request_union::Request;
 use sekas_api::server::v1::group_response_union::Response;
-use sekas_api::server::v1::{
-    CollectionDesc, DeleteRequest, PutRequest, PutType, ShardGetRequest, ShardGetResponse, Value,
-    WriteCondition,
-};
+use sekas_api::server::v1::*;
 
 use crate::group_client::GroupClient;
 use crate::metrics::*;
@@ -53,6 +50,10 @@ pub struct WriteBuilder {
     put_type: PutType,
     /// The cas conditions.
     conditions: Vec<WriteCondition>,
+    /// The TTL of key.
+    ttl: Option<u64>,
+    /// Whether to take prev values.
+    take_prev_value: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -64,130 +65,226 @@ pub struct Collection {
 
 impl WriteBuilder {
     pub fn new(key: Vec<u8>) -> Self {
-        WriteBuilder { key, put_type: PutType::None, conditions: vec![] }
+        WriteBuilder {
+            key,
+            put_type: PutType::None,
+            conditions: vec![],
+            ttl: None,
+            take_prev_value: false,
+        }
     }
 
     /// With ttl, in seconds.
     ///
     /// Only works for put request.
-    pub fn with_ttl(self, ttl: Option<u64>) -> Self {
-        todo!()
+    pub fn with_ttl(mut self, ttl: Option<u64>) -> Self {
+        self.ttl = ttl;
+        self
     }
 
     /// Build a put request.
     pub fn put(self, value: Vec<u8>) -> AppResult<PutRequest> {
-        todo!()
+        self.verify_conditions()?;
+        Ok(PutRequest {
+            put_type: PutType::None.into(),
+            key: self.key,
+            value,
+            ttl: self.ttl.unwrap_or_default(),
+            take_prev_value: self.take_prev_value,
+            conditions: self.conditions,
+        })
     }
 
     /// Build a put request without any error.
     pub fn ensure_put(self, value: Vec<u8>) -> PutRequest {
-        todo!()
+        self.put(value).expect("Invalid put conditions")
     }
 
     /// Build a delete request.
     pub fn delete(self) -> AppResult<DeleteRequest> {
-        // delete not support nop
-        todo!()
+        self.verify_conditions()?;
+        Ok(DeleteRequest {
+            key: self.key,
+            conditions: self.conditions,
+            take_prev_value: self.take_prev_value,
+        })
     }
 
     /// Build a delete request without any error.
     pub fn ensure_delete(self) -> DeleteRequest {
-        todo!()
+        self.delete().expect("Invalid delete conditions")
     }
 
     /// Build a nop request.
     pub fn nop(self) -> AppResult<PutRequest> {
-        todo!()
+        self.verify_conditions()?;
+        Ok(PutRequest {
+            put_type: PutType::Nop.into(),
+            key: self.key,
+            value: vec![],
+            ttl: 0,
+            conditions: self.conditions,
+            take_prev_value: false,
+        })
     }
 
     /// Build a nop request without any error.
     pub fn ensure_nop(self) -> PutRequest {
-        todo!()
+        self.nop().expect("Invalid nop conditions")
     }
 
     /// Build an add request, the value will be interpreted as i64.
     pub fn add(self, val: i64) -> AppResult<PutRequest> {
-        todo!()
+        self.verify_conditions()?;
+        Ok(PutRequest {
+            put_type: PutType::AddI64.into(),
+            key: self.key,
+            value: val.to_le_bytes().to_vec(),
+            ttl: self.ttl.unwrap_or_default(),
+            conditions: self.conditions,
+            take_prev_value: self.take_prev_value,
+        })
     }
 
     /// Build an add request without any error, the value will be interpreted as
     /// i64.
     pub fn ensure_add(self, val: i64) -> PutRequest {
-        todo!()
+        self.add(val).expect("Invalid add conditions")
     }
 
     /// Expect that the max version of the key is less than the input value.
     ///
-    /// One request only can contains one version releated expection.
-    pub fn expect_version_lt(self, expect: u64) -> Self {
-        todo!()
+    /// One request only can contains one version related expection.
+    pub fn expect_version_lt(mut self, expect: u64) -> Self {
+        self.conditions.push(WriteCondition {
+            r#type: WriteConditionType::ExpectVersionLt.into(),
+            version: expect,
+            ..Default::default()
+        });
+        self
     }
 
     /// Expect that the max version of the key is less than or equals to the
     /// input value.
     ///
-    /// One request only can contains one version releated expection.
-    pub fn expect_version_le(self, expect: u64) -> Self {
-        todo!()
+    /// One request only can contains one version related expection.
+    pub fn expect_version_le(mut self, expect: u64) -> Self {
+        self.conditions.push(WriteCondition {
+            r#type: WriteConditionType::ExpectVersionLe.into(),
+            version: expect,
+            ..Default::default()
+        });
+        self
     }
 
     /// Expect that the max version of the key is great than the input value.
     ///
-    /// One request only can contains one version releated expection.
-    pub fn expect_version_gt(self, expect: u64) -> Self {
-        todo!()
+    /// One request only can contains one version related expection.
+    pub fn expect_version_gt(mut self, expect: u64) -> Self {
+        self.conditions.push(WriteCondition {
+            r#type: WriteConditionType::ExpectVersionGt.into(),
+            version: expect,
+            ..Default::default()
+        });
+        self
     }
 
     /// Expect that the max version of the key is great than or equal to the
     /// input value.
     ///
-    /// One request only can contains one version releated expection.
-    pub fn expect_version_ge(self, expect: u64) -> Self {
-        todo!()
+    /// One request only can contains one version related expection.
+    pub fn expect_version_ge(mut self, expect: u64) -> Self {
+        self.conditions.push(WriteCondition {
+            r#type: WriteConditionType::ExpectVersionGe.into(),
+            version: expect,
+            ..Default::default()
+        });
+        self
     }
 
     /// Expect that the max version of the key is equal to the input value.
     ///
-    /// One request only can contains one version releated expection.
-    pub fn expect_version(self, expect: u64) -> Self {
-        todo!()
+    /// One request only can contains one version related expection.
+    pub fn expect_version(mut self, expect: u64) -> Self {
+        self.conditions.push(WriteCondition {
+            r#type: WriteConditionType::ExpectVersion.into(),
+            version: expect,
+            ..Default::default()
+        });
+        self
     }
 
     /// Expect that the target key is not exists.
-    pub fn expect_not_exists(self) -> Self {
-        todo!()
+    pub fn expect_not_exists(mut self) -> Self {
+        self.conditions.push(WriteCondition {
+            r#type: WriteConditionType::ExpectNotExists.into(),
+            ..Default::default()
+        });
+        self
     }
 
     /// Expect that the target key is equal to the input value.
-    pub fn expect_value(self, value: Vec<u8>) -> Self {
-        todo!()
+    pub fn expect_value(mut self, value: Vec<u8>) -> Self {
+        self.conditions.push(WriteCondition {
+            r#type: WriteConditionType::ExpectValue.into(),
+            value,
+            ..Default::default()
+        });
+        self
     }
 
     /// Expect that the key contains the input value.
-    pub fn expect_contains(self, value: Vec<u8>) -> Self {
-        todo!()
+    pub fn expect_contains(mut self, value: Vec<u8>) -> Self {
+        self.conditions.push(WriteCondition {
+            r#type: WriteConditionType::ExpectContains.into(),
+            value,
+            ..Default::default()
+        });
+        self
     }
 
     /// Expect that the slice of the value is equal to the input value.
-    pub fn expect_slice(self, beg: u64, value: Vec<u8>) -> Self {
-        todo!()
+    pub fn expect_slice(mut self, begin: u64, value: Vec<u8>) -> Self {
+        self.conditions.push(WriteCondition {
+            r#type: WriteConditionType::ExpectSlice.into(),
+            value,
+            begin,
+            ..Default::default()
+        });
+        self
     }
 
     /// Expect that the value of key is starts with the input value.
-    pub fn expect_starts_with(self, value: Vec<u8>) -> Self {
-        todo!()
+    pub fn expect_starts_with(mut self, value: Vec<u8>) -> Self {
+        self.conditions.push(WriteCondition {
+            r#type: WriteConditionType::ExpectStartsWith.into(),
+            value,
+            ..Default::default()
+        });
+        self
     }
 
     /// Expect that the value of key is ends with the input value.
-    pub fn expect_ends_with(self, value: Vec<u8>) -> Self {
-        todo!()
+    pub fn expect_ends_with(mut self, value: Vec<u8>) -> Self {
+        self.conditions.push(WriteCondition {
+            r#type: WriteConditionType::ExpectEndsWith.into(),
+            value,
+            ..Default::default()
+        });
+        self
     }
 
     /// Take the prev value.
     ///
-    /// It is useful for cas operations.
-    pub fn take_prev_value(self) -> Self {
-        todo!()
+    /// It is useful for cas operations. Default is `false`.
+    pub fn take_prev_value(mut self) -> Self {
+        self.take_prev_value = true;
+        self
+    }
+
+    fn verify_conditions(&self) -> AppResult<()> {
+        // TODO(walter) check conditions
+        Ok(())
     }
 }
 
@@ -218,12 +315,16 @@ impl Collection {
         Ok(())
     }
 
-    pub async fn get(&self, key: Vec<u8>) -> AppResult<Option<Vec<u8>>> {
+    pub async fn write_batch(&self, _req: WriteBatchRequest) -> crate::Result<WriteBatchResponse> {
+        todo!("support transactional write batch")
+    }
+
+    pub async fn get(&self, key: Vec<u8>) -> crate::Result<Option<Vec<u8>>> {
         let value = self.get_raw_value(key).await?;
         Ok(value.map(|v| v.content).flatten())
     }
 
-    pub async fn get_raw_value(&self, key: Vec<u8>) -> AppResult<Option<Value>> {
+    pub async fn get_raw_value(&self, key: Vec<u8>) -> crate::Result<Option<Value>> {
         CLIENT_DATABASE_BYTES_TOTAL.rx.inc_by(key.len() as u64);
         CLIENT_DATABASE_REQUEST_TOTAL.get.inc();
         record_latency!(&CLIENT_DATABASE_REQUEST_DURATION_SECONDS.get);
@@ -247,10 +348,6 @@ impl Collection {
         }
     }
 
-    pub async fn write_batch(&self, req: WriteBatchRequest) -> AppResult<WriteBatchResponse> {
-        todo!()
-    }
-
     async fn get_inner(
         &self,
         key: &[u8],
@@ -270,6 +367,43 @@ impl Collection {
         match client.request(&req).await? {
             Response::Get(ShardGetResponse { value }) => Ok(value),
             _ => Err(crate::Error::Internal(wrap("invalid response type, Get is required"))),
+        }
+    }
+
+    /// To issue a batch writes to a shard.
+    pub(crate) async fn write(
+        &self,
+        request: ShardWriteRequest,
+    ) -> crate::Result<ShardWriteResponse> {
+        let mut retry_state = RetryState::new(None);
+        loop {
+            match self.write_inner(&request, retry_state.timeout()).await {
+                Ok(value) => {
+                    return Ok(value);
+                }
+                Err(err) => {
+                    retry_state.retry(err).await?;
+                }
+            }
+        }
+    }
+
+    async fn write_inner(
+        &self,
+        request: &ShardWriteRequest,
+        timeout: Option<Duration>,
+    ) -> crate::Result<ShardWriteResponse> {
+        let router = self.client.router();
+        let group_state = router.find_group_by_shard(request.shard_id)?;
+        let mut group_client = GroupClient::new(group_state, self.client.clone());
+        if let Some(duration) = timeout {
+            group_client.set_timeout(duration);
+        }
+
+        let request = Request::Write(request.clone());
+        match group_client.request(&request).await? {
+            Response::Write(resp) => Ok(resp),
+            _ => Err(crate::Error::Internal(wrap("invalid response type, Write is required"))),
         }
     }
 

@@ -13,295 +13,92 @@
 // limitations under the License.
 use std::time::Duration;
 
+use prost::Message;
 use sekas_api::server::v1::group_request_union::Request;
 use sekas_api::server::v1::group_response_union::Response;
 use sekas_api::server::v1::*;
-use sekas_api::v1::*;
-use sekas_rock::time::timestamp_millis;
-use sekas_schema::system::col;
+use sekas_rock::time::{timestamp, timestamp_millis};
+use sekas_schema::system::{col, keys};
 
-use crate::{AppResult, ConnManager, Error, GroupClient, RootClient, Router};
+use crate::{
+    AppResult, Collection, ConnManager, Error, GroupClient, Result, RootClient, Router,
+    SekasClient, WriteBuilder,
+};
 
-/// The txn record.
-pub struct TxnRecord {
-    /// The txn state.
-    pub state: TxnState,
-    /// Txn timeout, in seconds.
-    pub timeout: u64,
-    /// The commit version of txn.
-    pub version: Option<u64>,
+// Default txn ttl is 5 seconds.
+const TXN_TTL: u64 = 5;
+const TXN_TIMEOUT: Duration = Duration::from_secs(5);
+
+struct TxnStateTable {
+    txn_col: Collection,
 }
 
-/// An client to access, manipulate txn collection.
-#[derive(Clone)]
-pub struct TxnClient {
-    root_client: RootClient,
-    router: Router,
-    conn_manager: ConnManager,
-
-    timeout: Option<Duration>,
-}
-
-impl TxnClient {
-    pub fn new(root_client: RootClient, router: Router, conn_manager: ConnManager) -> TxnClient {
-        TxnClient { root_client, router, conn_manager, timeout: None }
+impl TxnStateTable {
+    pub fn new(client: SekasClient) -> Self {
+        TxnStateTable { txn_col: Collection::new(client, col::txn_desc(), Some(TXN_TIMEOUT)) }
     }
 
-    pub fn set_timeout(&mut self, timeout: Duration) {
-        self.timeout = Some(timeout);
-    }
+    /// Begin a new transaction with the specified txn version.
+    pub async fn begin_txn(&self, start_version: u64) -> Result<()> {
+        let record = TxnRecord {
+            state: TxnState::Running.into(),
+            heartbeat: timestamp_millis(),
+            ttl: TXN_TTL,
+            commit_version: None,
+        };
+        let key = keys::txn_record_key(start_version);
+        let value = record.encode_to_vec();
+        let request = ShardWriteRequest {
+            shard_id: 0,
+            puts: vec![WriteBuilder::new(key)
+                .expect_not_exists()
+                .take_prev_value()
+                .ensure_put(value)],
+            ..Default::default()
+        };
+        let resp = match self.txn_col.write(request).await {
+            Ok(resp) => resp,
+            Err(Error::CasFailed(idx, cond_idx, prev_value)) => {
+                todo!()
+            }
+            Err(err) => return Err(err),
+        };
+        let Some(put_resp) = resp.puts.first() else {
+            return Err(Error::Internal(format!("put response is empty").into()));
+        };
 
-    pub async fn write(&mut self, _req: WriteBatchRequest) -> AppResult<WriteBatchResponse> {
-        let txn_id = self.root_client.alloc_txn_id(1).await?;
-        self.start_txn(txn_id).await?;
-        // Begin txn
-
-        let version = self.root_client.alloc_txn_id(1).await?;
-        self.commit_txn(txn_id, version).await?;
         todo!()
     }
 
-    pub async fn start_txn(&mut self, txn_id: u64) -> crate::Result<()> {
-        let (group, shard) = self.router.find_shard(col::txn_desc(), &txn_key_prefix(txn_id))?;
-        let mut client = GroupClient::new(group, self.router.clone(), self.conn_manager.clone());
-
-        let timeout = timestamp_millis() + 5000; // for 5 seconds
-
-        // TODO(walter): extract common codes.
-        let req = Request::BatchWrite(BatchWriteRequest {
-            puts: vec![
-                ShardPutRequest {
-                    shard_id: shard.id,
-                    put: Some(PutRequest {
-                        key: txn_state_key(txn_id),
-                        value: (TxnState::Running as u32).to_le_bytes().to_vec(),
-                        ttl: u64::MAX,
-                        conditions: vec![WriteCondition {
-                            r#type: WriteConditionType::NotExists.into(),
-                            ..Default::default()
-                        }],
-                        op: PutOperation::None.into(),
-                    }),
-                },
-                ShardPutRequest {
-                    shard_id: shard.id,
-                    put: Some(PutRequest {
-                        key: txn_timeout_key(txn_id),
-                        value: timeout.to_le_bytes().to_vec(),
-                        ttl: u64::MAX,
-                        ..Default::default()
-                    }),
-                },
-            ],
-            ..Default::default()
-        });
-        if let Some(duration) = self.timeout {
-            client.set_timeout(duration);
-        }
-        client.request(&req).await?;
-        Ok(())
+    /// Update the txn heartbeat.
+    pub async fn heartbeat(&self, start_version: u64) -> Result<()> {
+        todo!()
     }
 
-    pub async fn commit_txn(&mut self, txn_id: u64, version: u64) -> crate::Result<()> {
-        let (group, shard) = self.router.find_shard(col::txn_desc(), &txn_key_prefix(txn_id))?;
-        let mut client = GroupClient::new(group, self.router.clone(), self.conn_manager.clone());
-
-        let req = Request::BatchWrite(BatchWriteRequest {
-            puts: vec![
-                ShardPutRequest {
-                    shard_id: shard.id,
-                    put: Some(PutRequest {
-                        key: txn_state_key(txn_id),
-                        value: (TxnState::Committed as u32).to_le_bytes().to_vec(),
-                        ttl: u64::MAX,
-                        conditions: vec![WriteCondition {
-                            r#type: WriteConditionType::ExpectValue as i32,
-                            value: (TxnState::Running as u32).to_le_bytes().to_vec(),
-                            ..Default::default()
-                        }],
-                        op: PutOperation::None.into(),
-                    }),
-                },
-                ShardPutRequest {
-                    shard_id: shard.id,
-                    put: Some(PutRequest {
-                        key: txn_version_key(txn_id),
-                        value: version.to_le_bytes().to_vec(),
-                        ttl: u64::MAX,
-                        ..Default::default()
-                    }),
-                },
-            ],
-            ..Default::default()
-        });
-        if let Some(duration) = self.timeout {
-            client.set_timeout(duration);
-        }
-        client.request(&req).await?;
-        Ok(())
+    /// Commit the transaction specified by `start_version`.
+    ///
+    /// What happen if the commit txn already aborted.
+    pub async fn commit_txn(&self, start_version: u64, commit_version: u64) -> Result<()> {
+        todo!()
     }
 
-    pub async fn abort_txn(&mut self, txn_id: u64) -> crate::Result<()> {
-        let (group, shard) = self.router.find_shard(col::txn_desc(), &txn_key_prefix(txn_id))?;
-        let mut client = GroupClient::new(group, self.router.clone(), self.conn_manager.clone());
-
-        let req = Request::Put(ShardPutRequest {
-            shard_id: shard.id,
-            put: Some(PutRequest {
-                key: txn_state_key(txn_id),
-                value: (TxnState::Aborted as u32).to_le_bytes().to_vec(),
-                ttl: u64::MAX,
-                conditions: vec![WriteCondition {
-                    r#type: WriteConditionType::ExpectValue as i32,
-                    value: (TxnState::Running as u32).to_le_bytes().to_vec(),
-                    ..Default::default()
-                }],
-                op: PutOperation::None.into(),
-            }),
-        });
-        if let Some(duration) = self.timeout {
-            client.set_timeout(duration);
-        }
-        client.request(&req).await?;
-        Ok(())
-    }
-
-    pub async fn clean_txn(&mut self, txn_id: u64) -> crate::Result<()> {
-        let (group, shard) = self.router.find_shard(col::txn_desc(), &txn_key_prefix(txn_id))?;
-        let mut client = GroupClient::new(group, self.router.clone(), self.conn_manager.clone());
-
-        let req = Request::BatchWrite(BatchWriteRequest {
-            deletes: vec![
-                ShardDeleteRequest {
-                    shard_id: shard.id,
-                    delete: Some(DeleteRequest {
-                        key: txn_state_key(txn_id),
-                        ..Default::default()
-                    }),
-                },
-                ShardDeleteRequest {
-                    shard_id: shard.id,
-                    delete: Some(DeleteRequest {
-                        key: txn_timeout_key(txn_id),
-                        ..Default::default()
-                    }),
-                },
-                ShardDeleteRequest {
-                    shard_id: shard.id,
-                    delete: Some(DeleteRequest {
-                        key: txn_version_key(txn_id),
-                        ..Default::default()
-                    }),
-                },
-            ],
-            ..Default::default()
-        });
-        if let Some(duration) = self.timeout {
-            client.set_timeout(duration);
-        }
-        client.request(&req).await?;
-        Ok(())
-    }
-
-    pub async fn get_txn_record(&self, txn_id: u64) -> crate::Result<Option<TxnRecord>> {
-        let prefix = txn_key_prefix(txn_id);
-        let (group, shard) = self.router.find_shard(col::txn_desc(), &prefix)?;
-        let mut client = GroupClient::new(group, self.router.clone(), self.conn_manager.clone());
-        let req = Request::Scan(ShardScanRequest {
-            shard_id: shard.id,
-            limit: u64::MAX,
-            limit_bytes: u64::MAX,
-            prefix: Some(prefix.clone()),
-            ..Default::default()
-        });
-        let resp = match client.request(&req).await? {
-            Response::Scan(scan) => scan,
-            _ => {
-                return Err(Error::Internal(
-                    "invalid response type, `ShardScanResponse` is required".into(),
-                ))
-            }
-        };
-        if resp.data.is_empty() {
+    /// Get the corresponding txn record.
+    pub async fn get_txn_record(&self, start_version: u64) -> Result<Option<TxnRecord>> {
+        let key = keys::txn_record_key(start_version);
+        // FIXME(walter) get key from the specified shard.
+        let Some(value) = self.txn_col.get(key).await? else {
             return Ok(None);
-        }
+        };
 
-        // FIXME(walter) support scan during migration.
-        let mut txn_record = TxnRecord { state: TxnState::Aborted, timeout: 0, version: None };
-        for item in resp.data {
-            match item.key.strip_prefix(prefix.as_slice()) {
-                Some(b"state") => {
-                    txn_record.state = to_fixed_bytes(&item.value)
-                        .map(i32::from_le_bytes)
-                        .and_then(TxnState::from_i32)
-                        .ok_or_else(|| {
-                            Error::Internal(
-                                format!("txn state has illiged value: {:?}", item.value).into(),
-                            )
-                        })?;
-                }
-                Some(b"timeout") => {
-                    txn_record.timeout =
-                        to_fixed_bytes(&item.value).map(u64::from_le_bytes).ok_or_else(|| {
-                            Error::Internal(
-                                format!("txn timeout has illiged value: {:?}", item.value).into(),
-                            )
-                        })?;
-                }
-                Some(b"version") => {
-                    let version =
-                        to_fixed_bytes(&item.value).map(u64::from_le_bytes).ok_or_else(|| {
-                            Error::Internal(
-                                format!("txn timeout has illiged value: {:?}", item.value).into(),
-                            )
-                        })?;
-                    txn_record.version = Some(version);
-                }
-                _ => {
-                    return Err(Error::Internal(format!("unknown txn key: {:?}", item.key).into()));
-                }
-            }
-        }
+        let txn_record: TxnRecord = TxnRecord::decode(&*value)
+            .map_err(|e| Error::Internal(format!("decode TxnRecord: {e}").into()))?;
         Ok(Some(txn_record))
     }
-}
 
-#[inline]
-fn txn_state_key(txn_id: u64) -> Vec<u8> {
-    let mut buf = Vec::with_capacity(16);
-    buf.extend_from_slice(txn_id.to_be_bytes().as_slice());
-    buf.extend_from_slice(b"state");
-    buf
-}
-
-#[inline]
-fn txn_timeout_key(txn_id: u64) -> Vec<u8> {
-    let mut buf = Vec::with_capacity(16);
-    buf.extend_from_slice(txn_id.to_be_bytes().as_slice());
-    buf.extend_from_slice(b"timeout");
-    buf
-}
-
-#[inline]
-fn txn_version_key(txn_id: u64) -> Vec<u8> {
-    let mut buf = Vec::with_capacity(16);
-    buf.extend_from_slice(txn_id.to_be_bytes().as_slice());
-    buf.extend_from_slice(b"version");
-    buf
-}
-
-#[inline]
-fn txn_key_prefix(txn_id: u64) -> Vec<u8> {
-    txn_id.to_be_bytes().to_vec()
-}
-
-#[inline]
-fn to_fixed_bytes<const V: usize>(bytes: &[u8]) -> Option<[u8; V]> {
-    if bytes.len() != V {
-        None
-    } else {
-        let mut buf = [0u8; V];
-        buf[..].copy_from_slice(bytes);
-        Some(buf)
+    /// Abort the transaction specified by `start_version`.
+    ///
+    /// What happend if the txn has been committed.
+    pub async fn abort_txn(&self, start_version: u64) -> Result<()> {
+        todo!()
     }
 }
