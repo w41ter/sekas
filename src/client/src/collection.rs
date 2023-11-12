@@ -214,6 +214,15 @@ impl WriteBuilder {
         self
     }
 
+    /// Expect that the target key is exists exists.
+    pub fn expect_exists(mut self) -> Self {
+        self.conditions.push(WriteCondition {
+            r#type: WriteConditionType::ExpectExists.into(),
+            ..Default::default()
+        });
+        self
+    }
+
     /// Expect that the target key is not exists.
     pub fn expect_not_exists(mut self) -> Self {
         self.conditions.push(WriteCondition {

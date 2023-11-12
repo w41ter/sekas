@@ -2366,6 +2366,7 @@ name = "sekas-schema"
 version = "0.5.0"
 dependencies = [
  "crc32fast",
+ "fnv",
  "lazy_static",
  "libc",
  "log",

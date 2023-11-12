@@ -18,3 +18,5 @@ paste.workspace = true
 prost.workspace = true
 thiserror.workspace = true
 rand.workspace = true
+
+fnv = "1.0"

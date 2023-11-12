@@ -14,6 +14,7 @@
 pub mod col;
 pub mod db;
 pub mod keys;
+pub mod txn;
 
 use sekas_api::server::v1::*;
 
