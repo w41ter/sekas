@@ -52,7 +52,11 @@ impl RootStore {
     }
 
     pub async fn get(&self, shard_id: u64, key: &[u8]) -> Result<Option<Vec<u8>>> {
-        let get = ShardGetRequest { shard_id, start_version: u64::MAX, key: key.to_owned() };
+        let get = ShardGetRequest {
+            shard_id,
+            start_version: sekas_schema::system::txn::TXN_MAX_VERSION,
+            key: key.to_owned(),
+        };
         let resp = self.submit_request(Request::Get(get)).await?;
         let resp = resp
             .response
@@ -81,6 +85,7 @@ impl RootStore {
             .submit_request(Scan(ShardScanRequest {
                 shard_id,
                 prefix: Some(prefix.to_owned()),
+                start_version: sekas_schema::system::txn::TXN_MAX_VERSION,
                 ..Default::default()
             }))
             .await?;

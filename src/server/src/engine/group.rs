@@ -73,12 +73,14 @@ pub(crate) struct RawIterator<'a> {
     db_iter: rocksdb::DBIterator<'a>,
 }
 
+#[derive(Debug)]
 enum SnapshotRange {
     Target { target_key: Vec<u8> },
     Prefix { prefix: Vec<u8> },
     Range { start: Vec<u8>, end: Vec<u8> },
 }
 
+#[derive(Debug)]
 pub(crate) struct Snapshot<'a> {
     collection_id: u64,
     range: Option<SnapshotRange>,
@@ -86,7 +88,10 @@ pub(crate) struct Snapshot<'a> {
     core: RefCell<SnapshotCore<'a>>,
 }
 
+#[derive(derivative::Derivative)]
+#[derivative(Debug)]
 pub(crate) struct SnapshotCore<'a> {
+    #[derivative(Debug = "ignore")]
     db_iter: rocksdb::DBIterator<'a>,
     current_key: Option<Vec<u8>>,
     cached_entry: Option<MvccEntry>,
@@ -94,11 +99,13 @@ pub(crate) struct SnapshotCore<'a> {
 
 /// Traverse the data of a shard in the group engine, analyze and return the
 /// data (including tombstone).
+#[derive(Debug)]
 pub(crate) struct UserDataIterator<'a, 'b> {
     snapshot: &'b Snapshot<'a>,
 }
 
 /// Traverse multi-version of a single key.
+#[derive(Debug)]
 pub(crate) struct MvccIterator<'a, 'b> {
     snapshot: &'b Snapshot<'a>,
 }
@@ -1207,6 +1214,28 @@ mod tests {
             let mut snapshot = group_engine.snapshot(1, snapshot_mode).unwrap();
             let mut user_data_iter = snapshot.iter();
             assert!(user_data_iter.next().is_none());
+        }
+
+        {
+            // Scan with empty prefix should returns all.
+            let prefix = b"";
+            let snapshot_mode = SnapshotMode::Prefix { key: prefix };
+            let mut snapshot = group_engine.snapshot(1, snapshot_mode).unwrap();
+            let mut user_data_iter = snapshot.iter();
+
+            let mut mvcc_iter = user_data_iter.next().unwrap().unwrap();
+            let first_key = mvcc_iter.next();
+            assert!(matches!(first_key, Some(Ok(entry)) if entry.user_key() == b"123455"));
+
+            let mut mvcc_iter = user_data_iter.next().unwrap().unwrap();
+            assert!(matches!(mvcc_iter.next(), Some(Ok(entry)) if entry.user_key == b"123456"));
+            assert!(mvcc_iter.next().is_some());
+
+            let mut mvcc_iter = user_data_iter.next().unwrap().unwrap();
+            assert!(matches!(mvcc_iter.next(), Some(Ok(entry)) if entry.user_key == b"123456789"));
+
+            let mut mvcc_iter = user_data_iter.next().unwrap().unwrap();
+            assert!(matches!(mvcc_iter.next(), Some(Ok(entry)) if entry.user_key == b"123457789"));
         }
     }
 
