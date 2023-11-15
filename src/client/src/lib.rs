@@ -25,7 +25,7 @@ mod migrate_client;
 mod retry;
 mod rpc;
 mod shard_client;
-mod txn_client;
+mod txn;
 
 use tonic::async_trait;
 
@@ -39,3 +39,4 @@ pub use crate::migrate_client::MigrateClient;
 pub use crate::retry::RetryState;
 pub use crate::rpc::{ConnManager, NodeClient, RootClient, Router, RouterGroupState};
 pub use crate::shard_client::ShardClient;
+pub use crate::txn::TxnStateTable;

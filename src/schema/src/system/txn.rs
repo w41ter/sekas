@@ -15,6 +15,11 @@ use std::hash::Hasher;
 
 use fnv::FnvHasher;
 
+/// The version of write intent.
+pub const TXN_INTENT_VERSION: u64 = u64::MAX;
+/// The max version a txn could be.
+pub const TXN_MAX_VERSION: u64 = u64::MAX - 1;
+
 /// Compute the hash tag for a transaction.
 #[inline]
 pub fn hash_tag(txn_id: u64) -> u8 {
