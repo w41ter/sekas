@@ -13,6 +13,7 @@
 // limitations under the License.
 use std::time::Duration;
 
+use log::{debug, warn};
 use sekas_api::server::v1::group_request_union::Request;
 use sekas_api::server::v1::group_response_union::Response;
 use sekas_api::server::v1::*;
@@ -24,16 +25,18 @@ use crate::{Error, GroupClient, Result, RetryState, SekasClient, WriteBuilder};
 
 const TXN_TIMEOUT: Duration = Duration::from_secs(5);
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct TxnRecord {
-    /// / The state of txn record, the valid conversation is:
-    /// /
-    /// / RUNNING ------> ABORTED
-    /// /           +---> COMMITTED
+    /// The txn unique id.
+    pub start_version: u64,
+    /// The state of txn record, the valid conversation is:
+    ///
+    /// RUNNING ------> ABORTED
+    ///           +---> COMMITTED
     pub state: TxnState,
-    /// / The heartbeat of txn.
+    /// The heartbeat of txn.
     pub heartbeat: u64,
-    /// / The commit version of txn, it only used when state is equals to
+    /// The commit version of txn, it only used when state is equals to
     /// COMMITTED.
     pub commit_version: Option<u64>,
 }
@@ -45,7 +48,7 @@ struct TxnWriteRequest {
     deletes: Vec<DeleteRequest>,
 }
 
-struct TxnStateTable {
+pub struct TxnStateTable {
     client: SekasClient,
 }
 
@@ -55,6 +58,9 @@ impl TxnStateTable {
     }
 
     /// Begin a new transaction with the specified txn version.
+    ///
+    /// [`Error::InvalidArgument`] is returned if the specified txn has beed
+    /// committed or aborted.
     pub async fn begin_txn(&self, start_version: u64) -> Result<()> {
         let state_value = TxnState::Running.as_str_name().as_bytes().to_vec();
         let heartbeat_value = timestamp_millis().to_le_bytes().to_vec();
@@ -71,18 +77,29 @@ impl TxnStateTable {
             ],
             ..Default::default()
         };
-        let resp = match self.write(request).await {
-            Ok(resp) => resp,
-            Err(Error::CasFailed(idx, cond_idx, prev_value)) => {
-                todo!()
-            }
+
+        let (idx, cond_idx, prev_value) = match self.write(request).await {
+            Err(Error::CasFailed(idx, cond_idx, prev_value)) => (idx, cond_idx, prev_value),
             Err(err) => return Err(err),
-        };
-        let Some(put_resp) = resp.puts.first() else {
-            return Err(Error::Internal(format!("put response is empty").into()));
+            Ok(_) => return Ok(()),
         };
 
-        todo!()
+        if idx != 0 || cond_idx != 0 {
+            return Err(Error::Internal(format!("invalid cas failed response, idx {idx} and cond idx {cond_idx} are not expected").into()));
+        }
+        let Some(prev_value) = prev_value.as_ref().and_then(|v| v.content.as_ref()) else {
+            return Err(Error::NotFound(format!("target txn {start_version}")));
+        };
+
+        let prev_state = parse_txn_state(&prev_value)?;
+        debug!("try begin txn {start_version}, but prev state is {}", prev_state.as_str_name());
+        match prev_state {
+            TxnState::Running => Ok(()),
+            TxnState::Committed | TxnState::Aborted => Err(Error::InvalidArgument(format!(
+                "txn {start_version}, txn already {}",
+                prev_state.as_str_name()
+            ))),
+        }
     }
 
     /// Update the txn heartbeat.
@@ -96,23 +113,24 @@ impl TxnStateTable {
                 .ensure_put(heartbeat_value)],
             ..Default::default()
         };
-        let resp = match self.write(request).await {
-            Ok(resp) => resp,
-            Err(Error::CasFailed(idx, cond_idx, prev_value)) => {
-                todo!()
+
+        match self.write(request).await {
+            Err(Error::CasFailed(_, _, _)) => {
+                warn!("update txn {start_version} heartbeat, but the target txn is not exists");
+                Ok(())
             }
-            Err(err) => return Err(err),
-        };
-        let Some(put_resp) = resp.puts.first() else {
-            return Err(Error::Internal(format!("put response is empty").into()));
-        };
-        todo!()
+            Err(err) => Err(err),
+            Ok(_) => Ok(()),
+        }
     }
 
     /// Commit the transaction specified by `start_version`.
     ///
-    /// What happen if the commit txn already aborted.
+    /// [`Error::InvalidArgument`] is returned if the specified start version
+    /// has been aborted.
     pub async fn commit_txn(&self, start_version: u64, commit_version: u64) -> Result<()> {
+        debug_assert!(start_version < commit_version);
+
         let hash_tag = system::txn::hash_tag(start_version);
         let request = TxnWriteRequest {
             hash_tag,
@@ -122,24 +140,40 @@ impl TxnStateTable {
                     .take_prev_value()
                     .ensure_put(txn_state_value(TxnState::Committed)),
                 WriteBuilder::new(keys::txn_commit_key(hash_tag, start_version))
-                    .take_prev_value()
                     .ensure_put(txn_u64_value(commit_version)),
                 WriteBuilder::new(keys::txn_heartbeat_key(hash_tag, start_version))
                     .ensure_put(txn_u64_value(timestamp_millis())),
             ],
             ..Default::default()
         };
-        let resp = match self.write(request).await {
-            Ok(resp) => resp,
-            Err(Error::CasFailed(idx, cond_idx, prev_value)) => {
-                todo!()
-            }
+
+        let (idx, cond_idx, prev_value) = match self.write(request).await {
+            Err(Error::CasFailed(idx, cond_idx, prev_value)) => (idx, cond_idx, prev_value),
             Err(err) => return Err(err),
+            Ok(_) => return Ok(()),
         };
-        let Some(put_resp) = resp.puts.first() else {
-            return Err(Error::Internal(format!("put response is empty").into()));
+
+        if idx != 0 || cond_idx != 0 {
+            return Err(Error::Internal(format!("invalid cas failed response, idx {idx} and cond idx {cond_idx} are not expected").into()));
+        }
+        let Some(prev_value) = prev_value.as_ref().and_then(|v| v.content.as_ref()) else {
+            return Err(Error::NotFound(format!("target txn {start_version}")));
         };
-        todo!()
+
+        let prev_state = parse_txn_state(&prev_value)?;
+        debug!("try commit txn {start_version}, but prev state is {}", prev_state.as_str_name());
+        match prev_state {
+            TxnState::Running => {
+                Err(Error::Internal(format!("invalid cas failed response, the expect value is TxnState::Running, but failed").into()))
+            }
+            TxnState::Committed => {
+                // ATTN: here assumes that only one could commit a txn, so the commit version is always equals.
+                Ok(())
+            }
+            TxnState::Aborted => {
+                Err(Error::InvalidArgument(format!("txn {start_version}, txn already aborted")))
+            }
+        }
     }
 
     /// Get the corresponding txn record.
@@ -152,7 +186,8 @@ impl TxnStateTable {
 
     /// Abort the transaction specified by `start_version`.
     ///
-    /// What happend if the txn has been committed.
+    /// [`Error::InvalidArgument`] is returned if the specified txn has been
+    /// committed.
     pub async fn abort_txn(&self, start_version: u64) -> Result<()> {
         let expect_state_value = txn_state_value(TxnState::Running);
         let state_value = txn_state_value(TxnState::Aborted);
@@ -170,17 +205,31 @@ impl TxnStateTable {
             ],
             ..Default::default()
         };
-        let resp = match self.write(request).await {
-            Ok(resp) => resp,
-            Err(Error::CasFailed(idx, cond_idx, prev_value)) => {
-                todo!()
-            }
+
+        let (idx, cond_idx, prev_value) = match self.write(request).await {
+            Err(Error::CasFailed(idx, cond_idx, prev_value)) => (idx, cond_idx, prev_value),
             Err(err) => return Err(err),
+            Ok(_) => return Ok(()),
         };
-        let Some(put_resp) = resp.puts.first() else {
-            return Err(Error::Internal(format!("put response is empty").into()));
+
+        if idx != 0 || cond_idx != 0 {
+            return Err(Error::Internal(format!("invalid cas failed response, idx {idx} and cond idx {cond_idx} are not expected").into()));
+        }
+        let Some(prev_value) = prev_value.as_ref().and_then(|v| v.content.as_ref()) else {
+            return Err(Error::NotFound(format!("target txn {start_version}")));
         };
-        todo!()
+
+        let prev_state = parse_txn_state(&prev_value)?;
+        debug!("try abort txn {start_version}, but prev state is {}", prev_state.as_str_name());
+        match prev_state {
+            TxnState::Running => {
+                Err(Error::Internal(format!("invalid cas failed response, the expect value is TxnState::Running, but failed").into()))
+            }
+            TxnState::Committed => {
+                Err(Error::InvalidArgument(format!("txn {start_version}, txn already committed")))
+            }
+            TxnState::Aborted => Ok(()),
+        }
     }
 }
 
@@ -194,7 +243,7 @@ impl TxnStateTable {
 
             let request = Request::Scan(ShardScanRequest {
                 shard_id: shard_desc.id,
-                start_version: u64::MAX - 1, // TODO(walter) add this as a schema constant variable.
+                start_version: system::txn::TXN_MAX_VERSION,
                 prefix: Some(txn_prefix.to_vec()),
                 ..Default::default()
             });
@@ -272,6 +321,7 @@ fn parse_txn_record(
         }
     }
 
+    txn_record.start_version = start_version;
     txn_record.heartbeat = parse_next_txn_key(&mut it, &txn_heartbeat_key, parse_u64)?;
     txn_record.state = parse_next_txn_key(&mut it, &txn_state_key, parse_txn_state)?;
     if it.next().is_some() {
