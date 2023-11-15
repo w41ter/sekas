@@ -22,5 +22,6 @@ pub const STATE_REPLICA_ID: u64 = 0;
 pub const FIRST_REPLICA_ID: u64 = 1;
 pub const INIT_USER_REPLICA_ID: u64 = FIRST_REPLICA_ID + 1;
 pub const FIRST_NODE_ID: u64 = 0;
-pub const INITIAL_EPOCH: u64 = 0;
+// A group exists at least an replica, so the initial epoch is not zero.
+pub const INITIAL_EPOCH: u64 = 1;
 pub const INITIAL_JOB_ID: u64 = 0;

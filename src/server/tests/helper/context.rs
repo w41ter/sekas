@@ -17,7 +17,7 @@ use std::thread;
 use std::time::Duration;
 
 use log::info;
-use sekas_runtime::{ExecutorOwner, ShutdownNotifier, ExecutorConfig};
+use sekas_runtime::{ExecutorConfig, ExecutorOwner, ShutdownNotifier};
 use sekas_server::{Config, DbConfig, NodeConfig, RaftConfig, RootConfig, *};
 use tempdir::TempDir;
 
@@ -44,7 +44,7 @@ pub struct TestContext {
 impl TestContext {
     pub fn new(prefix: &str) -> Self {
         let root_dir = TempDir::new(prefix).unwrap();
-        TestContext {
+        let mut ctx = TestContext {
             name: prefix.to_owned(),
             root_dir,
             disable_group_promoting: false,
@@ -54,7 +54,10 @@ impl TestContext {
             tick_interval_ms: 500,
             notifiers: HashMap::default(),
             handles: HashMap::default(),
-        }
+        };
+        // Disable all balance by default.
+        ctx.disable_all_balance();
+        ctx
     }
 
     pub fn shutdown(&mut self) {

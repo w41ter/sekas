@@ -127,7 +127,10 @@ impl GroupStateMachine {
                         todo!("shard {} already existed in group", shard.id);
                     }
                 }
-                info!("group {} add shard {}", self.info.group_id, shard.id);
+                info!(
+                    "group {} add shard {} at epoch {}",
+                    self.info.group_id, shard.id, desc.epoch
+                );
                 self.desc_updated = true;
                 desc.epoch += SHARD_UPDATE_DELTA;
                 desc.shards.push(shard);

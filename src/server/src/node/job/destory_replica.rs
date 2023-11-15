@@ -15,6 +15,7 @@
 use std::sync::Arc;
 
 use log::error;
+use sekas_runtime::JoinHandle;
 
 use crate::engine::{Engines, GroupEngine, RawDb, StateEngine};
 use crate::node::metrics::*;
@@ -23,8 +24,8 @@ use crate::serverpb::v1::ReplicaLocalState;
 use crate::{record_latency, Error, Result};
 
 /// Clean a group engine and save the replica state to
-/// `ReplicaLocalState::Tombstone`.
-pub(crate) fn setup(group_id: u64, replica_id: u64, engines: Engines) {
+/// [`ReplicaLocalState::Tombstone`].
+pub(crate) fn setup(group_id: u64, replica_id: u64, engines: Engines) -> JoinHandle<()> {
     sekas_runtime::spawn(async move {
         if let Err(err) =
             destory_replica(group_id, replica_id, engines.state(), engines.db(), engines.log())
@@ -32,7 +33,7 @@ pub(crate) fn setup(group_id: u64, replica_id: u64, engines: Engines) {
         {
             error!("destory group engine: {}, group {}", err, group_id);
         }
-    });
+    })
 }
 
 async fn destory_replica(

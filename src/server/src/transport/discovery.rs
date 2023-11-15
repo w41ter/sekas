@@ -1,3 +1,4 @@
+// Copyright 2023-present The Sekas Authors.
 // Copyright 2022 The Engula Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -12,6 +13,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use log::debug;
 use sekas_client::ServiceDiscovery;
 
 use crate::engine::StateEngine;
@@ -31,8 +33,12 @@ impl RootDiscovery {
 impl ServiceDiscovery for RootDiscovery {
     async fn list_nodes(&self) -> Vec<String> {
         if let Ok(Some(root)) = self.state_engine.load_root_desc().await {
-            return root.root_nodes.into_iter().map(|n| n.addr).collect();
+            if !root.root_nodes.is_empty() {
+                debug!("load root nodes from state engine, root desc {root:?}");
+                return root.root_nodes.into_iter().map(|n| n.addr).collect();
+            }
         }
+        debug!("load root nodes from initial nodes, {:?}", self.initial_nodes);
         self.initial_nodes.clone()
     }
 }

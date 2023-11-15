@@ -69,7 +69,6 @@ where
 }
 
 /// Node is used to manage replicas lifecycle, and provides replica query.
-#[derive(Clone)]
 pub struct Node
 where
     Self: Send + Sync,
@@ -83,6 +82,7 @@ where
     transport_manager: TransportManager,
     engines: Engines,
     state_engine: StateEngine,
+    task_group: TaskGroup,
 
     /// Node related metadata, including serving replicas, root desc.
     node_state: Arc<Mutex<NodeState>>,
@@ -119,6 +119,7 @@ impl Node {
             migrate_ctrl,
             engines,
             state_engine,
+            task_group: TaskGroup::default(),
             node_state: Arc::new(Mutex::new(NodeState::default())),
             replica_mutation: Arc::default(),
         })
@@ -140,7 +141,9 @@ impl Node {
         let node_id = node_ident.node_id;
         for (group_id, replica_id, state) in self.state_engine.replica_states().await? {
             if state == ReplicaLocalState::Terminated {
-                setup_destory_replica(group_id, replica_id, self.engines.clone());
+                let destory_replica_handle =
+                    setup_destory_replica(group_id, replica_id, self.engines.clone());
+                self.task_group.add_task(destory_replica_handle);
             }
             if matches!(state, ReplicaLocalState::Tombstone | ReplicaLocalState::Terminated) {
                 self.raft_mgr
@@ -265,7 +268,9 @@ impl Node {
         self.raft_mgr.snapshot_manager().recycle_snapshots(replica_id, RecycleSnapMode::All);
 
         // Clean group engine data in asynchronously.
-        self::job::setup_destory_replica(group_id, replica_id, self.engines.clone());
+        let destory_replica_handle =
+            self::job::setup_destory_replica(group_id, replica_id, self.engines.clone());
+        self.task_group.add_task(destory_replica_handle);
 
         info!("group {group_id} remove replica {replica_id} success");
 
@@ -359,6 +364,7 @@ impl Node {
             Ok(())
         } else {
             // TODO(walter) reject staled update root request.
+            info!("update root from {local_root_desc:?} to {root_desc:?}");
             self.state_engine().save_root_desc(&root_desc).await?;
             self.reload_root_from_engine().await
         }

@@ -1,3 +1,4 @@
+// Copyright 2023-present The Sekas Authors.
 // Copyright 2022 The Engula Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,12 +14,12 @@
 // limitations under the License.
 mod helper;
 
-use sekas_server::Result;
+use log::info;
+use sekas_rock::fn_name;
 
 use crate::helper::client::*;
 use crate::helper::context::*;
 use crate::helper::init::setup_panic_hook;
-use crate::helper::runtime::block_on_current;
 
 #[ctor::ctor]
 fn init() {
@@ -26,52 +27,43 @@ fn init() {
     tracing_subscriber::fmt::init();
 }
 
-#[test]
-fn bootstrap_cluster() -> Result<()> {
-    let mut ctx = TestContext::new("bootstrap-cluster");
+#[sekas_macro::test]
+async fn bootstrap_cluster() {
+    let mut ctx = TestContext::new(fn_name!());
     let node_1_addr = ctx.next_listen_address();
     ctx.spawn_server(1, &node_1_addr, true, vec![]);
 
-    block_on_current(async {
-        node_client_with_retry(&node_1_addr).await;
-    });
-
-    // At this point, initialization has been completed.
-    Ok(())
+    // After this point, initialization has been completed.
+    node_client_with_retry(&node_1_addr).await;
 }
 
-#[test]
-fn join_node() -> Result<()> {
-    let mut ctx = TestContext::new("join-node");
+#[sekas_macro::test]
+async fn join_node() {
+    let mut ctx = TestContext::new(fn_name!());
     let node_1_addr = ctx.next_listen_address();
     ctx.spawn_server(1, &node_1_addr, true, vec![]);
 
     let node_2_addr = ctx.next_listen_address();
     ctx.spawn_server(2, &node_2_addr, false, vec![node_1_addr.clone()]);
 
-    block_on_current(async {
-        node_client_with_retry(&node_1_addr).await;
-        node_client_with_retry(&node_2_addr).await;
-    });
+    info!("spawn 2 server, now connect both");
+    node_client_with_retry(&node_1_addr).await;
+    node_client_with_retry(&node_2_addr).await;
 
     // At this point, initialization and join has been completed.
-
-    Ok(())
 }
 
-#[test]
-fn restart_cluster() {
-    block_on_current(async {
-        let mut ctx = TestContext::new("bootstrap_test__restart_cluster");
-        ctx.disable_all_balance();
-        let nodes = ctx.bootstrap_servers(3).await;
+#[sekas_macro::test]
+async fn restart_cluster() {
+    let mut ctx = TestContext::new(fn_name!());
+    ctx.disable_all_balance();
+    let nodes = ctx.bootstrap_servers(3).await;
 
-        // Shutdown and restart servers.
-        ctx.shutdown();
+    // Shutdown and restart servers.
+    ctx.shutdown();
 
-        let nodes = ctx.start_servers(nodes).await;
-        let c = ClusterClient::new(nodes).await;
-        let app = c.app_client().await;
-        app.create_database("db".into()).await.unwrap();
-    });
+    let nodes = ctx.start_servers(nodes).await;
+    let c = ClusterClient::new(nodes).await;
+    let app = c.app_client().await;
+    app.create_database("db".into()).await.unwrap();
 }
