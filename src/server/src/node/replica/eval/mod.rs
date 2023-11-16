@@ -18,8 +18,8 @@ mod cmd_accept_shard;
 mod cmd_get;
 mod cmd_move_replicas;
 mod cmd_scan;
+mod cmd_txn;
 mod cmd_write;
-// mod txn;
 
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -34,14 +34,10 @@ pub(crate) use self::cmd_accept_shard::accept_shard;
 pub(crate) use self::cmd_get::get;
 pub(crate) use self::cmd_move_replicas::move_replicas;
 pub(crate) use self::cmd_scan::scan;
+pub(crate) use self::cmd_txn::write_intent;
 pub(crate) use self::cmd_write::batch_write;
 use crate::serverpb::v1::EvalResult;
 use crate::{Error, Result};
-
-/// The key version reserved for write intent.
-const INTENT_KEY_VERSION: u64 = u64::MAX;
-/// The key version reserved for flat written.
-const FLAT_KEY_VERSION: u64 = u64::MAX - 1;
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
 struct ShardKey {
