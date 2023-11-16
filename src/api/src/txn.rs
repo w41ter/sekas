@@ -1,4 +1,4 @@
-// Copyright 2023 The Sekas Authors.
+// Copyright 2023-present The Engula Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,7 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-pub mod fs;
-pub mod lang;
-pub mod num;
-pub mod time;
+//! A mod to hold the helper functions of txn related structures.
+
+use crate::server::v1::TxnIntent;
+
+impl TxnIntent {
+    pub fn tombstone(start_version: u64) -> Self {
+        TxnIntent { start_version, is_delete: true, value: None }
+    }
+
+    pub fn with_put(start_version: u64, value: Option<Vec<u8>>) -> Self {
+        TxnIntent { start_version, is_delete: false, value }
+    }
+}

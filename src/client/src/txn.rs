@@ -17,6 +17,7 @@ use log::{debug, warn};
 use sekas_api::server::v1::group_request_union::Request;
 use sekas_api::server::v1::group_response_union::Response;
 use sekas_api::server::v1::*;
+use sekas_rock::num::decode_u64;
 use sekas_rock::time::timestamp_millis;
 use sekas_schema::system::keys::{self, txn_lower_key};
 use sekas_schema::system::{self, col};
@@ -334,15 +335,11 @@ fn parse_txn_record(
 }
 
 fn parse_u64(bytes: &[u8]) -> Result<u64> {
-    if bytes.len() != 8 {
-        return Err(Error::Internal(
+    decode_u64(bytes).ok_or_else(|| {
+        Error::Internal(
             format!("8 bytes is required to parse u64, but got {} bytes", bytes.len()).into(),
-        ));
-    }
-
-    let mut buf = [0u8; 8];
-    buf.copy_from_slice(bytes);
-    Ok(u64::from_be_bytes(buf))
+        )
+    })
 }
 
 fn parse_txn_state(bytes: &[u8]) -> Result<TxnState> {
