@@ -41,7 +41,6 @@ async fn begin_txn_idempotent() {
         timeout: Some(Duration::from_millis(200)),
     };
     let client = c.app_client_with_options(opts).await;
-    // c.assert_collection_ready(&sekas_schema::system::col::txn_desc()).await;
 
     let ts_table = sekas_client::TxnStateTable::new(client);
 
@@ -69,7 +68,6 @@ async fn commit_txn_idempotent() {
         timeout: Some(Duration::from_millis(200)),
     };
     let client = c.app_client_with_options(opts).await;
-    // c.assert_collection_ready(&sekas_schema::system::col::txn_desc()).await;
 
     let ts_table = sekas_client::TxnStateTable::new(client);
 
@@ -103,7 +101,6 @@ async fn abort_txn_idempotent() {
         timeout: Some(Duration::from_millis(200)),
     };
     let client = c.app_client_with_options(opts).await;
-    // c.assert_collection_ready(&sekas_schema::system::col::txn_desc()).await;
 
     let ts_table = sekas_client::TxnStateTable::new(client);
 
@@ -136,7 +133,6 @@ async fn txn_state_table_normal_case() {
         timeout: Some(Duration::from_millis(200)),
     };
     let client = c.app_client_with_options(opts).await;
-    // c.assert_collection_ready(&sekas_schema::system::col::txn_desc()).await;
 
     let ts_table = sekas_client::TxnStateTable::new(client);
 
