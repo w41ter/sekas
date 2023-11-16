@@ -14,11 +14,12 @@
 // limitations under the License.
 
 use sekas_api::server::v1::{PutType, ShardWriteRequest, ShardWriteResponse, WriteResponse};
+use sekas_schema::system::txn::TXN_MAX_VERSION;
 
 use super::cas::eval_conditions;
 use crate::engine::{GroupEngine, WriteBatch};
 use crate::node::replica::ExecCtx;
-use crate::serverpb::v1::{EvalResult, WriteBatchRep};
+use crate::serverpb::v1::EvalResult;
 use crate::Result;
 
 pub(crate) async fn batch_write(
@@ -37,19 +38,23 @@ pub(crate) async fn batch_write(
             // TODO(walter) support get value in parallel.
             let prev_value = group_engine.get(req.shard_id, &del.key).await?;
             eval_conditions(prev_value.as_ref(), &del.conditions)?;
-            resp.deletes.push(WriteResponse { prev_value });
+            if del.take_prev_value {
+                resp.deletes.push(WriteResponse { prev_value });
+            }
         }
         if exec_ctx.is_migrating_shard(req.shard_id) {
             panic!("BatchWrite does not support migrating shard");
         }
-        group_engine.tombstone(&mut wb, req.shard_id, &del.key, super::FLAT_KEY_VERSION)?;
+        group_engine.tombstone(&mut wb, req.shard_id, &del.key, TXN_MAX_VERSION)?;
     }
     for put in &req.puts {
         if !put.conditions.is_empty() || put.take_prev_value {
             // TODO(walter) support get value in parallel.
             let prev_value = group_engine.get(req.shard_id, &put.key).await?;
             eval_conditions(prev_value.as_ref(), &put.conditions)?;
-            resp.puts.push(WriteResponse { prev_value });
+            if put.take_prev_value {
+                resp.puts.push(WriteResponse { prev_value });
+            }
         }
         if put.put_type != PutType::None as i32 {
             panic!("BatchWrite does not support put operation");
@@ -57,12 +62,9 @@ pub(crate) async fn batch_write(
         if exec_ctx.is_migrating_shard(req.shard_id) {
             panic!("BatchWrite does not support migrating shard");
         }
+
         // FIXME(walter) change flat version, to support move internal shards.
-        group_engine.put(&mut wb, req.shard_id, &put.key, &put.value, super::FLAT_KEY_VERSION)?;
+        group_engine.put(&mut wb, req.shard_id, &put.key, &put.value, TXN_MAX_VERSION)?;
     }
-    let eval_result = EvalResult {
-        batch: Some(WriteBatchRep { data: wb.data().to_owned() }),
-        ..Default::default()
-    };
-    Ok((Some(eval_result), resp))
+    Ok((Some(EvalResult::with_batch(wb.data().to_owned())), resp))
 }

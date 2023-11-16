@@ -305,9 +305,19 @@ impl Replica {
                     eval::batch_write(exec_ctx, &self.group_engine, req).await?;
                 (eval_result, Response::Write(resp))
             }
-            Request::WriteIntent(_) => todo!(),
-            Request::CommitIntent(_) => todo!(),
-            Request::ClearIntent(_) => todo!(),
+            Request::WriteIntent(req) => {
+                let (eval_result, resp) =
+                    eval::write_intent(exec_ctx, &self.group_engine, req).await?;
+                (eval_result, Response::WriteIntent(resp))
+            }
+            Request::CommitIntent(req) => {
+                let eval_result = eval::commit_intent(exec_ctx, &self.group_engine, req).await?;
+                (eval_result, Response::CommitIntent(CommitIntentResponse::default()))
+            }
+            Request::ClearIntent(req) => {
+                let eval_result = eval::clear_intent(exec_ctx, &self.group_engine, req).await?;
+                (eval_result, Response::ClearIntent(ClearIntentResponse::default()))
+            }
             Request::Scan(req) => {
                 let eval_result = eval::scan(&self.group_engine, req).await?;
                 (None, Response::Scan(eval_result))

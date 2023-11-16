@@ -16,6 +16,7 @@
 use log::trace;
 use prost::Message;
 use sekas_api::server::v1::*;
+use sekas_schema::system::txn::TXN_INTENT_VERSION;
 
 use crate::engine::{GroupEngine, SnapshotMode};
 use crate::node::migrate::ForwardCtx;
@@ -48,12 +49,12 @@ async fn read_key(
     start_version: u64,
 ) -> Result<Option<Value>> {
     let snapshot_mode = SnapshotMode::Key { key };
-    let mut snapshot = engine.snapshot(shard_id, snapshot_mode)?;
+    let snapshot = engine.snapshot(shard_id, snapshot_mode)?;
     if let Some(iter) = snapshot.mvcc_iter() {
         for entry in iter? {
             let entry = entry?;
             trace!("read key entry with version: {}", entry.version());
-            if entry.version() == super::INTENT_KEY_VERSION {
+            if entry.version() == TXN_INTENT_VERSION {
                 // maybe we need to wait intent.
                 let Some(value) = entry.value() else {
                     return Err(Error::InvalidData(format!(
