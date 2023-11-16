@@ -44,8 +44,9 @@ message TxnRecord {
 message TxnIntent {
     /// The start version of txn.
     uint64 start_version = 1;
-    /// The value to apply. `None` for delete operation.
-    optional bytes value = 2;
+    bool is_delete = 2;
+    /// The value to apply to state machine. `None` for Nop.
+    optional bytes value = 3;
 }
 
 

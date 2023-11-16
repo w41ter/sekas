@@ -233,10 +233,10 @@ impl GroupEngine {
         internal::flushed_apply_state(&self.raw_db, &self.cf_handle())
     }
 
-    /// Get key value from the corresponding shard.
+    /// Get the latest key value from the corresponding shard.
     pub async fn get(&self, shard_id: u64, key: &[u8]) -> Result<Option<Value>> {
         let snapshot_mode = SnapshotMode::Key { key };
-        let mut snapshot = self.snapshot(shard_id, snapshot_mode)?;
+        let snapshot = self.snapshot(shard_id, snapshot_mode)?;
         if let Some(iter) = snapshot.mvcc_iter() {
             let mut iter = iter?;
             if let Some(entry) = iter.next() {
@@ -507,12 +507,12 @@ impl<'a> Snapshot<'a> {
     }
 
     #[inline]
-    pub fn iter<'b>(&'b mut self) -> UserDataIterator<'a, 'b> {
+    pub fn iter<'b>(&'b self) -> UserDataIterator<'a, 'b> {
         UserDataIterator { snapshot: self }
     }
 
     #[inline]
-    pub fn mvcc_iter<'b>(&'b mut self) -> Option<Result<MvccIterator<'a, 'b>>> {
+    pub fn mvcc_iter<'b>(&'b self) -> Option<Result<MvccIterator<'a, 'b>>> {
         self.next_mvcc_iterator()
     }
 
@@ -1043,7 +1043,7 @@ mod tests {
         }
         group_engine.commit(wb, WriteStates::default(), false).unwrap();
 
-        let mut snapshot = group_engine.snapshot(1, SnapshotMode::default()).unwrap();
+        let snapshot = group_engine.snapshot(1, SnapshotMode::default()).unwrap();
         let mut user_data_iter = snapshot.iter();
         {
             // key 123456
@@ -1096,7 +1096,7 @@ mod tests {
         }
         group_engine.commit(wb, WriteStates::default(), false).unwrap();
 
-        let mut snapshot = group_engine.snapshot(1, SnapshotMode::default()).unwrap();
+        let snapshot = group_engine.snapshot(1, SnapshotMode::default()).unwrap();
         let mut user_data_iter = snapshot.iter();
         {
             // key 123456
@@ -1142,7 +1142,7 @@ mod tests {
         {
             // Target key `123456`
             let snapshot_mode = SnapshotMode::Key { key: b"123456" };
-            let mut snapshot = group_engine.snapshot(1, snapshot_mode).unwrap();
+            let snapshot = group_engine.snapshot(1, snapshot_mode).unwrap();
             let mut user_data_iter = snapshot.iter();
             assert!(user_data_iter.next().is_some());
             assert!(user_data_iter.next().is_none());
@@ -1151,7 +1151,7 @@ mod tests {
         {
             // Target key `123456789`
             let snapshot_mode = SnapshotMode::Key { key: b"123456789" };
-            let mut snapshot = group_engine.snapshot(1, snapshot_mode).unwrap();
+            let snapshot = group_engine.snapshot(1, snapshot_mode).unwrap();
             let mut user_data_iter = snapshot.iter();
             assert!(user_data_iter.next().is_some());
             assert!(user_data_iter.next().is_none());
@@ -1160,7 +1160,7 @@ mod tests {
         {
             // Target to an not existed key
             let snapshot_mode = SnapshotMode::Key { key: b"???" };
-            let mut snapshot = group_engine.snapshot(1, snapshot_mode).unwrap();
+            let snapshot = group_engine.snapshot(1, snapshot_mode).unwrap();
             let mut user_data_iter = snapshot.iter();
             assert!(user_data_iter.next().is_none());
         }
@@ -1194,7 +1194,7 @@ mod tests {
             // Scan with prefix.
             let prefix = b"123456";
             let snapshot_mode = SnapshotMode::Prefix { key: prefix };
-            let mut snapshot = group_engine.snapshot(1, snapshot_mode).unwrap();
+            let snapshot = group_engine.snapshot(1, snapshot_mode).unwrap();
             let mut user_data_iter = snapshot.iter();
 
             let mut mvcc_iter = user_data_iter.next().unwrap().unwrap();
@@ -1211,7 +1211,7 @@ mod tests {
             // Scan with non-exists prefix
             let prefix = b"1234577890";
             let snapshot_mode = SnapshotMode::Prefix { key: prefix };
-            let mut snapshot = group_engine.snapshot(1, snapshot_mode).unwrap();
+            let snapshot = group_engine.snapshot(1, snapshot_mode).unwrap();
             let mut user_data_iter = snapshot.iter();
             assert!(user_data_iter.next().is_none());
         }
@@ -1220,7 +1220,7 @@ mod tests {
             // Scan with empty prefix should returns all.
             let prefix = b"";
             let snapshot_mode = SnapshotMode::Prefix { key: prefix };
-            let mut snapshot = group_engine.snapshot(1, snapshot_mode).unwrap();
+            let snapshot = group_engine.snapshot(1, snapshot_mode).unwrap();
             let mut user_data_iter = snapshot.iter();
 
             let mut mvcc_iter = user_data_iter.next().unwrap().unwrap();
@@ -1267,7 +1267,7 @@ mod tests {
             // Scan with prefix.
             let prefix = b"123456";
             let snapshot_mode = SnapshotMode::Start { start_key: Some(prefix) };
-            let mut snapshot = group_engine.snapshot(1, snapshot_mode).unwrap();
+            let snapshot = group_engine.snapshot(1, snapshot_mode).unwrap();
             let mut user_data_iter = snapshot.iter();
 
             let mut mvcc_iter = user_data_iter.next().unwrap().unwrap();
@@ -1284,7 +1284,7 @@ mod tests {
             // Scan with non-exists key
             let prefix = b"1234577890";
             let snapshot_mode = SnapshotMode::Start { start_key: Some(prefix) };
-            let mut snapshot = group_engine.snapshot(1, snapshot_mode).unwrap();
+            let snapshot = group_engine.snapshot(1, snapshot_mode).unwrap();
             let mut user_data_iter = snapshot.iter();
             assert!(user_data_iter.next().is_none());
         }
@@ -1319,7 +1319,7 @@ mod tests {
 
         // Iterate shard 1
         let snapshot_mode = SnapshotMode::default();
-        let mut snapshot = group_engine.snapshot(1, snapshot_mode).unwrap();
+        let snapshot = group_engine.snapshot(1, snapshot_mode).unwrap();
         let mut user_data_iter = snapshot.iter();
         let mut mvcc_key_iter = user_data_iter.next().unwrap().unwrap();
         let entry = mvcc_key_iter.next().unwrap().unwrap();
@@ -1328,7 +1328,7 @@ mod tests {
 
         // Iterate shard 2
         let snapshot_mode = SnapshotMode::default();
-        let mut snapshot = group_engine.snapshot(2, snapshot_mode).unwrap();
+        let snapshot = group_engine.snapshot(2, snapshot_mode).unwrap();
         let mut user_data_iter = snapshot.iter();
         let mut mvcc_key_iter = user_data_iter.next().unwrap().unwrap();
         let entry = mvcc_key_iter.next().unwrap().unwrap();

@@ -85,4 +85,10 @@ pub mod v1 {
             EntryId { index: e.index, term: e.term }
         }
     }
+
+    impl EvalResult {
+        pub fn with_batch(data: Vec<u8>) -> Self {
+            EvalResult { batch: Some(WriteBatchRep { data }), ..Default::default() }
+        }
+    }
 }

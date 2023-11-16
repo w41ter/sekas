@@ -107,6 +107,49 @@ pub(crate) async fn write_intent(
     Ok((eval_result, WriteIntentResponse { write: Some(resp) }))
 }
 
+pub(crate) async fn commit_intent(
+    exec_ctx: &ExecCtx,
+    group_engine: &GroupEngine,
+    req: &CommitIntentRequest,
+) -> Result<Option<EvalResult>> {
+    // FIXME(walter) support migration.
+    let mut wb = WriteBatch::default();
+    for key in &req.keys {
+        let Some(intent) =
+            read_target_intent(group_engine, req.start_version, req.shard_id, key).await?
+        else {
+            continue;
+        };
+        group_engine.delete(&mut wb, req.shard_id, key, TXN_INTENT_VERSION);
+        if intent.is_delete {
+            group_engine.tombstone(&mut wb, req.shard_id, key, req.commit_version);
+        } else if let Some(value) = intent.value {
+            group_engine.put(&mut wb, req.shard_id, key, &value, req.commit_version);
+        }
+    }
+
+    Ok(if wb.is_empty() { None } else { Some(EvalResult::with_batch(wb.data().to_owned())) })
+}
+
+pub(crate) async fn clear_intent(
+    exec_ctx: &ExecCtx,
+    group_engine: &GroupEngine,
+    req: &ClearIntentRequest,
+) -> Result<Option<EvalResult>> {
+    // FIXME(walter) support migration.
+    let mut wb = WriteBatch::default();
+    for key in &req.keys {
+        let Some(intent) =
+            read_target_intent(group_engine, req.start_version, req.shard_id, key).await?
+        else {
+            continue;
+        };
+        group_engine.delete(&mut wb, req.shard_id, key, TXN_INTENT_VERSION);
+    }
+
+    Ok(if wb.is_empty() { None } else { Some(EvalResult::with_batch(wb.data().to_owned())) })
+}
+
 fn apply_put_op(
     r#type: PutType,
     prev_value: Option<&Value>,
@@ -159,75 +202,30 @@ fn read_intent_and_next_key(
     Ok((None, None))
 }
 
-pub(crate) async fn commit_intent(
-    exec_ctx: &ExecCtx,
-    group_engine: &GroupEngine,
-    req: &CommitIntentRequest,
-) -> Result<EvalResult> {
-    // FIXME(walter) support migration.
-    let mut wb = WriteBatch::default();
-    for key in &req.keys {
-        let Some(value) = group_engine.get(req.shard_id, key).await? else {
-            // Skip not exists intent
-            continue;
-        };
-        if value.version != TXN_INTENT_VERSION {
-            continue;
-        }
-
-        let content = value.content.ok_or_else(|| {
-            Error::InvalidData(format!(
-                "txn intent without value, shard {} key {:?}",
-                req.shard_id, key
-            ))
-        })?;
-
-        // Avoid to commit other txn intents.
-        let intent = TxnIntent::decode(content.as_slice())?;
-        if intent.start_version != req.start_version {
-            continue;
-        }
-        group_engine.delete(&mut wb, req.shard_id, key, TXN_INTENT_VERSION);
-        if intent.is_delete {
-            group_engine.tombstone(&mut wb, req.shard_id, key, req.commit_version);
-        } else if let Some(value) = intent.value {
-            group_engine.put(&mut wb, req.shard_id, key, &value, req.commit_version);
-        }
+async fn read_target_intent(
+    engine: &GroupEngine,
+    start_version: u64,
+    shard_id: u64,
+    key: &[u8],
+) -> Result<Option<TxnIntent>> {
+    let value = engine.get(shard_id, key).await?;
+    let Some(value) = value else { return Ok(None) };
+    if value.version != TXN_INTENT_VERSION {
+        return Ok(None);
     }
 
-    Ok(EvalResult {
-        batch: Some(WriteBatchRep { data: wb.data().to_owned() }),
-        ..Default::default()
-    })
+    let content = value.content.ok_or_else(|| {
+        Error::InvalidData(format!("txn intent without value, shard {shard_id} key {key:?}"))
+    })?;
+
+    let intent = TxnIntent::decode(content.as_slice())?;
+
+    // To support idempotent.
+    if intent.start_version != start_version {
+        return Ok(None);
+    }
+    Ok(Some(intent))
 }
-
-// pub(crate) async fn clear_intent(
-//     exec_ctx: &ExecCtx,
-//     group_engine: &GroupEngine,
-//     req: &ClearIntentRequest,
-// ) -> Result<EvalResult> {
-//     // FIXME(walter) support migration.
-//     let mut wb = WriteBatch::default();
-//     for key in &req.keys {
-//         // Skip not exists intent
-//         let Some((value, super::INTENT_KEY_VERSION)) =
-// group_engine.get(req.shard_id, key).await?         else {
-//             continue;
-//         };
-
-//         // Avoid to commit other txn intents.
-//         let intent = WriteIntent::decode(value.as_slice())?;
-//         if intent.start_version != req.start_version {
-//             continue;
-//         }
-//         group_engine.delete(&mut wb, req.shard_id, key,
-// super::INTENT_KEY_VERSION);     }
-
-//     Ok(EvalResult {
-//         batch: Some(WriteBatchRep { data: wb.data().to_owned() }),
-//         ..Default::default()
-//     })
-// }
 
 // #[derive(Default)]
 // struct IntentRecord {

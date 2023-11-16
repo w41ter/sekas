@@ -34,7 +34,7 @@ pub(crate) use self::cmd_accept_shard::accept_shard;
 pub(crate) use self::cmd_get::get;
 pub(crate) use self::cmd_move_replicas::move_replicas;
 pub(crate) use self::cmd_scan::scan;
-pub(crate) use self::cmd_txn::write_intent;
+pub(crate) use self::cmd_txn::{clear_intent, commit_intent, write_intent};
 pub(crate) use self::cmd_write::batch_write;
 use crate::serverpb::v1::EvalResult;
 use crate::{Error, Result};

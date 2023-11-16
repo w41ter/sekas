@@ -14,6 +14,7 @@
 // limitations under the License.
 use prost::Message;
 use sekas_api::server::v1::*;
+use sekas_schema::system::txn::TXN_INTENT_VERSION;
 
 use crate::engine::{GroupEngine, Snapshot, SnapshotMode};
 use crate::Result;
@@ -36,10 +37,7 @@ pub(crate) async fn scan(
     scan_inner(snapshot, &req).await
 }
 
-async fn scan_inner(
-    mut snapshot: Snapshot<'_>,
-    req: &ShardScanRequest,
-) -> Result<ShardScanResponse> {
+async fn scan_inner(snapshot: Snapshot<'_>, req: &ShardScanRequest) -> Result<ShardScanResponse> {
     let mut data = Vec::new();
     let mut total_bytes = 0;
     'OUTER: for mvcc_iter in snapshot.iter() {
@@ -61,7 +59,7 @@ async fn scan_inner(
                 break 'OUTER;
             }
 
-            if entry.version() == super::INTENT_KEY_VERSION {
+            if entry.version() == TXN_INTENT_VERSION {
                 let encoded_intent = entry.value().ok_or_else(|| {
                     crate::Error::InvalidData(format!(
                         "the value of intent key {:?} is not exists",
