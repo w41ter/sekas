@@ -310,6 +310,7 @@ async fn read_target_intent(
 
 #[cfg(test)]
 mod tests {
+    use sekas_api::server::v1::{PutRequest, ShardWriteRequest};
     use sekas_rock::fn_name;
     use tempdir::TempDir;
 
@@ -392,5 +393,105 @@ mod tests {
             assert_eq!(prev_value, expect_prev_value, "idx={idx}");
             idx += 1;
         }
+    }
+
+    fn write_intent_request(start_version: u64, key: Vec<u8>) -> WriteIntentRequest {
+        WriteIntentRequest {
+            start_version,
+            write: Some(ShardWriteRequest {
+                shard_id: 1,
+                puts: vec![PutRequest {
+                    put_type: PutType::None.into(),
+                    key,
+                    value: vec![],
+                    take_prev_value: true,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }),
+        }
+    }
+
+    #[sekas_macro::test]
+    async fn write_and_commit_intent() {
+        let dir = TempDir::new(fn_name!()).unwrap();
+        let engine = create_group_engine(dir.path(), 1, 1, 1).await;
+
+        let key = b"123321".to_vec();
+        let start_version = 9394;
+        let req = write_intent_request(start_version, key.clone());
+        let (eval_result, resp) = write_intent(&ExecCtx::default(), &engine, &req).await.unwrap();
+        assert!(eval_result.is_some());
+        let wb = WriteBatch::new(&eval_result.unwrap().batch.unwrap().data);
+        engine.commit(wb, WriteStates::default(), false).unwrap();
+
+        let req = CommitIntentRequest {
+            shard_id: 1,
+            start_version,
+            commit_version: start_version + 1,
+            keys: vec![key.clone()],
+        };
+        let eval_result = commit_intent(&ExecCtx::default(), &engine, &req).await.unwrap();
+        assert!(eval_result.is_some());
+        let wb = WriteBatch::new(&eval_result.unwrap().batch.unwrap().data);
+        engine.commit(wb, WriteStates::default(), false).unwrap();
+
+        // commit intent is idempotent
+        let req = CommitIntentRequest {
+            shard_id: 1,
+            start_version,
+            commit_version: start_version + 1,
+            keys: vec![key.clone()],
+        };
+        let eval_result = commit_intent(&ExecCtx::default(), &engine, &req).await.unwrap();
+        assert!(eval_result.is_none());
+    }
+
+    #[sekas_macro::test]
+    async fn write_and_clear_intent() {
+        let dir = TempDir::new(fn_name!()).unwrap();
+        let engine = create_group_engine(dir.path(), 1, 1, 1).await;
+
+        let key = b"123321".to_vec();
+        let start_version = 9394;
+        let req = write_intent_request(start_version, key.clone());
+        let (eval_result, resp) = write_intent(&ExecCtx::default(), &engine, &req).await.unwrap();
+        assert!(eval_result.is_some());
+        let wb = WriteBatch::new(&eval_result.unwrap().batch.unwrap().data);
+        engine.commit(wb, WriteStates::default(), false).unwrap();
+
+        let req = ClearIntentRequest { shard_id: 1, start_version, keys: vec![key.clone()] };
+        let eval_result = clear_intent(&ExecCtx::default(), &engine, &req).await.unwrap();
+        assert!(eval_result.is_some());
+        let wb = WriteBatch::new(&eval_result.unwrap().batch.unwrap().data);
+        engine.commit(wb, WriteStates::default(), false).unwrap();
+
+        // clear intent is idempotent
+        let req = ClearIntentRequest { shard_id: 1, start_version, keys: vec![key.clone()] };
+        let eval_result = clear_intent(&ExecCtx::default(), &engine, &req).await.unwrap();
+        assert!(eval_result.is_none());
+    }
+
+    #[sekas_macro::test]
+    async fn write_intent_idempotent() {
+        let dir = TempDir::new(fn_name!()).unwrap();
+        let engine = create_group_engine(dir.path(), 1, 1, 1).await;
+
+        let key = b"123321".to_vec();
+        let start_version = 9394;
+        let req = write_intent_request(start_version, key.clone());
+        let (eval_result, resp) = write_intent(&ExecCtx::default(), &engine, &req).await.unwrap();
+        assert!(eval_result.is_some());
+        let wb = WriteBatch::new(&eval_result.unwrap().batch.unwrap().data);
+        engine.commit(wb, WriteStates::default(), false).unwrap();
+
+        let req = write_intent_request(start_version, key);
+        let (eval_result, resp) = write_intent(&ExecCtx::default(), &engine, &req).await.unwrap();
+        assert!(eval_result.is_none());
+
+        // Take the prev value.
+        let puts = resp.write.unwrap().puts;
+        assert_eq!(puts.len(), 1);
+        assert!(puts[0].prev_value.is_none());
     }
 }
