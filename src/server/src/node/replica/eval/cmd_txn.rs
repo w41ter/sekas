@@ -163,7 +163,7 @@ fn apply_put_op(
                 .ok_or_else(|| Error::InvalidArgument("input value is not a valid i64".into()))?;
 
             let former_value = match prev_value.and_then(|v| v.content.as_ref()) {
-                Some(content) => decode_i64(&content).ok_or_else(|| {
+                Some(content) => decode_i64(content).ok_or_else(|| {
                     Error::InvalidArgument("the exists value is not a valid i64".into())
                 })?,
                 None => 0,
@@ -194,7 +194,7 @@ fn read_intent_and_next_key(
                     ))
                 })?;
                 let txn_intent = TxnIntent::decode(content)?;
-                let prev_value = mvcc_iter.next().transpose()?.map(|v| Into::<Value>::into(v));
+                let prev_value = mvcc_iter.next().transpose()?.map(Into::<Value>::into);
                 return Ok((Some(txn_intent), prev_value));
             } else {
                 return Ok((None, Some(entry.into())));
@@ -267,7 +267,7 @@ mod tests {
         let mut wb = WriteBatch::default();
         for Value { version, content } in values {
             if let Some(value) = content {
-                engine.put(&mut wb, 1, key, &value, *version).unwrap();
+                engine.put(&mut wb, 1, key, value, *version).unwrap();
             } else {
                 engine.tombstone(&mut wb, 1, key, *version).unwrap();
             }
@@ -308,8 +308,8 @@ mod tests {
 
         let dir = TempDir::new(fn_name!()).unwrap();
         let engine = create_group_engine(dir.path(), 1, 1, 1).await;
-        let mut idx: u8 = 0;
-        for TestCase { expect_intent, expect_prev_value } in cases {
+        for (idx, TestCase { expect_intent, expect_prev_value }) in (0_u8..).zip(cases.into_iter())
+        {
             let mut values = vec![];
             if let Some(intent) = expect_intent.as_ref() {
                 values.push(Value::with_value(intent.encode_to_vec(), TXN_INTENT_VERSION));
@@ -322,7 +322,6 @@ mod tests {
 
             assert_eq!(intent, expect_intent, "idx={idx}");
             assert_eq!(prev_value, expect_prev_value, "idx={idx}");
-            idx += 1;
         }
     }
 

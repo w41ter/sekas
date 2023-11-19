@@ -14,10 +14,10 @@
 
 // In order to update values without reading, the txn record are split into
 // multi keys.
-pub const TXN_PREFIX: &'static [u8] = b"txn_";
-pub const TXN_SUFFIX_STATE: &'static [u8] = b"state";
-pub const TXN_SUFFIX_HEARTBEAT: &'static [u8] = b"hb";
-pub const TXN_SUFFIX_COMMIT: &'static [u8] = b"commit";
+pub const TXN_PREFIX: &[u8] = b"txn_";
+pub const TXN_SUFFIX_STATE: &[u8] = b"state";
+pub const TXN_SUFFIX_HEARTBEAT: &[u8] = b"hb";
+pub const TXN_SUFFIX_COMMIT: &[u8] = b"commit";
 
 /// The boundary of a txn tag.
 #[inline]

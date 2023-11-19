@@ -1,3 +1,4 @@
+// Copyright 2023-present The Sekas Authors.
 // Copyright 2022 The Engula Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -861,7 +862,7 @@ mod tests {
 
     async fn execute_read_request(replica: &Replica, key: &[u8]) -> Option<Value> {
         let read_req = build_read_request(key);
-        let response = execute_on_leader(&replica, read_req).await;
+        let response = execute_on_leader(replica, read_req).await;
         assert!(matches!(response, Response::Get(_)));
         let Response::Get(response) = response else { unreachable!() };
         response.value
@@ -870,7 +871,7 @@ mod tests {
     // execute put request and return prev values.
     async fn execute_put_request(replica: &Replica, key: &[u8], value: &[u8]) -> Option<Value> {
         let write_req = build_put_request(key, value);
-        let response = execute_on_leader(&replica, write_req).await;
+        let response = execute_on_leader(replica, write_req).await;
         assert!(matches!(response, Response::Write(_)));
         let Response::Write(response) = response else { unreachable!() };
         assert_eq!(response.puts.len(), 1);
@@ -880,7 +881,7 @@ mod tests {
     // execute delete request and return prev values.
     async fn execute_delete_request(replica: &Replica, key: &[u8]) -> Option<Value> {
         let write_req = build_delete_request(key);
-        let response = execute_on_leader(&replica, write_req).await;
+        let response = execute_on_leader(replica, write_req).await;
         assert!(matches!(response, Response::Write(_)));
         let Response::Write(response) = response else { unreachable!() };
         assert_eq!(response.deletes.len(), 1);

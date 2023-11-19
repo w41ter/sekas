@@ -34,7 +34,7 @@ where
         Some(prefix) => {
             req.exclude_end_key = false;
             req.exclude_start_key = false;
-            SnapshotMode::Prefix { key: &prefix }
+            SnapshotMode::Prefix { key: prefix }
         }
         None => SnapshotMode::Start { start_key: req.start_key.as_ref().map(|v| v.as_ref()) },
     };

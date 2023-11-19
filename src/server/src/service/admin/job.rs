@@ -1,3 +1,4 @@
+// Copyright 2023-present The Sekas Authors.
 // Copyright 2022 The Engula Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -39,7 +40,7 @@ impl super::service::HttpHandle for JobHandle {
             Ok(info) => info,
             Err(e @ crate::Error::NotRootLeader(..)) => {
                 let root_desc = self.server.node.get_root().await;
-                let node = root_desc.root_nodes.get(0);
+                let node = root_desc.root_nodes.first();
                 if node.is_none() {
                     return Err(e);
                 }

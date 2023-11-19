@@ -620,9 +620,9 @@ impl MvccEntry {
     }
 }
 
-impl Into<Value> for MvccEntry {
-    fn into(self) -> Value {
-        Value { content: self.value().map(ToOwned::to_owned), version: self.version() }
+impl From<MvccEntry> for Value {
+    fn from(entry: MvccEntry) -> Self {
+        Value { content: entry.value().map(ToOwned::to_owned), version: entry.version() }
     }
 }
 
@@ -1333,9 +1333,9 @@ mod tests {
 
         // First is the local collection datum.
         let (k, _) = iter.next().unwrap().unwrap();
-        assert!(&k[..] == &keys::apply_state());
+        assert!(k[..] == keys::apply_state());
         let (k, _) = iter.next().unwrap().unwrap();
-        assert!(&k[..] == &keys::descriptor());
+        assert!(k[..] == keys::descriptor());
 
         // The the user payloads.
         for payload in &payloads {
@@ -1343,7 +1343,7 @@ mod tests {
             let col_id = group_engine.shard_desc(1).unwrap().collection_id;
             let expect_key = keys::mvcc_key(col_id, payload.key, payload.version);
             assert!(
-                &k[..] == &expect_key,
+                k[..] == expect_key,
                 "expect {expect_key:?}, but got {k:?}, payload {payload:?}",
             );
         }

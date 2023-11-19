@@ -660,12 +660,7 @@ mod tests {
             let state_machine = SimpleStateMachine { flushed_index: 123, current_snapshot: None };
             let mut applier = Applier::new(1, state_machine);
 
-            insert_entries(
-                engine.clone(),
-                &mut storage,
-                (1..100).into_iter().map(|i| (i, 1)).collect(),
-            )
-            .await;
+            insert_entries(engine.clone(), &mut storage, (1..100).map(|i| (i, 1)).collect()).await;
             storage.compact_to(51);
 
             // create staled snapshot.
@@ -847,7 +842,7 @@ mod tests {
                 engine.as_ref(),
                 1,
                 vec![ReplicaDesc { id: 1, ..Default::default() }],
-                (0..100).into_iter().map(|_| EvalResult::default()).collect(),
+                (0..100).map(|_| EvalResult::default()).collect(),
             )
             .await
             .unwrap();

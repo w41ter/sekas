@@ -1,5 +1,4 @@
-use std::collections::HashMap;
-
+// Copyright 2023-present The Sekas Authors.
 // Copyright 2022 The Engula Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,6 +12,8 @@ use std::collections::HashMap;
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+use std::collections::HashMap;
+
 use lazy_static::lazy_static;
 use prometheus::{self, register_int_counter, IntCounter, TextEncoder};
 use tonic::codegen::*;
@@ -37,7 +38,7 @@ impl MetricsHandle {
     pub fn new(server: Server) -> Self {
         let collector = RootCollector::new("", server);
         match &prometheus::register(Box::new(collector.clone())) {
-            Err(err) if matches!(err, prometheus::Error::AlreadyReg) => {}
+            Err(prometheus::Error::AlreadyReg) => {}
             r => {
                 r.as_ref().unwrap();
             }

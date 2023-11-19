@@ -24,7 +24,6 @@ pub fn next_avail_port() -> u16 {
 pub fn next_n_avail_port(n: usize) -> Vec<u16> {
     #[allow(clippy::needless_collect)]
     let sockets = (0..n)
-        .into_iter()
         .map(|_| {
             let socket = Socket::new(Domain::IPV4, Type::STREAM, None).unwrap();
             socket.set_reuse_address(true).unwrap();

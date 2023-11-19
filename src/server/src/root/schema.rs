@@ -442,7 +442,6 @@ impl Schema {
         updates.extend_from_slice(
             &changed_groups
                 .values()
-                .into_iter()
                 .map(|desc| UpdateEvent {
                     event: Some(update_event::Event::Group(desc.to_owned())),
                 })
@@ -452,7 +451,6 @@ impl Schema {
         if !cur_groups.is_empty() {
             let deleted = cur_groups
                 .keys()
-                .into_iter()
                 .filter(|group_id| !groups.contains_key(group_id))
                 .collect::<Vec<_>>();
             let delete_desc = deleted

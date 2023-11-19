@@ -571,10 +571,10 @@ mod tests {
 
     use log::info;
     use raft_engine::{Config, Engine};
+    use sekas_runtime::*;
     use tempdir::TempDir;
 
     use super::*;
-    use sekas_runtime::*;
 
     fn mocked_entries(select_term: Option<u64>) -> Vec<(u64, u64)> {
         let entries = vec![

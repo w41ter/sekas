@@ -113,7 +113,7 @@ impl<'a> super::node::AdvanceTemplate for AdvanceImpl<'a> {
     fn send_messages(&mut self, msgs: Vec<Message>) {
         let mut seperated_msgs: HashMap<u64, Vec<Message>> = HashMap::default();
         for msg in msgs {
-            seperated_msgs.entry(msg.to).or_insert_with(Vec::default).push(msg);
+            seperated_msgs.entry(msg.to).or_default().push(msg);
         }
         for (target_id, msgs) in seperated_msgs {
             let to_replica = match self.replica_cache.get(target_id) {

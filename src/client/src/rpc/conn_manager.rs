@@ -1,3 +1,4 @@
+// Copyright 2023-present The Sekas Authors.
 // Copyright 2022 The Engula Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -18,9 +19,8 @@ use std::time::Duration;
 use sekas_api::server::v1::root_client::RootClient;
 use tonic::transport::{Channel, Endpoint};
 
-use crate::{Error, Result};
-
 use super::NodeClient;
+use crate::{Error, Result};
 
 #[derive(Clone, Debug)]
 pub struct ConnManager {

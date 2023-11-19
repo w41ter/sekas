@@ -25,17 +25,13 @@ pub fn in_range(start: &[u8], end: &[u8], key: &[u8]) -> bool {
 
 /// Return whether a key belongs to the corresponding shard.
 pub fn belong_to(shard: &ShardDesc, key: &[u8]) -> bool {
-    shard.range.as_ref()
-        .map(|range| in_range(&range.start, &range.end, key))
-        .unwrap_or_default()
+    shard.range.as_ref().map(|range| in_range(&range.start, &range.end, key)).unwrap_or_default()
 }
 
 /// Return the start key of the corresponding shard.
 #[inline]
 pub fn start_key(shard: &ShardDesc) -> Vec<u8> {
-    shard.range.as_ref()
-        .map(|range| range.start.clone())
-        .unwrap_or_default()
+    shard.range.as_ref().map(|range| range.start.clone()).unwrap_or_default()
 }
 
 /// Return the end key of the corresponding shard.
@@ -43,7 +39,5 @@ pub fn start_key(shard: &ShardDesc) -> Vec<u8> {
 /// For now, it only support range shard.
 #[inline]
 pub fn end_key(shard: &ShardDesc) -> Vec<u8> {
-    shard.range.as_ref()
-        .map(|range| range.end.clone())
-        .unwrap_or_default()
+    shard.range.as_ref().map(|range| range.end.clone()).unwrap_or_default()
 }

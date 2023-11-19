@@ -60,7 +60,7 @@ impl TxnStateTable {
 
     /// Begin a new transaction with the specified txn version.
     ///
-    /// [`Error::InvalidArgument`] is returned if the specified txn has beed
+    /// [`Error::InvalidArgument`] is returned if the specified txn has been
     /// committed or aborted.
     pub async fn begin_txn(&self, start_version: u64) -> Result<()> {
         let state_value = TxnState::Running.as_str_name().as_bytes().to_vec();
@@ -92,7 +92,7 @@ impl TxnStateTable {
             return Err(Error::NotFound(format!("target txn {start_version}")));
         };
 
-        let prev_state = parse_txn_state(&prev_value)?;
+        let prev_state = parse_txn_state(prev_value)?;
         debug!("try begin txn {start_version}, but prev state is {}", prev_state.as_str_name());
         match prev_state {
             TxnState::Running => Ok(()),
@@ -161,14 +161,17 @@ impl TxnStateTable {
             return Err(Error::NotFound(format!("target txn {start_version}")));
         };
 
-        let prev_state = parse_txn_state(&prev_value)?;
+        let prev_state = parse_txn_state(prev_value)?;
         debug!("try commit txn {start_version}, but prev state is {}", prev_state.as_str_name());
         match prev_state {
-            TxnState::Running => {
-                Err(Error::Internal(format!("invalid cas failed response, the expect value is TxnState::Running, but failed").into()))
-            }
+            TxnState::Running => Err(Error::Internal(
+                "invalid cas failed response, the expect value is TxnState::Running, but failed"
+                    .to_string()
+                    .into(),
+            )),
             TxnState::Committed => {
-                // ATTN: here assumes that only one could commit a txn, so the commit version is always equals.
+                // ATTN: here assumes that only one could commit a txn, so the commit version is
+                // always equals.
                 Ok(())
             }
             TxnState::Aborted => {
@@ -220,12 +223,14 @@ impl TxnStateTable {
             return Err(Error::NotFound(format!("target txn {start_version}")));
         };
 
-        let prev_state = parse_txn_state(&prev_value)?;
+        let prev_state = parse_txn_state(prev_value)?;
         debug!("try abort txn {start_version}, but prev state is {}", prev_state.as_str_name());
         match prev_state {
-            TxnState::Running => {
-                Err(Error::Internal(format!("invalid cas failed response, the expect value is TxnState::Running, but failed").into()))
-            }
+            TxnState::Running => Err(Error::Internal(
+                "invalid cas failed response, the expect value is TxnState::Running, but failed"
+                    .to_string()
+                    .into(),
+            )),
             TxnState::Committed => {
                 Err(Error::InvalidArgument(format!("txn {start_version}, txn already committed")))
             }
@@ -311,7 +316,7 @@ fn parse_txn_record(
     match it.peek() {
         Some(value_set) => {
             if value_set.user_key == txn_commit_key {
-                let commit_version = parse_txn_value(&value_set, parse_u64)?;
+                let commit_version = parse_txn_value(value_set, parse_u64)?;
                 txn_record.commit_version = Some(commit_version);
                 let _ = it.next();
             }

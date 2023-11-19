@@ -509,7 +509,7 @@ impl ExecCtx {
     }
 }
 
-pub(self) fn is_change_meta_request(request: &Request) -> bool {
+fn is_change_meta_request(request: &Request) -> bool {
     match request {
         Request::ChangeReplicas(_)
         | Request::CreateShard(_)

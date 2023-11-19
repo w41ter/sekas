@@ -149,7 +149,7 @@ mod tests {
         let mut wb = WriteBatch::default();
         for Value { version, content } in values {
             if let Some(value) = content {
-                engine.put(&mut wb, 1, key, &value, *version).unwrap();
+                engine.put(&mut wb, 1, key, value, *version).unwrap();
             } else {
                 engine.tombstone(&mut wb, 1, key, *version).unwrap();
             }
@@ -180,15 +180,12 @@ mod tests {
 
         let dir = TempDir::new(fn_name!()).unwrap();
         let engine = create_group_engine(dir.path(), 1, 1, 1).await;
-        let mut idx = 0;
-        for case in cases {
+        for (idx, case) in cases.into_iter().enumerate() {
             let key = idx.to_string();
             commit_values(&engine, key.as_bytes(), &case);
 
             let value_set = read_shard_all_versions(&engine, 1, key.as_bytes()).await.unwrap();
             assert_eq!(value_set.values, case, "idx = {idx}");
-
-            idx += 1;
         }
     }
 
@@ -224,15 +221,12 @@ mod tests {
         let dir = TempDir::new(fn_name!()).unwrap();
         let engine = create_group_engine(dir.path(), 1, 1, 1).await;
         let latch_mgr = NopLatchManager::default();
-        let mut idx = 0;
-        for TestCase { values, expect } in cases {
+        for (idx, TestCase { values, expect }) in cases.into_iter().enumerate() {
             let key = idx.to_string();
             commit_values(&engine, key.as_bytes(), &values);
 
             let got = read_key(&engine, &latch_mgr, 1, key.as_bytes(), 3).await.unwrap();
             assert_eq!(got, expect, "idx = {idx}");
-
-            idx += 1;
         }
     }
 
@@ -274,15 +268,12 @@ mod tests {
         let dir = TempDir::new(fn_name!()).unwrap();
         let engine = create_group_engine(dir.path(), 1, 1, 1).await;
         let latch_mgr = NopLatchManager::default();
-        let mut idx = 0;
-        for TestCase { values, expect } in cases {
+        for (idx, TestCase { values, expect }) in cases.into_iter().enumerate() {
             let key = idx.to_string();
             commit_values(&engine, key.as_bytes(), &values);
 
             let got = read_key(&engine, &latch_mgr, 1, key.as_bytes(), txn_version).await.unwrap();
             assert_eq!(got, expect, "idx = {idx}");
-
-            idx += 1;
         }
     }
 }

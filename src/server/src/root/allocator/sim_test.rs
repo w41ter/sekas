@@ -1,3 +1,4 @@
+// Copyright 2023-present The Sekas Authors.
 // Copyright 2022 The Engula Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -18,11 +19,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
 use sekas_api::server::v1::*;
+use sekas_runtime::ExecutorOwner;
 
 use super::*;
 use crate::constants::REPLICA_PER_GROUP;
 use crate::root::allocator::source::NodeFilter;
-use sekas_runtime::ExecutorOwner;
 
 #[test]
 fn sim_boostrap_join_node_balance() {
@@ -160,7 +161,7 @@ fn sim_boostrap_join_node_balance() {
                         group_id_gen,
                         GroupDesc { id: group_id_gen, epoch: 0, shards: vec![], replicas },
                     );
-                    p.set_groups(groups.values().into_iter().map(ToOwned::to_owned).collect());
+                    p.set_groups(groups.values().map(ToOwned::to_owned).collect());
                     p.set_replica_states(replica_states);
                     group_id_gen += 1;
                 }
@@ -234,7 +235,7 @@ fn sim_boostrap_join_node_balance() {
                         group_id_gen,
                         GroupDesc { id: group_id_gen, epoch: 0, shards: vec![], replicas },
                     );
-                    p.set_groups(groups.values().into_iter().map(ToOwned::to_owned).collect());
+                    p.set_groups(groups.values().map(ToOwned::to_owned).collect());
                     p.set_replica_states(replica_states);
                     group_id_gen += 1;
                 }

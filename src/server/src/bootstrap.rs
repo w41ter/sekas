@@ -22,12 +22,12 @@ use sekas_api::server::v1::node_server::NodeServer;
 use sekas_api::server::v1::root_server::RootServer;
 use sekas_api::server::v1::*;
 use sekas_client::RootClient;
+use sekas_runtime::{Executor, Shutdown};
 
 use crate::constants::*;
 use crate::engine::{Engines, StateEngine};
 use crate::node::Node;
 use crate::root::Root;
-use sekas_runtime::{Executor, Shutdown};
 use crate::serverpb::v1::raft_server::RaftServer;
 use crate::serverpb::v1::NodeIdent;
 use crate::service::ProxyServer;
@@ -72,10 +72,10 @@ async fn bootstrap_services(
     _proxy_server: Option<ProxyServer>,
     shutdown: Shutdown,
 ) -> Result<()> {
+    use sekas_runtime::TcpIncoming;
     use tokio::net::TcpListener;
     use tonic::transport::Server;
 
-    use sekas_runtime::TcpIncoming;
     use crate::service::admin::make_admin_service;
 
     let listener = TcpListener::bind(addr).await?;

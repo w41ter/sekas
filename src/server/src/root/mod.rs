@@ -552,8 +552,8 @@ impl Root {
                         .collect::<Vec<_>>();
                     let leaders = replicas
                         .iter()
-                        .cloned()
                         .filter(|r| r.raft_role == RaftRole::Leader as i32)
+                        .cloned()
                         .collect::<Vec<_>>();
                     Node { id: n.id, addr: n.addr.to_owned(), replicas, leaders, status: n.status }
                 })

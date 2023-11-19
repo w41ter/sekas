@@ -139,7 +139,7 @@ impl<T: AllocSource> ShardCountPolicy<T> {
     ) -> Option<ShardDesc> {
         let replicas = src_group.shards.to_owned();
         // TODO: ranking shards and choose the preferred one
-        replicas.get(0).map(ToOwned::to_owned)
+        replicas.first().map(ToOwned::to_owned)
     }
 
     fn current_user_groups(&self) -> Vec<GroupDesc> {

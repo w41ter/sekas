@@ -63,12 +63,7 @@ pub struct Collection {
 
 impl WriteBuilder {
     pub fn new(key: Vec<u8>) -> Self {
-        WriteBuilder {
-            key,
-            conditions: vec![],
-            ttl: None,
-            take_prev_value: false,
-        }
+        WriteBuilder { key, conditions: vec![], ttl: None, take_prev_value: false }
     }
 
     /// With ttl, in seconds.
@@ -131,6 +126,7 @@ impl WriteBuilder {
     }
 
     /// Build an add request, the value will be interpreted as i64.
+    #[allow(clippy::should_implement_trait)]
     pub fn add(self, val: i64) -> AppResult<PutRequest> {
         self.verify_conditions()?;
         Ok(PutRequest {
@@ -327,7 +323,7 @@ impl Collection {
 
     pub async fn get(&self, key: Vec<u8>) -> crate::Result<Option<Vec<u8>>> {
         let value = self.get_raw_value(key).await?;
-        Ok(value.map(|v| v.content).flatten())
+        Ok(value.and_then(|v| v.content))
     }
 
     pub async fn get_raw_value(&self, key: Vec<u8>) -> crate::Result<Option<Value>> {

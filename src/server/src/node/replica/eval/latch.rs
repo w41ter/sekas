@@ -86,7 +86,7 @@ impl<L: LatchGuard> DeferSignalLatchGuard<L> {
 impl<L: LatchGuard> Drop for DeferSignalLatchGuard<L> {
     fn drop(&mut self) {
         if let Some((txn_state, commit_version)) = self.state.take() {
-            for (_, latch) in &self.latches {
+            for latch in self.latches.values() {
                 latch.signal_all(txn_state, commit_version);
             }
         }
@@ -288,7 +288,7 @@ pub mod remote {
                     &mut wb,
                     shard_key.shard_id,
                     &shard_key.user_key,
-                    &value,
+                    value,
                     commit_version,
                 )?;
             }

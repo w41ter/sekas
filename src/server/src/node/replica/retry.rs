@@ -180,7 +180,7 @@ fn is_executable(descriptor: &GroupDesc, request: &Request) -> bool {
             }
             Request::CommitIntent(req) => {
                 for key in &req.keys {
-                    if !is_target_shard_exists(descriptor, req.shard_id, &key) {
+                    if !is_target_shard_exists(descriptor, req.shard_id, key) {
                         return false;
                     }
                 }
@@ -188,7 +188,7 @@ fn is_executable(descriptor: &GroupDesc, request: &Request) -> bool {
             }
             Request::ClearIntent(req) => {
                 for key in &req.keys {
-                    if !is_target_shard_exists(descriptor, req.shard_id, &key) {
+                    if !is_target_shard_exists(descriptor, req.shard_id, key) {
                         return false;
                     }
                 }

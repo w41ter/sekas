@@ -315,7 +315,7 @@ async fn editor_main(addrs: Vec<String>) {
         match readline {
             Ok(line) => {
                 editor.add_history_entry(line.as_str());
-                if let Err(err) = session.parse_and_execute(line.as_str().as_bytes()).await {
+                if let Err(err) = session.parse_and_execute(line.as_bytes()).await {
                     std::io::stderr().write_fmt(format_args!("{:?}\n", err)).unwrap_or_default();
                 }
             }

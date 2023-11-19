@@ -64,7 +64,7 @@ where
             .uri()
             .query()
             .map(|q| url::form_urlencoded::parse(q.as_bytes()).into_owned().collect())
-            .unwrap_or_else(HashMap::new);
+            .unwrap_or_default();
         let path = req.uri().path().to_owned();
         Box::pin(async move { inner.call(&path, query_params).await })
     }
