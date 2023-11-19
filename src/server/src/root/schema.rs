@@ -19,7 +19,7 @@ use std::sync::Arc;
 
 use futures::lock::Mutex;
 use lazy_static::lazy_static;
-use log::{info, warn};
+use log::{debug, info, warn};
 use prost::Message;
 use sekas_api::server::v1::watch_response::{delete_event, update_event, DeleteEvent, UpdateEvent};
 use sekas_api::server::v1::{CollectionDesc, DatabaseDesc, PutRequest, *};
@@ -68,11 +68,7 @@ impl Schema {
     }
 
     pub async fn cluster_id(&self) -> Result<Option<Vec<u8>>> {
-        let id = self.get_meta(META_CLUSTER_ID_KEY.as_bytes()).await?;
-        if let Some(id) = id {
-            return Ok(Some(id));
-        }
-        Ok(None)
+        self.get_meta(META_CLUSTER_ID_KEY.as_bytes()).await
     }
 
     pub async fn create_database(&self, desc: DatabaseDesc) -> Result<DatabaseDesc> {
@@ -235,9 +231,8 @@ impl Schema {
             }
         };
         let mut nodes = Vec::new();
-        for mvcc in snapshot.iter() {
-            let mvcc = mvcc?;
-            for entry in mvcc {
+        while let Some(mvcc_iter) = snapshot.next() {
+            for entry in mvcc_iter? {
                 let entry = entry?;
                 if let Some(val) = entry.value() {
                     nodes.push(
@@ -595,6 +590,10 @@ impl Schema {
                 );
                 return Err(Error::ClusterNotMatch);
             }
+            debug!(
+                "cluster has been bootstrapped, cluster={}",
+                String::from_utf8_lossy(&cluster_id)
+            );
             return Ok(());
         }
 

@@ -1,0 +1,360 @@
+// Copyright 2023-present The Sekas Authors.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+use std::collections::{HashMap, VecDeque};
+use std::sync::Arc;
+use std::time::Duration;
+
+use dashmap::DashMap;
+use futures::channel::oneshot;
+use sekas_api::server::v1::group_request_union::Request;
+use sekas_api::server::v1::{ShardDesc, ShardKey, ShardWriteRequest, TxnIntent, TxnState, Value};
+use sekas_client::TxnStateTable;
+
+use crate::serverpb::v1::EvalResult;
+use crate::{Error, Result};
+
+pub trait LatchGuard {
+    /// Resolve the state of the specified txn record and release the lock
+    /// guard. Return the value if the txn is committed, otherwise [`None`] is
+    /// returned.
+    async fn resolve_txn(&mut self, txn_intent: TxnIntent) -> Result<Option<Value>>;
+
+    /// Signal all intent waiters.
+    fn signal_all(&self, txn_state: TxnState, commit_version: Option<u64>);
+}
+
+pub trait LatchManager {
+    type Guard: LatchGuard;
+
+    /// Resolve the state of the specified txn record. Return the value if the
+    /// txn is committed, otherwise [`None`] is returned.
+    ///
+    /// - `start_version` the version of the executing txn.
+    /// - `intent_version` the version of txn to resolved.
+    async fn resolve_txn(
+        &self,
+        shard_id: u64,
+        user_key: &[u8],
+        start_version: u64,
+        intent_version: u64,
+    ) -> Result<Option<Value>>;
+
+    /// Acquire row latch for the specified user key.
+    async fn acquire(&self, shard_id: u64, user_key: &[u8]) -> Result<Self::Guard>;
+}
+
+pub async fn acquire_row_latches<T>(
+    latch_mgr: &T,
+    request: &Request,
+) -> Result<Option<HashMap<ShardKey, T::Guard>>>
+where
+    T: LatchManager,
+{
+    let (shard_id, mut keys) = match request {
+        Request::Write(req) => (req.shard_id, collect_shard_write_keys(req)?),
+        Request::WriteIntent(req) => {
+            if let Some(req) = req.write.as_ref() {
+                (req.shard_id, collect_shard_write_keys(req)?)
+            } else {
+                return Ok(None);
+            }
+        }
+        Request::CommitIntent(req) => (req.shard_id, req.keys.clone()),
+        Request::ClearIntent(req) => (req.shard_id, req.keys.clone()),
+        Request::Scan(_)
+        | Request::Get(_)
+        | Request::CreateShard(_)
+        | Request::ChangeReplicas(_)
+        | Request::AcceptShard(_)
+        | Request::Transfer(_)
+        | Request::MoveReplicas(_) => return Ok(None),
+    };
+
+    if keys.is_empty() {
+        return Ok(None);
+    }
+
+    // ATTN: Sort shard keys before acquiring any latch, to avoid deadlock.
+    keys.sort_unstable();
+
+    let mut latches = HashMap::with_capacity(keys.len());
+    for user_key in keys {
+        let latch = latch_mgr.acquire(shard_id, &user_key).await?;
+        latches.insert(ShardKey { shard_id, user_key }, latch);
+    }
+    Ok(Some(latches))
+}
+
+fn collect_shard_write_keys(req: &ShardWriteRequest) -> Result<Vec<Vec<u8>>> {
+    let mut keys = Vec::with_capacity(req.puts.len() + req.deletes.len());
+    for put in &req.puts {
+        keys.push(put.key.clone());
+    }
+    for delete in &req.deletes {
+        keys.push(delete.key.clone());
+    }
+    Ok(keys)
+}
+
+pub mod remote {
+    use std::collections::{HashMap, VecDeque};
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use dashmap::DashMap;
+    use futures::channel::oneshot;
+    use log::debug;
+    use prost::Message;
+    use sekas_api::server::v1::group_request_union::Request;
+    use sekas_api::server::v1::{
+        ShardDesc, ShardKey, ShardWriteRequest, TxnIntent, TxnState, Value,
+    };
+    use sekas_client::TxnStateTable;
+    use sekas_rock::time::timestamp_millis;
+    use sekas_schema::system::txn::TXN_INTENT_VERSION;
+
+    use super::LatchGuard;
+    use crate::engine::{GroupEngine, SnapshotMode};
+    use crate::node::replica::eval::LatchManager;
+    use crate::serverpb::v1::EvalResult;
+    use crate::{Error, Result};
+
+    #[derive(Default)]
+    struct LatchBlock {
+        hold: bool,
+        shard_key: ShardKey,
+        latch_waiters: VecDeque<oneshot::Sender<RemoteLatchGuard>>,
+        intent_waiters: VecDeque<oneshot::Sender<(TxnState, u64)>>,
+    }
+
+    pub struct RemoteLatchGuard {
+        hold: bool,
+        shard_key: ShardKey,
+        latch_mgr: RemoteLatchManager,
+    }
+
+    #[derive(Clone)]
+    pub struct RemoteLatchManager {
+        core: Arc<LatchManagerCore>,
+    }
+
+    pub struct LatchManagerCore {
+        txn_table: TxnStateTable,
+        group_engine: GroupEngine,
+        latches: DashMap<ShardKey, LatchBlock>,
+    }
+
+    impl RemoteLatchManager {
+        pub fn new(client: sekas_client::SekasClient, group_engine: GroupEngine) -> Self {
+            RemoteLatchManager {
+                core: Arc::new(LatchManagerCore {
+                    txn_table: TxnStateTable::new(client),
+                    group_engine,
+                    latches: DashMap::with_shard_amount(16),
+                }),
+            }
+        }
+
+        pub fn release(&self, shard_id: u64, user_key: &[u8]) {
+            let shard_key = ShardKey { shard_id, user_key: user_key.to_owned() };
+
+            self.core.latches.remove_if_mut(&shard_key, |shard_key, latch_block| {
+                self.transfer_latch_guard(latch_block)
+            });
+        }
+
+        fn acquire_internal(
+            &self,
+            shard_id: u64,
+            key: &[u8],
+        ) -> Result<RemoteLatchGuard, oneshot::Receiver<RemoteLatchGuard>> {
+            let shard_key = ShardKey { shard_id, user_key: key.to_owned() };
+
+            let mut entry = self.core.latches.entry(shard_key).or_default();
+            let latch = entry.value_mut();
+            if !latch.hold {
+                latch.hold = true;
+                Ok(RemoteLatchGuard {
+                    hold: true,
+                    shard_key: ShardKey { shard_id, user_key: key.to_owned() },
+                    latch_mgr: self.clone(),
+                })
+            } else {
+                let (tx, rx) = oneshot::channel();
+                latch.latch_waiters.push_back(tx);
+                Err(rx)
+            }
+        }
+
+        fn transfer_latch_guard(&self, latch_block: &mut LatchBlock) -> bool {
+            let mut guard = RemoteLatchGuard {
+                hold: true,
+                shard_key: latch_block.shard_key.clone(),
+                latch_mgr: self.clone(),
+            };
+            while let Some(sender) = latch_block.latch_waiters.pop_front() {
+                guard = match sender.send(guard) {
+                    Ok(()) => {
+                        // The guard will wakes up the remaining waiters even the receiver is
+                        // canceled.
+                        latch_block.hold = true;
+                        return false;
+                    }
+                    Err(guard) => guard,
+                };
+            }
+
+            // No more waiters, remove entry from map.
+            guard.hold = false;
+            latch_block.hold = false;
+            true
+        }
+    }
+
+    impl super::LatchManager for RemoteLatchManager {
+        type Guard = RemoteLatchGuard;
+
+        /// Resolve the state of the specified txn record. Return the value if
+        /// the txn is committed, otherwise [`None`] is returned.
+        async fn resolve_txn(
+            &self,
+            shard_id: u64,
+            user_key: &[u8],
+            start_version: u64,
+            intent_version: u64,
+        ) -> Result<Option<Value>> {
+            let mut latch_guard = self.acquire(shard_id, user_key).await?;
+            // read the txn intent again with latch guard.
+            let mut snapshot =
+                self.core.group_engine.snapshot(shard_id, SnapshotMode::Key { key: user_key })?;
+            let Some(mvcc_iter) = snapshot.next() else { return Ok(None) };
+            for entry in mvcc_iter? {
+                let entry = entry?;
+                if entry.version() == TXN_INTENT_VERSION {
+                    let content = entry.value().ok_or_else(|| {
+                        Error::InvalidData(format!(
+                            "txn intent value is not exists, shard_id {shard_id} key {user_key:?}"
+                        ))
+                    })?;
+                    let txn_intent = TxnIntent::decode(content)?;
+                    if txn_intent.start_version == intent_version {
+                        return latch_guard.resolve_txn(txn_intent).await;
+                    }
+                    // no such intent exists, just read the recent value.
+                } else if entry.version() <= start_version {
+                    return Ok(Some(entry.into()));
+                }
+            }
+            Ok(None)
+        }
+
+        async fn acquire(&self, shard_id: u64, key: &[u8]) -> Result<RemoteLatchGuard> {
+            match self.acquire_internal(shard_id, key) {
+                Ok(latch) => Ok(latch),
+                Err(rx) => Ok(rx.await.expect("Will not be dropped without send()")),
+            }
+        }
+    }
+
+    impl super::LatchGuard for RemoteLatchGuard {
+        async fn resolve_txn(&mut self, txn_intent: TxnIntent) -> Result<Option<Value>> {
+            let start_version = txn_intent.start_version;
+            loop {
+                let txn_record =
+                    self.latch_mgr.core.txn_table.get_txn_record(start_version).await?.ok_or_else(
+                        || {
+                            Error::InvalidData(format!(
+                                "resolve txn {}, but txn record is not exists",
+                                start_version
+                            ))
+                        },
+                    )?;
+
+                let (actual_txn_state, commit_version) = if txn_record.state == TxnState::Running {
+                    if txn_record.heartbeat + 500 < timestamp_millis() {
+                        debug!("abort txn {} because it was expired", start_version);
+                        match self.latch_mgr.core.txn_table.abort_txn(start_version).await {
+                            Ok(()) => (TxnState::Aborted, 0),
+                            Err(sekas_client::Error::InvalidArgument(_)) => {
+                                continue;
+                            }
+                            Err(err) => return Err(err.into()),
+                        }
+                    } else {
+                        let (sender, receiver) = oneshot::channel();
+                        {
+                            let mut entry = self
+                                .latch_mgr
+                                .core
+                                .latches
+                                .entry(self.shard_key.clone())
+                                .or_default();
+                            entry.intent_waiters.push_back(sender);
+                            self.latch_mgr.transfer_latch_guard(&mut entry);
+                        }
+                        self.hold = false;
+                        let (txn_state, commit_version) = receiver.await.expect("Do not cancel");
+                        *self = self
+                            .latch_mgr
+                            .acquire(self.shard_key.shard_id, &self.shard_key.user_key)
+                            .await?;
+                        (txn_state, commit_version)
+                    }
+                } else {
+                    (txn_record.state, txn_record.commit_version.unwrap_or_default())
+                };
+                match actual_txn_state {
+                    TxnState::Committed => {
+                        // TODO(walter) commit intent
+                        if txn_intent.is_delete {
+                            return Ok(Some(Value::tombstone(commit_version)));
+                        } else {
+                            return Ok(Some(Value {
+                                content: txn_intent.value,
+                                version: commit_version,
+                            }));
+                        }
+                    }
+                    TxnState::Aborted => {
+                        // TODO(walter) clear intent
+                        return Ok(None);
+                    }
+                    TxnState::Running => {
+                        unreachable!("the txn state should be resolved")
+                    }
+                }
+            }
+        }
+
+        fn signal_all(&self, txn_state: TxnState, commit_version: Option<u64>) {
+            let commit_version = commit_version.unwrap_or_default();
+            if let Some(mut latch_block) =
+                self.latch_mgr.core.latches.get_mut(&self.shard_key.clone())
+            {
+                for sender in std::mem::take(&mut latch_block.intent_waiters) {
+                    let _ = sender.send((txn_state, commit_version));
+                }
+            }
+        }
+    }
+
+    impl Drop for RemoteLatchGuard {
+        fn drop(&mut self) {
+            if self.hold {
+                self.latch_mgr.release(self.shard_key.shard_id, &self.shard_key.user_key);
+            }
+        }
+    }
+}

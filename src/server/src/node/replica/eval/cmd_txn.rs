@@ -14,6 +14,7 @@
 
 #![allow(unused)]
 
+use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime};
 
@@ -23,23 +24,24 @@ use futures::channel::oneshot;
 use log::debug;
 use prost::Message;
 use sekas_api::server::v1::{
-    ClearIntentRequest, CommitIntentRequest, PutType, ShardWriteResponse, TxnIntent, TxnState,
-    Value, WriteIntentRequest, WriteIntentResponse, WriteResponse,
+    ClearIntentRequest, CommitIntentRequest, PutType, ShardKey, ShardWriteResponse, TxnIntent,
+    TxnState, Value, WriteIntentRequest, WriteIntentResponse, WriteResponse,
 };
 use sekas_rock::num::decode_i64;
 use sekas_schema::system::txn::{TXN_INTENT_VERSION, TXN_MAX_VERSION};
 
 use super::cas::eval_conditions;
-use super::{LatchGuard, ShardKey};
+use super::LatchGuard;
 use crate::engine::{GroupEngine, SnapshotMode, WriteBatch};
 use crate::node::migrate::ForwardCtx;
 use crate::node::replica::ExecCtx;
 use crate::serverpb::v1::{EvalResult, WriteBatchRep};
 use crate::{Error, Result};
 
-pub(crate) async fn write_intent(
+pub(crate) async fn write_intent<T: LatchGuard>(
     exec_ctx: &ExecCtx,
     group_engine: &GroupEngine,
+    latch_guard: &mut HashMap<ShardKey, T>,
     req: &WriteIntentRequest,
 ) -> Result<(Option<EvalResult>, WriteIntentResponse)> {
     // TODO(walter) support migration?
@@ -51,20 +53,27 @@ pub(crate) async fn write_intent(
     let mut wb = WriteBatch::default();
     let mut resp = ShardWriteResponse::default();
     for del in &write.deletes {
-        let (txn_intent, prev_value) =
+        let (txn_intent, mut prev_value) =
             read_intent_and_next_key(group_engine, req.start_version, write.shard_id, &del.key)?;
         let mut skip_write = false;
         if let Some(txn_intent) = txn_intent {
             if txn_intent.start_version != req.start_version {
-                todo!("wait until the former intent to commit or clear");
+                if let Some(value) = latch_guard
+                    .get_mut(&ShardKey { shard_id: write.shard_id, user_key: del.key.clone() })
+                    .unwrap()
+                    .resolve_txn(txn_intent)
+                    .await?
+                {
+                    prev_value = Some(value);
+                }
+            } else {
+                // Support idempotent.
+                debug!(
+                    "the intent of key {:?} already exists, shard {}, start version {}",
+                    del.key, write.shard_id, req.start_version
+                );
+                skip_write = true;
             }
-
-            // Support idempotent.
-            debug!(
-                "the intent of key {:?} already exists, shard {}, start version {}",
-                del.key, write.shard_id, req.start_version
-            );
-            skip_write = true;
         }
         if !skip_write {
             eval_conditions(prev_value.as_ref(), &del.conditions)?;
@@ -76,20 +85,27 @@ pub(crate) async fn write_intent(
         }
     }
     for put in &write.puts {
-        let (txn_intent, prev_value) =
+        let (txn_intent, mut prev_value) =
             read_intent_and_next_key(group_engine, req.start_version, write.shard_id, &put.key)?;
         let mut skip_write = false;
         if let Some(txn_intent) = txn_intent {
             if txn_intent.start_version != req.start_version {
-                todo!("wait until the former intent to commit or clear");
+                if let Some(value) = latch_guard
+                    .get_mut(&ShardKey { shard_id: write.shard_id, user_key: put.key.clone() })
+                    .unwrap()
+                    .resolve_txn(txn_intent)
+                    .await?
+                {
+                    prev_value = Some(value);
+                }
+            } else {
+                // Support idempotent.
+                debug!(
+                    "the intent of key {:?} already exists, shard {}, start version {}",
+                    put.key, write.shard_id, req.start_version
+                );
+                skip_write = true;
             }
-
-            // Support idempotent.
-            debug!(
-                "the intent of key {:?} already exists, shard {}, start version {}",
-                put.key, write.shard_id, req.start_version
-            );
-            skip_write = true;
         }
         if !skip_write {
             eval_conditions(prev_value.as_ref(), &put.conditions)?;
@@ -107,9 +123,10 @@ pub(crate) async fn write_intent(
     Ok((eval_result, WriteIntentResponse { write: Some(resp) }))
 }
 
-pub(crate) async fn commit_intent(
+pub(crate) async fn commit_intent<T: LatchGuard>(
     exec_ctx: &ExecCtx,
     group_engine: &GroupEngine,
+    latch_guard: &mut HashMap<ShardKey, T>,
     req: &CommitIntentRequest,
 ) -> Result<Option<EvalResult>> {
     // FIXME(walter) support migration.
@@ -127,13 +144,15 @@ pub(crate) async fn commit_intent(
             group_engine.put(&mut wb, req.shard_id, key, &value, req.commit_version);
         }
     }
+    // TODO(walter) defer signal all.
 
     Ok(if wb.is_empty() { None } else { Some(EvalResult::with_batch(wb.data().to_owned())) })
 }
 
-pub(crate) async fn clear_intent(
+pub(crate) async fn clear_intent<T: LatchGuard>(
     exec_ctx: &ExecCtx,
     group_engine: &GroupEngine,
+    latch_guard: &mut HashMap<ShardKey, T>,
     req: &ClearIntentRequest,
 ) -> Result<Option<EvalResult>> {
     // FIXME(walter) support migration.
@@ -146,6 +165,7 @@ pub(crate) async fn clear_intent(
         };
         group_engine.delete(&mut wb, req.shard_id, key, TXN_INTENT_VERSION);
     }
+    // TODO(walter) defer signal all.
 
     Ok(if wb.is_empty() { None } else { Some(EvalResult::with_batch(wb.data().to_owned())) })
 }
@@ -179,8 +199,8 @@ fn read_intent_and_next_key(
     shard_id: u64,
     key: &[u8],
 ) -> Result<(Option<TxnIntent>, Option<Value>)> {
-    let snapshot = engine.snapshot(shard_id, SnapshotMode::Key { key })?;
-    if let Some(mvcc_iter) = snapshot.mvcc_iter() {
+    let mut snapshot = engine.snapshot(shard_id, SnapshotMode::Key { key })?;
+    if let Some(mvcc_iter) = snapshot.next() {
         let mut mvcc_iter = mvcc_iter?;
         if let Some(entry) = mvcc_iter.next() {
             let mut entry = entry?;
@@ -226,87 +246,6 @@ async fn read_target_intent(
     }
     Ok(Some(intent))
 }
-
-// #[derive(Default)]
-// struct IntentRecord {
-//     waiters: Vec<oneshot::Sender<()>>,
-// }
-
-// struct TxnResolveManager {
-//     txn_client: TxnClient,
-//     intent_records: DashMap<(u64, ShardKey), IntentRecord>,
-// }
-
-// impl TxnResolveManager {
-//     /// Wait the txn intent to finish, return `None` if deadline is reached.
-//     async fn wait_txn_intent(
-//         &self,
-//         start_version: u64,
-//         deadline: u64,
-//         shard_id: u64,
-//         key: &[u8],
-//         latch_guard: LatchGuard,
-//     ) -> Result<LatchGuard, LatchGuard> {
-//         let receiver = self.insert_waiter(start_version, shard_id, key);
-//         let latch_mgr = &latch_guard.latch_manager;
-//         assert_eq!(shard_id, latch_guard.shard_key.shard_id);
-//         assert_eq!(key, latch_guard.shard_key.user_key);
-//         latch_mgr.release(shard_id, key);
-
-//         let now = sekas_rock::time::timestamp_millis();
-//         let expired = if now < deadline {
-//             // Need to sleep
-//             let duration = Duration::from_millis(deadline - now);
-//             sekas_runtime::time::timeout(duration, receiver).await.is_err()
-//         } else {
-//             receiver.await;
-//             false
-//         };
-
-//         let latch_guard = latch_mgr.acquire(shard_id, key,
-// None).await.unwrap();         if expired {
-//             Ok(latch_guard)
-//         } else {
-//             Err(latch_guard)
-//         }
-//     }
-
-//     fn insert_waiter(
-//         &self,
-//         start_version: u64,
-//         shard_id: u64,
-//         key: &[u8],
-//     ) -> oneshot::Receiver<()> {
-//         let shard_key = ShardKey { shard_id, user_key: key.to_owned() };
-//         let intent_key = (start_version, shard_key);
-//         let (sender, receiver) = oneshot::channel();
-//         let mut entry = self.intent_records.entry(intent_key).or_default();
-//         let value = entry.value_mut();
-//         value.waiters.push(sender);
-//         receiver
-//     }
-
-//     /// Resolve the state of txn, abort or commit.
-//     async fn resolve_txn(&self, start_version: u64, latch_guard: LatchGuard)
-// -> Result<TxnState> {         let mut txn_client = self.txn_client.clone();
-//         match txn_client.abort_txn(start_version).await {
-//             Ok(_) => Ok(TxnState::Aborted),
-//             Err(sekas_client::Error::CasFailed(_)) => Ok(TxnState::Aborted),
-//             Err(err) => Err(err.into()),
-//         }
-//     }
-
-//     /// Notify the state of txn intent.
-//     async fn notify_intent(&self, start_version: u64, shard_id: u64, key:
-// &[u8]) {         let shard_key = ShardKey { shard_id, user_key:
-// key.to_owned() };         let intent_key = (start_version, shard_key);
-//         if let Some((_, intent_record)) =
-// self.intent_records.remove(&intent_key) {             for waiter in
-// intent_record.waiters {                 let _ = waiter.send(());
-//             }
-//         }
-//     }
-// }
 
 #[cfg(test)]
 mod tests {
@@ -416,11 +355,13 @@ mod tests {
     async fn write_and_commit_intent() {
         let dir = TempDir::new(fn_name!()).unwrap();
         let engine = create_group_engine(dir.path(), 1, 1, 1).await;
+        let mut latch_guard = HashMap::new();
 
         let key = b"123321".to_vec();
         let start_version = 9394;
         let req = write_intent_request(start_version, key.clone());
-        let (eval_result, resp) = write_intent(&ExecCtx::default(), &engine, &req).await.unwrap();
+        let (eval_result, resp) =
+            write_intent(&ExecCtx::default(), &engine, &mut latch_guard, &req).await.unwrap();
         assert!(eval_result.is_some());
         let wb = WriteBatch::new(&eval_result.unwrap().batch.unwrap().data);
         engine.commit(wb, WriteStates::default(), false).unwrap();
@@ -431,7 +372,8 @@ mod tests {
             commit_version: start_version + 1,
             keys: vec![key.clone()],
         };
-        let eval_result = commit_intent(&ExecCtx::default(), &engine, &req).await.unwrap();
+        let eval_result =
+            commit_intent(&ExecCtx::default(), &engine, &mut latch_guard, &req).await.unwrap();
         assert!(eval_result.is_some());
         let wb = WriteBatch::new(&eval_result.unwrap().batch.unwrap().data);
         engine.commit(wb, WriteStates::default(), false).unwrap();
@@ -443,7 +385,8 @@ mod tests {
             commit_version: start_version + 1,
             keys: vec![key.clone()],
         };
-        let eval_result = commit_intent(&ExecCtx::default(), &engine, &req).await.unwrap();
+        let eval_result =
+            commit_intent(&ExecCtx::default(), &engine, &mut latch_guard, &req).await.unwrap();
         assert!(eval_result.is_none());
     }
 
@@ -451,24 +394,28 @@ mod tests {
     async fn write_and_clear_intent() {
         let dir = TempDir::new(fn_name!()).unwrap();
         let engine = create_group_engine(dir.path(), 1, 1, 1).await;
+        let mut latch_guard = HashMap::new();
 
         let key = b"123321".to_vec();
         let start_version = 9394;
         let req = write_intent_request(start_version, key.clone());
-        let (eval_result, resp) = write_intent(&ExecCtx::default(), &engine, &req).await.unwrap();
+        let (eval_result, resp) =
+            write_intent(&ExecCtx::default(), &engine, &mut latch_guard, &req).await.unwrap();
         assert!(eval_result.is_some());
         let wb = WriteBatch::new(&eval_result.unwrap().batch.unwrap().data);
         engine.commit(wb, WriteStates::default(), false).unwrap();
 
         let req = ClearIntentRequest { shard_id: 1, start_version, keys: vec![key.clone()] };
-        let eval_result = clear_intent(&ExecCtx::default(), &engine, &req).await.unwrap();
+        let eval_result =
+            clear_intent(&ExecCtx::default(), &engine, &mut latch_guard, &req).await.unwrap();
         assert!(eval_result.is_some());
         let wb = WriteBatch::new(&eval_result.unwrap().batch.unwrap().data);
         engine.commit(wb, WriteStates::default(), false).unwrap();
 
         // clear intent is idempotent
         let req = ClearIntentRequest { shard_id: 1, start_version, keys: vec![key.clone()] };
-        let eval_result = clear_intent(&ExecCtx::default(), &engine, &req).await.unwrap();
+        let eval_result =
+            clear_intent(&ExecCtx::default(), &engine, &mut latch_guard, &req).await.unwrap();
         assert!(eval_result.is_none());
     }
 
@@ -476,17 +423,20 @@ mod tests {
     async fn write_intent_idempotent() {
         let dir = TempDir::new(fn_name!()).unwrap();
         let engine = create_group_engine(dir.path(), 1, 1, 1).await;
+        let mut latch_guard = HashMap::new();
 
         let key = b"123321".to_vec();
         let start_version = 9394;
         let req = write_intent_request(start_version, key.clone());
-        let (eval_result, resp) = write_intent(&ExecCtx::default(), &engine, &req).await.unwrap();
+        let (eval_result, resp) =
+            write_intent(&ExecCtx::default(), &engine, &mut latch_guard, &req).await.unwrap();
         assert!(eval_result.is_some());
         let wb = WriteBatch::new(&eval_result.unwrap().batch.unwrap().data);
         engine.commit(wb, WriteStates::default(), false).unwrap();
 
         let req = write_intent_request(start_version, key);
-        let (eval_result, resp) = write_intent(&ExecCtx::default(), &engine, &req).await.unwrap();
+        let (eval_result, resp) =
+            write_intent(&ExecCtx::default(), &engine, &mut latch_guard, &req).await.unwrap();
         assert!(eval_result.is_none());
 
         // Take the prev value.

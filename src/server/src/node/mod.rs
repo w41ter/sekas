@@ -26,6 +26,7 @@ use futures::channel::mpsc;
 use futures::lock::Mutex;
 use log::{debug, info, warn};
 use sekas_api::server::v1::*;
+use sekas_client::ClientOptions;
 use sekas_runtime::TaskGroup;
 
 use self::job::StateChannel;
@@ -314,11 +315,15 @@ impl Node {
         let move_replicas_provider = Arc::new(MoveReplicasProvider::new());
         let schedule_state_observer =
             Arc::new(LeaseStateObserver::new(info.clone(), lease_state.clone(), channel));
+
+        // TODO: config client options.
+        let client = self.transport_manager.build_client(ClientOptions::default());
         let replica = Replica::new(
             info.clone(),
             lease_state,
             raft_node.clone(),
             group_engine,
+            client,
             move_replicas_provider.clone(),
         );
         let replica = Arc::new(replica);

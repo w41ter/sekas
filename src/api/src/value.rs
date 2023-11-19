@@ -13,7 +13,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::server::v1::Value;
+use std::hash::Hash;
+
+use crate::server::v1::{ShardKey, Value};
 
 /// A set of helper functions to simplify `Value` construction.
 impl Value {
@@ -25,5 +27,15 @@ impl Value {
     /// Construct a put value.
     pub fn with_value(content: Vec<u8>, version: u64) -> Self {
         Value { content: Some(content), version }
+    }
+}
+
+impl Eq for ShardKey {}
+
+impl Hash for ShardKey {
+    #[inline]
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.shard_id.hash(state);
+        self.user_key.hash(state);
     }
 }

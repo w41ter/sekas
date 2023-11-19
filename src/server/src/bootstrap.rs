@@ -127,7 +127,6 @@ async fn try_join_cluster(
     info!("try join a bootstrapted cluster");
 
     let join_list = join_list.into_iter().filter(|addr| *addr != local_addr).collect::<Vec<_>>();
-
     if join_list.is_empty() {
         return Err(Error::InvalidArgument("the filtered join list is empty".into()));
     }
@@ -138,6 +137,7 @@ async fn try_join_cluster(
 
     let mut backoff: u64 = 1;
     loop {
+        info!("try send request to root server");
         match root_client.join_node(req.clone()).await {
             Ok(res) => {
                 debug!("issue join request to root server success");

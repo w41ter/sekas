@@ -16,6 +16,14 @@ syntax = "proto3";
 
 package sekas.server.v1;
 
+/// The structure to hold an user key.
+message ShardKey {
+    /// The shard id.
+    uint64 shard_id = 1;
+    /// The key in this shard.
+    bytes user_key = 2;
+}
+
 /// The smallest unit of user data.
 message Value {
     /// The content of user data. `None` for delete tombstone.

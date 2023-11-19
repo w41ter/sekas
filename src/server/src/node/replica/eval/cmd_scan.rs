@@ -16,14 +16,19 @@ use prost::Message;
 use sekas_api::server::v1::*;
 use sekas_schema::system::txn::TXN_INTENT_VERSION;
 
+use super::LatchManager;
 use crate::engine::{GroupEngine, Snapshot, SnapshotMode};
 use crate::Result;
 
 /// Scan the specified range.
-pub(crate) async fn scan(
+pub(crate) async fn scan<T>(
     engine: &GroupEngine,
+    latch_mgr: &T,
     req: &ShardScanRequest,
-) -> Result<ShardScanResponse> {
+) -> Result<ShardScanResponse>
+where
+    T: LatchManager,
+{
     let mut req = req.clone();
     let snapshot_mode = match &req.prefix {
         Some(prefix) => {
@@ -34,16 +39,22 @@ pub(crate) async fn scan(
         None => SnapshotMode::Start { start_key: req.start_key.as_ref().map(|v| v.as_ref()) },
     };
     let snapshot = engine.snapshot(req.shard_id, snapshot_mode)?;
-    scan_inner(snapshot, &req).await
+    scan_inner(latch_mgr, snapshot, &req).await
 }
 
-async fn scan_inner(snapshot: Snapshot<'_>, req: &ShardScanRequest) -> Result<ShardScanResponse> {
+async fn scan_inner<T>(
+    latch_mgr: &T,
+    mut snapshot: Snapshot<'_>,
+    req: &ShardScanRequest,
+) -> Result<ShardScanResponse>
+where
+    T: LatchManager,
+{
     let mut data = Vec::new();
     let mut total_bytes = 0;
-    'OUTER: for mvcc_iter in snapshot.iter() {
-        let mut mvcc_iter = mvcc_iter?;
+    'OUTER: while let Some(mvcc_iter) = snapshot.next() {
         let mut value_set = ValueSet::default();
-        while let Some(entry) = mvcc_iter.next() {
+        for entry in mvcc_iter? {
             let entry = entry?;
 
             // skip exclude keys.
@@ -68,7 +79,19 @@ async fn scan_inner(snapshot: Snapshot<'_>, req: &ShardScanRequest) -> Result<Sh
                 })?;
                 let intent = TxnIntent::decode(encoded_intent)?;
                 if intent.start_version < req.start_version {
-                    // TODO: handle orphan write intent.
+                    if let Some(value) = latch_mgr
+                        .resolve_txn(
+                            req.shard_id,
+                            entry.user_key(),
+                            req.start_version,
+                            intent.start_version,
+                        )
+                        .await?
+                    {
+                        if value.version < req.start_version {
+                            todo!("save result and refresh snapshot")
+                        }
+                    }
                     // TODO(walter) what happen if a intent is resolved before
                     // ingest?
                 }

@@ -18,15 +18,17 @@ use prost::Message;
 use sekas_api::server::v1::*;
 use sekas_schema::system::txn::TXN_INTENT_VERSION;
 
+use super::LatchManager;
 use crate::engine::{GroupEngine, SnapshotMode};
 use crate::node::migrate::ForwardCtx;
 use crate::node::replica::ExecCtx;
 use crate::{Error, Result};
 
 /// Get the value of the specified key.
-pub(crate) async fn get(
+pub(crate) async fn get<T: LatchManager>(
     exec_ctx: &ExecCtx,
     engine: &GroupEngine,
+    latch_mgr: &T,
     req: &ShardGetRequest,
 ) -> Result<Option<Value>> {
     if let Some(desc) = exec_ctx.migration_desc.as_ref() {
@@ -39,18 +41,19 @@ pub(crate) async fn get(
     }
 
     trace!("read key {:?} at shard {} with version {}", req.key, req.shard_id, req.start_version);
-    read_key(engine, req.shard_id, &req.key, req.start_version).await
+    read_key(engine, latch_mgr, req.shard_id, &req.key, req.start_version).await
 }
 
-async fn read_key(
+async fn read_key<T: LatchManager>(
     engine: &GroupEngine,
+    latch_mgr: &T,
     shard_id: u64,
     key: &[u8],
     start_version: u64,
 ) -> Result<Option<Value>> {
     let snapshot_mode = SnapshotMode::Key { key };
-    let snapshot = engine.snapshot(shard_id, snapshot_mode)?;
-    if let Some(iter) = snapshot.mvcc_iter() {
+    let mut snapshot = engine.snapshot(shard_id, snapshot_mode)?;
+    if let Some(iter) = snapshot.next() {
         for entry in iter? {
             let entry = entry?;
             trace!("read key entry with version: {}", entry.version());
@@ -63,7 +66,14 @@ async fn read_key(
                 };
                 let intent = TxnIntent::decode(value)?;
                 if intent.start_version <= start_version {
-                    // TODO(walter) We need to wait intent lock to release!
+                    if let Some(value) = latch_mgr
+                        .resolve_txn(shard_id, key, start_version, intent.start_version)
+                        .await?
+                    {
+                        if value.version <= start_version {
+                            return Ok(Some(value));
+                        }
+                    }
                 }
             } else if entry.version() <= start_version {
                 // This entry is safe for reading.
@@ -82,7 +92,7 @@ async fn read_shard_all_versions(
     let snapshot_mode = SnapshotMode::Key { key };
     let mut snapshot = engine.snapshot(shard_id, snapshot_mode)?;
     let mut value_set = ValueSet { user_key: key.to_owned(), values: vec![] };
-    if let Some(iter) = snapshot.mvcc_iter() {
+    if let Some(iter) = snapshot.next() {
         for entry in iter? {
             let entry = entry?;
             value_set.values.push(entry.into());
@@ -99,6 +109,41 @@ mod tests {
 
     use super::*;
     use crate::engine::{create_group_engine, WriteBatch, WriteStates};
+    use crate::node::replica::eval;
+
+    #[derive(Default)]
+    struct LatchGuard {}
+
+    impl eval::LatchGuard for LatchGuard {
+        fn signal_all(&self, txn_state: TxnState, commit_version: Option<u64>) {
+            todo!()
+        }
+
+        async fn resolve_txn(&mut self, _txn_intent: TxnIntent) -> Result<Option<Value>> {
+            todo!()
+        }
+    }
+
+    #[derive(Default)]
+    struct LatchManager {}
+
+    impl eval::LatchManager for LatchManager {
+        type Guard = LatchGuard;
+
+        async fn acquire(&self, _shard_id: u64, _key: &[u8]) -> Result<Self::Guard> {
+            Ok(LatchGuard {})
+        }
+
+        async fn resolve_txn(
+            &self,
+            _shard_id: u64,
+            _user_key: &[u8],
+            _start_version: u64,
+            _intent_version: u64,
+        ) -> Result<Option<Value>> {
+            todo!()
+        }
+    }
 
     fn commit_values(engine: &GroupEngine, key: &[u8], values: &[Value]) {
         let mut wb = WriteBatch::default();
@@ -178,12 +223,13 @@ mod tests {
 
         let dir = TempDir::new(fn_name!()).unwrap();
         let engine = create_group_engine(dir.path(), 1, 1, 1).await;
+        let latch_mgr = LatchManager::default();
         let mut idx = 0;
         for TestCase { values, expect } in cases {
             let key = idx.to_string();
             commit_values(&engine, key.as_bytes(), &values);
 
-            let got = read_key(&engine, 1, key.as_bytes(), 3).await.unwrap();
+            let got = read_key(&engine, &latch_mgr, 1, key.as_bytes(), 3).await.unwrap();
             assert_eq!(got, expect, "idx = {idx}");
 
             idx += 1;
@@ -227,12 +273,13 @@ mod tests {
 
         let dir = TempDir::new(fn_name!()).unwrap();
         let engine = create_group_engine(dir.path(), 1, 1, 1).await;
+        let latch_mgr = LatchManager::default();
         let mut idx = 0;
         for TestCase { values, expect } in cases {
             let key = idx.to_string();
             commit_values(&engine, key.as_bytes(), &values);
 
-            let got = read_key(&engine, 1, key.as_bytes(), txn_version).await.unwrap();
+            let got = read_key(&engine, &latch_mgr, 1, key.as_bytes(), txn_version).await.unwrap();
             assert_eq!(got, expect, "idx = {idx}");
 
             idx += 1;

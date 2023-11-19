@@ -29,8 +29,8 @@ use sekas_api::server::v1::group_response_union::Response;
 use sekas_api::server::v1::*;
 use serde::Serialize;
 
-pub use self::eval::LatchGuard;
-use self::eval::{acquire_row_latches, RowLatchManager};
+use self::eval::acquire_row_latches;
+use self::eval::remote::RemoteLatchManager;
 pub use self::state::{LeaseState, LeaseStateObserver};
 use crate::engine::GroupEngine;
 use crate::error::BusyReason;
@@ -85,7 +85,7 @@ where
     lease_state: Arc<Mutex<LeaseState>>,
     move_replicas_provider: Arc<MoveReplicasProvider>,
     meta_acl: Arc<tokio::sync::RwLock<()>>,
-    latch_mgr: RowLatchManager,
+    latch_mgr: RemoteLatchManager,
 }
 
 impl Replica {
@@ -115,8 +115,10 @@ impl Replica {
         lease_state: Arc<Mutex<LeaseState>>,
         raft_group: RaftGroup,
         group_engine: GroupEngine,
+        sekas_client: sekas_client::SekasClient,
         move_replicas_provider: Arc<MoveReplicasProvider>,
     ) -> Self {
+        let latch_mgr = RemoteLatchManager::new(sekas_client, group_engine.clone());
         Replica {
             info,
             group_engine,
@@ -124,7 +126,8 @@ impl Replica {
             lease_state,
             move_replicas_provider,
             meta_acl: Arc::default(),
-            latch_mgr: RowLatchManager::new(),
+            // FIXME(walter) create latch manager if epoch changed.
+            latch_mgr,
         }
     }
 
@@ -292,11 +295,10 @@ impl Replica {
         // Acquire row latches one by one. The implementation guarantees that there will
         // be no deadlock, so waiting while holding `read/write_acl_guard` will
         // not affect other requests.
-        // TODO(walter) support row latches.
-        // let _latches = acquire_row_latches(&self.latch_mgr, request, None).await?;
+        let mut latches = acquire_row_latches(&self.latch_mgr, request).await?;
         let (eval_result_opt, resp) = match &request {
             Request::Get(req) => {
-                let value = eval::get(exec_ctx, &self.group_engine, req).await?;
+                let value = eval::get(exec_ctx, &self.group_engine, &self.latch_mgr, req).await?;
                 let resp = ShardGetResponse { value };
                 (None, Response::Get(resp))
             }
@@ -306,20 +308,37 @@ impl Replica {
                 (eval_result, Response::Write(resp))
             }
             Request::WriteIntent(req) => {
-                let (eval_result, resp) =
-                    eval::write_intent(exec_ctx, &self.group_engine, req).await?;
+                let (eval_result, resp) = eval::write_intent(
+                    exec_ctx,
+                    &self.group_engine,
+                    latches.as_mut().expect("write intent request must hold latches"),
+                    req,
+                )
+                .await?;
                 (eval_result, Response::WriteIntent(resp))
             }
             Request::CommitIntent(req) => {
-                let eval_result = eval::commit_intent(exec_ctx, &self.group_engine, req).await?;
+                let eval_result = eval::commit_intent(
+                    exec_ctx,
+                    &self.group_engine,
+                    latches.as_mut().expect("commit intent request must hold latches"),
+                    req,
+                )
+                .await?;
                 (eval_result, Response::CommitIntent(CommitIntentResponse::default()))
             }
             Request::ClearIntent(req) => {
-                let eval_result = eval::clear_intent(exec_ctx, &self.group_engine, req).await?;
+                let eval_result = eval::clear_intent(
+                    exec_ctx,
+                    &self.group_engine,
+                    latches.as_mut().expect("clear intent request must hold latches"),
+                    req,
+                )
+                .await?;
                 (eval_result, Response::ClearIntent(ClearIntentResponse::default()))
             }
             Request::Scan(req) => {
-                let eval_result = eval::scan(&self.group_engine, req).await?;
+                let eval_result = eval::scan(&self.group_engine, &self.latch_mgr, req).await?;
                 (None, Response::Scan(eval_result))
             }
             Request::CreateShard(req) => {

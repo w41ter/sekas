@@ -42,9 +42,8 @@ async fn collect_chunks(
     let snapshot_mode = SnapshotMode::Start { start_key };
     let mut snapshot = group_engine.snapshot(shard_id, snapshot_mode)?;
     let mut buf = Vec::with_capacity(cfg.shard_gc_keys);
-    for mvcc_iter in snapshot.iter() {
-        let mvcc_iter = mvcc_iter?;
-        for entry in mvcc_iter {
+    while let Some(mvcc_iter) = snapshot.next() {
+        for entry in mvcc_iter? {
             let e = entry?;
             buf.push((e.user_key().to_owned(), e.version()));
         }
