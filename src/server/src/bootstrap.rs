@@ -69,7 +69,7 @@ pub fn run(config: Config, executor: Executor, shutdown: Shutdown) -> Result<()>
 async fn bootstrap_services(
     addr: &str,
     server: Server,
-    proxy_server: Option<ProxyServer>,
+    _proxy_server: Option<ProxyServer>,
     shutdown: Shutdown,
 ) -> Result<()> {
     use tokio::net::TcpListener;

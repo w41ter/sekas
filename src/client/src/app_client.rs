@@ -111,9 +111,3 @@ impl Client {
         self.inner.opts.timeout
     }
 }
-
-#[inline]
-fn wrap(msg: &str) -> Box<dyn std::error::Error + Sync + Send + 'static> {
-    let msg = String::from(msg);
-    msg.into()
-}

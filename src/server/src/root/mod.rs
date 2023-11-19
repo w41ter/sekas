@@ -278,13 +278,8 @@ impl Root {
         // the leadership change does not need to check for whether bootstrap or
         // not.
         if !*bootstrapped {
-            if let Err(err) = schema
-                .try_bootstrap_root(
-                    local_addr,
-                    cfg_cpu_nums,
-                    self.shared.node_ident.cluster_id.clone(),
-                )
-                .await
+            let cluster_id = self.shared.node_ident.cluster_id.clone();
+            if let Err(err) = schema.try_bootstrap_root(local_addr, cfg_cpu_nums, cluster_id).await
             {
                 metrics::BOOTSTRAP_FAIL_TOTAL.inc();
                 error!("boostrap: {err:?}");
@@ -1235,7 +1230,7 @@ mod root_test {
     use futures::StreamExt;
     use sekas_api::server::v1::watch_response::{update_event, UpdateEvent};
     use sekas_api::server::v1::{DatabaseDesc, GroupDesc};
-    use sekas_runtime::ExecutorOwner;
+    use sekas_rock::fn_name;
     use tempdir::TempDir;
 
     use super::Config;
@@ -1257,87 +1252,66 @@ mod root_test {
         (root, node)
     }
 
-    #[test]
-    fn boostrap_root() {
-        let executor_owner = ExecutorOwner::new(1);
-        let executor = executor_owner.executor();
-        let tmp_dir = TempDir::new("bootstrap_root").unwrap();
+    #[sekas_macro::test]
+    async fn boostrap_root() {
+        let tmp_dir = TempDir::new(fn_name!()).unwrap();
         let config = Config { root_dir: tmp_dir.path().to_owned(), ..Default::default() };
-
         let ident = NodeIdent { cluster_id: vec![], node_id: 1 };
 
-        executor.block_on(async {
-            let (root, node) = create_root_and_node(&config, &ident).await;
-            bootstrap_cluster(&node, "0.0.0.0:8888").await.unwrap();
-            node.bootstrap(&ident).await.unwrap();
-            root.bootstrap(&node).await.unwrap();
-            // TODO: test on leader logic later.
-        });
+        let (root, node) = create_root_and_node(&config, &ident).await;
+        bootstrap_cluster(&node, "0.0.0.0:8888").await.unwrap();
+        node.bootstrap(&ident).await.unwrap();
+        root.bootstrap(&node).await.unwrap();
+        // TODO: test on leader logic later.
     }
 
-    #[test]
-    fn bootstrap_pending_root_replica() {
-        let executor_owner = ExecutorOwner::new(1);
-        let executor = executor_owner.executor();
-        let tmp_dir = TempDir::new("bootstrap_pending_root").unwrap();
+    #[sekas_macro::test]
+    async fn bootstrap_pending_root_replica() {
+        let tmp_dir = TempDir::new(fn_name!()).unwrap();
         let config = Config { root_dir: tmp_dir.path().to_owned(), ..Default::default() };
-
         let ident = NodeIdent { cluster_id: vec![], node_id: 1 };
 
-        executor.block_on(async {
-            let (root, node) = create_root_and_node(&config, &ident).await;
-            node.bootstrap(&ident).await.unwrap();
-            node.create_replica(
-                3,
-                GroupDesc {
-                    id: ROOT_GROUP_ID,
-                    epoch: INITIAL_EPOCH,
-                    shards: vec![],
-                    replicas: vec![],
-                },
-            )
-            .await
-            .unwrap();
-            root.bootstrap(&node).await.unwrap();
-        });
+        let (root, node) = create_root_and_node(&config, &ident).await;
+        node.bootstrap(&ident).await.unwrap();
+        node.create_replica(
+            3,
+            GroupDesc { id: ROOT_GROUP_ID, epoch: INITIAL_EPOCH, shards: vec![], replicas: vec![] },
+        )
+        .await
+        .unwrap();
+        root.bootstrap(&node).await.unwrap();
     }
 
-    #[test]
-    fn watch_hub() {
-        let executor_owner = ExecutorOwner::new(1);
-        let executor = executor_owner.executor();
-
+    #[sekas_macro::test]
+    async fn watch_hub() {
+        let tmp_dir = TempDir::new(fn_name!()).unwrap();
         let ident = NodeIdent { cluster_id: vec![], node_id: 1 };
-
-        let tmp_dir = TempDir::new("watch_hub").unwrap();
         let config = Config { root_dir: tmp_dir.path().to_owned(), ..Default::default() };
-        executor.block_on(async {
-            let (root, _node) = create_root_and_node(&config, &ident).await;
-            let hub = root.watcher_hub();
-            let _create_db1_event =
-                Some(update_event::Event::Database(DatabaseDesc { id: 1, name: "db1".into() }));
-            let mut w = {
-                let (w, mut initializer) = hub.create_watcher().await;
-                initializer.set_init_resp(vec![UpdateEvent { event: _create_db1_event }], vec![]);
-                w
-            };
-            let resp1 = w.next().await.unwrap().unwrap();
-            assert!(matches!(&resp1.updates[0].event, _create_db1_event));
+        let (root, _node) = create_root_and_node(&config, &ident).await;
+        let hub = root.watcher_hub();
+        let _create_db1_event =
+            Some(update_event::Event::Database(DatabaseDesc { id: 1, name: "db1".into() }));
+        let mut w = {
+            let (w, mut initializer) = hub.create_watcher().await;
+            initializer.set_init_resp(vec![UpdateEvent { event: _create_db1_event }], vec![]);
+            w
+        };
+        let resp1 = w.next().await.unwrap().unwrap();
+        assert!(matches!(&resp1.updates[0].event, _create_db1_event));
 
-            let mut w2 = {
-                let (w, _) = hub.create_watcher().await;
-                w
-            };
+        let mut w2 = {
+            let (w, _) = hub.create_watcher().await;
+            w
+        };
 
-            let _create_db2_event =
-                Some(update_event::Event::Database(DatabaseDesc { id: 2, name: "db2".into() }));
-            hub.notify_updates(vec![UpdateEvent { event: _create_db2_event }]).await;
-            let resp2 = w.next().await.unwrap().unwrap();
-            assert!(matches!(&resp2.updates[0].event, _create_db2_event));
-            let resp22 = w2.next().await.unwrap().unwrap();
-            assert!(matches!(&resp22.updates[0].event, _create_db2_event));
-            // hub.notify_error(Error::NotRootLeader(vec![])).await;
-        });
+        let _create_db2_event =
+            Some(update_event::Event::Database(DatabaseDesc { id: 2, name: "db2".into() }));
+        hub.notify_updates(vec![UpdateEvent { event: _create_db2_event }]).await;
+        let resp2 = w.next().await.unwrap().unwrap();
+        assert!(matches!(&resp2.updates[0].event, _create_db2_event));
+        let resp22 = w2.next().await.unwrap().unwrap();
+        assert!(matches!(&resp22.updates[0].event, _create_db2_event));
+        // hub.notify_error(Error::NotRootLeader(vec![])).await;
     }
 }
 

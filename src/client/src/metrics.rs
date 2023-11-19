@@ -129,7 +129,6 @@ pub fn take_group_request_metrics(
             GROUP_CLIENT_GROUP_REQUEST_TOTAL.move_replicas.inc();
             Some(&GROUP_CLIENT_GROUP_REQUEST_DURATION_SECONDS.move_replicas)
         }
-        _ => todo!(),
     }
 }
 

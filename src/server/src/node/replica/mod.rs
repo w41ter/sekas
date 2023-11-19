@@ -118,7 +118,8 @@ impl Replica {
         sekas_client: sekas_client::SekasClient,
         move_replicas_provider: Arc<MoveReplicasProvider>,
     ) -> Self {
-        let latch_mgr = RemoteLatchManager::new(sekas_client, group_engine.clone());
+        let latch_mgr =
+            RemoteLatchManager::new(sekas_client, group_engine.clone(), raft_group.clone());
         Replica {
             info,
             group_engine,

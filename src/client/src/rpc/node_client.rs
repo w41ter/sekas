@@ -177,21 +177,6 @@ impl RequestBatchBuilder {
         Self { node_id, requests: vec![] }
     }
 
-    pub fn get(mut self, group_id: u64, epoch: u64, shard_id: u64, key: Vec<u8>) -> Self {
-        self.requests.push(GroupRequest {
-            group_id,
-            epoch,
-            request: Some(GroupRequestUnion {
-                request: Some(group_request_union::Request::Get(ShardGetRequest {
-                    shard_id,
-                    start_version: u64::MAX,
-                    key,
-                })),
-            }),
-        });
-        self
-    }
-
     pub fn create_shard(mut self, group_id: u64, epoch: u64, shard_desc: ShardDesc) -> Self {
         self.requests.push(GroupRequest {
             group_id,
@@ -297,56 +282,6 @@ impl RequestBatchBuilder {
             request: Some(GroupRequestUnion {
                 request: Some(group_request_union::Request::Transfer(TransferRequest {
                     transferee,
-                })),
-            }),
-        });
-        self
-    }
-
-    pub fn shard_prefix(mut self, group_id: u64, epoch: u64, shard_id: u64, prefix: &[u8]) -> Self {
-        self.requests.push(GroupRequest {
-            group_id,
-            epoch,
-            request: Some(GroupRequestUnion {
-                request: Some(group_request_union::Request::Scan(ShardScanRequest {
-                    shard_id,
-                    start_version: u64::MAX,
-                    prefix: Some(prefix.to_owned()),
-                    ..Default::default()
-                })),
-            }),
-        });
-        self
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub fn shard_scan(
-        mut self,
-        group_id: u64,
-        epoch: u64,
-        shard_id: u64,
-        limit: u64,
-        limit_bytes: u64,
-        exclude_start_key: bool,
-        exclude_end_key: bool,
-        start_key: Option<Vec<u8>>,
-        end_key: Option<Vec<u8>>,
-    ) -> Self {
-        self.requests.push(GroupRequest {
-            group_id,
-            epoch,
-            request: Some(GroupRequestUnion {
-                request: Some(group_request_union::Request::Scan(ShardScanRequest {
-                    shard_id,
-                    start_version: u64::MAX,
-                    limit,
-                    limit_bytes,
-                    exclude_start_key,
-                    exclude_end_key,
-                    prefix: None,
-                    start_key,
-                    end_key,
-                    include_raw_data: false,
                 })),
             }),
         });

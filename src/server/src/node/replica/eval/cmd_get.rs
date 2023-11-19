@@ -112,10 +112,10 @@ mod tests {
     use crate::node::replica::eval;
 
     #[derive(Default)]
-    struct LatchGuard {}
+    struct NopLatchGuard {}
 
-    impl eval::LatchGuard for LatchGuard {
-        fn signal_all(&self, txn_state: TxnState, commit_version: Option<u64>) {
+    impl eval::LatchGuard for NopLatchGuard {
+        fn signal_all(&self, _txn_state: TxnState, _commit_version: Option<u64>) {
             todo!()
         }
 
@@ -125,13 +125,13 @@ mod tests {
     }
 
     #[derive(Default)]
-    struct LatchManager {}
+    struct NopLatchManager {}
 
-    impl eval::LatchManager for LatchManager {
-        type Guard = LatchGuard;
+    impl eval::LatchManager for NopLatchManager {
+        type Guard = NopLatchGuard;
 
         async fn acquire(&self, _shard_id: u64, _key: &[u8]) -> Result<Self::Guard> {
-            Ok(LatchGuard {})
+            Ok(NopLatchGuard {})
         }
 
         async fn resolve_txn(
@@ -223,7 +223,7 @@ mod tests {
 
         let dir = TempDir::new(fn_name!()).unwrap();
         let engine = create_group_engine(dir.path(), 1, 1, 1).await;
-        let latch_mgr = LatchManager::default();
+        let latch_mgr = NopLatchManager::default();
         let mut idx = 0;
         for TestCase { values, expect } in cases {
             let key = idx.to_string();
@@ -273,7 +273,7 @@ mod tests {
 
         let dir = TempDir::new(fn_name!()).unwrap();
         let engine = create_group_engine(dir.path(), 1, 1, 1).await;
-        let latch_mgr = LatchManager::default();
+        let latch_mgr = NopLatchManager::default();
         let mut idx = 0;
         for TestCase { values, expect } in cases {
             let key = idx.to_string();

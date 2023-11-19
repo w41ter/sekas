@@ -46,8 +46,6 @@ pub struct WriteBatchResponse {
 pub struct WriteBuilder {
     /// The key to operate.
     key: Vec<u8>,
-    /// The type of request operation.
-    put_type: PutType,
     /// The cas conditions.
     conditions: Vec<WriteCondition>,
     /// The TTL of key.
@@ -67,7 +65,6 @@ impl WriteBuilder {
     pub fn new(key: Vec<u8>) -> Self {
         WriteBuilder {
             key,
-            put_type: PutType::None,
             conditions: vec![],
             ttl: None,
             take_prev_value: false,
@@ -380,6 +377,7 @@ impl Collection {
     }
 
     /// To issue a batch writes to a shard.
+    #[allow(dead_code)]
     pub(crate) async fn write(
         &self,
         request: ShardWriteRequest,

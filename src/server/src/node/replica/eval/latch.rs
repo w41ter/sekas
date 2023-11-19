@@ -12,17 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::collections::{HashMap, VecDeque};
-use std::sync::Arc;
-use std::time::Duration;
+use std::collections::HashMap;
 
-use dashmap::DashMap;
-use futures::channel::oneshot;
 use sekas_api::server::v1::group_request_union::Request;
-use sekas_api::server::v1::{ShardDesc, ShardKey, ShardWriteRequest, TxnIntent, TxnState, Value};
-use sekas_client::TxnStateTable;
+use sekas_api::server::v1::{ShardKey, ShardWriteRequest, TxnIntent, TxnState, Value};
 
-use crate::serverpb::v1::EvalResult;
 use crate::{Error, Result};
 
 pub trait LatchGuard {
@@ -55,10 +49,54 @@ pub trait LatchManager {
     async fn acquire(&self, shard_id: u64, user_key: &[u8]) -> Result<Self::Guard>;
 }
 
+pub struct DeferSignalLatchGuard<L: LatchGuard> {
+    state: Option<(TxnState, Option<u64>)>,
+    latches: HashMap<ShardKey, L>,
+}
+
+impl<L: LatchGuard> DeferSignalLatchGuard<L> {
+    #[cfg(test)]
+    pub fn empty() -> Self {
+        DeferSignalLatchGuard { state: None, latches: HashMap::default() }
+    }
+
+    pub async fn resolve_txn(
+        &mut self,
+        shard_id: u64,
+        user_key: &[u8],
+        txn_intent: TxnIntent,
+    ) -> Result<Option<Value>> {
+        let shard_key = ShardKey { shard_id, user_key: user_key.to_vec() };
+        let latch = self.latches.get_mut(&shard_key).ok_or_else(|| {
+            Error::InvalidData(format!(
+                "resolve txn but not hold the latch, start version {}",
+                txn_intent.start_version
+            ))
+        })?;
+        latch.resolve_txn(txn_intent).await
+        // TODO(walter) release the other latches!
+    }
+
+    #[inline]
+    pub fn signal_all(&mut self, txn_state: TxnState, commit_version: Option<u64>) {
+        self.state = Some((txn_state, commit_version));
+    }
+}
+
+impl<L: LatchGuard> Drop for DeferSignalLatchGuard<L> {
+    fn drop(&mut self) {
+        if let Some((txn_state, commit_version)) = self.state.take() {
+            for (_, latch) in &self.latches {
+                latch.signal_all(txn_state, commit_version);
+            }
+        }
+    }
+}
+
 pub async fn acquire_row_latches<T>(
     latch_mgr: &T,
     request: &Request,
-) -> Result<Option<HashMap<ShardKey, T::Guard>>>
+) -> Result<Option<DeferSignalLatchGuard<T::Guard>>>
 where
     T: LatchManager,
 {
@@ -94,7 +132,7 @@ where
         let latch = latch_mgr.acquire(shard_id, &user_key).await?;
         latches.insert(ShardKey { shard_id, user_key }, latch);
     }
-    Ok(Some(latches))
+    Ok(Some(DeferSignalLatchGuard { state: None, latches }))
 }
 
 fn collect_shard_write_keys(req: &ShardWriteRequest) -> Result<Vec<Vec<u8>>> {
@@ -109,25 +147,22 @@ fn collect_shard_write_keys(req: &ShardWriteRequest) -> Result<Vec<Vec<u8>>> {
 }
 
 pub mod remote {
-    use std::collections::{HashMap, VecDeque};
+    use std::collections::VecDeque;
     use std::sync::Arc;
-    use std::time::Duration;
 
     use dashmap::DashMap;
     use futures::channel::oneshot;
     use log::debug;
     use prost::Message;
-    use sekas_api::server::v1::group_request_union::Request;
-    use sekas_api::server::v1::{
-        ShardDesc, ShardKey, ShardWriteRequest, TxnIntent, TxnState, Value,
-    };
+    use sekas_api::server::v1::{ShardKey, TxnIntent, TxnState, Value};
     use sekas_client::TxnStateTable;
     use sekas_rock::time::timestamp_millis;
     use sekas_schema::system::txn::TXN_INTENT_VERSION;
 
     use super::LatchGuard;
-    use crate::engine::{GroupEngine, SnapshotMode};
+    use crate::engine::{GroupEngine, SnapshotMode, WriteBatch};
     use crate::node::replica::eval::LatchManager;
+    use crate::raftgroup::RaftGroup;
     use crate::serverpb::v1::EvalResult;
     use crate::{Error, Result};
 
@@ -153,15 +188,21 @@ pub mod remote {
     pub struct LatchManagerCore {
         txn_table: TxnStateTable,
         group_engine: GroupEngine,
+        raft_group: RaftGroup,
         latches: DashMap<ShardKey, LatchBlock>,
     }
 
     impl RemoteLatchManager {
-        pub fn new(client: sekas_client::SekasClient, group_engine: GroupEngine) -> Self {
+        pub fn new(
+            client: sekas_client::SekasClient,
+            group_engine: GroupEngine,
+            raft_group: RaftGroup,
+        ) -> Self {
             RemoteLatchManager {
                 core: Arc::new(LatchManagerCore {
                     txn_table: TxnStateTable::new(client),
                     group_engine,
+                    raft_group,
                     latches: DashMap::with_shard_amount(16),
                 }),
             }
@@ -170,9 +211,9 @@ pub mod remote {
         pub fn release(&self, shard_id: u64, user_key: &[u8]) {
             let shard_key = ShardKey { shard_id, user_key: user_key.to_owned() };
 
-            self.core.latches.remove_if_mut(&shard_key, |shard_key, latch_block| {
-                self.transfer_latch_guard(latch_block)
-            });
+            self.core
+                .latches
+                .remove_if_mut(&shard_key, |_, latch_block| self.transfer_latch_guard(latch_block));
         }
 
         fn acquire_internal(
@@ -220,6 +261,50 @@ pub mod remote {
             guard.hold = false;
             latch_block.hold = false;
             true
+        }
+
+        async fn commit_intent(
+            &self,
+            shard_key: &ShardKey,
+            txn_intent: &TxnIntent,
+            commit_version: u64,
+        ) -> Result<Option<Value>> {
+            let mut wb = WriteBatch::default();
+            self.core.group_engine.delete(
+                &mut wb,
+                shard_key.shard_id,
+                &shard_key.user_key,
+                TXN_INTENT_VERSION,
+            )?;
+            if txn_intent.is_delete {
+                self.core.group_engine.tombstone(
+                    &mut wb,
+                    shard_key.shard_id,
+                    &shard_key.user_key,
+                    commit_version,
+                )?;
+            } else if let Some(value) = txn_intent.value.as_ref() {
+                self.core.group_engine.put(
+                    &mut wb,
+                    shard_key.shard_id,
+                    &shard_key.user_key,
+                    &value,
+                    commit_version,
+                )?;
+            }
+            self.core.raft_group.propose(EvalResult::with_batch(wb.data().to_vec())).await?;
+            todo!()
+        }
+
+        async fn clear_intent(&self, shard_key: &ShardKey) -> Result<()> {
+            let mut wb = WriteBatch::default();
+            self.core.group_engine.delete(
+                &mut wb,
+                shard_key.shard_id,
+                &shard_key.user_key,
+                TXN_INTENT_VERSION,
+            )?;
+            self.core.raft_group.propose(EvalResult::with_batch(wb.data().to_owned())).await
         }
     }
 
@@ -282,11 +367,15 @@ pub mod remote {
                         },
                     )?;
 
+                let mut delete_intent = false;
                 let (actual_txn_state, commit_version) = if txn_record.state == TxnState::Running {
                     if txn_record.heartbeat + 500 < timestamp_millis() {
                         debug!("abort txn {} because it was expired", start_version);
                         match self.latch_mgr.core.txn_table.abort_txn(start_version).await {
-                            Ok(()) => (TxnState::Aborted, 0),
+                            Ok(()) => {
+                                delete_intent = true;
+                                (TxnState::Aborted, 0)
+                            }
                             Err(sekas_client::Error::InvalidArgument(_)) => {
                                 continue;
                             }
@@ -313,11 +402,16 @@ pub mod remote {
                         (txn_state, commit_version)
                     }
                 } else {
+                    delete_intent = true;
                     (txn_record.state, txn_record.commit_version.unwrap_or_default())
                 };
                 match actual_txn_state {
                     TxnState::Committed => {
-                        // TODO(walter) commit intent
+                        if delete_intent {
+                            self.latch_mgr
+                                .commit_intent(&self.shard_key, &txn_intent, commit_version)
+                                .await?;
+                        }
                         if txn_intent.is_delete {
                             return Ok(Some(Value::tombstone(commit_version)));
                         } else {
@@ -328,7 +422,9 @@ pub mod remote {
                         }
                     }
                     TxnState::Aborted => {
-                        // TODO(walter) clear intent
+                        if delete_intent {
+                            self.latch_mgr.clear_intent(&self.shard_key).await?;
+                        }
                         return Ok(None);
                     }
                     TxnState::Running => {
