@@ -21,7 +21,7 @@ use sekas_schema::system::txn::TXN_INTENT_VERSION;
 use super::LatchManager;
 use crate::engine::{GroupEngine, SnapshotMode};
 use crate::node::migrate::ForwardCtx;
-use crate::node::replica::ExecCtx;
+use crate::replica::ExecCtx;
 use crate::{Error, Result};
 
 /// Get the value of the specified key.
@@ -109,7 +109,7 @@ mod tests {
 
     use super::*;
     use crate::engine::{create_group_engine, WriteBatch, WriteStates};
-    use crate::node::replica::eval;
+    use crate::replica::eval;
 
     #[derive(Default)]
     struct NopLatchGuard {}

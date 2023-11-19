@@ -21,8 +21,7 @@ use sekas_api::server::v1::*;
 
 use super::{Action, ActionState};
 use crate::error::BusyReason;
-use crate::node::replica::ExecCtx;
-use crate::node::Replica;
+use crate::replica::{ExecCtx, Replica};
 use crate::schedule::event_source::EventSource;
 use crate::schedule::provider::GroupProviders;
 use crate::schedule::scheduler::ScheduleContext;

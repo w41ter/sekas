@@ -23,6 +23,7 @@ mod config;
 mod constants;
 mod engine;
 mod error;
+mod replica;
 mod root;
 mod schedule;
 mod service;

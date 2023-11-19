@@ -18,7 +18,7 @@ use sekas_schema::system::txn::TXN_MAX_VERSION;
 
 use super::cas::eval_conditions;
 use crate::engine::{GroupEngine, WriteBatch};
-use crate::node::replica::ExecCtx;
+use crate::replica::ExecCtx;
 use crate::serverpb::v1::EvalResult;
 use crate::Result;
 

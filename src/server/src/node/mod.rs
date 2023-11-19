@@ -13,11 +13,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-mod job;
-mod metrics;
+pub mod metrics;
 
+pub mod job;
 pub mod migrate;
-pub mod replica;
 pub mod route_table;
 
 use std::collections::{HashMap, HashSet};
@@ -32,14 +31,14 @@ use sekas_runtime::TaskGroup;
 
 use self::job::StateChannel;
 use self::migrate::MigrateController;
-pub use self::replica::Replica;
 pub use self::route_table::{RaftRouteTable, ReplicaRouteTable};
 use crate::constants::ROOT_GROUP_ID;
 use crate::engine::{Engines, GroupEngine, RawDb, StateEngine};
-use crate::node::replica::fsm::GroupStateMachine;
-use crate::node::replica::{ExecCtx, LeaseState, LeaseStateObserver, ReplicaInfo};
 use crate::raftgroup::snap::RecycleSnapMode;
 use crate::raftgroup::{ChannelManager, RaftGroup, RaftManager, SnapManager};
+use crate::replica::fsm::GroupStateMachine;
+pub use crate::replica::Replica;
+use crate::replica::{ExecCtx, LeaseState, LeaseStateObserver, ReplicaInfo};
 use crate::schedule::MoveReplicasProvider;
 use crate::serverpb::v1::*;
 use crate::transport::TransportManager;
@@ -387,7 +386,7 @@ impl Node {
     }
 
     pub async fn execute_request(&self, request: &GroupRequest) -> Result<GroupResponse> {
-        use self::replica::retry::forwardable_execute;
+        use crate::replica::retry::forwardable_execute;
 
         let replica = match self.replica_route_table.find(request.group_id) {
             Some(replica) => replica,
@@ -400,7 +399,7 @@ impl Node {
     }
 
     pub async fn forward(&self, request: ForwardRequest) -> Result<ForwardResponse> {
-        use self::replica::retry::execute;
+        use crate::replica::retry::execute;
 
         let replica = match self.replica_route_table.find(request.group_id) {
             Some(replica) => replica,
@@ -429,7 +428,7 @@ impl Node {
 
     // This request is issued by dest group.
     pub async fn migrate(&self, event: MigrationEvent, desc: MigrationDesc) -> Result<()> {
-        use self::replica::retry::do_migration;
+        use crate::replica::retry::do_migration;
 
         if desc.shard_desc.is_none() {
             return Err(Error::InvalidArgument("MigrationDesc::shard_desc".to_owned()));

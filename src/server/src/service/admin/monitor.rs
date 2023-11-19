@@ -17,8 +17,8 @@ use std::collections::HashMap;
 use serde::Serialize;
 use tonic::codegen::*;
 
-use crate::node::replica::ReplicaPerfContext;
 use crate::raftgroup::perf_point_micros;
+use crate::replica::ReplicaPerfContext;
 use crate::{Error, Result, Server};
 
 #[derive(Default, Debug, Clone, Serialize)]

@@ -161,8 +161,8 @@ pub mod remote {
 
     use super::LatchGuard;
     use crate::engine::{GroupEngine, SnapshotMode, WriteBatch};
-    use crate::node::replica::eval::LatchManager;
     use crate::raftgroup::RaftGroup;
+    use crate::replica::eval::LatchManager;
     use crate::serverpb::v1::EvalResult;
     use crate::{Error, Result};
 

@@ -21,7 +21,7 @@ use log::{debug, error, info, warn};
 use sekas_api::server::v1::group_request_union::Request;
 use sekas_api::server::v1::group_response_union::Response;
 use sekas_api::server::v1::*;
-use sekas_client::{MigrateClient, Router};
+use sekas_client::MigrateClient;
 use sekas_runtime::JoinHandle;
 
 use crate::node::metrics::*;
@@ -62,10 +62,6 @@ struct MigrateControllerShared {
 impl MigrateController {
     pub(crate) fn new(cfg: NodeConfig, transport_manager: TransportManager) -> Self {
         MigrateController { shared: Arc::new(MigrateControllerShared { cfg, transport_manager }) }
-    }
-
-    pub fn router(&self) -> Router {
-        self.shared.transport_manager.router().clone()
     }
 
     /// Watch migration state and do the corresponding step.

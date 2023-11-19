@@ -19,7 +19,7 @@ use sekas_api::server::v1::group_request_union::Request::{self, *};
 use sekas_api::server::v1::{GroupRequest, GroupRequestUnion, *};
 
 use crate::constants::ROOT_GROUP_ID;
-use crate::node::replica::Replica;
+use crate::replica::Replica;
 use crate::{Error, Result};
 
 pub struct RootStore {
@@ -107,8 +107,8 @@ impl RootStore {
     }
 
     async fn submit_request(&self, req: Request) -> Result<GroupResponse> {
-        use crate::node::replica::retry::execute;
-        use crate::node::replica::ExecCtx;
+        use crate::replica::retry::execute;
+        use crate::replica::ExecCtx;
 
         let request = GroupRequest {
             group_id: ROOT_GROUP_ID,

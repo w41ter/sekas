@@ -22,7 +22,7 @@ use super::cas::eval_conditions;
 use super::latch::DeferSignalLatchGuard;
 use super::LatchGuard;
 use crate::engine::{GroupEngine, SnapshotMode, WriteBatch};
-use crate::node::replica::ExecCtx;
+use crate::replica::ExecCtx;
 use crate::serverpb::v1::EvalResult;
 use crate::{Error, Result};
 
@@ -248,10 +248,6 @@ mod tests {
         fn signal_all(&self, _txn_state: TxnState, _commit_version: Option<u64>) {}
     }
 
-    // TODO: add test
-    // 1. commit intent and clear intent is idempotent.
-    // 2. only commit or clear intent with the same start_version.
-    // 3. insert intent is idempotent.
     #[test]
     fn apply_nop() {
         assert!(apply_put_op(PutType::Nop, None, vec![]).unwrap().is_none());
