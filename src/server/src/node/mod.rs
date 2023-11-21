@@ -969,4 +969,113 @@ mod tests {
             execute_put_request(&replica, b"123", b"456").await;
         }
     }
+
+    fn build_preapre_request(start_version: u64, key: &[u8], value: &[u8]) -> Request {
+        Request::WriteIntent(WriteIntentRequest {
+            start_version,
+            write: Some(ShardWriteRequest {
+                shard_id: SHARD_ID,
+                puts: vec![PutRequest {
+                    put_type: PutType::None.into(),
+                    key: key.to_vec(),
+                    value: value.to_vec(),
+                    take_prev_value: true,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }),
+        })
+    }
+
+    // execute prepare request and return prev values.
+    async fn execute_prepare_request(
+        replica: &Replica,
+        start_version: u64,
+        key: &[u8],
+        value: &[u8],
+    ) -> Option<Value> {
+        let write_req = build_preapre_request(start_version, key, value);
+        let response = execute_on_leader(replica, write_req).await;
+        assert!(matches!(response, Response::WriteIntent(_)));
+        let Response::WriteIntent(response) = response else { unreachable!() };
+        assert!(response.write.is_some());
+        let write = response.write.unwrap();
+        assert_eq!(write.puts.len(), 1);
+        write.puts[0].prev_value.clone()
+    }
+
+    fn build_commit_request(start_version: u64, commit_version: u64, key: &[u8]) -> Request {
+        Request::CommitIntent(CommitIntentRequest {
+            shard_id: SHARD_ID,
+            start_version,
+            commit_version,
+            keys: vec![key.to_vec()],
+        })
+    }
+
+    async fn execute_commit_request(
+        replica: &Replica,
+        start_version: u64,
+        commit_version: u64,
+        key: &[u8],
+    ) {
+        let write_req = build_commit_request(start_version, commit_version, key);
+        let response = execute_on_leader(replica, write_req).await;
+        assert!(matches!(response, Response::CommitIntent(_)));
+    }
+
+    fn build_abort_request(start_version: u64, key: &[u8]) -> Request {
+        Request::ClearIntent(ClearIntentRequest {
+            shard_id: SHARD_ID,
+            start_version,
+            keys: vec![key.to_vec()],
+        })
+    }
+
+    async fn execute_abort_request(replica: &Replica, start_version: u64, key: &[u8]) {
+        let write_req = build_abort_request(start_version, key);
+        let response = execute_on_leader(replica, write_req).await;
+        assert!(matches!(response, Response::ClearIntent(_)));
+    }
+
+    #[sekas_macro::test]
+    async fn read_commit_value() {
+        let dir = TempDir::new(fn_name!()).unwrap();
+        let node = bootstrap_node(dir.path()).await;
+        let replica = create_first_replica(&node).await;
+
+        // Key not found
+        let value = execute_read_request(&replica, b"123").await;
+        assert!(value.is_none());
+
+        let start_version = 123;
+        let commit_version = 345;
+        execute_prepare_request(&replica, start_version, b"123", b"456").await;
+        execute_commit_request(&replica, start_version, commit_version, b"123").await;
+
+        // read again.
+        let value = execute_read_request(&replica, b"123").await;
+        assert!(
+            matches!(value, Some(v) if v.content.as_ref().unwrap() == b"456" && v.version == commit_version)
+        );
+    }
+
+    #[sekas_macro::test]
+    async fn read_abort_value() {
+        let dir = TempDir::new(fn_name!()).unwrap();
+        let node = bootstrap_node(dir.path()).await;
+        let replica = create_first_replica(&node).await;
+
+        // Key not found
+        let value = execute_read_request(&replica, b"123").await;
+        assert!(value.is_none());
+
+        let start_version = 123;
+        execute_prepare_request(&replica, start_version, b"123", b"456").await;
+        execute_abort_request(&replica, start_version, b"123").await;
+
+        // read again.
+        let value = execute_read_request(&replica, b"123").await;
+        assert!(value.is_none());
+    }
 }

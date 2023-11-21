@@ -268,7 +268,7 @@ pub mod remote {
             shard_key: &ShardKey,
             txn_intent: &TxnIntent,
             commit_version: u64,
-        ) -> Result<Option<Value>> {
+        ) -> Result<()> {
             let mut wb = WriteBatch::default();
             self.core.group_engine.delete(
                 &mut wb,
@@ -292,8 +292,7 @@ pub mod remote {
                     commit_version,
                 )?;
             }
-            self.core.raft_group.propose(EvalResult::with_batch(wb.data().to_vec())).await?;
-            todo!()
+            self.core.raft_group.propose(EvalResult::with_batch(wb.data().to_vec())).await
         }
 
         async fn clear_intent(&self, shard_key: &ShardKey) -> Result<()> {

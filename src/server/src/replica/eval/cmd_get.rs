@@ -103,6 +103,9 @@ async fn read_shard_all_versions(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::VecDeque;
+    use std::sync::Mutex;
+
     use sekas_api::server::v1::Value;
     use sekas_rock::fn_name;
     use tempdir::TempDir;
@@ -272,6 +275,97 @@ mod tests {
             let key = idx.to_string();
             commit_values(&engine, key.as_bytes(), &values);
 
+            let got = read_key(&engine, &latch_mgr, 1, key.as_bytes(), txn_version).await.unwrap();
+            assert_eq!(got, expect, "idx = {idx}");
+        }
+    }
+
+    struct MockLatchManager {
+        values: Mutex<VecDeque<Option<Value>>>,
+    }
+
+    impl MockLatchManager {
+        fn new(values: Vec<Option<Value>>) -> Self {
+            MockLatchManager { values: Mutex::new(values.into_iter().collect()) }
+        }
+
+        fn with_value(value: Option<Value>) -> Self {
+            MockLatchManager::new(vec![value])
+        }
+    }
+
+    impl LatchManager for MockLatchManager {
+        type Guard = NopLatchGuard;
+
+        async fn resolve_txn(
+            &self,
+            _shard_id: u64,
+            _user_key: &[u8],
+            _start_version: u64,
+            _intent_version: u64,
+        ) -> Result<Option<Value>> {
+            let mut values = self.values.lock().expect("Poisoned");
+            Ok(values.pop_front().unwrap())
+        }
+
+        /// Acquire row latch for the specified user key.
+        async fn acquire(&self, _shard_id: u64, _user_key: &[u8]) -> Result<Self::Guard> {
+            todo!()
+        }
+    }
+
+    #[sekas_macro::test]
+    async fn read_key_with_intent() {
+        struct TestCase {
+            intent: TxnIntent,
+            resolve: Option<Value>,
+            expect: Option<Value>,
+        }
+
+        let values = vec![Value::with_value(b"123".to_vec(), 122)];
+        let cases = vec![
+            // case 1. intent is not visible
+            TestCase {
+                intent: TxnIntent::with_put(144, None),
+                resolve: None,
+                expect: Some(Value::with_value(b"123".to_vec(), 122)),
+            },
+            // case 2. intent is visible but aborted
+            TestCase {
+                intent: TxnIntent::with_put(122, None),
+                resolve: None,
+                expect: Some(Value::with_value(b"123".to_vec(), 122)),
+            },
+            // case 3. intent is visible and committed, but value is not visible
+            TestCase {
+                intent: TxnIntent::with_put(122, None),
+                resolve: Some(Value::with_value(b"124".to_vec(), 125)),
+                expect: Some(Value::with_value(b"123".to_vec(), 122)),
+            },
+            // case 4. intent is visible and committed, value is visible
+            TestCase {
+                intent: TxnIntent::with_put(122, None),
+                resolve: Some(Value::with_value(b"124".to_vec(), 123)),
+                expect: Some(Value::with_value(b"124".to_vec(), 123)),
+            },
+            // case 4. intent is visible and committed, value is nop
+            TestCase {
+                intent: TxnIntent::with_put(122, None),
+                resolve: None,
+                expect: Some(Value::with_value(b"123".to_vec(), 122)),
+            },
+        ];
+
+        let txn_version = 123;
+        let dir = TempDir::new(fn_name!()).unwrap();
+        let engine = create_group_engine(dir.path(), 1, 1, 1).await;
+        for (idx, TestCase { intent, resolve, expect }) in cases.into_iter().enumerate() {
+            let key = idx.to_string();
+            let mut values = values.clone();
+            values.push(Value::with_value(intent.encode_to_vec(), TXN_INTENT_VERSION));
+            commit_values(&engine, key.as_bytes(), &values);
+
+            let latch_mgr = MockLatchManager::with_value(resolve);
             let got = read_key(&engine, &latch_mgr, 1, key.as_bytes(), txn_version).await.unwrap();
             assert_eq!(got, expect, "idx = {idx}");
         }
