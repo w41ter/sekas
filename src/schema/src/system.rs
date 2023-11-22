@@ -47,3 +47,31 @@ pub fn collections() -> Vec<CollectionDesc> {
         col::txn_desc(),
     ]
 }
+
+/// Return the descriptor of the root group.
+pub fn root_group() -> GroupDesc {
+    GroupDesc {
+        id: crate::ROOT_GROUP_ID,
+        epoch: crate::INITIAL_EPOCH,
+        shards: unity_col_shards(),
+        replicas: vec![ReplicaDesc {
+            id: crate::FIRST_REPLICA_ID,
+            node_id: crate::FIRST_NODE_ID,
+            role: ReplicaRole::Voter.into(),
+        }],
+    }
+}
+
+/// Return the descriptor of the first user group.
+pub fn init_group() -> GroupDesc {
+    GroupDesc {
+        id: crate::FIRST_GROUP_ID,
+        epoch: crate::INITIAL_EPOCH,
+        shards: vec![],
+        replicas: vec![ReplicaDesc {
+            id: crate::INIT_USER_REPLICA_ID,
+            node_id: crate::FIRST_NODE_ID,
+            role: ReplicaRole::Voter.into(),
+        }],
+    }
+}

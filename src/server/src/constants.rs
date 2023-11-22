@@ -1,3 +1,4 @@
+// Copyright 2023-present The Sekas Authors.
 // Copyright 2022 The Engula Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -12,16 +13,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-pub use sekas_schema::LOCAL_COLLECTION_ID;
+pub use sekas_schema::{
+    FIRST_GROUP_ID, FIRST_NODE_ID, FIRST_REPLICA_ID, INITIAL_EPOCH, INITIAL_JOB_ID,
+    INIT_USER_REPLICA_ID, LOCAL_COLLECTION_ID, ROOT_GROUP_ID, STATE_REPLICA_ID,
+};
 
 pub const REPLICA_PER_GROUP: usize = 3;
-
-pub const ROOT_GROUP_ID: u64 = 0;
-pub const FIRST_GROUP_ID: u64 = ROOT_GROUP_ID + 1;
-pub const STATE_REPLICA_ID: u64 = 0;
-pub const FIRST_REPLICA_ID: u64 = 1;
-pub const INIT_USER_REPLICA_ID: u64 = FIRST_REPLICA_ID + 1;
-pub const FIRST_NODE_ID: u64 = 0;
-// A group exists at least an replica, so the initial epoch is not zero.
-pub const INITIAL_EPOCH: u64 = 1;
-pub const INITIAL_JOB_ID: u64 = 0;

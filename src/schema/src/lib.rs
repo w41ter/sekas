@@ -28,3 +28,13 @@ pub const FIRST_USER_SHARD_ID: u64 = 1024;
 
 /// The first id for non-system db.
 pub const FIRST_USER_DATABASE_ID: u64 = system::db::ID + 1;
+
+pub const ROOT_GROUP_ID: u64 = 0;
+pub const FIRST_GROUP_ID: u64 = ROOT_GROUP_ID + 1;
+pub const STATE_REPLICA_ID: u64 = 0;
+pub const FIRST_REPLICA_ID: u64 = 1;
+pub const INIT_USER_REPLICA_ID: u64 = FIRST_REPLICA_ID + 1;
+pub const FIRST_NODE_ID: u64 = 0;
+// A group exists at least an replica, so the initial epoch is not zero.
+pub const INITIAL_EPOCH: u64 = 1;
+pub const INITIAL_JOB_ID: u64 = 0;

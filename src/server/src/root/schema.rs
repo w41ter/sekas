@@ -611,17 +611,7 @@ impl Schema {
         self.put_node(node_desc).await?;
 
         // Put root group and replica state.
-        let group_desc = GroupDesc {
-            id: ROOT_GROUP_ID,
-            epoch: INITIAL_EPOCH,
-            replicas: vec![ReplicaDesc {
-                id: FIRST_REPLICA_ID,
-                node_id: FIRST_NODE_ID,
-                role: ReplicaRole::Voter.into(),
-            }],
-            shards: sekas_schema::system::unity_col_shards(),
-        };
-        self.put_group(group_desc).await?;
+        self.put_group(sekas_schema::system::root_group()).await?;
 
         let replica_state = ReplicaState {
             replica_id: FIRST_REPLICA_ID,
@@ -634,17 +624,7 @@ impl Schema {
         self.put_replica_state(replica_state).await?;
 
         // Put user group and replica state.
-        let group_desc = GroupDesc {
-            id: FIRST_GROUP_ID,
-            epoch: INITIAL_EPOCH,
-            replicas: vec![ReplicaDesc {
-                id: INIT_USER_REPLICA_ID,
-                node_id: FIRST_NODE_ID,
-                role: ReplicaRole::Voter.into(),
-            }],
-            shards: vec![],
-        };
-        self.put_group(group_desc).await?;
+        self.put_group(sekas_schema::system::init_group()).await?;
 
         let replica_state = ReplicaState {
             replica_id: INIT_USER_REPLICA_ID,

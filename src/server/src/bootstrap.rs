@@ -185,34 +185,12 @@ async fn save_node_ident(
 }
 
 async fn write_initial_cluster_data(node: &Node, addr: &str) -> Result<()> {
-    // FIXME(walter): unify group desc with root schema!
-
     // Create the first raft group of cluster, this node is the only member of the
     // raft group.
-    let group = GroupDesc {
-        id: ROOT_GROUP_ID,
-        epoch: INITIAL_EPOCH,
-        shards: sekas_schema::system::unity_col_shards(),
-        replicas: vec![ReplicaDesc {
-            id: FIRST_REPLICA_ID,
-            node_id: FIRST_NODE_ID,
-            role: ReplicaRole::Voter.into(),
-        }],
-    };
-    node.create_replica(FIRST_REPLICA_ID, group).await?;
+    node.create_replica(FIRST_REPLICA_ID, sekas_schema::system::root_group()).await?;
 
     // Create another group with empty shard to prepare user usage.
-    let init_group = GroupDesc {
-        id: FIRST_GROUP_ID,
-        epoch: INITIAL_EPOCH,
-        shards: vec![],
-        replicas: vec![ReplicaDesc {
-            id: INIT_USER_REPLICA_ID,
-            node_id: FIRST_NODE_ID,
-            role: ReplicaRole::Voter.into(),
-        }],
-    };
-    node.create_replica(INIT_USER_REPLICA_ID, init_group).await?;
+    node.create_replica(INIT_USER_REPLICA_ID, sekas_schema::system::init_group()).await?;
 
     let root_node = NodeDesc { id: FIRST_NODE_ID, addr: addr.to_owned(), ..Default::default() };
     let root_desc = RootDesc { epoch: INITIAL_EPOCH, root_nodes: vec![root_node] };
