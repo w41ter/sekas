@@ -610,6 +610,7 @@ impl Schema {
         };
         self.put_node(node_desc).await?;
 
+        // Put root group and replica state.
         let group_desc = GroupDesc {
             id: ROOT_GROUP_ID,
             epoch: INITIAL_EPOCH,
@@ -632,6 +633,29 @@ impl Schema {
         };
         self.put_replica_state(replica_state).await?;
 
+        // Put user group and replica state.
+        let group_desc = GroupDesc {
+            id: FIRST_GROUP_ID,
+            epoch: INITIAL_EPOCH,
+            replicas: vec![ReplicaDesc {
+                id: INIT_USER_REPLICA_ID,
+                node_id: FIRST_NODE_ID,
+                role: ReplicaRole::Voter.into(),
+            }],
+            shards: vec![],
+        };
+        self.put_group(group_desc).await?;
+
+        let replica_state = ReplicaState {
+            replica_id: INIT_USER_REPLICA_ID,
+            group_id: FIRST_GROUP_ID,
+            term: 0,
+            voted_for: INIT_USER_REPLICA_ID,
+            role: RaftRole::Leader.into(),
+            node_id: FIRST_NODE_ID,
+        };
+        self.put_replica_state(replica_state).await?;
+
         let mut batch =
             ShardWriteRequest { shard_id: col::shard_id(col::COLLECTION_ID), ..Default::default() };
         for col in sekas_schema::system::collections() {
@@ -646,26 +670,6 @@ impl Schema {
         // ATTN: init meta collection will setup cluster id, so it must be the last step
         // of bootstrap root.
         self.init_meta_collection(cluster_id.to_owned()).await?;
-
-        // batch.put_group(GroupDesc {
-        //     id: FIRST_GROUP_ID,
-        //     epoch: INITIAL_EPOCH,
-        //     replicas: vec![ReplicaDesc {
-        //         id: INIT_USER_REPLICA_ID,
-        //         node_id: FIRST_NODE_ID,
-        //         role: ReplicaRole::Voter.into(),
-        //     }],
-        //     shards: sekas_schema::system::txn_col_shards(),
-        // });
-
-        // batch.put_replica_state(ReplicaState {
-        //     replica_id: INIT_USER_REPLICA_ID,
-        //     group_id: FIRST_GROUP_ID,
-        //     term: 0,
-        //     voted_for: INIT_USER_REPLICA_ID,
-        //     role: RaftRole::Leader.into(),
-        //     node_id: FIRST_NODE_ID,
-        // });
 
         info!("boostrap root successfully. cluster={}", String::from_utf8_lossy(&cluster_id));
 

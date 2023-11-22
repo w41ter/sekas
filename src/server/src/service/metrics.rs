@@ -1,3 +1,4 @@
+// Copyright 2023-present The Engula Authors.
 // Copyright 2022 The Engula Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -22,6 +23,9 @@ make_static_metric! {
             get,
             scan,
             write,
+            write_intent,
+            commit_intent,
+            clear_intent,
             transfer,
             accept_shard,
             create_shard,
@@ -34,6 +38,9 @@ make_static_metric! {
             get,
             scan,
             write,
+            write_intent,
+            commit_intent,
+            clear_intent,
             transfer,
             accept_shard,
             create_shard,
@@ -101,7 +108,18 @@ pub fn take_group_request_metrics(request: &GroupRequest) -> Option<&'static His
             NODE_SERVICE_GROUP_REQUEST_TOTAL.move_replicas.inc();
             Some(&NODE_SERVICE_GROUP_REQUEST_DURATION_SECONDS.move_replicas)
         }
-        Some(_) => todo!(),
+        Some(Request::WriteIntent(_)) => {
+            NODE_SERVICE_GROUP_REQUEST_TOTAL.write_intent.inc();
+            Some(&NODE_SERVICE_GROUP_REQUEST_DURATION_SECONDS.write_intent)
+        }
+        Some(Request::CommitIntent(_)) => {
+            NODE_SERVICE_GROUP_REQUEST_TOTAL.commit_intent.inc();
+            Some(&NODE_SERVICE_GROUP_REQUEST_DURATION_SECONDS.commit_intent)
+        }
+        Some(Request::ClearIntent(_)) => {
+            NODE_SERVICE_GROUP_REQUEST_TOTAL.clear_intent.inc();
+            Some(&NODE_SERVICE_GROUP_REQUEST_DURATION_SECONDS.clear_intent)
+        }
         None => None,
     }
 }

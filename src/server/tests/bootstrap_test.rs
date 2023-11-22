@@ -28,7 +28,7 @@ fn init() {
 }
 
 #[sekas_macro::test]
-async fn bootstrap_cluster() {
+async fn bootstrap_simple_cluster() {
     let mut ctx = TestContext::new(fn_name!());
     let node_1_addr = ctx.next_listen_address();
     ctx.spawn_server(1, &node_1_addr, true, vec![]);
@@ -38,7 +38,7 @@ async fn bootstrap_cluster() {
 }
 
 #[sekas_macro::test]
-async fn join_node() {
+async fn bootstrap_cluster_join_node() {
     let mut ctx = TestContext::new(fn_name!());
     let node_1_addr = ctx.next_listen_address();
     ctx.spawn_server(1, &node_1_addr, true, vec![]);
@@ -54,7 +54,7 @@ async fn join_node() {
 }
 
 #[sekas_macro::test]
-async fn restart_cluster() {
+async fn bootstrap_restart_cluster() {
     let mut ctx = TestContext::new(fn_name!());
     ctx.disable_all_balance();
     let nodes = ctx.bootstrap_servers(3).await;
