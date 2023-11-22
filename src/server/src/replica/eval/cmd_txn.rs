@@ -65,9 +65,9 @@ pub(crate) async fn write_intent<T: LatchGuard>(
             let txn_intent = TxnIntent::tombstone(req.start_version).encode_to_vec();
             group_engine.put(&mut wb, write.shard_id, &del.key, &txn_intent, TXN_INTENT_VERSION)?;
         }
-        if del.take_prev_value {
-            resp.deletes.push(WriteResponse { prev_value });
-        }
+        resp.deletes.push(WriteResponse {
+            prev_value: if del.take_prev_value { prev_value } else { None },
+        });
     }
     for put in &write.puts {
         let (txn_intent, mut prev_value) =
@@ -95,9 +95,9 @@ pub(crate) async fn write_intent<T: LatchGuard>(
             let txn_intent = TxnIntent::with_put(req.start_version, apply_value).encode_to_vec();
             group_engine.put(&mut wb, write.shard_id, &put.key, &txn_intent, TXN_INTENT_VERSION)?;
         }
-        if put.take_prev_value {
-            resp.puts.push(WriteResponse { prev_value });
-        }
+        resp.puts.push(WriteResponse {
+            prev_value: if put.take_prev_value { prev_value } else { None },
+        });
     }
 
     let eval_result =

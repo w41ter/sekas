@@ -42,6 +42,9 @@ pub(crate) async fn batch_write(
                 resp.deletes.push(WriteResponse { prev_value });
             }
         }
+        if !del.take_prev_value {
+            resp.deletes.push(WriteResponse { prev_value: None });
+        }
         if exec_ctx.is_migrating_shard(req.shard_id) {
             panic!("BatchWrite does not support migrating shard");
         }
@@ -55,6 +58,9 @@ pub(crate) async fn batch_write(
             if put.take_prev_value {
                 resp.puts.push(WriteResponse { prev_value });
             }
+        }
+        if !put.take_prev_value {
+            resp.puts.push(WriteResponse { prev_value: None });
         }
         if put.put_type != PutType::None as i32 {
             panic!("BatchWrite does not support put operation");

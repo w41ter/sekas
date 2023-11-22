@@ -26,6 +26,7 @@ mod retry;
 mod rpc;
 mod shard_client;
 mod txn;
+mod write_batch;
 
 use tonic::async_trait;
 

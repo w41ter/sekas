@@ -146,6 +146,12 @@ impl From<sekas_api::server::v1::Error> for Error {
     }
 }
 
+impl From<tokio::task::JoinError> for Error {
+    fn from(value: tokio::task::JoinError) -> Self {
+        Error::Internal(value.into())
+    }
+}
+
 impl From<Error> for AppError {
     fn from(err: Error) -> Self {
         match err {

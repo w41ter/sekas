@@ -21,6 +21,7 @@ use sekas_api::server::v1::*;
 use crate::group_client::GroupClient;
 use crate::metrics::*;
 use crate::retry::RetryState;
+use crate::write_batch::WriteBatchContext;
 use crate::{record_latency, AppResult, SekasClient};
 
 #[derive(Debug, Default, Clone)]
@@ -317,8 +318,14 @@ impl Collection {
         Ok(())
     }
 
-    pub async fn write_batch(&self, _req: WriteBatchRequest) -> crate::Result<WriteBatchResponse> {
-        todo!("support transactional write batch")
+    pub async fn write_batch(&self, req: WriteBatchRequest) -> crate::Result<WriteBatchResponse> {
+        let ctx = WriteBatchContext::new(
+            self.co_desc.clone(),
+            req,
+            self.client.clone(),
+            self.rpc_timeout,
+        );
+        ctx.commit().await
     }
 
     pub async fn get(&self, key: Vec<u8>) -> crate::Result<Option<Vec<u8>>> {

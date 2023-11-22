@@ -38,21 +38,9 @@ impl RetryState {
         self.deadline.map(|d| d.saturating_duration_since(Instant::now()))
     }
 
-    pub async fn retry(&mut self, err: Error) -> Result<()> {
+    pub fn is_retryable(&self, err: &Error) -> bool {
         match err {
-            Error::NotFound(_) | Error::EpochNotMatch(_) | Error::GroupNotAccessable(_) => {
-                let mut interval = Duration::from_millis(self.interval_ms);
-                if let Some(deadline) = self.deadline {
-                    if let Some(duration) = deadline.checked_duration_since(Instant::now()) {
-                        interval = std::cmp::min(interval, duration);
-                    } else {
-                        return Err(Error::DeadlineExceeded("timeout".into()));
-                    }
-                }
-                tokio::time::sleep(interval).await;
-                self.interval_ms = std::cmp::min(self.interval_ms * 2, 250);
-                Ok(())
-            }
+            Error::NotFound(_) | Error::EpochNotMatch(_) | Error::GroupNotAccessable(_) => true,
             Error::NotLeader(..)
             | Error::GroupNotFound(_)
             | Error::NotRootLeader(..)
@@ -66,7 +54,29 @@ impl RetryState {
             | Error::CasFailed(_, _, _)
             | Error::Rpc(_)
             | Error::Transport(_)
-            | Error::Internal(_) => Err(err),
+            | Error::Internal(_) => false,
         }
+    }
+
+    pub async fn retry(&mut self, err: Error) -> Result<()> {
+        if !self.is_retryable(&err) {
+            return Err(err);
+        }
+
+        self.force_retry().await
+    }
+
+    pub async fn force_retry(&mut self) -> Result<()> {
+        let mut interval = Duration::from_millis(self.interval_ms);
+        if let Some(deadline) = self.deadline {
+            if let Some(duration) = deadline.checked_duration_since(Instant::now()) {
+                interval = std::cmp::min(interval, duration);
+            } else {
+                return Err(Error::DeadlineExceeded("timeout".into()));
+            }
+        }
+        tokio::time::sleep(interval).await;
+        self.interval_ms = std::cmp::min(self.interval_ms * 2, 250);
+        Ok(())
     }
 }
