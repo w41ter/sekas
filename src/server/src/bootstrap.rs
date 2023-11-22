@@ -36,33 +36,30 @@ use crate::{Config, Error, Result, Server};
 
 /// The main entrance of sekas server.
 pub fn run(config: Config, executor: Executor, shutdown: Shutdown) -> Result<()> {
-    executor.block_on(async {
-        let engines = Engines::open(&config.root_dir, &config.db)?;
+    executor.block_on(async { run_in_async(config, shutdown).await })
+}
 
-        let root_list =
-            if config.init { vec![config.addr.clone()] } else { config.join_list.clone() };
-        let transport_manager = TransportManager::new(root_list, engines.state()).await;
-        let address_resolver = transport_manager.address_resolver();
-        let node = Node::new(config.clone(), engines, transport_manager.clone()).await?;
+async fn run_in_async(config: Config, shutdown: Shutdown) -> Result<()> {
+    let engines = Engines::open(&config.root_dir, &config.db)?;
 
-        let ident =
-            bootstrap_or_join_cluster(&config, &node, transport_manager.root_client()).await?;
-        node.bootstrap(&ident).await?;
-        let root = Root::new(transport_manager.clone(), &ident, config.clone());
-        let initial_node_descs = root.bootstrap(&node).await?;
-        address_resolver.set_initial_nodes(initial_node_descs);
+    let root_list = if config.init { vec![config.addr.clone()] } else { config.join_list.clone() };
+    let transport_manager = TransportManager::new(root_list, engines.state()).await;
+    let address_resolver = transport_manager.address_resolver();
+    let node = Node::new(config.clone(), engines, transport_manager.clone()).await?;
 
-        info!("node {} starts serving requests", ident.node_id);
+    let ident = bootstrap_or_join_cluster(&config, &node, transport_manager.root_client()).await?;
+    node.bootstrap(&ident).await?;
+    let root = Root::new(transport_manager.clone(), &ident, config.clone());
+    let initial_node_descs = root.bootstrap(&node).await?;
+    address_resolver.set_initial_nodes(initial_node_descs);
 
-        let server = Server { node: Arc::new(node), root, address_resolver };
+    info!("node {} starts serving requests", ident.node_id);
 
-        let proxy_server = if config.enable_proxy_service {
-            Some(ProxyServer::new(&transport_manager))
-        } else {
-            None
-        };
-        bootstrap_services(&config.addr, server, proxy_server, shutdown).await
-    })
+    let server = Server { node: Arc::new(node), root, address_resolver };
+
+    let proxy_server =
+        if config.enable_proxy_service { Some(ProxyServer::new(&transport_manager)) } else { None };
+    bootstrap_services(&config.addr, server, proxy_server, shutdown).await
 }
 
 /// Listen and serve incoming rpc requests.
