@@ -422,7 +422,7 @@ impl GroupEngine {
     }
 
     #[inline]
-    fn shard_desc(&self, shard_id: u64) -> Result<ShardDesc> {
+    pub fn shard_desc(&self, shard_id: u64) -> Result<ShardDesc> {
         self.core
             .read()
             .expect("read lock")

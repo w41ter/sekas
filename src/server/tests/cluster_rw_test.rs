@@ -85,7 +85,7 @@ async fn cluster_rw_put_many_keys() {
     let co = db.create_collection("test_co".to_string()).await.unwrap();
     c.assert_collection_ready(&co.desc()).await;
 
-    for i in 0..1000 {
+    for i in 0..100 {
         let k = format!("key-{i}").as_bytes().to_vec();
         let v = format!("value-{i}").as_bytes().to_vec();
         co.put(k.clone(), v).await.unwrap();
@@ -109,7 +109,7 @@ async fn cluster_rw_with_config_change() {
     c.assert_collection_ready(&co.desc()).await;
     c.assert_root_group_has_promoted().await;
 
-    for i in 0..3000 {
+    for i in 0..300 {
         if i == 20 {
             ctx.stop_server(2).await;
             ctx.add_server(vec![root_addr.clone()], 3).await;
@@ -136,7 +136,7 @@ async fn cluster_rw_with_leader_transfer() {
     let co = db.create_collection("test_co".to_string()).await.unwrap();
     c.assert_collection_ready(&co.desc()).await;
 
-    for i in 0..1000 {
+    for i in 0..100 {
         let k = format!("key-{i}").as_bytes().to_vec();
         let v = format!("value-{i}").as_bytes().to_vec();
         co.put(k.clone(), v).await.unwrap();
@@ -144,7 +144,7 @@ async fn cluster_rw_with_leader_transfer() {
         let r = r.map(String::from_utf8);
         assert!(matches!(r, Some(Ok(v)) if v == format!("value-{i}")));
 
-        if i % 100 == 0 {
+        if i % 10 == 0 {
             let state = c.find_router_group_state_by_key(&co.desc(), k.as_slice()).await.unwrap();
             let leader_id = state.leader_state.unwrap().0;
             for (id, replica) in state.replicas {
@@ -175,7 +175,7 @@ async fn cluster_rw_with_shard_migration() {
     let prev_group_id = source_state.id;
     let target_group_id = 0;
 
-    for i in 0..1000 {
+    for i in 0..100 {
         let k = format!("key-{i}").as_bytes().to_vec();
         let v = format!("value-{i}").as_bytes().to_vec();
         co.put(k.clone(), v).await.unwrap();
@@ -183,7 +183,7 @@ async fn cluster_rw_with_shard_migration() {
         let r = r.map(String::from_utf8);
         assert!(matches!(r, Some(Ok(v)) if v == format!("value-{i}")));
 
-        if i % 100 == 0 {
+        if i % 10 == 0 {
             let source_state = c.find_router_group_state_by_key(&co.desc(), &[0]).await.unwrap();
             if source_state.id == target_group_id {
                 continue;

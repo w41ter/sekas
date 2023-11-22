@@ -16,11 +16,13 @@
 use std::collections::HashSet;
 use std::sync::{atomic, Arc, Mutex};
 use std::task::{Poll, Waker};
+use std::time::Duration;
 
 use futures::future::poll_fn;
 use log::{error, info, warn};
 use prometheus::HistogramTimer;
 use sekas_api::server::v1::{GroupDesc, ReplicaDesc, ReplicaRole, RootDesc, ShardDesc};
+use sekas_client::RetryState;
 use tokio::time::Instant;
 
 use super::allocator::*;
@@ -520,8 +522,15 @@ impl Jobs {
 impl Jobs {
     async fn try_create_shard(&self, group_id: u64, desc: &ShardDesc) -> Result<()> {
         let mut group_client = self.core.root_shared.transport_manager.lazy_group_client(group_id);
-        group_client.create_shard(desc).await?;
-        Ok(())
+        let mut retry_state = RetryState::new(Some(Duration::from_secs(10)));
+        loop {
+            match group_client.create_shard(desc).await {
+                Ok(()) => return Ok(()),
+                Err(err) => {
+                    retry_state.retry(err).await?;
+                }
+            }
+        }
     }
 
     async fn try_create_replica(

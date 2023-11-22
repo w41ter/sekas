@@ -259,7 +259,7 @@ impl Root {
                 }
                 self.jobs.wait_more_jobs().await;
             } else {
-                sekas_runtime::time::sleep(Duration::from_secs(20)).await;
+                sekas_runtime::time::sleep(Duration::from_secs(1)).await;
             };
         }
     }

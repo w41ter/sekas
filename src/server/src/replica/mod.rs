@@ -23,7 +23,7 @@ use std::sync::atomic::AtomicI32;
 use std::sync::{Arc, Mutex};
 use std::task::Poll;
 
-use log::info;
+use log::{info, warn};
 use sekas_api::server::v1::group_request_union::Request;
 use sekas_api::server::v1::group_response_union::Response;
 use sekas_api::server::v1::*;
@@ -349,8 +349,17 @@ impl Replica {
                     .as_ref()
                     .cloned()
                     .ok_or_else(|| Error::InvalidArgument("CreateShard::shard".into()))?;
+                let eval_result = if self.group_engine.shard_desc(shard.id).is_ok() {
+                    warn!(
+                        "shard {} already exists, ignore duplicated create shard request. replica={} group={}",
+                        shard.id, self.info.replica_id, self.info.group_id,
+                    );
+                    None
+                } else {
+                    Some(eval::add_shard(shard))
+                };
                 let resp = CreateShardResponse {};
-                (Some(eval::add_shard(shard)), Response::CreateShard(resp))
+                (eval_result, Response::CreateShard(resp))
             }
             Request::ChangeReplicas(req) => {
                 if let Some(change) = &req.change_replicas {

@@ -236,6 +236,10 @@ impl GroupClient {
                 Ok(())
             }
             Error::NotLeader(_, term, leader_desc) => {
+                trace!(
+                    "group {} not leader, new leader {leader_desc:?}, term {term}",
+                    self.group_id
+                );
                 self.apply_not_leader_status(term, leader_desc);
                 Ok(())
             }
