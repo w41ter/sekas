@@ -244,7 +244,7 @@ impl WriteBatchContext {
                     Response::WriteIntent(WriteIntentResponse { write: Some(resp) }) => {
                         Ok((resp, ctx.put_indexes, ctx.delete_indexes))
                     }
-                    _ => Err(crate::Error::Internal(
+                    _ => Err(Error::Internal(
                         "invalid response type, Get is required".to_string().into(),
                     )),
                 }
@@ -279,7 +279,7 @@ impl WriteBatchContext {
                     }
                 }
                 Err(err) => {
-                    if self.retry_state.is_retryable(&err) {
+                    if !self.retry_state.is_retryable(&err) {
                         return Err(err);
                     }
                 }

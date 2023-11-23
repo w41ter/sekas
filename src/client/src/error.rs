@@ -173,7 +173,7 @@ impl From<Error> for AppError {
             | Error::GroupNotFound(_)
             | Error::GroupNotAccessable(_)
             | Error::NotRootLeader(..)
-            | Error::NotLeader(..) => unreachable!(),
+            | Error::NotLeader(..) => unreachable!("convert err {err:?} to `AppError`"),
         }
     }
 }

@@ -181,7 +181,7 @@ async fn cluster_rw_with_shard_migration() {
         co.put(k.clone(), v).await.unwrap();
         let r = co.get(k).await.unwrap();
         let r = r.map(String::from_utf8);
-        assert!(matches!(r, Some(Ok(v)) if v == format!("value-{i}")));
+        assert!(matches!(&r, Some(Ok(v)) if v == &format!("value-{i}")), "index {i}: {r:?}");
 
         if i % 10 == 0 {
             let source_state = c.find_router_group_state_by_key(&co.desc(), &[0]).await.unwrap();
