@@ -18,7 +18,7 @@ use sekas_schema::system::txn::TXN_INTENT_VERSION;
 
 use super::LatchManager;
 use crate::engine::{GroupEngine, Snapshot, SnapshotMode};
-use crate::Result;
+use crate::{Error, Result};
 
 /// Scan the specified range.
 pub(crate) async fn scan<T>(
@@ -56,61 +56,65 @@ where
         let mut value_set = ValueSet::default();
         for entry in mvcc_iter? {
             let entry = entry?;
+            let (user_key, mut version) = (entry.user_key(), entry.version());
 
             // skip exclude keys.
-            if req.exclude_start_key && is_equals(&req.start_key, entry.user_key()) {
+            if req.exclude_start_key && is_equals(&req.start_key, user_key) {
                 continue 'OUTER;
             }
 
-            if req.exclude_end_key && is_equals(&req.end_key, entry.user_key()) {
+            if req.exclude_end_key && is_equals(&req.end_key, user_key) {
                 continue 'OUTER;
             }
 
-            if is_exceeds(&req.end_key, entry.user_key()) {
+            if is_exceeds(&req.end_key, user_key) {
                 break 'OUTER;
             }
 
-            if entry.version() == TXN_INTENT_VERSION {
+            let value;
+            if version == TXN_INTENT_VERSION {
                 let encoded_intent = entry.value().ok_or_else(|| {
-                    crate::Error::InvalidData(format!(
-                        "the value of intent key {:?} is not exists",
-                        entry.user_key()
+                    Error::InvalidData(format!(
+                        "the value of intent key {user_key:?} is not exists",
                     ))
                 })?;
                 let intent = TxnIntent::decode(encoded_intent)?;
-                if intent.start_version < req.start_version {
-                    if let Some(value) = latch_mgr
-                        .resolve_txn(
-                            req.shard_id,
-                            entry.user_key(),
-                            req.start_version,
-                            intent.start_version,
-                        )
-                        .await?
-                    {
-                        if value.version < req.start_version {
-                            todo!("save result and refresh snapshot")
-                        }
-                    }
-                    // TODO(walter) what happen if a intent is resolved before
-                    // ingest?
+                if intent.start_version > req.start_version {
+                    // skip invisible versions.
+                    continue;
                 }
-            }
+                let Some(intent_value) = latch_mgr
+                    .resolve_txn(req.shard_id, user_key, req.start_version, intent.start_version)
+                    .await?
+                else {
+                    // skip empty value.
+                    continue;
+                };
+                if intent_value.version > req.start_version {
+                    // skip invisible versions.
+                    continue;
+                }
 
-            // skip invisible versions.
-            if req.start_version < entry.version() {
+                version = intent_value.version;
+                value = intent_value.content;
+                // TODO(walter) what happen if a intent is resolved before
+                // ingest?
+            } else if req.start_version < version {
+                // skip invisible versions.
                 continue;
+            } else {
+                value = entry.value().map(ToOwned::to_owned);
             }
 
-            if let Some(value) = entry.value().map(ToOwned::to_owned) {
+            if let Some(value) = value {
                 total_bytes += value.len();
-                value_set.values.push(Value { content: Some(value), version: entry.version() });
+                value_set.values.push(Value { content: Some(value), version });
             } else if req.include_raw_data {
-                value_set.values.push(Value { content: None, version: entry.version() });
+                value_set.values.push(Value { content: None, version });
             }
 
             if !value_set.values.is_empty() && value_set.user_key.is_empty() {
-                value_set.user_key = entry.user_key().to_owned();
+                value_set.user_key = user_key.to_owned();
                 total_bytes += value_set.user_key.len();
             }
 
