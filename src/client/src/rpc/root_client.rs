@@ -15,7 +15,7 @@
 use std::collections::HashMap;
 use std::future::Future;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use derivative::Derivative;
 use log::trace;
@@ -185,12 +185,17 @@ impl Client {
         Ok(res.into_inner())
     }
 
-    pub async fn alloc_txn_id(&self, num_required: u64) -> Result<u64> {
+    pub async fn alloc_txn_id(&self, num_required: u64, timeout: Option<Duration>) -> Result<u64> {
         let req = AllocTxnIdRequest { num_required };
         let res = self
-            .invoke(|mut client| {
+            .invoke_with_timeout(timeout, |mut client| {
                 let req = req.clone();
-                async move { client.alloc_txn_id(req).await }
+                async move {
+                    log::info!("alloc txn id rpc");
+                    let result = client.alloc_txn_id(req).await;
+                    log::info!("alloc txn id rpc finish");
+                    result
+                }
             })
             .await?;
         let res = res.into_inner();
@@ -227,9 +232,19 @@ impl Client {
         F: Fn(root_client::RootClient<Channel>) -> O,
         O: Future<Output = Result<V, Status>>,
     {
+        self.invoke_with_timeout(None, op).await
+    }
+
+    async fn invoke_with_timeout<F, O, V>(&self, timeout: Option<Duration>, op: F) -> Result<V>
+    where
+        F: Fn(root_client::RootClient<Channel>) -> O,
+        O: Future<Output = Result<V, Status>>,
+    {
         let mut interval = 1;
         let mut save_core = false;
         let mut core = self.core().await;
+
+        let deadline = timeout.map(|duration| Instant::now() + duration);
         'OUTER: loop {
             if let Some(leader) = core.leader {
                 // Fast path of invoking.
@@ -301,6 +316,10 @@ impl Client {
 
             // Sine all nodes are unreachable or timeout, try refresh roots from discovery.
             core = self.refresh_client_core(core).await?;
+
+            if deadline.map(|v| v.elapsed() > Duration::ZERO).unwrap_or_default() {
+                return Err(crate::Error::DeadlineExceeded("issue rpc".to_owned()));
+            }
 
             tokio::time::sleep(Duration::from_millis(interval)).await;
             interval = std::cmp::min(interval * 2, 1000);

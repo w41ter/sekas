@@ -11,15 +11,18 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+use std::backtrace::Backtrace;
 use std::{panic, process};
+
+use log::error;
 
 pub fn setup_panic_hook() {
     let orig_hook = panic::take_hook();
     panic::set_hook(Box::new(move |panic_info| {
         // invoke the default handler and exit the process
         orig_hook(panic_info);
-        tracing::error!("{:#?}", panic_info);
-        tracing::error!("Backtrace: \n{}", std::backtrace::Backtrace::force_capture());
+        let backtrace = Backtrace::force_capture();
+        error!("{:#?} \nbacktrace: \n{}", panic_info, backtrace);
         process::exit(1);
     }));
 }

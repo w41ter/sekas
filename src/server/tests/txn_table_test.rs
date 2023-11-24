@@ -42,7 +42,7 @@ async fn begin_txn_idempotent() {
     };
     let client = c.app_client_with_options(opts).await;
 
-    let ts_table = sekas_client::TxnStateTable::new(client);
+    let ts_table = sekas_client::TxnStateTable::new(client, Some(Duration::from_secs(5)));
 
     let start_version = 123321;
     ts_table.begin_txn(start_version).await.unwrap();
@@ -69,7 +69,7 @@ async fn commit_txn_idempotent() {
     };
     let client = c.app_client_with_options(opts).await;
 
-    let ts_table = sekas_client::TxnStateTable::new(client);
+    let ts_table = sekas_client::TxnStateTable::new(client, Some(Duration::from_secs(5)));
 
     let start_version = 123321;
     ts_table.begin_txn(start_version).await.unwrap();
@@ -102,7 +102,7 @@ async fn abort_txn_idempotent() {
     };
     let client = c.app_client_with_options(opts).await;
 
-    let ts_table = sekas_client::TxnStateTable::new(client);
+    let ts_table = sekas_client::TxnStateTable::new(client, Some(Duration::from_secs(5)));
 
     let start_version = 123321;
     ts_table.begin_txn(start_version).await.unwrap();
@@ -134,7 +134,7 @@ async fn txn_state_table_normal_case() {
     };
     let client = c.app_client_with_options(opts).await;
 
-    let ts_table = sekas_client::TxnStateTable::new(client);
+    let ts_table = sekas_client::TxnStateTable::new(client, Some(Duration::from_secs(5)));
 
     let start_version = 123321;
     ts_table.begin_txn(start_version).await.unwrap();

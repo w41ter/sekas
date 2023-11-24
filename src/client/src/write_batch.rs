@@ -108,11 +108,14 @@ impl WriteBatchContext {
         // TODO: check parameters
 
         // TODO: handle errors to abort txn.
+        log::info!("try alloc txn version");
         self.start_version = self.alloc_txn_version().await?;
+        log::info!("alloc txn version {}", self.start_version);
         self.start_txn().await?;
+        log::info!("start txn {}", self.start_version);
 
         let start_version = self.start_version;
-        let txn_table = TxnStateTable::new(self.client.clone());
+        let txn_table = TxnStateTable::new(self.client.clone(), self.retry_state.timeout());
 
         tokio::select! {
             _ = Self::lease_txn(txn_table, start_version) => {
@@ -135,8 +138,11 @@ impl WriteBatchContext {
 
     async fn commit_inner(mut self) -> Result<WriteBatchResponse> {
         self.prepare_intents().await?;
+        log::info!("prepare intents {}", self.start_version);
         self.commit_version = self.alloc_txn_version().await?;
+        log::info!("allocate commit txn version {} {}", self.start_version, self.commit_version);
         self.commit_txn().await?;
+        log::info!("commit txn version {} {}", self.start_version, self.commit_version);
         let version = self.commit_version;
 
         let mut deletes = Vec::with_capacity(self.num_deletes);
@@ -153,17 +159,19 @@ impl WriteBatchContext {
         }
 
         self.commit_intents();
+        log::info!("commit intents");
         Ok(WriteBatchResponse { version, deletes, puts })
     }
 
     async fn alloc_txn_version(&mut self) -> Result<u64> {
         let root_client = self.client.root_client();
         loop {
-            match root_client.alloc_txn_id(1).await {
+            match root_client.alloc_txn_id(1, self.retry_state.timeout()).await {
                 Ok(value) => {
                     return Ok(value);
                 }
                 Err(err) => {
+                    log::info!("alloc txn id: {err:?}");
                     self.retry_state.retry(err).await?;
                 }
             }
@@ -171,15 +179,9 @@ impl WriteBatchContext {
     }
 
     async fn start_txn(&mut self) -> Result<()> {
-        let txn_table = TxnStateTable::new(self.client.clone());
-        loop {
-            match txn_table.begin_txn(self.start_version).await {
-                Ok(()) => return Ok(()),
-                Err(err) => {
-                    self.retry_state.retry(err).await?;
-                }
-            }
-        }
+        TxnStateTable::new(self.client.clone(), self.retry_state.timeout())
+            .begin_txn(self.start_version)
+            .await
     }
 
     async fn prepare_intents(&mut self) -> Result<()> {
@@ -289,28 +291,16 @@ impl WriteBatchContext {
     }
 
     async fn commit_txn(&mut self) -> Result<()> {
-        let txn_table = TxnStateTable::new(self.client.clone());
-        loop {
-            match txn_table.commit_txn(self.start_version, self.commit_version).await {
-                Ok(()) => return Ok(()),
-                Err(err) => {
-                    self.retry_state.retry(err).await?;
-                }
-            }
-        }
+        TxnStateTable::new(self.client.clone(), self.retry_state.timeout())
+            .commit_txn(self.start_version, self.commit_version)
+            .await
     }
 
     #[allow(unused)]
     async fn abort_txn(&mut self) -> Result<()> {
-        let txn_table = TxnStateTable::new(self.client.clone());
-        loop {
-            match txn_table.abort_txn(self.start_version).await {
-                Ok(()) => return Ok(()),
-                Err(err) => {
-                    self.retry_state.retry(err).await?;
-                }
-            }
-        }
+        TxnStateTable::new(self.client.clone(), self.retry_state.timeout())
+            .abort_txn(self.start_version)
+            .await
     }
 
     fn commit_intents(mut self) {

@@ -49,13 +49,15 @@ struct TxnWriteRequest {
     deletes: Vec<DeleteRequest>,
 }
 
+#[derive(Debug)]
 pub struct TxnStateTable {
     client: SekasClient,
+    timeout: Option<Duration>,
 }
 
 impl TxnStateTable {
-    pub fn new(client: SekasClient) -> Self {
-        TxnStateTable { client }
+    pub fn new(client: SekasClient, timeout: Option<Duration>) -> Self {
+        TxnStateTable { client, timeout }
     }
 
     /// Begin a new transaction with the specified txn version.
@@ -264,7 +266,7 @@ impl TxnStateTable {
     }
 
     async fn write(&self, request: TxnWriteRequest) -> Result<ShardWriteResponse> {
-        let mut retry_state = RetryState::new(Some(TXN_TIMEOUT));
+        let mut retry_state = RetryState::new(self.timeout);
         loop {
             match self.write_inner(&request, retry_state.timeout()).await {
                 Ok(value) => return Ok(value),
