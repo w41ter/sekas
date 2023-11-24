@@ -20,7 +20,7 @@ use super::cas::eval_conditions;
 use crate::engine::{GroupEngine, WriteBatch};
 use crate::replica::ExecCtx;
 use crate::serverpb::v1::EvalResult;
-use crate::Result;
+use crate::{Error, Result};
 
 pub(crate) async fn batch_write(
     exec_ctx: &ExecCtx,
@@ -33,11 +33,14 @@ pub(crate) async fn batch_write(
 
     let mut wb = WriteBatch::default();
     let mut resp = ShardWriteResponse::default();
-    for del in &req.deletes {
+    let num_deletes = req.deletes.len();
+    for (idx, del) in req.deletes.iter().enumerate() {
         if !del.conditions.is_empty() || del.take_prev_value {
             // TODO(walter) support get value in parallel.
             let prev_value = group_engine.get(req.shard_id, &del.key).await?;
-            eval_conditions(prev_value.as_ref(), &del.conditions)?;
+            if let Some(cond_idx) = eval_conditions(prev_value.as_ref(), &del.conditions)? {
+                return Err(Error::CasFailed(idx as u64, cond_idx as u64, prev_value));
+            }
             if del.take_prev_value {
                 resp.deletes.push(WriteResponse { prev_value });
             }
@@ -50,11 +53,14 @@ pub(crate) async fn batch_write(
         }
         group_engine.tombstone(&mut wb, req.shard_id, &del.key, TXN_MAX_VERSION)?;
     }
-    for put in &req.puts {
+    for (idx, put) in req.puts.iter().enumerate() {
         if !put.conditions.is_empty() || put.take_prev_value {
             // TODO(walter) support get value in parallel.
             let prev_value = group_engine.get(req.shard_id, &put.key).await?;
-            eval_conditions(prev_value.as_ref(), &put.conditions)?;
+            if let Some(cond_idx) = eval_conditions(prev_value.as_ref(), &put.conditions)? {
+                let idx = num_deletes + idx;
+                return Err(Error::CasFailed(idx as u64, cond_idx as u64, prev_value));
+            }
             if put.take_prev_value {
                 resp.puts.push(WriteResponse { prev_value });
             }
@@ -73,4 +79,80 @@ pub(crate) async fn batch_write(
         group_engine.put(&mut wb, req.shard_id, &put.key, &put.value, TXN_MAX_VERSION)?;
     }
     Ok((Some(EvalResult::with_batch(wb.data().to_owned())), resp))
+}
+
+#[cfg(test)]
+mod tests {
+    use sekas_api::server::v1::Value;
+    use sekas_client::WriteBuilder;
+    use sekas_rock::fn_name;
+    use tempdir::TempDir;
+
+    use super::*;
+    use crate::engine::{create_group_engine, WriteStates};
+    use crate::Error;
+
+    const SHARD_ID: u64 = 1;
+
+    fn commit_values(engine: &GroupEngine, key: &[u8], values: &[Value]) {
+        let mut wb = WriteBatch::default();
+        for Value { version, content } in values {
+            if let Some(value) = content {
+                engine.put(&mut wb, SHARD_ID, key, value, *version).unwrap();
+            } else {
+                engine.tombstone(&mut wb, SHARD_ID, key, *version).unwrap();
+            }
+        }
+        engine.commit(wb, WriteStates::default(), false).unwrap();
+    }
+
+    #[sekas_macro::test]
+    async fn batch_write_when_exists() {
+        let dir = TempDir::new(fn_name!()).unwrap();
+        let engine = create_group_engine(dir.path(), 1, 1, 1).await;
+
+        // 1. put exists failed
+        let exec_ctx = ExecCtx::default();
+        let req = ShardWriteRequest {
+            shard_id: SHARD_ID,
+            puts: vec![WriteBuilder::new(b"key".to_vec())
+                .expect_exists()
+                .ensure_put(b"value".to_vec())],
+            ..Default::default()
+        };
+        let r = batch_write(&exec_ctx, &engine, &req).await;
+        assert!(matches!(r, Err(Error::CasFailed(0, 0, _))), "{r:?}");
+
+        // 2. delete exists failed
+        let exec_ctx = ExecCtx::default();
+        let req = ShardWriteRequest {
+            shard_id: SHARD_ID,
+            deletes: vec![WriteBuilder::new(b"key".to_vec()).expect_exists().ensure_delete()],
+            ..Default::default()
+        };
+        let r = batch_write(&exec_ctx, &engine, &req).await;
+        assert!(matches!(r, Err(Error::CasFailed(0, 0, _))));
+
+        commit_values(&engine, b"key", &[Value::with_value(b"value".to_vec(), 123)]);
+
+        // 3. put exists success
+        let req = ShardWriteRequest {
+            shard_id: SHARD_ID,
+            puts: vec![WriteBuilder::new(b"key".to_vec())
+                .expect_exists()
+                .ensure_put(b"value".to_vec())],
+            ..Default::default()
+        };
+        let r = batch_write(&exec_ctx, &engine, &req).await;
+        assert!(r.is_ok());
+
+        // 4. delete exists success
+        let req = ShardWriteRequest {
+            shard_id: SHARD_ID,
+            deletes: vec![WriteBuilder::new(b"key".to_vec()).expect_exists().ensure_delete()],
+            ..Default::default()
+        };
+        let r = batch_write(&exec_ctx, &engine, &req).await;
+        assert!(r.is_ok());
+    }
 }
