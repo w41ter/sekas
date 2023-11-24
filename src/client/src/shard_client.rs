@@ -15,6 +15,7 @@
 use sekas_api::server::v1::group_request_union::Request;
 use sekas_api::server::v1::group_response_union::Response;
 use sekas_api::server::v1::*;
+use sekas_schema::system::txn::TXN_MAX_VERSION;
 
 use crate::group_client::GroupClient;
 use crate::retry::RetryState;
@@ -88,6 +89,7 @@ impl ShardClient {
         let req = Request::Scan(ShardScanRequest {
             shard_id: self.shard_id,
             prefix: Some(prefix.to_owned()),
+            start_version: TXN_MAX_VERSION,
             ..Default::default()
         });
         let mut client = GroupClient::lazy(self.group_id, self.client.clone());
