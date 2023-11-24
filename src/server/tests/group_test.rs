@@ -81,7 +81,7 @@ async fn group_add_replica() {
 }
 
 #[sekas_macro::test]
-async fn create_group_with_multi_replicas() {
+async fn group_create_with_multi_replicas() {
     let mut ctx = TestContext::new(fn_name!());
     ctx.disable_all_balance();
     ctx.disable_all_node_scheduler();
@@ -123,7 +123,7 @@ async fn create_group_with_multi_replicas() {
 /// The root group can be promoted to cluster mode as long as enough nodes are
 /// added to the cluster.
 #[sekas_macro::test]
-async fn promote_to_cluster_from_single_node() {
+async fn group_promote_to_cluster_from_single_node() {
     let mut ctx = TestContext::new(fn_name!());
     ctx.disable_all_balance();
     let nodes = ctx.bootstrap_servers(3).await;
@@ -177,7 +177,7 @@ async fn group_cure_automatic() {
 }
 
 #[sekas_macro::test]
-fn group_move_replica() {
+async fn group_move_replica() {
     let mut ctx = TestContext::new(fn_name!());
     ctx.disable_all_balance();
     let nodes = ctx.bootstrap_servers(4).await;

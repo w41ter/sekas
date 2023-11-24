@@ -171,7 +171,6 @@ impl WriteBatchContext {
                     return Ok(value);
                 }
                 Err(err) => {
-                    log::info!("alloc txn id: {err:?}");
                     self.retry_state.retry(err).await?;
                 }
             }

@@ -189,13 +189,9 @@ impl Client {
         let req = AllocTxnIdRequest { num_required };
         let res = self
             .invoke_with_timeout(timeout, |mut client| {
+                // TODO(walter) add timeout for alloc_txn_id request.
                 let req = req.clone();
-                async move {
-                    log::info!("alloc txn id rpc");
-                    let result = client.alloc_txn_id(req).await;
-                    log::info!("alloc txn id rpc finish");
-                    result
-                }
+                async move { client.alloc_txn_id(req).await }
             })
             .await?;
         let res = res.into_inner();

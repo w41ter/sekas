@@ -14,11 +14,15 @@
 
 use proc_macro::TokenStream;
 use quote::quote;
+use syn::spanned::Spanned;
 use syn::ItemFn;
 
 #[proc_macro_attribute]
 pub fn test(_args: TokenStream, item: TokenStream) -> TokenStream {
     let mut input = syn::parse_macro_input!(item as ItemFn);
+    if input.sig.asyncness.is_none() {
+        return syn::Error::new(input.sig.span(), "async fn is required").to_compile_error().into();
+    }
     input.sig.asyncness = None;
     let body = input.block;
     input.block = syn::parse_quote! {

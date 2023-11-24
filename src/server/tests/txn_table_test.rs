@@ -31,7 +31,7 @@ fn init() {
 }
 
 #[sekas_macro::test]
-async fn begin_txn_idempotent() {
+async fn txn_table_begin_txn_idempotent() {
     let mut ctx = TestContext::new(fn_name!());
     ctx.disable_all_balance();
     let nodes = ctx.bootstrap_servers(1).await;
@@ -58,7 +58,7 @@ async fn begin_txn_idempotent() {
 }
 
 #[sekas_macro::test]
-async fn commit_txn_idempotent() {
+async fn txn_table_commit_txn_idempotent() {
     let mut ctx = TestContext::new(fn_name!());
     ctx.disable_all_balance();
     let nodes = ctx.bootstrap_servers(1).await;
@@ -91,7 +91,7 @@ async fn commit_txn_idempotent() {
 }
 
 #[sekas_macro::test]
-async fn abort_txn_idempotent() {
+async fn txn_table_abort_txn_idempotent() {
     let mut ctx = TestContext::new(fn_name!());
     ctx.disable_all_balance();
     let nodes = ctx.bootstrap_servers(1).await;
@@ -123,7 +123,7 @@ async fn abort_txn_idempotent() {
 }
 
 #[sekas_macro::test]
-async fn txn_state_table_normal_case() {
+async fn txn_table_normal_case() {
     let mut ctx = TestContext::new(fn_name!());
     ctx.disable_all_balance();
     let nodes = ctx.bootstrap_servers(1).await;

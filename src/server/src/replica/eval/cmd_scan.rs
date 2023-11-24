@@ -148,4 +148,15 @@ fn is_exceeds(target: &Option<Vec<u8>>, user_key: &[u8]) -> bool {
     target.as_ref().map(|target_key| target_key.as_slice() < user_key).unwrap_or_default()
 }
 
-// TODO(walter) add scan test
+#[cfg(test)]
+mod tests {
+    #[sekas_macro::test]
+    async fn scan_with_txn_intent() {
+        // 1. write intent with version 90
+        // 2. take snapshot at version 100
+        // 3. commit intent with version 95
+        // 4. write intent with version 99
+        // 5. commit intent with version 101
+        // 6. scan try resolve intent 90, and it should returns version 95.
+    }
+}

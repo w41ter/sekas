@@ -149,6 +149,7 @@ fn collect_shard_write_keys(req: &ShardWriteRequest) -> Result<Vec<Vec<u8>>> {
 pub mod remote {
     use std::collections::VecDeque;
     use std::sync::Arc;
+    use std::time::Duration;
 
     use dashmap::DashMap;
     use futures::channel::oneshot;
@@ -200,7 +201,7 @@ pub mod remote {
         ) -> Self {
             RemoteLatchManager {
                 core: Arc::new(LatchManagerCore {
-                    txn_table: TxnStateTable::new(client),
+                    txn_table: TxnStateTable::new(client, Some(Duration::from_secs(5))),
                     group_engine,
                     raft_group,
                     latches: DashMap::with_shard_amount(16),

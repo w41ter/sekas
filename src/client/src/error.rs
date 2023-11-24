@@ -141,6 +141,7 @@ impl From<sekas_api::server::v1::Error> for Error {
             }
             Some(Value::NotMatch(v)) => Error::EpochNotMatch(v.descriptor.unwrap_or_default()),
             Some(Value::StatusCode(v)) => Status::new(v.into(), msg).into(),
+            Some(Value::CasFailed(v)) => Error::CasFailed(v.index, v.cond_index, v.prev_value),
             _ => Status::internal(format!("unknown error detail, msg: {msg}")).into(),
         }
     }
