@@ -143,6 +143,7 @@ impl GroupClient {
             GROUP_CLIENT_RETRY_TOTAL.inc();
         }
 
+        trace!("group {group_id} issue rpc failed, group is not accessable");
         Err(Error::GroupNotAccessable(group_id))
     }
 
@@ -268,12 +269,14 @@ impl GroupClient {
             }
             Error::EpochNotMatch(group_desc) => self.apply_epoch_not_match_status(group_desc, opt),
             e => {
-                warn!(
-                    "group {} issue rpc to {}: epoch {} with unknown error {e:?}",
-                    self.group_id,
-                    self.access_node_id.unwrap_or_default(),
-                    self.epoch,
-                );
+                if !matches!(e, Error::CasFailed(_, _, _)) {
+                    warn!(
+                        "group {} issue rpc to {}: epoch {} with unknown error {e:?}",
+                        self.group_id,
+                        self.access_node_id.unwrap_or_default(),
+                        self.epoch,
+                    );
+                }
                 Err(e)
             }
         }
