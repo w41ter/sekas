@@ -222,9 +222,13 @@ pub mod remote {
             shard_id: u64,
             key: &[u8],
         ) -> Result<RemoteLatchGuard, oneshot::Receiver<RemoteLatchGuard>> {
-            let shard_key = ShardKey { shard_id, user_key: key.to_owned() };
+            let default_latch_block = || LatchBlock {
+                shard_key: ShardKey { shard_id, user_key: key.to_owned() },
+                ..Default::default()
+            };
 
-            let mut entry = self.core.latches.entry(shard_key).or_default();
+            let shard_key = ShardKey { shard_id, user_key: key.to_owned() };
+            let mut entry = self.core.latches.entry(shard_key).or_insert_with(default_latch_block);
             let latch = entry.value_mut();
             if !latch.hold {
                 latch.hold = true;
@@ -451,6 +455,55 @@ pub mod remote {
             if self.hold {
                 self.latch_mgr.release(self.shard_key.shard_id, &self.shard_key.user_key);
             }
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use futures::channel::mpsc;
+        use sekas_client::{ClientOptions, SekasClient};
+        use sekas_rock::fn_name;
+        use tempdir::TempDir;
+
+        use super::*;
+        use crate::engine::create_group_engine;
+
+        #[sekas_macro::test]
+        async fn acquire_and_release_latches() {
+            let dir = TempDir::new(fn_name!()).unwrap();
+            let client =
+                SekasClient::new(ClientOptions::default(), vec!["127.0.0.1:5000".to_string()])
+                    .await
+                    .unwrap();
+            let engine = create_group_engine(dir.path(), 1, 1, 1).await;
+            let (sender, _receiver) = mpsc::channel(1024);
+            let raft_group = RaftGroup::open(sender);
+            let latch_mgr = RemoteLatchManager::new(client, engine, raft_group);
+
+            let shard_id = 1;
+            let user_key = vec![1u8, 2u8];
+
+            // case 1: acquire and release normally.
+            {
+                let _latch_guard = latch_mgr.acquire(shard_id, &user_key).await.unwrap();
+            }
+            {
+                let _latch_guard = latch_mgr.acquire(shard_id, &user_key).await.unwrap();
+            }
+
+            // case 2: transfer latch guard.
+            let acquire_1 = latch_mgr.acquire(shard_id, &user_key).await.unwrap();
+            let user_key_clone = user_key.clone();
+            let latch_mgr_clone = latch_mgr.clone();
+            let handle = sekas_runtime::spawn(async move {
+                latch_mgr_clone.acquire(shard_id, &user_key_clone).await
+            });
+            sekas_runtime::time::sleep(Duration::from_secs(1)).await;
+            drop(acquire_1);
+            handle.await.unwrap().unwrap();
+
+            // case 3: transfer latch should release latches.
+            let _acquire_3 = latch_mgr.acquire(shard_id, &user_key).await.unwrap();
         }
     }
 }
