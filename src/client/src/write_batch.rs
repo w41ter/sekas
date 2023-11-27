@@ -16,7 +16,7 @@ use std::collections::HashMap;
 use std::iter::zip;
 use std::time::Duration;
 
-use log::warn;
+use log::{trace, warn};
 use sekas_api::server::v1::group_request_union::Request;
 use sekas_api::server::v1::group_response_union::Response;
 use sekas_api::server::v1::*;
@@ -185,7 +185,7 @@ impl WriteBatchContext {
 
     async fn prepare_intents(&mut self) -> Result<()> {
         loop {
-            if self.prepare_intents_inner().await? {
+            if !self.prepare_intents_inner().await? {
                 return Ok(());
             }
             self.retry_state.force_retry().await?;
@@ -252,6 +252,7 @@ impl WriteBatchContext {
             });
             handles.push(handle);
         }
+
         for handle in handles {
             match handle.await? {
                 Ok((resp, put_indexes, delete_indexes)) => {
@@ -265,7 +266,8 @@ impl WriteBatchContext {
                         ));
                     }
 
-                    self.num_doing_writes
+                    self.num_doing_writes = self
+                        .num_doing_writes
                         .checked_sub(delete_indexes.len() + put_indexes.len())
                         .expect("out of range");
                     for (index, delete) in zip(delete_indexes, resp.deletes) {
@@ -280,12 +282,14 @@ impl WriteBatchContext {
                     }
                 }
                 Err(err) => {
+                    trace!("txn {} write intent: {err:?}", self.start_version);
                     if !self.retry_state.is_retryable(&err) {
                         return Err(err);
                     }
                 }
             }
         }
+        trace!("txn {} write intent left {} writes", self.start_version, self.num_doing_writes);
         Ok(self.num_doing_writes > 0)
     }
 
@@ -311,8 +315,8 @@ impl WriteBatchContext {
 
             for i in [1, 3, 5] {
                 match self.commit_intents_inner().await {
-                    Ok(true) => break,
-                    Ok(false) => tokio::time::sleep(Duration::from_millis(i)).await,
+                    Ok(false) => break,
+                    Ok(true) => tokio::time::sleep(Duration::from_millis(i)).await,
                     Err(err) => {
                         warn!("txn {} commit intents: {}", self.start_version, err);
                         break;
@@ -355,7 +359,8 @@ impl WriteBatchContext {
             match handle.await? {
                 Ok(index) => {
                     self.writes[index].done = true;
-                    self.num_doing_writes.checked_sub(1).expect("out of range");
+                    self.num_doing_writes =
+                        self.num_doing_writes.checked_sub(1).expect("out of range");
                 }
                 Err(err) => {
                     if !self.retry_state.is_retryable(&err) {
@@ -364,6 +369,7 @@ impl WriteBatchContext {
                 }
             }
         }
+        trace!("txn {} commit intent left {} writes", self.start_version, self.num_doing_writes);
         Ok(self.num_doing_writes > 0)
     }
 

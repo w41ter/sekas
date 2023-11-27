@@ -13,7 +13,7 @@
 // limitations under the License.
 use std::time::Duration;
 
-use log::{debug, warn};
+use log::{debug, trace, warn};
 use sekas_api::server::v1::group_request_union::Request;
 use sekas_api::server::v1::group_response_union::Response;
 use sekas_api::server::v1::*;
@@ -271,6 +271,7 @@ impl TxnStateTable {
             match self.write_inner(&request, retry_state.timeout()).await {
                 Ok(value) => return Ok(value),
                 Err(err) => {
+                    trace!("write txn request: {err:?}");
                     retry_state.retry(err).await?;
                 }
             }
