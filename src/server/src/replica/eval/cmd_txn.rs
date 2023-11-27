@@ -519,11 +519,7 @@ mod tests {
             TestCase { prev_value: Some(-1), delta: i64::MIN, expect: i64::MIN.wrapping_sub(1) },
         ];
         for TestCase { prev_value, delta, expect } in cases {
-            let value = if let Some(v) = prev_value {
-                Some(Value::with_value(v.to_be_bytes().to_vec(), 1))
-            } else {
-                None
-            };
+            let value = prev_value.map(|v| Value::with_value(v.to_be_bytes().to_vec(), 1));
             let r = apply_put_op(PutType::AddI64, value.as_ref(), delta.to_be_bytes().to_vec())
                 .unwrap()
                 .unwrap();
