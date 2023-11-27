@@ -285,7 +285,7 @@ async fn cluster_rw_put_with_condition() {
 
     // 4. Put if exists success
     let req = WriteBatchRequest {
-        puts: vec![WriteBuilder::new(k.clone()).expect_not_exists().ensure_put(v.clone())],
+        puts: vec![WriteBuilder::new(k.clone()).expect_exists().ensure_put(v.clone())],
         ..Default::default()
     };
     let r = co.write_batch(req).await;
@@ -353,7 +353,7 @@ async fn cluster_rw_concurrent_inc() {
     handle_1.await.unwrap();
     handle_2.await.unwrap();
 
-    let expect = 2000i64.to_le_bytes().to_vec();
+    let expect = 2000i64.to_be_bytes().to_vec();
     let r = co.get(k.clone()).await.unwrap().unwrap();
     assert_eq!(r, expect);
 }

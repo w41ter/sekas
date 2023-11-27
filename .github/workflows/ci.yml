@@ -22,6 +22,12 @@ env:
   CI: 1
 
 on:
+  push:
+    paths-ignore:
+      - "docs/**"
+      - "**.md"
+      - "scripts/**"
+      - "conf/**"
   pull_request:
     paths-ignore:
       - "docs/**"
