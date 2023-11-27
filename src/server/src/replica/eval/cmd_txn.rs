@@ -175,7 +175,7 @@ fn apply_put_op(
                 })?,
                 None => 0,
             };
-            Ok(Some(former_value.wrapping_add(delta).to_le_bytes().to_vec()))
+            Ok(Some(former_value.wrapping_add(delta).to_be_bytes().to_vec()))
         }
         PutType::None => Ok(Some(value)),
         PutType::Nop => Ok(None),
@@ -483,10 +483,83 @@ mod tests {
         // 3. put exists success
         let req = build_write_intent(
             start_version,
-            vec![WriteBuilder::new(key.clone()).expect_exists().ensure_put(b"value".to_vec())],
+            vec![WriteBuilder::new(key.clone())
+                .expect_exists()
+                .take_prev_value()
+                .ensure_put(b"value".to_vec())],
             vec![],
         );
         let r = write_intent(&ExecCtx::default(), &engine, &mut latch_guard, &req).await;
-        assert!(matches!(r, Err(Error::CasFailed(0, 0, _))), "{r:?}");
+        assert!(r.is_ok());
+    }
+
+    #[test]
+    fn apply_put_op_add_i64() {
+        struct TestCase {
+            prev_value: Option<i64>,
+            delta: i64,
+            expect: i64,
+        }
+
+        let cases = vec![
+            // prev value not exists
+            TestCase { prev_value: None, delta: 0, expect: 0 },
+            TestCase { prev_value: None, delta: 1, expect: 1 },
+            TestCase { prev_value: None, delta: i64::MAX, expect: i64::MAX },
+            TestCase { prev_value: None, delta: i64::MIN, expect: i64::MIN },
+            // normal case
+            TestCase { prev_value: Some(0), delta: i64::MAX, expect: i64::MAX },
+            TestCase { prev_value: Some(0), delta: i64::MIN, expect: i64::MIN },
+            TestCase { prev_value: Some(1), delta: 1, expect: 2 },
+            TestCase { prev_value: Some(-1), delta: i64::MAX, expect: i64::MAX - 1 },
+            // wrapping
+            TestCase { prev_value: Some(1), delta: i64::MAX, expect: i64::MAX.wrapping_add(1) },
+            TestCase { prev_value: Some(i64::MAX), delta: 1, expect: i64::MAX.wrapping_add(1) },
+            TestCase { prev_value: Some(i64::MIN), delta: -1, expect: i64::MIN.wrapping_sub(1) },
+            TestCase { prev_value: Some(-1), delta: i64::MIN, expect: i64::MIN.wrapping_sub(1) },
+        ];
+        for TestCase { prev_value, delta, expect } in cases {
+            let value = if let Some(v) = prev_value {
+                Some(Value::with_value(v.to_be_bytes().to_vec(), 1))
+            } else {
+                None
+            };
+            let r = apply_put_op(PutType::AddI64, value.as_ref(), delta.to_be_bytes().to_vec())
+                .unwrap()
+                .unwrap();
+            assert!(matches!(decode_i64(&r), Some(v) if v == expect), "{r:?}");
+        }
+    }
+
+    #[test]
+    fn apply_put_op_add_invalid() {
+        assert!(matches!(
+            apply_put_op(PutType::AddI64, None, vec![1u8]),
+            Err(Error::InvalidArgument(_))
+        ));
+        let value = Value::with_value(vec![2u8], 1);
+        assert!(matches!(
+            apply_put_op(PutType::AddI64, Some(&value), 1i64.to_be_bytes().to_vec()),
+            Err(Error::InvalidArgument(_))
+        ));
+    }
+
+    #[test]
+    fn apply_put_op_nop() {
+        let r = apply_put_op(PutType::Nop, None, vec![]).unwrap();
+        assert!(r.is_none());
+        let value = Value::with_value(vec![1u8], 1);
+        let r = apply_put_op(PutType::Nop, Some(&value), vec![1u8]).unwrap();
+        assert!(r.is_none());
+    }
+
+    #[test]
+    fn apply_put_op_none() {
+        let r = apply_put_op(PutType::None, None, vec![1u8]).unwrap();
+        assert!(matches!(r, Some(v) if v == vec![1u8]));
+
+        let value = Value::with_value(vec![2u8], 1);
+        let r = apply_put_op(PutType::None, Some(&value), vec![1u8]).unwrap();
+        assert!(matches!(r, Some(v) if v == vec![1u8]));
     }
 }

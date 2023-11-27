@@ -133,7 +133,7 @@ impl WriteBuilder {
         Ok(PutRequest {
             put_type: PutType::AddI64.into(),
             key: self.key,
-            value: val.to_le_bytes().to_vec(),
+            value: val.to_be_bytes().to_vec(),
             ttl: self.ttl.unwrap_or_default(),
             conditions: self.conditions,
             take_prev_value: self.take_prev_value,
