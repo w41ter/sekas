@@ -60,6 +60,13 @@ impl<L: LatchGuard> DeferSignalLatchGuard<L> {
         DeferSignalLatchGuard { state: None, latches: HashMap::default() }
     }
 
+    #[cfg(test)]
+    pub fn with_single(shard_key: &ShardKey, latch: L) -> Self {
+        let mut latches = HashMap::new();
+        latches.insert(shard_key.clone(), latch);
+        DeferSignalLatchGuard { state: None, latches }
+    }
+
     pub async fn resolve_txn(
         &mut self,
         shard_id: u64,
@@ -153,7 +160,7 @@ pub mod remote {
 
     use dashmap::DashMap;
     use futures::channel::oneshot;
-    use log::debug;
+    use log::{debug, trace};
     use prost::Message;
     use sekas_api::server::v1::{ShardKey, TxnIntent, TxnState, Value};
     use sekas_client::TxnStateTable;
@@ -211,10 +218,16 @@ pub mod remote {
 
         pub fn release(&self, shard_id: u64, user_key: &[u8]) {
             let shard_key = ShardKey { shard_id, user_key: user_key.to_owned() };
+            log::debug!("release shard {} user key {:?}", shard_id, user_key);
 
-            self.core
-                .latches
-                .remove_if_mut(&shard_key, |_, latch_block| self.transfer_latch_guard(latch_block));
+            self.core.latches.remove_if_mut(&shard_key, |shard_key, latch_block| {
+                log::debug!(
+                    "transfer latch guard, shard {} user key {:?}",
+                    shard_key.shard_id,
+                    shard_key.user_key
+                );
+                self.transfer_latch_guard(latch_block)
+            });
         }
 
         fn acquire_internal(
@@ -222,22 +235,22 @@ pub mod remote {
             shard_id: u64,
             key: &[u8],
         ) -> Result<RemoteLatchGuard, oneshot::Receiver<RemoteLatchGuard>> {
-            let default_latch_block = || LatchBlock {
-                shard_key: ShardKey { shard_id, user_key: key.to_owned() },
-                ..Default::default()
-            };
-
-            let shard_key = ShardKey { shard_id, user_key: key.to_owned() };
-            let mut entry = self.core.latches.entry(shard_key).or_insert_with(default_latch_block);
+            let mut entry = self.core.get_latch_mut(shard_id, key);
             let latch = entry.value_mut();
             if !latch.hold {
                 latch.hold = true;
+                log::debug!("acquire shard {} user key {:?}", shard_id, key);
                 Ok(RemoteLatchGuard {
                     hold: true,
                     shard_key: ShardKey { shard_id, user_key: key.to_owned() },
                     latch_mgr: self.clone(),
                 })
             } else {
+                log::debug!(
+                    "acquire shard {} user key {:?}, latch is hold, wait it release",
+                    shard_id,
+                    key
+                );
                 let (tx, rx) = oneshot::channel();
                 latch.latch_waiters.push_back(tx);
                 Err(rx)
@@ -251,21 +264,37 @@ pub mod remote {
                 latch_mgr: self.clone(),
             };
             while let Some(sender) = latch_block.latch_waiters.pop_front() {
+                log::debug!(
+                    "find a waiter, try wake up it, shard {} user key {:?}",
+                    latch_block.shard_key.shard_id,
+                    latch_block.shard_key.user_key
+                );
                 guard = match sender.send(guard) {
                     Ok(()) => {
                         // The guard will wakes up the remaining waiters even the receiver is
                         // canceled.
+                        log::debug!(
+                            "acquire shard {} user key {:?}",
+                            latch_block.shard_key.shard_id,
+                            latch_block.shard_key.user_key
+                        );
                         latch_block.hold = true;
                         return false;
                     }
                     Err(guard) => guard,
                 };
             }
+            log::debug!(
+                "no waiters, shard {} user key {:?}",
+                latch_block.shard_key.shard_id,
+                latch_block.shard_key.user_key
+            );
 
-            // No more waiters, remove entry from map.
             guard.hold = false;
             latch_block.hold = false;
-            true
+
+            // No more waiters, remove entry from map.
+            latch_block.intent_waiters.is_empty()
         }
 
         async fn commit_intent(
@@ -324,6 +353,7 @@ pub mod remote {
             start_version: u64,
             intent_version: u64,
         ) -> Result<Option<Value>> {
+            trace!("txn {start_version} try resolve txn {intent_version}, shard {shard_id} user key {user_key:?}");
             let mut latch_guard = self.acquire(shard_id, user_key).await?;
             // read the txn intent again with latch guard.
             let mut snapshot =
@@ -360,6 +390,7 @@ pub mod remote {
     impl super::LatchGuard for RemoteLatchGuard {
         async fn resolve_txn(&mut self, txn_intent: TxnIntent) -> Result<Option<Value>> {
             let start_version = txn_intent.start_version;
+            trace!("try resolve txn {start_version}, shard key {:?}", self.shard_key);
             loop {
                 let txn_record =
                     self.latch_mgr.core.txn_table.get_txn_record(start_version).await?.ok_or_else(
@@ -386,17 +417,17 @@ pub mod remote {
                             Err(err) => return Err(err.into()),
                         }
                     } else {
+                        debug!("wait txn {} intent to commit or abort", start_version);
                         let (sender, receiver) = oneshot::channel();
                         {
                             let mut entry = self
                                 .latch_mgr
                                 .core
-                                .latches
-                                .entry(self.shard_key.clone())
-                                .or_default();
+                                .get_latch_mut(self.shard_key.shard_id, &self.shard_key.user_key);
                             entry.intent_waiters.push_back(sender);
                             self.latch_mgr.transfer_latch_guard(&mut entry);
                         }
+                        debug_assert!(self.hold, "resolve txn should hold the lock");
                         self.hold = false;
                         let (txn_state, commit_version) = receiver.await.expect("Do not cancel");
                         *self = self
@@ -409,6 +440,9 @@ pub mod remote {
                     delete_intent = true;
                     (txn_record.state, txn_record.commit_version.unwrap_or_default())
                 };
+
+                debug!("txn {} intent state {}, commit version {commit_version} delete intent {delete_intent}", start_version,
+                    actual_txn_state.as_str_name());
                 match actual_txn_state {
                     TxnState::Committed => {
                         if delete_intent {
@@ -439,6 +473,7 @@ pub mod remote {
         }
 
         fn signal_all(&self, txn_state: TxnState, commit_version: Option<u64>) {
+            // FIXME(walter) what happen if the signal intent is not equals to wait intent.
             let commit_version = commit_version.unwrap_or_default();
             if let Some(mut latch_block) =
                 self.latch_mgr.core.latches.get_mut(&self.shard_key.clone())
@@ -455,6 +490,22 @@ pub mod remote {
             if self.hold {
                 self.latch_mgr.release(self.shard_key.shard_id, &self.shard_key.user_key);
             }
+        }
+    }
+
+    impl LatchManagerCore {
+        fn get_latch_mut(
+            &self,
+            shard_id: u64,
+            user_key: &[u8],
+        ) -> dashmap::mapref::one::RefMut<'_, ShardKey, LatchBlock> {
+            let default_latch_block = || LatchBlock {
+                shard_key: ShardKey { shard_id, user_key: user_key.to_owned() },
+                ..Default::default()
+            };
+
+            let shard_key = ShardKey { shard_id, user_key: user_key.to_owned() };
+            self.latches.entry(shard_key).or_insert_with(default_latch_block)
         }
     }
 
@@ -504,6 +555,154 @@ pub mod remote {
 
             // case 3: transfer latch should release latches.
             let _acquire_3 = latch_mgr.acquire(shard_id, &user_key).await.unwrap();
+        }
+    }
+}
+
+#[cfg(test)]
+pub mod local {
+    use std::collections::{HashMap, VecDeque};
+    use std::sync::{Arc, Mutex};
+
+    use futures::channel::oneshot;
+    use sekas_api::server::v1::{ShardKey, TxnIntent, TxnState, Value};
+
+    use crate::replica::eval::LatchManager;
+
+    #[derive(Default)]
+    struct LatchBlock {
+        hold: bool,
+        shard_key: ShardKey,
+        latch_waiters: VecDeque<oneshot::Sender<LocalLatchGuard>>,
+        intent_waiters: VecDeque<oneshot::Sender<(TxnState, u64)>>,
+    }
+
+    /// A local latch manager.
+    #[derive(Default, Clone)]
+    pub struct LocalLatchManager {
+        #[allow(clippy::type_complexity)]
+        latches: Arc<Mutex<HashMap<ShardKey, LatchBlock>>>,
+    }
+
+    /// A guard of local latch.
+    pub struct LocalLatchGuard {
+        hold: bool,
+        shard_key: ShardKey,
+        latch_mgr: LocalLatchManager,
+    }
+
+    impl LocalLatchManager {
+        fn release(&self, shard_key: &ShardKey) {
+            let mut latches = self.latches.lock().unwrap();
+            if let Some(latch_block) = latches.get_mut(shard_key) {
+                if self.transfer_latch_guard(latch_block) {
+                    latches.remove(shard_key);
+                }
+            }
+        }
+
+        fn transfer_latch_guard(&self, latch_block: &mut LatchBlock) -> bool {
+            let mut guard = LocalLatchGuard {
+                hold: true,
+                shard_key: latch_block.shard_key.clone(),
+                latch_mgr: self.clone(),
+            };
+            while let Some(sender) = latch_block.latch_waiters.pop_front() {
+                guard = match sender.send(guard) {
+                    Ok(()) => {
+                        // The guard will wakes up the remaining waiters even the receiver is
+                        // canceled.
+                        latch_block.hold = true;
+                        return false;
+                    }
+                    Err(guard) => guard,
+                };
+            }
+
+            guard.hold = false;
+            latch_block.hold = false;
+
+            // No more waiters, remove entry from map.
+            latch_block.intent_waiters.is_empty()
+        }
+    }
+
+    impl super::LatchManager for LocalLatchManager {
+        type Guard = LocalLatchGuard;
+
+        async fn resolve_txn(
+            &self,
+            _shard_id: u64,
+            _user_key: &[u8],
+            _start_version: u64,
+            _intent_version: u64,
+        ) -> crate::Result<Option<Value>> {
+            todo!()
+        }
+
+        async fn acquire(&self, shard_id: u64, user_key: &[u8]) -> crate::Result<Self::Guard> {
+            let shard_key = ShardKey { shard_id, user_key: user_key.to_owned() };
+            let receiver = {
+                let mut latches = self.latches.lock().unwrap();
+                let latch_block = latches.entry(shard_key.clone()).or_insert_with(|| LatchBlock {
+                    shard_key: shard_key.clone(),
+                    ..Default::default()
+                });
+                if !latch_block.hold {
+                    latch_block.hold = true;
+                    return Ok(LocalLatchGuard { hold: true, shard_key, latch_mgr: self.clone() });
+                }
+                let (sender, receiver) = oneshot::channel();
+                latch_block.latch_waiters.push_back(sender);
+                receiver
+            };
+            Ok(receiver.await.unwrap())
+        }
+    }
+
+    impl super::LatchGuard for LocalLatchGuard {
+        async fn resolve_txn(&mut self, txn_intent: TxnIntent) -> crate::Result<Option<Value>> {
+            let (sender, receiver) = oneshot::channel();
+            {
+                let mut latches = self.latch_mgr.latches.lock().unwrap();
+                let latch_block = latches.entry(self.shard_key.clone()).or_insert_with(|| {
+                    LatchBlock { shard_key: self.shard_key.clone(), ..Default::default() }
+                });
+                latch_block.intent_waiters.push_back(sender);
+                self.latch_mgr.transfer_latch_guard(latch_block);
+            }
+
+            let (txn_state, commit_version) = receiver.await.unwrap();
+            *self =
+                self.latch_mgr.acquire(self.shard_key.shard_id, &self.shard_key.user_key).await?;
+            match txn_state {
+                TxnState::Aborted => Ok(None),
+                TxnState::Committed => {
+                    if txn_intent.is_delete {
+                        Ok(Some(Value::tombstone(commit_version)))
+                    } else {
+                        Ok(Some(Value { content: txn_intent.value, version: commit_version }))
+                    }
+                }
+                _ => unreachable!(),
+            }
+        }
+
+        fn signal_all(&self, txn_state: TxnState, commit_version: Option<u64>) {
+            let mut latches = self.latch_mgr.latches.lock().unwrap();
+            if let Some(latch_block) = latches.get_mut(&self.shard_key) {
+                while let Some(sender) = latch_block.intent_waiters.pop_front() {
+                    let _ = sender.send((txn_state, commit_version.unwrap_or_default()));
+                }
+            }
+        }
+    }
+
+    impl Drop for LocalLatchGuard {
+        fn drop(&mut self) {
+            if self.hold {
+                self.latch_mgr.release(&self.shard_key);
+            }
         }
     }
 }

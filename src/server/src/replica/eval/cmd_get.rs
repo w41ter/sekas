@@ -71,11 +71,19 @@ async fn read_key<T: LatchManager>(
                         .await?
                     {
                         if value.version <= start_version {
+                            trace!("get return resolve txn intent, shard_id {}, value version: {}, start version: {}",
+                                    shard_id, value.version, start_version);
                             return Ok(Some(value));
                         }
                     }
                 }
             } else if entry.version() <= start_version {
+                trace!(
+                    "get return entry, shard_id {}, value version: {}, start version: {}",
+                    shard_id,
+                    entry.version(),
+                    start_version
+                );
                 // This entry is safe for reading.
                 return Ok(Some(entry.into()));
             }

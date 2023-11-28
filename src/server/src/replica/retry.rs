@@ -15,6 +15,7 @@
 
 use std::time::Duration;
 
+use log::trace;
 use sekas_api::server::v1::group_request_union::Request;
 use sekas_api::server::v1::*;
 use sekas_schema::shard;
@@ -88,6 +89,7 @@ async fn execute_internal(
     let mut freshed_descriptor = None;
     loop {
         exec_ctx.reset();
+        trace!("group {} try execute request with epoch {}", exec_ctx.group_id, exec_ctx.epoch);
         match replica.execute(&mut exec_ctx, request).await {
             Ok(resp) => {
                 let resp = if let Some(descriptor) = freshed_descriptor {

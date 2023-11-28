@@ -158,8 +158,10 @@ impl Replica {
             return Err(Error::GroupNotFound(self.info.group_id));
         }
 
+        log::trace!("group {} take acl guard", self.info.group_id);
         let _acl_guard = self.take_acl_guard(request).await;
         self.check_request_early(exec_ctx, request)?;
+        log::trace!("group {} eval command {request:?}", self.info.group_id);
         self.evaluate_command(exec_ctx, request).await
     }
 
@@ -296,7 +298,9 @@ impl Replica {
         // Acquire row latches one by one. The implementation guarantees that there will
         // be no deadlock, so waiting while holding `read/write_acl_guard` will
         // not affect other requests.
+        log::trace!("group {} before acquire row latches", self.info.group_id);
         let mut latches = acquire_row_latches(&self.latch_mgr, request).await?;
+        log::trace!("group {} acquire all row latches", self.info.group_id);
         let (eval_result_opt, resp) = match &request {
             Request::Get(req) => {
                 let value = eval::get(exec_ctx, &self.group_engine, &self.latch_mgr, req).await?;
