@@ -410,12 +410,13 @@ impl Node {
             }
         };
 
-        let ingest_chunk = request.forward_data;
-        match replica.ingest(request.shard_id, ingest_chunk, true).await {
-            Ok(_) | Err(Error::ShardNotFound(_)) => {
-                // Ingest success or shard is migrated.
+        if let Some(ingest_chunk) = request.forward_data {
+            match replica.ingest_value_set(request.shard_id, &ingest_chunk).await {
+                Ok(_) | Err(Error::ShardNotFound(_)) => {
+                    // Ingest success or shard is migrated.
+                }
+                Err(e) => return Err(e),
             }
-            Err(e) => return Err(e),
         }
 
         debug_assert!(request.request.is_some());

@@ -48,49 +48,6 @@ impl Replica {
         Ok(())
     }
 
-    pub async fn ingest(&self, shard_id: u64, chunk: Vec<ValueSet>, forwarded: bool) -> Result<()> {
-        if chunk.is_empty() {
-            return Ok(());
-        }
-
-        let _acl_guard = self.take_read_acl_guard().await;
-        self.check_moving_shard_request_early(shard_id)?;
-
-        let mut wb = WriteBatch::default();
-        for value_set in &chunk {
-            for value in &value_set.values {
-                if let Some(content) = value.content.as_ref() {
-                    self.group_engine.put(
-                        &mut wb,
-                        shard_id,
-                        &value_set.user_key,
-                        content,
-                        value.version,
-                    )?;
-                } else {
-                    self.group_engine.tombstone(
-                        &mut wb,
-                        shard_id,
-                        &value_set.user_key,
-                        value.version,
-                    )?;
-                }
-            }
-        }
-
-        let sync_op = if !forwarded {
-            Some(SyncOp::ingest(chunk.last().as_ref().unwrap().user_key.clone()))
-        } else {
-            None
-        };
-
-        let eval_result =
-            EvalResult { batch: Some(WriteBatchRep { data: wb.data().to_owned() }), op: sync_op };
-        self.raft_group.propose(eval_result).await?;
-
-        Ok(())
-    }
-
     pub async fn delete_chunks(&self, shard_id: u64, keys: &[(Vec<u8>, u64)]) -> Result<()> {
         if keys.is_empty() {
             return Ok(());

@@ -225,6 +225,7 @@ impl WriteBatchContext {
                     write.response = Some(resp);
                 }
                 Err(err) => {
+                    // FIXME(walter) UPDATE THE CAS FAIELD INDEX.
                     trace!("txn {} write intent: {err:?}", self.start_version);
                     if !self.retry_state.is_retryable(&err) {
                         return Err(err);

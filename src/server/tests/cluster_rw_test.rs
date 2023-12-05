@@ -159,8 +159,6 @@ async fn cluster_rw_with_leader_transfer() {
     }
 }
 
-// FIXME(walter) support both moving shard and transaction.
-#[ignore]
 #[sekas_macro::test]
 async fn cluster_rw_with_shard_moving() {
     let mut ctx = TestContext::new(fn_name!());

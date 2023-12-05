@@ -20,36 +20,48 @@ use sekas_schema::system::txn::TXN_INTENT_VERSION;
 
 use super::cas::eval_conditions;
 use super::latch::DeferSignalLatchGuard;
-use super::LatchGuard;
+use super::{read_shard_all_versions, LatchGuard};
 use crate::engine::{GroupEngine, SnapshotMode, WriteBatch};
+use crate::node::move_shard::ForwardCtx;
 use crate::replica::ExecCtx;
 use crate::serverpb::v1::EvalResult;
 use crate::{Error, Result};
 
 pub(crate) async fn write_intent<T: LatchGuard>(
-    _exec_ctx: &ExecCtx,
+    exec_ctx: &ExecCtx,
     group_engine: &GroupEngine,
     latch_guard: &mut DeferSignalLatchGuard<T>,
     req: &WriteIntentRequest,
 ) -> Result<(Option<EvalResult>, WriteIntentResponse)> {
-    // TODO(walter) support migration?
     let write = req
         .write
         .as_ref()
         .ok_or_else(|| Error::InvalidArgument("`write` is required".to_string()))?;
 
+    let user_key = write.user_key();
+    // Maybe we can extract the forwarding logic to a common place before writing.
+    if let Some(desc) = exec_ctx.move_shard_desc.as_ref() {
+        let shard_id = desc.shard_desc.as_ref().unwrap().id;
+        if shard_id == req.shard_id {
+            let payloads = read_shard_all_versions(group_engine, req.shard_id, user_key).await?;
+            let forward_ctx =
+                ForwardCtx { shard_id, dest_group_id: desc.dest_group_id, payload: payloads };
+            return Err(Error::Forward(forward_ctx));
+        }
+    }
+
+    let (skip_write, prev_value) = read_first_non_intent_key(
+        latch_guard,
+        group_engine,
+        req.start_version,
+        req.shard_id,
+        user_key,
+    )
+    .await?;
+
     let mut wb = WriteBatch::default();
-    let mut resp = WriteResponse::default();
-    match write {
+    let prev_value = match write {
         WriteRequest::Delete(del) => {
-            let (skip_write, prev_value) = read_first_non_intent_key(
-                latch_guard,
-                group_engine,
-                req.start_version,
-                req.shard_id,
-                &del.key,
-            )
-            .await?;
             if !skip_write {
                 if let Some(cond_idx) = eval_conditions(prev_value.as_ref(), &del.conditions)? {
                     return Err(Error::CasFailed(0, cond_idx as u64, prev_value));
@@ -63,17 +75,13 @@ pub(crate) async fn write_intent<T: LatchGuard>(
                     TXN_INTENT_VERSION,
                 )?;
             }
-            resp.prev_value = if del.take_prev_value { prev_value } else { None }
+            if del.take_prev_value {
+                prev_value
+            } else {
+                None
+            }
         }
         WriteRequest::Put(put) => {
-            let (skip_write, prev_value) = read_first_non_intent_key(
-                latch_guard,
-                group_engine,
-                req.start_version,
-                req.shard_id,
-                &put.key,
-            )
-            .await?;
             if !skip_write {
                 log::debug!("eval conditions {:?}, prev value {:?}", put.conditions, prev_value);
                 if let Some(cond_idx) = eval_conditions(prev_value.as_ref(), &put.conditions)? {
@@ -91,10 +99,15 @@ pub(crate) async fn write_intent<T: LatchGuard>(
                     TXN_INTENT_VERSION,
                 )?;
             }
-            resp.prev_value = if put.take_prev_value { prev_value } else { None };
+            if put.take_prev_value {
+                prev_value
+            } else {
+                None
+            }
         }
-    }
+    };
 
+    let resp = WriteResponse { prev_value };
     let eval_result =
         if !wb.is_empty() { Some(EvalResult::with_batch(wb.data().to_owned())) } else { None };
     Ok((eval_result, WriteIntentResponse { write: Some(resp) }))
@@ -113,7 +126,17 @@ pub(crate) async fn commit_intent<T: LatchGuard>(
         req.commit_version
     );
 
-    // FIXME(walter) support migration.
+    if let Some(desc) = exec_ctx.move_shard_desc.as_ref() {
+        let shard_id = desc.shard_desc.as_ref().unwrap().id;
+        if shard_id == req.shard_id {
+            let payloads =
+                read_shard_all_versions(group_engine, req.shard_id, &req.user_key).await?;
+            let forward_ctx =
+                ForwardCtx { shard_id, dest_group_id: desc.dest_group_id, payload: payloads };
+            return Err(Error::Forward(forward_ctx));
+        }
+    }
+
     let Some(intent) =
         read_target_intent(group_engine, req.start_version, req.shard_id, &req.user_key).await?
     else {
@@ -149,12 +172,22 @@ pub(crate) async fn commit_intent<T: LatchGuard>(
 }
 
 pub(crate) async fn clear_intent<T: LatchGuard>(
-    _exec_ctx: &ExecCtx,
+    exec_ctx: &ExecCtx,
     group_engine: &GroupEngine,
     latch_guard: &mut DeferSignalLatchGuard<T>,
     req: &ClearIntentRequest,
 ) -> Result<Option<EvalResult>> {
-    // FIXME(walter) support migration.
+    if let Some(desc) = exec_ctx.move_shard_desc.as_ref() {
+        let shard_id = desc.shard_desc.as_ref().unwrap().id;
+        if shard_id == req.shard_id {
+            let payloads =
+                read_shard_all_versions(group_engine, req.shard_id, &req.user_key).await?;
+            let forward_ctx =
+                ForwardCtx { shard_id, dest_group_id: desc.dest_group_id, payload: payloads };
+            return Err(Error::Forward(forward_ctx));
+        }
+    }
+
     if read_target_intent(group_engine, req.start_version, req.shard_id, &req.user_key)
         .await?
         .is_none()

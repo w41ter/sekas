@@ -1,5 +1,4 @@
 // Copyright 2023-present The Engula Authors.
-// Copyright 2022 The Engula Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -13,19 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-mod desc;
-mod error;
-mod move_shard;
-mod txn;
-mod value;
-mod write;
+use crate::server::v1::WriteRequest;
 
-pub mod server {
-    pub mod v1 {
-        #![allow(clippy::all)]
-        tonic::include_proto!("sekas.server.v1");
-
-        /// A helper enum to hold both [`PutRequest`] and [`DeleteRequest`].
-        pub type WriteRequest = write_intent_request::Write;
+/// A set of helper functions to simplify `WriteRequest` interface.
+impl WriteRequest {
+    pub fn user_key(&self) -> &[u8] {
+        match self {
+            WriteRequest::Put(put) => &put.key,
+            WriteRequest::Delete(del) => &del.key,
+        }
     }
 }

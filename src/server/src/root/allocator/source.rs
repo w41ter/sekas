@@ -178,7 +178,6 @@ impl SysAllocSource {
         Ok(())
     }
 
-    #[allow(dead_code)]
     fn set_replica_states(&self, rs: Vec<ReplicaState>) {
         let mut replicas = self.replicas.lock().unwrap();
         let id_to_state =
