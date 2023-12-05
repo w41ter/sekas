@@ -266,19 +266,19 @@ impl ClusterClient {
         panic!("group {group_id} is not contains shard {shard_id}");
     }
 
-    pub async fn collect_migration_state(
+    pub async fn collect_moving_shard_state(
         &self,
         group_id: u64,
         node_id: u64,
-    ) -> Result<CollectMigrationStateResponse> {
+    ) -> Result<CollectMovingShardStateResponse> {
         let node_addr = self.nodes.get(&node_id).unwrap();
         let client = NodeClient::connect(node_addr.to_string()).await?;
         let resp = client
             .root_heartbeat(HeartbeatRequest {
                 timestamp: 0,
                 piggybacks: vec![PiggybackRequest {
-                    info: Some(piggyback_request::Info::CollectMigrationState(
-                        CollectMigrationStateRequest { group: group_id },
+                    info: Some(piggyback_request::Info::CollectMovingShardState(
+                        CollectMovingShardStateRequest { group: group_id },
                     )),
                 }],
             })
@@ -289,12 +289,12 @@ impl ClusterClient {
                 | piggyback_response::Info::CollectStats(_)
                 | piggyback_response::Info::CollectScheduleState(_)
                 | piggyback_response::Info::CollectGroupDetail(_) => {}
-                piggyback_response::Info::CollectMigrationState(resp) => {
+                piggyback_response::Info::CollectMovingShardState(resp) => {
                     return Ok(resp.clone());
                 }
             }
         }
-        panic!("collect_migration_state have't received response");
+        panic!("collect_move_shard_state have't received response");
     }
 
     pub async fn collect_replica_state(
@@ -320,7 +320,7 @@ impl ClusterClient {
                 piggyback_response::Info::SyncRoot(_)
                 | piggyback_response::Info::CollectStats(_)
                 | piggyback_response::Info::CollectScheduleState(_)
-                | piggyback_response::Info::CollectMigrationState(_) => {}
+                | piggyback_response::Info::CollectMovingShardState(_) => {}
                 piggyback_response::Info::CollectGroupDetail(resp) => {
                     for state in &resp.replica_states {
                         if state.group_id == group_id {

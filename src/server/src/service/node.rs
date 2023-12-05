@@ -18,7 +18,7 @@ use sekas_runtime::JoinHandle;
 use tonic::{Request, Response, Status};
 
 use super::metrics::*;
-use crate::serverpb::v1::MigrationEvent;
+use crate::serverpb::v1::MoveShardEvent;
 use crate::{record_latency, record_latency_opt, Error, Server};
 
 #[crate::async_trait]
@@ -71,40 +71,40 @@ impl node_server::Node for Server {
         Ok(Response::new(NodeAdminResponse { response: Some(resp) }))
     }
 
-    async fn migrate(
+    async fn move_shard(
         &self,
-        request: Request<MigrateRequest>,
-    ) -> Result<Response<MigrateResponse>, Status> {
+        request: Request<MoveShardRequest>,
+    ) -> Result<Response<MoveShardResponse>, Status> {
         let req = request.into_inner();
         let Some(req) = req.request else {
-            return Err(Status::invalid_argument("MigrateRequest::request is empty"));
+            return Err(Status::invalid_argument("MoveShardRequest::request is empty"));
         };
         let resp = match req {
-            migrate_request::Request::Forward(req) => {
-                migrate_response::Response::Forward(self.forward(req).await?)
+            move_shard_request::Request::Forward(req) => {
+                move_shard_response::Response::Forward(self.forward(req).await?)
             }
-            migrate_request::Request::Setup(req) => {
+            move_shard_request::Request::AcquireShard(req) => {
                 let Some(desc) = req.desc else {
                     return Err(Status::invalid_argument(
-                        "SetupMigrationRequest::desc is empty".to_owned(),
+                        "AcquireShardRequest::desc is empty".to_owned(),
                     ));
                 };
                 record_latency!(take_migrate_request_metrics());
-                self.node.migrate(MigrationEvent::Setup, desc).await?;
-                migrate_response::Response::Setup(SetupMigrationResponse::default())
+                self.node.move_shard(MoveShardEvent::Setup, desc).await?;
+                move_shard_response::Response::AcquireShard(AcquireShardResponse::default())
             }
-            migrate_request::Request::Commit(req) => {
+            move_shard_request::Request::MoveOut(req) => {
                 let Some(desc) = req.desc else {
                     return Err(Status::invalid_argument(
-                        "CommitMigrationRequest::desc is empty".to_owned(),
+                        "MoveOutRequest::desc is empty".to_owned(),
                     ));
                 };
                 record_latency!(take_migrate_request_metrics());
-                self.node.migrate(MigrationEvent::Commit, desc).await?;
-                migrate_response::Response::Commit(CommitMigrationResponse::default())
+                self.node.move_shard(MoveShardEvent::Commit, desc).await?;
+                move_shard_response::Response::MoveOut(MoveOutResponse::default())
             }
         };
-        Ok(Response::new(MigrateResponse { response: Some(resp) }))
+        Ok(Response::new(MoveShardResponse { response: Some(resp) }))
     }
 }
 
@@ -161,9 +161,9 @@ impl Server {
                         self.node.collect_group_detail(&req).await,
                     )
                 }
-                piggyback_request::Info::CollectMigrationState(req) => {
-                    piggyback_response::Info::CollectMigrationState(
-                        self.node.collect_migration_state(&req).await,
+                piggyback_request::Info::CollectMovingShardState(req) => {
+                    piggyback_response::Info::CollectMovingShardState(
+                        self.node.collect_moving_shard_state(&req).await,
                     )
                 }
                 piggyback_request::Info::CollectScheduleState(req) => {

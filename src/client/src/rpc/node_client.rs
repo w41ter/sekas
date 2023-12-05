@@ -121,46 +121,48 @@ impl Client {
     pub async fn forward(&self, req: ForwardRequest) -> Result<ForwardResponse, tonic::Status> {
         let mut client = self.client.clone();
         let resp = client
-            .migrate(MigrateRequest { request: Some(migrate_request::Request::Forward(req)) })
+            .move_shard(MoveShardRequest {
+                request: Some(move_shard_request::Request::Forward(req)),
+            })
             .await?;
         match resp.into_inner().response {
-            Some(migrate_response::Response::Forward(resp)) => Ok(resp),
+            Some(move_shard_response::Response::Forward(resp)) => Ok(resp),
             _ => Err(tonic::Status::internal(
                 "Invalid response type, `ForwardResponse` is required".to_owned(),
             )),
         }
     }
 
-    pub async fn setup_migration(&self, desc: MigrationDesc) -> Result<(), tonic::Status> {
+    pub async fn acquire_shard(&self, desc: MoveShardDesc) -> Result<(), tonic::Status> {
         let mut client = self.client.clone();
         let resp = client
-            .migrate(MigrateRequest {
-                request: Some(migrate_request::Request::Setup(SetupMigrationRequest {
+            .move_shard(MoveShardRequest {
+                request: Some(move_shard_request::Request::AcquireShard(AcquireShardRequest {
                     desc: Some(desc),
                 })),
             })
             .await?;
         match resp.into_inner().response {
-            Some(migrate_response::Response::Setup(_)) => Ok(()),
+            Some(move_shard_response::Response::AcquireShard(_)) => Ok(()),
             _ => Err(tonic::Status::internal(
-                "Invalid response type, `SetupMigrationDesc` is required".to_owned(),
+                "Invalid response type, `AcquireShardResponse` is required".to_owned(),
             )),
         }
     }
 
-    pub async fn commit_migration(&self, desc: MigrationDesc) -> Result<(), tonic::Status> {
+    pub async fn move_out(&self, desc: MoveShardDesc) -> Result<(), tonic::Status> {
         let mut client = self.client.clone();
         let resp = client
-            .migrate(MigrateRequest {
-                request: Some(migrate_request::Request::Commit(CommitMigrationRequest {
+            .move_shard(MoveShardRequest {
+                request: Some(move_shard_request::Request::MoveOut(MoveOutRequest {
                     desc: Some(desc),
                 })),
             })
             .await?;
         match resp.into_inner().response {
-            Some(migrate_response::Response::Commit(_)) => Ok(()),
+            Some(move_shard_response::Response::MoveOut(_)) => Ok(()),
             _ => Err(tonic::Status::internal(
-                "Invalid response type, `CommitMigrationDesc` is required".to_owned(),
+                "Invalid response type, `MoveOutResponse` is required".to_owned(),
             )),
         }
     }
@@ -414,10 +416,10 @@ mod transport_error_tests {
             todo!()
         }
 
-        async fn migrate(
+        async fn move_shard(
             &self,
-            request: tonic::Request<sekas_api::server::v1::MigrateRequest>,
-        ) -> Result<tonic::Response<sekas_api::server::v1::MigrateResponse>, tonic::Status>
+            request: tonic::Request<sekas_api::server::v1::MoveShardRequest>,
+        ) -> Result<tonic::Response<sekas_api::server::v1::MoveShardResponse>, tonic::Status>
         {
             todo!()
         }

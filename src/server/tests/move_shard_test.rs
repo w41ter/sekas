@@ -34,17 +34,17 @@ fn init() {
     tracing_subscriber::fmt::init();
 }
 
-async fn is_not_in_migration(c: &ClusterClient, dest_group_id: u64) -> bool {
-    use collect_migration_state_response::State;
+async fn is_not_in_shard_moving(c: &ClusterClient, dest_group_id: u64) -> bool {
+    use collect_moving_shard_state_response::State;
     if let Some(leader_node_id) = c.get_group_leader_node_id(dest_group_id).await {
-        debug!("group {dest_group_id} node {leader_node_id} collect migration state",);
-        if let Ok(resp) = c.collect_migration_state(dest_group_id, leader_node_id).await {
+        debug!("group {dest_group_id} node {leader_node_id} collect moving shard state",);
+        if let Ok(resp) = c.collect_moving_shard_state(dest_group_id, leader_node_id).await {
             debug!(
-                "group {dest_group_id} node {leader_node_id} collect migration state: {:?}",
+                "group {dest_group_id} node {leader_node_id} collect moving shard state: {:?}",
                 resp.state
             );
             if resp.state == State::None as i32 {
-                // migration is finished or aborted.
+                // moving shard is finished or aborted.
                 return true;
             }
         }
@@ -61,7 +61,7 @@ async fn move_shard(
     'OUTER: for _ in 0..16 {
         let src_group_epoch = c.must_group_epoch(src_group_id).await;
 
-        // Shard migration is finished.
+        // Shard moving is finished.
         if c.group_contains_shard(dest_group_id, shard_desc.id) {
             return;
         }
@@ -78,13 +78,13 @@ async fn move_shard(
 
         tokio::time::sleep(Duration::from_millis(10)).await;
         for _ in 0..1000 {
-            if is_not_in_migration(c, dest_group_id).await {
+            if is_not_in_shard_moving(c, dest_group_id).await {
                 continue 'OUTER;
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
 
-        panic!("migration task is timeout");
+        panic!("move shard task is timeout");
     }
 
     panic!("move shard is failed after 16 retries");
@@ -143,9 +143,9 @@ async fn insert(c: &ClusterClient, group_id: u64, shard_id: u64, range: std::ops
     }
 }
 
-/// Migration test within groups which have only one member, shard is empty.
+/// Moving shard test within groups which have only one member, shard is empty.
 #[sekas_macro::test]
-async fn migration_single_replica_empty_shard() {
+async fn move_shard_single_replica_empty_shard() {
     let mut ctx = TestContext::new(fn_name!());
     ctx.disable_all_balance();
     ctx.disable_all_node_scheduler();
@@ -193,10 +193,10 @@ async fn migration_single_replica_empty_shard() {
     move_shard(&c, &shard_desc, group_id_2, group_id_1).await;
 }
 
-/// Migration test within groups which have only one member, shard have 1000 key
-/// values.
+/// Move shard test within groups which have only one member, shard have 1000
+/// key values.
 #[sekas_macro::test]
-async fn migration_single_replica() {
+async fn move_shard_single_replica() {
     let mut ctx = TestContext::new(fn_name!());
     ctx.disable_all_balance();
     ctx.disable_all_node_scheduler();
@@ -289,9 +289,9 @@ async fn create_two_groups(
     (group_id_1, group_id_2, shard_desc)
 }
 
-/// The basic migration test.
+/// The basic moving shard test.
 #[sekas_macro::test]
-async fn migration_basic() {
+async fn move_shard_basic() {
     let mut ctx = TestContext::new(fn_name!());
     ctx.disable_all_balance();
     let nodes = ctx.bootstrap_servers(3).await;
@@ -306,7 +306,7 @@ async fn migration_basic() {
 }
 
 #[sekas_macro::test]
-async fn migration_abort() {
+async fn move_shard_abort() {
     let mut ctx = TestContext::new(fn_name!());
     ctx.disable_all_balance();
     let nodes = ctx.bootstrap_servers(3).await;
@@ -322,19 +322,19 @@ async fn migration_abort() {
 
     let mut group_client = c.group(group_id_2);
     // It will be reject by service busy?
-    // Ensure issue at least one shard migration.
+    // Ensure issue at least one shard moving.
     while let Err(e) = group_client.accept_shard(group_id_1, src_epoch, &shard_desc).await {
         error!("accept shard: {e:?}");
         ctx.wait_election_timeout().await;
     }
-    // Ensure the former shard migration is aborted by epoch not match.
+    // Ensure the former shard moving is aborted by epoch not match.
     while group_client.accept_shard(group_id_1, src_epoch, &shard_desc).await.is_err() {
         ctx.wait_election_timeout().await;
     }
 }
 
 #[sekas_macro::test]
-async fn migration_with_offline_peers() {
+async fn move_shard_with_offline_peers() {
     let mut ctx = TestContext::new(fn_name!());
     ctx.disable_all_balance();
     ctx.disable_all_node_scheduler();
@@ -355,7 +355,7 @@ async fn migration_with_offline_peers() {
 }
 
 #[sekas_macro::test]
-async fn migration_source_group_receive_duplicate_accepting_shard_request() {
+async fn move_shard_source_group_receive_duplicate_accepting_shard_request() {
     let mut ctx = TestContext::new(fn_name!());
     ctx.disable_all_balance();
     let nodes = ctx.bootstrap_servers(3).await;
@@ -366,32 +366,32 @@ async fn migration_source_group_receive_duplicate_accepting_shard_request() {
     for _ in 0..10 {
         let mut g = c.group(group_id_1);
         let src_group_epoch = c.must_group_epoch(group_id_1).await;
-        let desc = MigrationDesc {
+        let desc = MoveShardDesc {
             shard_desc: Some(shard_desc.clone()),
             src_group_id: group_id_1,
             src_group_epoch,
             dest_group_id: group_id_2,
             dest_group_epoch: 1,
         };
-        match g.setup_migration(&desc).await {
+        match g.acquire_shard(&desc).await {
             Err(sekas_client::Error::EpochNotMatch(_)) => {
                 continue;
             }
             Ok(_) => {}
-            Err(e) => panic!("setup migration receive: {e:?}"),
+            Err(e) => panic!("setup moving shard receive: {e:?}"),
         }
         // retry
-        g.setup_migration(&desc).await.unwrap();
+        g.acquire_shard(&desc).await.unwrap();
 
-        g.commit_migration(&desc).await.unwrap();
+        g.move_out(&desc).await.unwrap();
         // retry
-        g.commit_migration(&desc).await.unwrap();
+        g.move_out(&desc).await.unwrap();
         break;
     }
 }
 
 #[sekas_macro::test]
-async fn migration_source_group_receive_many_accepting_shard_request() {
+async fn move_shard_source_group_receive_many_accepting_shard_request() {
     let mut ctx = TestContext::new(fn_name!());
     ctx.disable_all_balance();
     let nodes = ctx.bootstrap_servers(3).await;
@@ -402,40 +402,40 @@ async fn migration_source_group_receive_many_accepting_shard_request() {
     for _ in 0..10 {
         let mut g = c.group(group_id_1);
         let src_group_epoch = c.must_group_epoch(group_id_1).await;
-        let desc = MigrationDesc {
+        let desc = MoveShardDesc {
             shard_desc: Some(shard_desc.clone()),
             src_group_id: group_id_1,
             src_group_epoch,
             dest_group_id: group_id_2,
             dest_group_epoch: 1,
         };
-        match g.setup_migration(&desc).await {
+        match g.acquire_shard(&desc).await {
             Err(sekas_client::Error::EpochNotMatch(_)) => {
                 continue;
             }
             Ok(_) => {}
-            Err(e) => panic!("setup migration receive: {e:?}"),
+            Err(e) => panic!("setup moving shard receive: {e:?}"),
         }
 
         let mut cloned_g = g.clone();
-        let diff_desc = MigrationDesc { dest_group_id: 1231, ..desc.clone() };
+        let diff_desc = MoveShardDesc { dest_group_id: 1231, ..desc.clone() };
         let handle = spawn(async move {
             // retry
             assert!(matches!(
-                cloned_g.setup_migration(&diff_desc).await,
+                cloned_g.acquire_shard(&diff_desc).await,
                 Err(sekas_client::Error::EpochNotMatch(_))
             ));
         });
 
         ctx.wait_election_timeout().await;
-        g.commit_migration(&desc).await.unwrap();
+        g.move_out(&desc).await.unwrap();
         handle.await.unwrap();
         break;
     }
 }
 
 #[sekas_macro::test]
-async fn migration_receive_forward_request_after_shard_migrated() {
+async fn move_shard_receive_forward_request_after_shard_migrated() {
     let mut ctx = TestContext::new(fn_name!());
     ctx.disable_all_balance();
     ctx.disable_all_node_scheduler();
@@ -515,7 +515,7 @@ async fn migration_receive_forward_request_after_shard_migrated() {
         Response::Get(ShardGetResponse { value }) => value,
         _ => panic!("invalid response type, Get is required"),
     };
-    // Ingest should failed because migration is finished.
+    // Ingest should failed because moving shard is finished.
     assert!(value.is_none());
 
     let resp = group_client

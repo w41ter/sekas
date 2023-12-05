@@ -14,10 +14,10 @@
 
 use super::server::v1::*;
 
-impl MigrationDesc {
+impl MoveShardDesc {
     #[inline]
     pub fn get_shard_desc(&self) -> &ShardDesc {
-        self.shard_desc.as_ref().expect("MigrationDesc::shard_desc is not None")
+        self.shard_desc.as_ref().expect("MoveShardDesc::shard_desc is not None")
     }
 
     #[inline]
@@ -26,16 +26,16 @@ impl MigrationDesc {
     }
 }
 
-impl std::fmt::Display for MigrationDesc {
+impl std::fmt::Display for MoveShardDesc {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let shard_id = self.get_shard_id();
         write!(
             f,
-            "{}-{}-{}-{}-{}",
+            "shard {}, src group {} epoch {}, dest group {} epoch {}",
             shard_id,
             self.src_group_id,
-            self.dest_group_id,
             self.src_group_epoch,
+            self.dest_group_id,
             self.dest_group_epoch
         )
     }

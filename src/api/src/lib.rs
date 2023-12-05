@@ -15,7 +15,7 @@
 
 mod desc;
 mod error;
-mod migration;
+mod move_shard;
 mod txn;
 mod value;
 

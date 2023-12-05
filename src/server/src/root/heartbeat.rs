@@ -110,7 +110,7 @@ impl Root {
                     for resp in &res.piggybacks {
                         match resp.info.as_ref().unwrap() {
                             piggyback_response::Info::SyncRoot(_)
-                            | piggyback_response::Info::CollectMigrationState(_) => {}
+                            | piggyback_response::Info::CollectMovingShardState(_) => {}
                             piggyback_response::Info::CollectStats(ref resp) => {
                                 self.handle_collect_stats(&schema, resp, n.to_owned()).await?
                             }

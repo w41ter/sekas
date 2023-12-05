@@ -373,7 +373,7 @@ mod tests {
             assert!(matches!(find, Some(RouterGroupState { id, .. }) if id == 2));
         }
 
-        // case 3: group 1 change configs before migration finished.
+        // case 3: group 1 change configs before moving shard finished.
         {
             let mut state = State::default();
             let mut desc = descriptor(1, 1);
@@ -390,14 +390,14 @@ mod tests {
             let find = state.find_group_by_shard(1);
             assert!(matches!(find, Some(RouterGroupState { id, .. }) if id == 2));
 
-            // group 1 change configs before migration finished.
+            // group 1 change configs before moving shard finished.
             let group_1 = descriptor(1, 2);
             state.apply_group_descriptor(group_1);
 
             let find = state.find_group_by_shard(1);
             assert!(matches!(find, Some(RouterGroupState { id, .. }) if id == 2));
 
-            // group 1 finish migration.
+            // group 1 finish moving shard.
             let group_1 = descriptor(1, 2 + (1 << 32));
             state.apply_group_descriptor(group_1);
             let find = state.find_group_by_shard(1);

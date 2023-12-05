@@ -102,7 +102,7 @@ impl TransportManager {
     }
 
     #[inline]
-    pub(crate) fn build_migrate_client(&self, group_id: u64) -> MigrateClient {
-        MigrateClient::new(group_id, self.build_client(ClientOptions::default()))
+    pub(crate) fn build_move_shard_client(&self, group_id: u64) -> MoveShardClient {
+        MoveShardClient::new(group_id, self.build_client(ClientOptions::default()))
     }
 }

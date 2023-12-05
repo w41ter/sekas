@@ -1,3 +1,4 @@
+// Copyright 2023-present The Sekas Authors.
 // Copyright 2022 The Engula Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -15,4 +16,4 @@
 mod ctrl;
 mod gc;
 
-pub(crate) use self::ctrl::{ForwardCtx, MigrateController};
+pub(crate) use self::ctrl::{ForwardCtx, MoveShardController};

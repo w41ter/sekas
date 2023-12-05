@@ -15,7 +15,7 @@
 
 mod eval;
 pub mod fsm;
-mod migrate;
+mod move_shard;
 pub mod retry;
 mod state;
 
@@ -71,8 +71,8 @@ pub struct ExecCtx {
     /// The epoch of `GroupDesc` carried in this request.
     pub epoch: u64,
 
-    /// The migration desc, filled by `check_request_early`.
-    migration_desc: Option<MigrationDesc>,
+    /// The move shard desc, filled by `check_request_early`.
+    move_shard_desc: Option<MoveShardDesc>,
 }
 
 pub struct Replica
@@ -243,8 +243,8 @@ impl Replica {
     }
 
     #[inline]
-    pub fn migration_state(&self) -> Option<MigrationState> {
-        self.lease_state.lock().unwrap().migration_state.clone()
+    pub fn move_shard_state(&self) -> Option<MoveShardState> {
+        self.lease_state.lock().unwrap().move_shard_state.clone()
     }
 
     #[inline]
@@ -419,17 +419,17 @@ impl Replica {
             Ok(())
         } else if exec_ctx.epoch < lease_state.descriptor.epoch {
             Err(Error::EpochNotMatch(lease_state.descriptor.clone()))
-        } else if lease_state.is_migrating() && matches!(req, Request::AcceptShard(_)) {
-            // At the same time, there can only be one migration task.
-            Err(Error::ServiceIsBusy(BusyReason::Migrating))
+        } else if lease_state.has_shard_moving() && matches!(req, Request::AcceptShard(_)) {
+            // At the same time, there can only be one moving shard task.
+            Err(Error::ServiceIsBusy(BusyReason::Moving))
         } else {
             // If the current replica is the leader and has applied data in the current
             // term, it is expected that the input epoch should not be larger
             // than the leaders.
             debug_assert_eq!(exec_ctx.epoch, lease_state.descriptor.epoch);
-            let migrating_digest =
-                lease_state.migration_state.as_ref().and_then(|m| m.migration_desc.clone());
-            exec_ctx.migration_desc = migrating_digest;
+            let moving_digest =
+                lease_state.move_shard_state.as_ref().and_then(|m| m.move_shard.clone());
+            exec_ctx.move_shard_desc = moving_digest;
             Ok(())
         }
     }
@@ -509,12 +509,12 @@ impl ExecCtx {
     }
 
     pub fn reset(&mut self) {
-        self.migration_desc = None;
+        self.move_shard_desc = None;
     }
 
     #[inline]
     fn is_migrating_shard(&self, shard_id: u64) -> bool {
-        self.migration_desc
+        self.move_shard_desc
             .as_ref()
             .and_then(|m| m.shard_desc.as_ref())
             .map(|d| d.id == shard_id)

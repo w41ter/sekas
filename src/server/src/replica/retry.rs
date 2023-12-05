@@ -22,20 +22,20 @@ use sekas_schema::shard;
 
 use super::{ExecCtx, Replica};
 use crate::node::metrics::NODE_RETRY_TOTAL;
-use crate::node::migrate::MigrateController;
-use crate::serverpb::v1::MigrationEvent;
+use crate::node::move_shard::MoveShardController;
+use crate::serverpb::v1::MoveShardEvent;
 use crate::{Error, Result};
 
-pub async fn do_migration(
+pub async fn move_shard_with_retry(
     replica: &Replica,
-    event: MigrationEvent,
-    desc: &MigrationDesc,
+    event: MoveShardEvent,
+    desc: &MoveShardDesc,
 ) -> Result<()> {
     loop {
         let resp = match event {
-            MigrationEvent::Setup => replica.setup_migration(desc).await,
-            MigrationEvent::Commit => replica.commit_migration(desc).await,
-            _ => panic!("Unexpected migration event"),
+            MoveShardEvent::Setup => replica.setup_shard_moving(desc).await,
+            MoveShardEvent::Commit => replica.commit_shard_moving(desc).await,
+            _ => panic!("Unexpected moving shard event"),
         };
         match resp {
             Ok(()) => return Ok(()),
@@ -62,7 +62,7 @@ pub async fn execute(
 
 #[inline]
 pub async fn forwardable_execute(
-    migrate_ctrl: &MigrateController,
+    migrate_ctrl: &MoveShardController,
     replica: &Replica,
     exec_ctx: &ExecCtx,
     request: &GroupRequest,
@@ -71,7 +71,7 @@ pub async fn forwardable_execute(
 }
 
 async fn execute_internal(
-    migrate_ctrl: Option<&MigrateController>,
+    move_shard_ctrl: Option<&MoveShardController>,
     replica: &Replica,
     exec_ctx: &ExecCtx,
     request: &GroupRequest,
@@ -100,11 +100,11 @@ async fn execute_internal(
                 return Ok(resp);
             }
             Err(Error::Forward(forward_ctx)) => {
-                if let Some(ctrl) = migrate_ctrl {
+                if let Some(ctrl) = move_shard_ctrl {
                     let resp = ctrl.forward(forward_ctx, request).await?;
                     return Ok(GroupResponse::new(resp));
                 } else {
-                    panic!("receive forward response but no migration controller set");
+                    panic!("receive forward response but no moving shard controller set");
                 }
             }
             Err(Error::ServiceIsBusy(_)) | Err(Error::GroupNotReady(_)) => {

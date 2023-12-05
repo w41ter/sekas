@@ -67,7 +67,7 @@ message GroupDesc {
 	///
 	/// The number of shard changes is placed in the upper 32 bits, so can judge
 	/// the freshness of shard meta between different groups by simply comparing
-	/// the size. This feature is very useful when shard migration, see
+	/// the size. This feature is very useful when shard moving, see
 	/// `GroupStateMachine` for details.
 	uint64 epoch = 2;
 	repeated ShardDesc shards = 3;
@@ -112,14 +112,14 @@ enum RaftRole {
 	PRE_CANDIDATE = 3;
 }
 
-message MigrationDesc {
-	/// The descriptor of migrating shard.
+message MoveShardDesc {
+	/// The descriptor of moving shard.
 	ShardDesc shard_desc = 1;
-	/// The source group of migration.
+	/// The source group of moving shard.
 	uint64 src_group_id = 2;
-	/// The epoch of source group when this migration is initialized.
+	/// The epoch of source group when this moving is initialized.
 	uint64 src_group_epoch = 3;
-	/// The dest group id of migration.
+	/// The dest group id of moving.
 	uint64 dest_group_id = 4;
 	/// The epoch of dest group.
 	uint64 dest_group_epoch = 5;

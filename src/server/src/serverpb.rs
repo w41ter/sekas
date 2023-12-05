@@ -15,12 +15,12 @@
 #![allow(clippy::all)]
 
 pub mod v1 {
-    use sekas_api::server::v1::{MigrationDesc, ShardDesc};
+    use sekas_api::server::v1::{MoveShardDesc, ShardDesc};
 
     tonic::include_proto!("serverpb.v1");
 
     pub type ApplyState = EntryId;
-    pub type MigrationEvent = migration::Event;
+    pub type MoveShardEvent = move_shard::Event;
 
     impl SyncOp {
         #[inline]
@@ -40,11 +40,11 @@ pub mod v1 {
         }
 
         #[inline]
-        pub fn migration(event: MigrationEvent, desc: MigrationDesc) -> Box<Self> {
+        pub fn move_shard(event: MoveShardEvent, desc: MoveShardDesc) -> Box<Self> {
             Box::new(SyncOp {
-                migration: Some(Migration {
+                move_shard: Some(MoveShard {
                     event: event as i32,
-                    migration_desc: Some(desc),
+                    desc: Some(desc),
                     ..Default::default()
                 }),
                 ..Default::default()
@@ -53,8 +53,8 @@ pub mod v1 {
         #[inline]
         pub fn ingest(key: Vec<u8>) -> Box<Self> {
             Box::new(SyncOp {
-                migration: Some(Migration {
-                    event: MigrationEvent::Ingest as i32,
+                move_shard: Some(MoveShard {
+                    event: MoveShardEvent::Ingest as i32,
                     last_ingested_key: key,
                     ..Default::default()
                 }),
@@ -63,15 +63,15 @@ pub mod v1 {
         }
     }
 
-    impl MigrationState {
+    impl MoveShardState {
         #[inline]
         pub fn get_shard_desc(&self) -> &ShardDesc {
-            self.get_migration_desc().get_shard_desc()
+            self.get_move_shard_desc().get_shard_desc()
         }
 
         #[inline]
-        pub fn get_migration_desc(&self) -> &MigrationDesc {
-            self.migration_desc.as_ref().expect("MigrationState::migration_desc is not None")
+        pub fn get_move_shard_desc(&self) -> &MoveShardDesc {
+            self.move_shard.as_ref().expect("MoveShardState::move_shard is not None")
         }
 
         #[inline]

@@ -20,7 +20,7 @@ use std::task::Waker;
 use futures::channel::mpsc;
 use log::info;
 use sekas_api::server::v1::{
-    GroupDesc, MigrationDesc, RaftRole, ReplicaDesc, ReplicaState, ScheduleState,
+    GroupDesc, MoveShardDesc, RaftRole, ReplicaDesc, ReplicaState, ScheduleState,
 };
 
 use super::fsm::StateMachineObserver;
@@ -28,7 +28,7 @@ use super::ReplicaInfo;
 use crate::node::job::StateChannel;
 use crate::raftgroup::StateObserver;
 use crate::schedule::ScheduleStateObserver;
-use crate::serverpb::v1::MigrationState;
+use crate::serverpb::v1::MoveShardState;
 
 pub struct LeaseState {
     pub leader_id: u64,
@@ -36,8 +36,8 @@ pub struct LeaseState {
     pub applied_term: u64,
     pub replica_state: ReplicaState,
     pub descriptor: GroupDesc,
-    pub migration_state: Option<MigrationState>,
-    pub migration_state_subscriber: mpsc::UnboundedSender<MigrationState>,
+    pub move_shard_state: Option<MoveShardState>,
+    pub move_shard_state_subscriber: mpsc::UnboundedSender<MoveShardState>,
     pub schedule_state: ScheduleState,
     pub leader_subscribers: HashMap<&'static str, Waker>,
 }
@@ -54,13 +54,13 @@ pub struct LeaseStateObserver {
 impl LeaseState {
     pub fn new(
         descriptor: GroupDesc,
-        migration_state: Option<MigrationState>,
-        migration_state_subscriber: mpsc::UnboundedSender<MigrationState>,
+        move_shard_state: Option<MoveShardState>,
+        move_shard_state_subscriber: mpsc::UnboundedSender<MoveShardState>,
     ) -> Self {
         LeaseState {
             descriptor,
-            migration_state,
-            migration_state_subscriber,
+            move_shard_state,
+            move_shard_state_subscriber,
             leader_id: 0,
             applied_term: 0,
             schedule_state: ScheduleState::default(),
@@ -86,18 +86,18 @@ impl LeaseState {
     }
 
     #[inline]
-    pub fn is_migrating(&self) -> bool {
-        self.migration_state.is_some()
+    pub fn has_shard_moving(&self) -> bool {
+        self.move_shard_state.is_some()
     }
 
     #[inline]
-    pub fn is_migrating_shard(&self, shard_id: u64) -> bool {
-        self.migration_state.as_ref().map(|s| s.get_shard_id() == shard_id).unwrap_or_default()
+    pub fn is_shard_in_moving(&self, shard_id: u64) -> bool {
+        self.move_shard_state.as_ref().map(|s| s.get_shard_id() == shard_id).unwrap_or_default()
     }
 
     #[inline]
-    pub fn is_same_migration(&self, desc: &MigrationDesc) -> bool {
-        self.migration_state.as_ref().unwrap().get_migration_desc() == desc
+    pub fn is_same_shard_moving(&self, desc: &MoveShardDesc) -> bool {
+        self.move_shard_state.as_ref().unwrap().get_move_shard_desc() == desc
     }
 
     #[inline]
@@ -115,7 +115,7 @@ impl LeaseState {
     #[inline]
     pub fn terminate(&mut self) {
         self.wake_all_waiters();
-        self.migration_state_subscriber.close_channel();
+        self.move_shard_state_subscriber.close_channel();
     }
 }
 
@@ -199,23 +199,23 @@ impl StateMachineObserver for LeaseStateObserver {
                 self.info.replica_id, self.info.node_id, self.info.group_id
             );
             lease_state.wake_all_waiters();
-            if let Some(migration_state) = lease_state.migration_state.as_ref() {
+            if let Some(move_shard_state) = lease_state.move_shard_state.as_ref() {
                 lease_state
-                    .migration_state_subscriber
-                    .unbounded_send(migration_state.to_owned())
+                    .move_shard_state_subscriber
+                    .unbounded_send(move_shard_state.to_owned())
                     .unwrap_or_default();
             }
         }
     }
 
-    fn on_migrate_state_updated(&mut self, migration_state: Option<MigrationState>) {
+    fn on_move_shard_state_updated(&mut self, move_shard_state: Option<MoveShardState>) {
         let mut lease_state = self.lease_state.lock().unwrap();
-        lease_state.migration_state = migration_state;
-        if let Some(migration_state) = lease_state.migration_state.as_ref() {
+        lease_state.move_shard_state = move_shard_state;
+        if let Some(move_shard_state) = lease_state.move_shard_state.as_ref() {
             if lease_state.is_ready_for_serving() {
                 lease_state
-                    .migration_state_subscriber
-                    .unbounded_send(migration_state.to_owned())
+                    .move_shard_state_subscriber
+                    .unbounded_send(move_shard_state.to_owned())
                     .unwrap_or_default();
             }
         }

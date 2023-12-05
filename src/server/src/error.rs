@@ -77,7 +77,7 @@ pub enum Error {
     ServiceIsBusy(BusyReason),
 
     #[error("forward request to dest group")]
-    Forward(crate::node::migrate::ForwardCtx),
+    Forward(crate::node::move_shard::ForwardCtx),
 
     #[error("group epoch not match")]
     EpochNotMatch(GroupDesc),
@@ -106,7 +106,7 @@ pub type Result<T, E = Error> = std::result::Result<T, E>;
 #[derive(Debug)]
 pub enum BusyReason {
     Transfering,
-    Migrating,
+    Moving,
     AclGuard,
     PendingConfigChange,
     RequestChannelFulled,
@@ -117,7 +117,7 @@ impl std::fmt::Display for BusyReason {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let reason = match self {
             BusyReason::AclGuard => "take acl guard",
-            BusyReason::Migrating => "in shard migrating",
+            BusyReason::Moving => "in shard migrating",
             BusyReason::PendingConfigChange => "has pending config change",
             BusyReason::Transfering => "leader transfering",
             BusyReason::RequestChannelFulled => "request channel fulled",

@@ -549,21 +549,21 @@ impl GroupClient {
     }
 }
 
-// Migration related functions, which will be retried at:
+// Moving shard related functions, which will be retried at:
 // `sekas-client::migrate_client::MigrateClient`.
 impl GroupClient {
-    pub async fn setup_migration(&mut self, desc: &MigrationDesc) -> Result<()> {
+    pub async fn acquire_shard(&mut self, desc: &MoveShardDesc) -> Result<()> {
         let op = |_: InvokeContext, client: NodeClient| async move {
-            client.setup_migration(desc.clone()).await
+            client.acquire_shard(desc.clone()).await
         };
         let opt =
             InvokeOpt { accurate_epoch: true, ignore_transport_error: true, ..Default::default() };
         self.invoke_with_opt(op, opt).await
     }
 
-    pub async fn commit_migration(&mut self, desc: &MigrationDesc) -> Result<()> {
+    pub async fn move_out(&mut self, desc: &MoveShardDesc) -> Result<()> {
         let op = |_: InvokeContext, client: NodeClient| async move {
-            client.commit_migration(desc.clone()).await
+            client.move_out(desc.clone()).await
         };
         let opt = InvokeOpt { ignore_transport_error: true, ..Default::default() };
         self.invoke_with_opt(op, opt).await

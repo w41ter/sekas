@@ -55,12 +55,12 @@ pub struct Config {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct NodeConfig {
-    /// The limit bytes of each shard chunk during migration.
+    /// The limit bytes of each shard chunk during moving shard.
     ///
     /// Default: 64KB.
     pub shard_chunk_size: usize,
 
-    /// The limit number of keys for gc shard after migration.
+    /// The limit number of keys for gc shard after moving shard.
     ///
     /// Default: 256.
     pub shard_gc_keys: usize,

@@ -225,7 +225,7 @@ impl<T: AllocSource> Allocator<T> {
         // 1 remove groups from unreachable nodes that indicated by NodeLiveness(they
         // also need repair replicas).
         // 2 remove groups from unmatched cpu-quota nodes.
-        // 3. remove groups with lowest migration cost.
+        // 3. remove groups with lowest moving shard cost.
         self.alloc_source
             .nodes(NodeFilter::NotDecommissioned)
             .iter()

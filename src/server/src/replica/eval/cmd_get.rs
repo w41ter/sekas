@@ -20,7 +20,7 @@ use sekas_schema::system::txn::TXN_INTENT_VERSION;
 
 use super::LatchManager;
 use crate::engine::{GroupEngine, SnapshotMode};
-use crate::node::migrate::ForwardCtx;
+use crate::node::move_shard::ForwardCtx;
 use crate::replica::ExecCtx;
 use crate::{Error, Result};
 
@@ -31,7 +31,7 @@ pub(crate) async fn get<T: LatchManager>(
     latch_mgr: &T,
     req: &ShardGetRequest,
 ) -> Result<Option<Value>> {
-    if let Some(desc) = exec_ctx.migration_desc.as_ref() {
+    if let Some(desc) = exec_ctx.move_shard_desc.as_ref() {
         let shard_id = desc.shard_desc.as_ref().unwrap().id;
         if shard_id == req.shard_id {
             let payloads = read_shard_all_versions(engine, req.shard_id, &req.key).await?;

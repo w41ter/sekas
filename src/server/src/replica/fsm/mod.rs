@@ -21,7 +21,7 @@ use std::sync::Arc;
 
 use log::{info, trace, warn};
 use sekas_api::server::v1::{
-    ChangeReplica, ChangeReplicaType, ChangeReplicas, GroupDesc, MigrationDesc, ReplicaDesc,
+    ChangeReplica, ChangeReplicaType, ChangeReplicas, GroupDesc, MoveShardDesc, ReplicaDesc,
     ReplicaRole,
 };
 
@@ -49,8 +49,8 @@ pub trait StateMachineObserver: Send + Sync {
     /// This function will be called once the encountered term changes.
     fn on_term_updated(&mut self, term: u64);
 
-    /// This function will be called once the migrate state changes.
-    fn on_migrate_state_updated(&mut self, migrate_state: Option<MigrationState>);
+    /// This function will be called once the move shard state changes.
+    fn on_move_shard_state_updated(&mut self, state: Option<MoveShardState>);
 }
 
 pub struct GroupStateMachine
@@ -68,7 +68,7 @@ where
 
     /// Whether `GroupDesc` changes during apply.
     desc_updated: bool,
-    migration_state_updated: bool,
+    move_shard_state_updated: bool,
     last_applied_term: u64,
 }
 
@@ -88,7 +88,7 @@ impl GroupStateMachine {
             plugged_write_batches: Vec::default(),
             plugged_write_states: WriteStates::default(),
             desc_updated: false,
-            migration_state_updated: false,
+            move_shard_state_updated: false,
             last_applied_term: apply_state.term,
         }
     }
@@ -135,8 +135,8 @@ impl GroupStateMachine {
                 desc.epoch += SHARD_UPDATE_DELTA;
                 desc.shards.push(shard);
             }
-            if let Some(m) = op.migration {
-                self.apply_migration_event(m, &mut desc);
+            if let Some(m) = op.move_shard {
+                self.apply_move_shard_event(m, &mut desc);
             }
 
             // Any sync_op will update group desc.
@@ -146,82 +146,82 @@ impl GroupStateMachine {
         Ok(())
     }
 
-    fn apply_migration_event(&mut self, migration: Migration, group_desc: &mut GroupDesc) {
-        let event = MigrationEvent::from_i32(migration.event).expect("unknown migration event");
-        if let Some(desc) = migration.migration_desc.as_ref() {
+    fn apply_move_shard_event(&mut self, move_shard: MoveShard, group_desc: &mut GroupDesc) {
+        let event = MoveShardEvent::from_i32(move_shard.event).expect("unknown moving shard event");
+        if let Some(desc) = move_shard.desc.as_ref() {
             info!(
-                "apply migration event. replica={}, group={}, desc={}, event={:?}",
+                "apply moving shard event. replica={}, group={}, desc={}, event={:?}",
                 self.info.replica_id, self.info.group_id, desc, event
             );
         }
 
         match event {
-            MigrationEvent::Setup => {
-                if migration.migration_desc.is_none() {
+            MoveShardEvent::Setup => {
+                if move_shard.desc.is_none() {
                     warn!(
-                        "Migration::migration_desc is None. replica={}, group={}",
+                        "MovingShard::desc is None. replica={}, group={}",
                         self.info.replica_id, self.info.group_id
                     );
                     return;
                 }
 
-                let state = MigrationState {
-                    migration_desc: migration.migration_desc,
-                    last_migrated_key: None,
-                    step: MigrationStep::Prepare as i32,
+                let state = MoveShardState {
+                    move_shard: move_shard.desc,
+                    last_moved_key: None,
+                    step: MoveShardStep::Prepare as i32,
                 };
-                debug_assert!(state.migration_desc.is_some());
-                self.plugged_write_states.migration_state = Some(state);
-                self.migration_state_updated = true;
+                debug_assert!(state.move_shard.is_some());
+                self.plugged_write_states.move_shard_state = Some(state);
+                self.move_shard_state_updated = true;
             }
-            MigrationEvent::Ingest => {
-                let mut state = self.must_migration_state();
+            MoveShardEvent::Ingest => {
+                let mut state = self.must_move_shard_state();
 
-                // If only the ingested key changes, there is no need to notify the migration
+                // If only the ingested key changes, there is no need to notify the move shard
                 // controller to perform corresponding operations.
-                if state.step == MigrationStep::Prepare as i32 {
-                    state.step = MigrationStep::Migrating as i32;
-                    self.migration_state_updated = true;
+                if state.step == MoveShardStep::Prepare as i32 {
+                    state.step = MoveShardStep::Moving as i32;
+                    self.move_shard_state_updated = true;
                 }
 
-                debug_assert!(state.step == MigrationStep::Migrating as i32);
-                state.last_migrated_key = Some(migration.last_ingested_key);
+                debug_assert!(state.step == MoveShardStep::Moving as i32);
+                state.last_moved_key = Some(move_shard.last_ingested_key);
 
-                self.plugged_write_states.migration_state = Some(state);
+                self.plugged_write_states.move_shard_state = Some(state);
             }
-            MigrationEvent::Commit => {
-                let mut state = self.must_migration_state();
+            MoveShardEvent::Commit => {
+                let mut state = self.must_move_shard_state();
                 debug_assert!(
-                    state.step == MigrationStep::Migrating as i32
-                        || state.step == MigrationStep::Prepare as i32
+                    state.step == MoveShardStep::Moving as i32
+                        || state.step == MoveShardStep::Prepare as i32
                 );
-                state.step = MigrationStep::Migrated as i32;
-                self.plugged_write_states.migration_state = Some(state);
-                self.migration_state_updated = true;
+                state.step = MoveShardStep::Moved as i32;
+                self.plugged_write_states.move_shard_state = Some(state);
+                self.move_shard_state_updated = true;
             }
-            MigrationEvent::Apply => {
-                let mut state = self.must_migration_state();
-                debug_assert!(state.step == MigrationStep::Migrated as i32);
+            MoveShardEvent::Apply => {
+                let mut state = self.must_move_shard_state();
+                debug_assert!(state.step == MoveShardStep::Moved as i32);
 
-                let desc = state.get_migration_desc();
-                self.apply_migration(group_desc, desc);
+                let desc = state.get_move_shard_desc();
+                self.apply_moving_shard(group_desc, desc);
 
-                state.step = MigrationStep::Finished as i32;
-                self.plugged_write_states.migration_state = Some(state);
-                self.migration_state_updated = true;
+                state.step = MoveShardStep::Finished as i32;
+                self.plugged_write_states.move_shard_state = Some(state);
+                self.move_shard_state_updated = true;
             }
-            MigrationEvent::Abort => {
-                let mut state = self.must_migration_state();
-                debug_assert!(state.step == MigrationStep::Prepare as i32);
+            MoveShardEvent::Abort => {
+                let mut state = self.must_move_shard_state();
+                debug_assert!(state.step == MoveShardStep::Prepare as i32);
 
-                state.step = MigrationStep::Aborted as i32;
-                self.plugged_write_states.migration_state = Some(state);
-                self.migration_state_updated = true;
+                state.step = MoveShardStep::Aborted as i32;
+                self.plugged_write_states.move_shard_state = Some(state);
+                self.move_shard_state_updated = true;
             }
         }
     }
 
-    fn apply_migration(&mut self, group_desc: &mut GroupDesc, desc: &MigrationDesc) {
+    fn apply_moving_shard(&mut self, group_desc: &mut GroupDesc, desc: &MoveShardDesc) {
         let shard_desc = desc.get_shard_desc();
 
         let inherited_epoch = std::cmp::max(desc.src_group_epoch, desc.dest_group_epoch);
@@ -236,7 +236,7 @@ impl GroupStateMachine {
             "shard migrated in"
         };
         info!(
-            "apply migration: {msg}. replica={}, group={}, epoch={}, shard={}",
+            "apply moving shard: {msg}. replica={}, group={}, epoch={}, shard={}",
             self.info.replica_id, self.info.group_id, group_desc.epoch, shard_desc.id
         );
         self.desc_updated = true;
@@ -253,9 +253,9 @@ impl GroupStateMachine {
             self.observer.on_term_updated(term);
         }
 
-        if self.migration_state_updated {
-            self.migration_state_updated = false;
-            self.observer.on_migrate_state_updated(self.group_engine.migration_state());
+        if self.move_shard_state_updated {
+            self.move_shard_state_updated = false;
+            self.observer.on_move_shard_state_updated(self.group_engine.move_shard_state());
         }
     }
 
@@ -265,9 +265,9 @@ impl GroupStateMachine {
     }
 
     #[inline]
-    fn must_migration_state(&self) -> MigrationState {
-        self.plugged_write_states.migration_state.clone().unwrap_or_else(|| {
-            self.group_engine.migration_state().expect("The MigrationState should exist")
+    fn must_move_shard_state(&self) -> MoveShardState {
+        self.plugged_write_states.move_shard_state.clone().unwrap_or_else(|| {
+            self.group_engine.move_shard_state().expect("The MoveShardState should exist")
         })
     }
 }

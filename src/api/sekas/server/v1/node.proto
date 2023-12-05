@@ -27,8 +27,8 @@ service Node {
     rpc Batch(BatchRequest) returns (BatchResponse) {}
     /// A set methods to manipulate node.
     rpc Admin(NodeAdminRequest) returns (NodeAdminResponse) {}
-    /// A set methods about shard migration.
-    rpc Migrate(MigrateRequest) returns (MigrateResponse) {}
+    /// A set methods about shard moving.
+    rpc MoveShard(MoveShardRequest) returns (MoveShardResponse) {}
 }
 
 message BatchRequest {
@@ -69,14 +69,14 @@ message GroupRequestUnion {
         /// Change replicas of an existing group.
         ChangeReplicasRequest change_replicas = 8;
 
-        /// Issue a migration request. This request need to send to the dest group.
+        /// Issue a moving shard request. This request need to send to the dest group.
         AcceptShardRequest accept_shard = 9;
 
         /// Transfer leadership to another replicas. This request is executed as a notice, so
         /// the response doesn't reflect the actual execution result of transferring.
         TransferRequest transfer = 10;
 
-        /// MoveReplicas delegates the replicas migration task to group leader.
+        /// MoveReplicas delegates the replicas moving to group leader.
         ///
         /// Response once the group leader accepts the moving replicas request. When there exists
         /// some conflicts, such as group is in joint, `Error::AlreadyExists` is returned.
@@ -243,11 +243,11 @@ enum ChangeReplicaType {
 }
 
 message AcceptShardRequest {
-    /// The source group of this migration.
+    /// The source group of this moving shard.
     uint64 src_group_id = 1;
-    /// The epoch of source group when issuing this migration request.
+    /// The epoch of source group when issuing this moving shard request.
     uint64 src_group_epoch = 2;
-    /// The descriptor of migrating shard.
+    /// The descriptor of moving shard.
     ShardDesc shard_desc = 3;
 }
 
@@ -277,7 +277,7 @@ message PiggybackRequest {
         CollectStatsRequest collect_stats = 2;
         CollectGroupDetailRequest collect_group_detail = 3;
         CollectScheduleStateRequest collect_schedule_state = 4;
-        CollectMigrationStateRequest collect_migration_state = 5;
+        CollectMovingShardStateRequest collect_moving_shard_state = 5;
     }
 }
 
@@ -287,7 +287,7 @@ message PiggybackResponse {
         CollectStatsResponse collect_stats = 2;
         CollectGroupDetailResponse collect_group_detail = 3;
         CollectScheduleStateResponse collect_schedule_state = 4;
-        CollectMigrationStateResponse collect_migration_state = 5;
+        CollectMovingShardStateResponse collect_moving_shard_state = 5;
     }
 }
 
@@ -346,18 +346,18 @@ message CollectScheduleStateResponse {
     repeated ScheduleState schedule_states = 1;
 }
 
-message CollectMigrationStateRequest { uint64 group = 1; }
+message CollectMovingShardStateRequest { uint64 group = 1; }
 
-message CollectMigrationStateResponse {
+message CollectMovingShardStateResponse {
     enum State {
         NONE = 0;
-        SETUP = 1;
-        MIGRATING = 2;
-        MIGRATED = 3;
+        PREAPRE = 1;
+        MOVING = 2;
+        MOVED = 3;
     }
 
     State state = 1;
-    MigrationDesc desc = 2;
+    MoveShardDesc desc = 2;
 }
 
 message MoveReplicasRequest {
@@ -369,19 +369,19 @@ message MoveReplicasResponse {
     ScheduleState schedule_state = 1;
 }
 
-message MigrateRequest {
+message MoveShardRequest {
     oneof request {
         ForwardRequest forward = 1;
-        SetupMigrationRequest setup = 2;
-        CommitMigrationRequest commit = 3;
+        AcquireShardRequest acquire_shard = 2;
+        MoveOutRequest move_out = 3;
     }
 }
 
-message MigrateResponse {
+message MoveShardResponse {
     oneof response {
         ForwardResponse forward = 1;
-        SetupMigrationResponse setup = 2;
-        CommitMigrationResponse commit = 3;
+        AcquireShardResponse acquire_shard = 2;
+        MoveOutResponse move_out = 3;
     }
 }
 
@@ -396,14 +396,14 @@ message ForwardResponse {
     GroupResponseUnion response = 1;
 }
 
-message SetupMigrationRequest {
-    MigrationDesc desc = 1;
+message AcquireShardRequest {
+    MoveShardDesc desc = 1;
 }
 
-message SetupMigrationResponse {}
+message AcquireShardResponse {}
 
-message CommitMigrationRequest {
-    MigrationDesc desc = 1;
+message MoveOutRequest {
+    MoveShardDesc desc = 1;
 }
 
-message CommitMigrationResponse {}
+message MoveOutResponse {}

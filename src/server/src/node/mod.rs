@@ -16,7 +16,7 @@
 pub mod metrics;
 
 pub mod job;
-pub mod migrate;
+pub mod move_shard;
 pub mod route_table;
 
 use std::collections::{HashMap, HashSet};
@@ -24,13 +24,13 @@ use std::sync::Arc;
 
 use futures::channel::mpsc;
 use futures::lock::Mutex;
-use log::{debug, info, warn};
+use log::{debug, info, trace, warn};
 use sekas_api::server::v1::*;
 use sekas_client::ClientOptions;
 use sekas_runtime::TaskGroup;
 
 use self::job::StateChannel;
-use self::migrate::MigrateController;
+use self::move_shard::MoveShardController;
 pub use self::route_table::{RaftRouteTable, ReplicaRouteTable};
 use crate::constants::ROOT_GROUP_ID;
 use crate::engine::{Engines, GroupEngine, RawDb, StateEngine};
@@ -79,7 +79,7 @@ where
     replica_route_table: ReplicaRouteTable,
 
     raft_mgr: Arc<RaftManager>,
-    migrate_ctrl: MigrateController,
+    migrate_ctrl: MoveShardController,
     transport_manager: TransportManager,
     engines: Engines,
     state_engine: StateEngine,
@@ -109,7 +109,7 @@ impl Node {
         let raft_mgr = Arc::new(
             RaftManager::open(cfg.raft.clone(), engines.log(), snap_mgr, trans_mgr).await?,
         );
-        let migrate_ctrl = MigrateController::new(cfg.node.clone(), transport_manager.clone());
+        let migrate_ctrl = MoveShardController::new(cfg.node.clone(), transport_manager.clone());
         let state_engine = engines.state();
         Ok(Node {
             cfg: cfg.node,
@@ -297,7 +297,7 @@ impl Node {
         let info = Arc::new(ReplicaInfo::new(&desc, group_id, local_state));
         let lease_state = Arc::new(std::sync::Mutex::new(LeaseState::new(
             group_engine.descriptor(),
-            group_engine.migration_state(),
+            group_engine.move_shard_state(),
             sender,
         )));
         let raft_node = start_raft_group(
@@ -388,14 +388,16 @@ impl Node {
     pub async fn execute_request(&self, request: &GroupRequest) -> Result<GroupResponse> {
         use crate::replica::retry::forwardable_execute;
 
-        let replica = match self.replica_route_table.find(request.group_id) {
-            Some(replica) => replica,
-            None => {
-                return Err(Error::GroupNotFound(request.group_id));
-            }
+        trace!("node execute request {request:?}");
+
+        let Some(replica) = self.replica_route_table.find(request.group_id) else {
+            return Err(Error::GroupNotFound(request.group_id));
         };
 
-        forwardable_execute(&self.migrate_ctrl, &replica, &ExecCtx::default(), request).await
+        let resp =
+            forwardable_execute(&self.migrate_ctrl, &replica, &ExecCtx::default(), request).await;
+        trace!("node execute returns response {resp:?}");
+        resp
     }
 
     pub async fn forward(&self, request: ForwardRequest) -> Result<ForwardResponse> {
@@ -427,11 +429,11 @@ impl Node {
     }
 
     // This request is issued by dest group.
-    pub async fn migrate(&self, event: MigrationEvent, desc: MigrationDesc) -> Result<()> {
-        use crate::replica::retry::do_migration;
+    pub async fn move_shard(&self, event: MoveShardEvent, desc: MoveShardDesc) -> Result<()> {
+        use crate::replica::retry::move_shard_with_retry;
 
         if desc.shard_desc.is_none() {
-            return Err(Error::InvalidArgument("MigrationDesc::shard_desc".to_owned()));
+            return Err(Error::InvalidArgument("MoveShardDesc::shard_desc".to_owned()));
         }
 
         let group_id = desc.src_group_id;
@@ -442,7 +444,7 @@ impl Node {
             }
         };
 
-        do_migration(&replica, event, &desc).await?;
+        move_shard_with_retry(&replica, event, &desc).await?;
         Ok(())
     }
 
@@ -541,29 +543,29 @@ impl Node {
         CollectGroupDetailResponse { replica_states: states, group_descs: descriptors }
     }
 
-    pub async fn collect_migration_state(
+    pub async fn collect_moving_shard_state(
         &self,
-        req: &CollectMigrationStateRequest,
-    ) -> CollectMigrationStateResponse {
-        use collect_migration_state_response::State;
+        req: &CollectMovingShardStateRequest,
+    ) -> CollectMovingShardStateResponse {
+        use collect_moving_shard_state_response::State;
 
-        let mut resp = CollectMigrationStateResponse { state: State::None as i32, desc: None };
+        let mut resp = CollectMovingShardStateResponse { state: State::None as i32, desc: None };
 
         let group_id = req.group;
         if let Some(replica) = self.replica_route_table.find(group_id) {
             if !replica.replica_info().is_terminated() {
-                if let Some(ms) = replica.migration_state() {
-                    let mut state = match MigrationStep::from_i32(ms.step) {
-                        Some(MigrationStep::Prepare) => State::Setup,
-                        Some(MigrationStep::Migrated) => State::Migrated,
-                        Some(MigrationStep::Migrating) => State::Migrating,
+                if let Some(ms) = replica.move_shard_state() {
+                    let mut state = match MoveShardStep::from_i32(ms.step) {
+                        Some(MoveShardStep::Prepare) => State::Preapre,
+                        Some(MoveShardStep::Moved) => State::Moved,
+                        Some(MoveShardStep::Moving) => State::Moving,
                         _ => State::None,
                     };
-                    if ms.migration_desc.is_none() {
+                    if ms.move_shard.is_none() {
                         state = State::None;
                     }
                     resp.state = state as i32;
-                    resp.desc = ms.migration_desc;
+                    resp.desc = ms.move_shard;
                 }
             }
         }

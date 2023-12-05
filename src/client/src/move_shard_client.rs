@@ -1,3 +1,4 @@
+// Copyright 2023-present The Sekas Authors.
 // Copyright 2022 The Engula Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -19,24 +20,24 @@ use crate::retry::RetryState;
 use crate::shard_client::ShardClient;
 use crate::{Error, Result, SekasClient};
 
-/// `MigrateClient` wraps `GroupClient` and provides retry for migration-related
-/// functions.
-pub struct MigrateClient {
+/// `MigrateClient` wraps `GroupClient` and provides retry for moving shard
+/// related functions.
+pub struct MoveShardClient {
     group_id: u64,
     client: SekasClient,
 }
 
-impl MigrateClient {
+impl MoveShardClient {
     pub fn new(group_id: u64, client: SekasClient) -> Self {
-        MigrateClient { group_id, client }
+        MoveShardClient { group_id, client }
     }
 
-    pub async fn setup_migration(&mut self, desc: &MigrationDesc) -> Result<()> {
+    pub async fn acquire_shard(&mut self, desc: &MoveShardDesc) -> Result<()> {
         let mut retry_state = RetryState::new(None);
 
         loop {
             let mut client = self.group_client();
-            match client.setup_migration(desc).await {
+            match client.acquire_shard(desc).await {
                 Ok(()) => return Ok(()),
                 e @ Err(Error::EpochNotMatch(..)) => return e,
                 Err(err) => {
@@ -46,12 +47,12 @@ impl MigrateClient {
         }
     }
 
-    pub async fn commit_migration(&mut self, desc: &MigrationDesc) -> Result<()> {
+    pub async fn move_out(&mut self, desc: &MoveShardDesc) -> Result<()> {
         let mut retry_state = RetryState::new(None);
 
         loop {
             let mut client = self.group_client();
-            match client.commit_migration(desc).await {
+            match client.move_out(desc).await {
                 Ok(()) => return Ok(()),
                 Err(err) => {
                     retry_state.retry(err).await?;

@@ -33,7 +33,7 @@ use crate::{EngineConfig, Error, Result};
 pub struct WriteStates {
     pub apply_state: Option<ApplyState>,
     pub descriptor: Option<GroupDesc>,
-    pub migration_state: Option<MigrationState>,
+    pub move_shard_state: Option<MoveShardState>,
 }
 
 #[derive(Default)]
@@ -62,7 +62,7 @@ where
 struct GroupEngineCore {
     group_desc: GroupDesc,
     shard_descs: HashMap<u64, ShardDesc>,
-    migration_state: Option<MigrationState>,
+    move_shard_state: Option<MoveShardState>,
 }
 
 /// Traverse the data of the group engine, but don't care about the data format.
@@ -152,7 +152,7 @@ impl GroupEngine {
             core: Arc::new(RwLock::new(GroupEngineCore {
                 group_desc: desc.clone(),
                 shard_descs: Default::default(),
-                migration_state: None,
+                move_shard_state: None,
             })),
         };
 
@@ -186,12 +186,12 @@ impl GroupEngine {
         };
 
         let group_desc = internal::descriptor(&raw_db, &cf_handle)?;
-        let migration_state = internal::migration_state(&raw_db, &cf_handle)?;
+        let move_shard_state = internal::move_shard_state(&raw_db, &cf_handle)?;
         let mut shard_descs = internal::shard_descs(&group_desc);
-        if let Some(shard_desc) = migration_state.as_ref().map(|m| m.get_shard_desc()) {
+        if let Some(shard_desc) = move_shard_state.as_ref().map(|m| m.get_shard_desc()) {
             shard_descs.entry(shard_desc.id).or_insert_with(|| shard_desc.clone());
         }
-        let core = GroupEngineCore { migration_state, group_desc, shard_descs };
+        let core = GroupEngineCore { move_shard_state, group_desc, shard_descs };
 
         Ok(Some(GroupEngine {
             cfg: cfg.clone(),
@@ -209,10 +209,10 @@ impl GroupEngine {
         Ok(())
     }
 
-    /// Return the migrate state.
+    /// Return the move shard state.
     #[inline]
-    pub fn migration_state(&self) -> Option<MigrationState> {
-        self.core.read().unwrap().migration_state.clone()
+    pub fn move_shard_state(&self) -> Option<MoveShardState> {
+        self.core.read().unwrap().move_shard_state.clone()
     }
 
     /// Return the group descriptor.
@@ -329,8 +329,8 @@ impl GroupEngine {
             self.raw_db.write_opt(inner_wb, &opts)?;
         }
 
-        if states.descriptor.is_some() || states.migration_state.is_some() {
-            self.apply_core_states(states.descriptor, states.migration_state);
+        if states.descriptor.is_some() || states.move_shard_state.is_some() {
+            self.apply_core_states(states.descriptor, states.move_shard_state);
         }
 
         Ok(())
@@ -387,8 +387,8 @@ impl GroupEngine {
         self.raw_db.ingest_external_file_cf_opts(&cf_handle, &opts, files)?;
 
         let group_desc = internal::descriptor(&self.raw_db, &cf_handle)?;
-        let migration_state = internal::migration_state(&self.raw_db, &cf_handle)?;
-        self.apply_core_states(Some(group_desc), migration_state);
+        let move_shard_state = internal::move_shard_state(&self.raw_db, &cf_handle)?;
+        self.apply_core_states(Some(group_desc), move_shard_state);
 
         Ok(())
     }
@@ -396,26 +396,26 @@ impl GroupEngine {
     pub fn apply_core_states(
         &self,
         descriptor: Option<GroupDesc>,
-        migration_state: Option<MigrationState>,
+        move_shard_state: Option<MoveShardState>,
     ) {
         let mut core = self.core.write().unwrap();
         if let Some(desc) = descriptor {
             core.group_desc = desc;
         }
 
-        // TODO(walter) remove shard desc if migration task is aborted.
-        if let Some(migration_state) = migration_state {
-            if migration_state.step == MigrationStep::Finished as i32
-                || migration_state.step == MigrationStep::Aborted as i32
+        // TODO(walter) remove shard desc if move shard task is aborted.
+        if let Some(move_shard_state) = move_shard_state {
+            if move_shard_state.step == MoveShardStep::Finished as i32
+                || move_shard_state.step == MoveShardStep::Aborted as i32
             {
-                core.migration_state = None;
+                core.move_shard_state = None;
             } else {
-                core.migration_state = Some(migration_state);
+                core.move_shard_state = Some(move_shard_state);
             }
         }
 
         core.shard_descs = internal::shard_descs(&core.group_desc);
-        if let Some(shard_desc) = core.migration_state.as_ref().map(|m| m.get_shard_desc().clone())
+        if let Some(shard_desc) = core.move_shard_state.as_ref().map(|m| m.get_shard_desc().clone())
         {
             core.shard_descs.entry(shard_desc.id).or_insert(shard_desc);
         }
@@ -720,7 +720,7 @@ mod keys {
     }
 
     #[inline]
-    pub fn migrate_state() -> Vec<u8> {
+    pub fn move_shard_state() -> Vec<u8> {
         let mut buf = Vec::with_capacity(core::mem::size_of::<u64>() + MIGRATE_STATE.len());
         buf.extend_from_slice(super::LOCAL_COLLECTION_ID.to_le_bytes().as_slice());
         buf.extend_from_slice(MIGRATE_STATE);
@@ -784,14 +784,14 @@ impl WriteStates {
         if let Some(desc) = &self.descriptor {
             wb.put_cf(cf_handle, keys::descriptor(), desc.encode_to_vec());
         }
-        if let Some(migration_state) = &self.migration_state {
-            // Migrations in abort or finish steps are not persisted.
-            if migration_state.step != MigrationStep::Finished as i32
-                && migration_state.step != MigrationStep::Aborted as i32
+        if let Some(move_shard_state) = &self.move_shard_state {
+            // Moving shard in abort or finish steps are not persisted.
+            if move_shard_state.step != MoveShardStep::Finished as i32
+                && move_shard_state.step != MoveShardStep::Aborted as i32
             {
-                wb.put_cf(cf_handle, keys::migrate_state(), migration_state.encode_to_vec());
+                wb.put_cf(cf_handle, keys::move_shard_state(), move_shard_state.encode_to_vec());
             } else {
-                wb.delete_cf(cf_handle, keys::migrate_state());
+                wb.delete_cf(cf_handle, keys::move_shard_state());
             }
         }
     }
@@ -835,12 +835,12 @@ mod internal {
         Ok(GroupDesc::decode(value.as_ref())?)
     }
 
-    pub(super) fn migration_state(
+    pub(super) fn move_shard_state(
         db: &RawDb,
         cf_handle: &impl rocksdb::AsColumnFamilyRef,
-    ) -> Result<Option<MigrationState>> {
-        if let Some(v) = db.get_pinned_cf(cf_handle, keys::migrate_state())? {
-            Ok(Some(MigrationState::decode(v.as_ref())?))
+    ) -> Result<Option<MoveShardState>> {
+        if let Some(v) = db.get_pinned_cf(cf_handle, keys::move_shard_state())? {
+            Ok(Some(MoveShardState::decode(v.as_ref())?))
         } else {
             Ok(None)
         }
@@ -1418,24 +1418,26 @@ mod tests {
         }
 
         {
-            // with migrate state
-            let migrate_state = MigrationState {
-                migration_desc: Some(MigrationDesc {
+            // with move shard state
+            let move_shard_state = MoveShardState {
+                move_shard: Some(MoveShardDesc {
                     shard_desc: Some(ShardDesc::whole(1, 1)),
                     src_group_id: 1,
                     src_group_epoch: 1,
                     dest_group_id: 2,
                     dest_group_epoch: 2,
                 }),
-                last_migrated_key: None,
-                step: MigrationStep::Prepare.into(),
+                last_moved_key: None,
+                step: MoveShardStep::Prepare.into(),
             };
-            let states =
-                WriteStates { migration_state: Some(migrate_state.clone()), ..Default::default() };
+            let states = WriteStates {
+                move_shard_state: Some(move_shard_state.clone()),
+                ..Default::default()
+            };
             engine.commit(WriteBatch::default(), states, false).unwrap();
 
-            let read_state = engine.migration_state();
-            assert!(matches!(read_state, Some(state) if state == migrate_state));
+            let read_state = engine.move_shard_state();
+            assert!(matches!(read_state, Some(state) if state == move_shard_state));
         }
     }
 }

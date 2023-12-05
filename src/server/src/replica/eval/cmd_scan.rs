@@ -29,6 +29,8 @@ pub(crate) async fn scan<T>(
 where
     T: LatchManager,
 {
+    // TODO(walter) support moving shards, maybe we need to merge the values from
+    // source and dest group.
     let mut req = req.clone();
     let snapshot_mode = match &req.prefix {
         Some(prefix) => {

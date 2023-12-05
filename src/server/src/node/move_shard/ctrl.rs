@@ -21,7 +21,7 @@ use log::{debug, error, info, warn};
 use sekas_api::server::v1::group_request_union::Request;
 use sekas_api::server::v1::group_response_union::Response;
 use sekas_api::server::v1::*;
-use sekas_client::MigrateClient;
+use sekas_client::MoveShardClient;
 use sekas_runtime::JoinHandle;
 
 use crate::node::metrics::*;
@@ -37,7 +37,7 @@ pub struct ForwardCtx {
     pub payloads: ValueSet,
 }
 
-struct MigrationCoordinator {
+struct MoveShardCoordinator {
     cfg: NodeConfig,
 
     replica_id: u64,
@@ -45,30 +45,32 @@ struct MigrationCoordinator {
 
     replica: Arc<Replica>,
 
-    client: MigrateClient,
-    desc: MigrationDesc,
+    client: MoveShardClient,
+    desc: MoveShardDesc,
 }
 
 #[derive(Clone)]
-pub struct MigrateController {
-    shared: Arc<MigrateControllerShared>,
+pub struct MoveShardController {
+    shared: Arc<MoveShardControllerShared>,
 }
 
-struct MigrateControllerShared {
+struct MoveShardControllerShared {
     cfg: NodeConfig,
     transport_manager: TransportManager,
 }
 
-impl MigrateController {
+impl MoveShardController {
     pub(crate) fn new(cfg: NodeConfig, transport_manager: TransportManager) -> Self {
-        MigrateController { shared: Arc::new(MigrateControllerShared { cfg, transport_manager }) }
+        MoveShardController {
+            shared: Arc::new(MoveShardControllerShared { cfg, transport_manager }),
+        }
     }
 
-    /// Watch migration state and do the corresponding step.
+    /// Watch moving shard state and do the corresponding step.
     pub fn watch_state_changes(
         &self,
         replica: Arc<Replica>,
-        mut receiver: mpsc::UnboundedReceiver<MigrationState>,
+        mut receiver: mpsc::UnboundedReceiver<MoveShardState>,
     ) -> JoinHandle<()> {
         let info = replica.replica_info();
         let replica_id = info.replica_id;
@@ -76,13 +78,13 @@ impl MigrateController {
 
         let ctrl = self.clone();
         sekas_runtime::spawn(async move {
-            let mut coord: Option<MigrationCoordinator> = None;
+            let mut coord: Option<MoveShardCoordinator> = None;
             while let Some(state) = receiver.next().await {
                 debug!(
-                    "on migration step: {:?}. group={group_id}, replica={replica_id}",
-                    MigrationStep::from_i32(state.step)
+                    "on move shard step: {:?}. group={group_id}, replica={replica_id}",
+                    MoveShardStep::from_i32(state.step)
                 );
-                let desc = state.get_migration_desc();
+                let desc = state.get_move_shard_desc();
                 if coord.is_none() || coord.as_ref().unwrap().desc != *desc {
                     let target_group_id = if desc.src_group_id == group_id {
                         desc.dest_group_id
@@ -90,8 +92,8 @@ impl MigrateController {
                         desc.src_group_id
                     };
                     let client =
-                        ctrl.shared.transport_manager.build_migrate_client(target_group_id);
-                    coord = Some(MigrationCoordinator {
+                        ctrl.shared.transport_manager.build_move_shard_client(target_group_id);
+                    coord = Some(MoveShardCoordinator {
                         cfg: ctrl.shared.cfg.clone(),
                         replica_id,
                         group_id,
@@ -103,14 +105,14 @@ impl MigrateController {
                 coord.as_mut().unwrap().next_step(state).await;
             }
             debug!(
-                "migration state watcher is stopped. replica_id={replica_id}, group_id={group_id}"
+                "move shard state watcher is stopped. replica_id={replica_id}, group_id={group_id}"
             );
         })
     }
 
     pub async fn forward(&self, forward_ctx: ForwardCtx, request: &Request) -> Result<Response> {
         let group_id = forward_ctx.dest_group_id;
-        let mut client = self.shared.transport_manager.build_migrate_client(group_id);
+        let mut client = self.shared.transport_manager.build_move_shard_client(group_id);
         let req = ForwardRequest {
             shard_id: forward_ctx.shard_id,
             group_id,
@@ -123,58 +125,58 @@ impl MigrateController {
     }
 }
 
-impl MigrationCoordinator {
-    async fn next_step(&mut self, state: MigrationState) {
-        let step = MigrationStep::from_i32(state.step).unwrap();
+impl MoveShardCoordinator {
+    async fn next_step(&mut self, state: MoveShardState) {
+        let step = MoveShardStep::from_i32(state.step).unwrap();
         if self.is_dest_group() {
             match step {
-                MigrationStep::Prepare => {
+                MoveShardStep::Prepare => {
                     self.setup_source_group().await;
                 }
-                MigrationStep::Migrating => {
-                    self.pull(state.last_migrated_key).await;
+                MoveShardStep::Moving => {
+                    self.pull(state.last_moved_key).await;
                 }
-                MigrationStep::Migrated => {
-                    // Send finish migration request to source group.
+                MoveShardStep::Moved => {
+                    // Send finish moving request to source group.
                     self.commit_source_group().await;
                 }
-                MigrationStep::Finished | MigrationStep::Aborted => unreachable!(),
+                MoveShardStep::Finished | MoveShardStep::Aborted => unreachable!(),
             }
         } else {
             match step {
-                MigrationStep::Migrated => {
+                MoveShardStep::Moved => {
                     self.clean_orphan_shard().await;
                 }
-                MigrationStep::Prepare | MigrationStep::Migrating => {}
-                MigrationStep::Finished | MigrationStep::Aborted => unreachable!(),
+                MoveShardStep::Prepare | MoveShardStep::Moving => {}
+                MoveShardStep::Finished | MoveShardStep::Aborted => unreachable!(),
             }
         }
     }
 
     async fn setup_source_group(&mut self) {
         debug!(
-            "setup source group migration. replica={}, group={}, desc={}",
+            "setup source group moving shard. replica={}, group={}, desc={}",
             self.replica_id, self.group_id, self.desc
         );
 
-        match self.client.setup_migration(&self.desc).await {
+        match self.client.acquire_shard(&self.desc).await {
             Ok(_) => {
                 info!(
-                    "setup source group migration success. replica={}, group={}, desc={}",
+                    "setup source group moving shard success. replica={}, group={}, desc={}",
                     self.replica_id, self.group_id, self.desc
                 );
                 self.enter_pulling_step().await;
             }
             Err(sekas_client::Error::EpochNotMatch(group_desc)) => {
-                // Since the epoch is not matched, this migration should be rollback.
+                // Since the epoch is not matched, this moving shard should be rollback.
                 warn!(
-                    "abort migration since epoch not match, new epoch is {}. replica={}, group={}, desc={}",
+                    "abort moving shard since epoch not match, new epoch is {}. replica={}, group={}, desc={}",
                         group_desc.epoch, self.replica_id, self.group_id, self.desc);
-                self.abort_migration().await;
+                self.abort_moving_shard().await;
             }
             Err(err) => {
                 error!(
-                    "setup source group migration: {err:?}. replica={}, group={}, desc={}",
+                    "setup source group moving shard: {err:?}. replica={}, group={}, desc={}",
                     self.replica_id, self.group_id, self.desc
                 );
             }
@@ -182,63 +184,63 @@ impl MigrationCoordinator {
     }
 
     async fn commit_source_group(&mut self) {
-        if let Err(e) = self.client.commit_migration(&self.desc).await {
+        if let Err(e) = self.client.move_out(&self.desc).await {
             error!(
-                "commit source group migration: {e:?}. replica={}, group={}, desc={}",
+                "commit source group moving shard: {e:?}. replica={}, group={}, desc={}",
                 self.replica_id, self.group_id, self.desc
             );
             return;
         }
 
         info!(
-            "source group migration is committed. replica={}, group={}, desc={}",
+            "source group moving shard is committed. replica={}, group={}, desc={}",
             self.replica_id, self.group_id, self.desc
         );
 
-        self.clean_migration_state().await;
+        self.clean_move_shard_state().await;
     }
 
     async fn commit_dest_group(&self) {
-        if let Err(e) = self.replica.commit_migration(&self.desc).await {
+        if let Err(e) = self.replica.commit_shard_moving(&self.desc).await {
             error!(
-                "commit dest migration: {e:?}. replica={}, group={}, desc={}",
+                "commit dest moving shard: {e:?}. replica={}, group={}, desc={}",
                 self.replica_id, self.group_id, self.desc,
             );
             return;
         }
 
         info!(
-            "dest group migration is committed. replica={}, group={}, desc={}",
+            "dest group moving shard is committed. replica={}, group={}, desc={}",
             self.replica_id, self.group_id, self.desc,
         );
     }
 
-    async fn clean_migration_state(&self) {
-        if let Err(e) = self.replica.finish_migration(&self.desc).await {
+    async fn clean_move_shard_state(&self) {
+        if let Err(e) = self.replica.finish_shard_moving(&self.desc).await {
             error!(
-                "clean migration state: {e:?}. replica={}, group={}, desc={}",
+                "clean moving shard state: {e:?}. replica={}, group={}, desc={}",
                 self.replica_id, self.group_id, self.desc,
             );
             return;
         }
 
         info!(
-            "migration state is cleaned. replica={}, group={}, desc={}",
+            "move shard state is cleaned. replica={}, group={}, desc={}",
             self.replica_id, self.group_id, self.desc
         );
     }
 
-    async fn abort_migration(&self) {
-        if let Err(e) = self.replica.abort_migration(&self.desc).await {
+    async fn abort_moving_shard(&self) {
+        if let Err(e) = self.replica.abort_shard_moving(&self.desc).await {
             error!(
-                "abort migration: {e:?}. replica={}, group={}, desc={}",
+                "abort moving shard: {e:?}. replica={}, group={}, desc={}",
                 self.replica_id, self.group_id, self.desc
             );
             return;
         }
 
         info!(
-            "migration is aborted. replica={}, group={}, desc={}",
+            "moving shard is aborted. replica={}, group={}, desc={}",
             self.replica_id, self.group_id, self.desc
         );
     }
@@ -261,13 +263,13 @@ impl MigrationCoordinator {
                 .await
         {
             error!(
-                "remove migrated shard from source group: {e:?}. replica={}, group={}, desc={}",
+                "remove moved out shard from source group: {e:?}. replica={}, group={}, desc={}",
                 self.replica_id, self.group_id, self.desc
             );
             return;
         }
 
-        self.clean_migration_state().await;
+        self.clean_move_shard_state().await;
     }
 
     async fn pull(&mut self, last_migrated_key: Option<Vec<u8>>) {
@@ -291,9 +293,9 @@ impl MigrationCoordinator {
 }
 
 pub async fn pull_shard(
-    client: &MigrateClient,
+    client: &MoveShardClient,
     replica: &Replica,
-    desc: &MigrationDesc,
+    desc: &MoveShardDesc,
     last_migrated_key: Option<Vec<u8>>,
 ) -> Result<()> {
     record_latency!(take_pull_shard_metrics());
@@ -309,8 +311,13 @@ pub async fn pull_shard(
         } else {
             finished = true;
         }
+        for value_set in &shard_chunk {
+            replica.ingest_value_set(shard_id, value_set).await?;
+        }
+        if let Some(value_set) = shard_chunk.last() {
+            replica.save_ingest_progress(shard_id, &value_set.user_key).await?
+        }
         NODE_INGEST_CHUNK_TOTAL.inc();
-        replica.ingest(shard_id, shard_chunk, false).await?;
     }
     Ok(())
 }

@@ -8,7 +8,7 @@ It has the following advantages:
 
 - Elasticity
 
-    sekas supports automatic data migration and balancing, which allows you easily to scale up or down based on you application needs.
+    sekas supports automatic data moving and balancing, which allows you easily to scale up or down based on you application needs.
 
 - Fault tolerance
 
@@ -36,9 +36,9 @@ In sekas, a replication set is called a **Group**. A leader is elected within a 
 
 Group 0 is called the **Root Group**, which is responsible for balancing, schema maintenance, and providing routing information.
 
-Apart from the root, the storage part of the sekas server is called **Node**. Node is responsible for data access, log replication and shard migration. (A shard is the smallest granularity of data and will be introduced later.)
+Apart from the root, the storage part of the sekas server is called **Node**. Node is responsible for data access, log replication and shard moving. (A shard is the smallest granularity of data and will be introduced later.)
 
-In addition, node is also responsible for providing group-level scheduling, including automatic maintaining num of replicas, automatic replace bad replicas, and replica migration between servers.
+In addition, node is also responsible for providing group-level scheduling, including automatic maintaining num of replicas, automatic replace bad replicas, and replica moving between servers.
 
 ## Data organization
 
