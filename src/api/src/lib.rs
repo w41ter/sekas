@@ -23,5 +23,8 @@ pub mod server {
     pub mod v1 {
         #![allow(clippy::all)]
         tonic::include_proto!("sekas.server.v1");
+
+        /// A helper enum to hold both [`PutRequest`] and [`DeleteRequest`].
+        pub type WriteRequest = write_intent_request::Write;
     }
 }

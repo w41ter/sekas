@@ -851,7 +851,7 @@ mod tests {
         Request::Get(ShardGetRequest {
             shard_id: SHARD_ID,
             start_version: u64::MAX - 1,
-            key: key.to_vec(),
+            user_key: key.to_vec(),
         })
     }
 
@@ -975,17 +975,14 @@ mod tests {
     fn build_preapre_request(start_version: u64, key: &[u8], value: &[u8]) -> Request {
         Request::WriteIntent(WriteIntentRequest {
             start_version,
-            write: Some(ShardWriteRequest {
-                shard_id: SHARD_ID,
-                puts: vec![PutRequest {
-                    put_type: PutType::None.into(),
-                    key: key.to_vec(),
-                    value: value.to_vec(),
-                    take_prev_value: true,
-                    ..Default::default()
-                }],
+            shard_id: SHARD_ID,
+            write: Some(WriteRequest::Put(PutRequest {
+                put_type: PutType::None.into(),
+                key: key.to_vec(),
+                value: value.to_vec(),
+                take_prev_value: true,
                 ..Default::default()
-            }),
+            })),
         })
     }
 
@@ -1002,8 +999,7 @@ mod tests {
         let Response::WriteIntent(response) = response else { unreachable!() };
         assert!(response.write.is_some());
         let write = response.write.unwrap();
-        assert_eq!(write.puts.len(), 1);
-        write.puts[0].prev_value.clone()
+        write.prev_value.clone()
     }
 
     fn build_commit_request(start_version: u64, commit_version: u64, key: &[u8]) -> Request {
@@ -1011,7 +1007,7 @@ mod tests {
             shard_id: SHARD_ID,
             start_version,
             commit_version,
-            keys: vec![key.to_vec()],
+            user_key: key.to_vec(),
         })
     }
 
@@ -1030,7 +1026,7 @@ mod tests {
         Request::ClearIntent(ClearIntentRequest {
             shard_id: SHARD_ID,
             start_version,
-            keys: vec![key.to_vec()],
+            user_key: key.to_vec(),
         })
     }
 

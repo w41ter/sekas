@@ -34,14 +34,19 @@ pub(crate) async fn get<T: LatchManager>(
     if let Some(desc) = exec_ctx.move_shard_desc.as_ref() {
         let shard_id = desc.shard_desc.as_ref().unwrap().id;
         if shard_id == req.shard_id {
-            let payloads = read_shard_all_versions(engine, req.shard_id, &req.key).await?;
+            let payloads = read_shard_all_versions(engine, req.shard_id, &req.user_key).await?;
             let forward_ctx = ForwardCtx { shard_id, dest_group_id: desc.dest_group_id, payloads };
             return Err(Error::Forward(forward_ctx));
         }
     }
 
-    trace!("read key {:?} at shard {} with version {}", req.key, req.shard_id, req.start_version);
-    read_key(engine, latch_mgr, req.shard_id, &req.key, req.start_version).await
+    trace!(
+        "read key {:?} at shard {} with version {}",
+        req.user_key,
+        req.shard_id,
+        req.start_version
+    );
+    read_key(engine, latch_mgr, req.shard_id, &req.user_key, req.start_version).await
 }
 
 async fn read_key<T: LatchManager>(

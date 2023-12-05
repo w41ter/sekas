@@ -117,7 +117,7 @@ message ShardWriteResponse {
 message ShardGetRequest {
     uint64 shard_id = 1;
     uint64 start_version = 2;
-    bytes key = 3;
+    bytes user_key = 3;
 }
 
 message ShardGetResponse {
@@ -152,19 +152,25 @@ message ShardScanRequest {
 message ShardScanResponse { repeated ValueSet data = 1; }
 
 message WriteIntentRequest {
-    uint64 start_version = 1;
-    ShardWriteRequest write = 2;
+    uint64 shard_id = 1;
+    uint64 start_version = 2;
+
+    /// The write request.
+    oneof write {
+        DeleteRequest delete = 3;
+        PutRequest put = 4;
+    }
 }
 
 message WriteIntentResponse {
-    ShardWriteResponse write = 1;
+    WriteResponse write = 1;
 }
 
 message CommitIntentRequest {
     uint64 shard_id = 1;
     uint64 start_version = 2;
     uint64 commit_version = 3;
-    repeated bytes keys = 4;
+    bytes user_key = 4;
 }
 
 message CommitIntentResponse {}
@@ -172,7 +178,7 @@ message CommitIntentResponse {}
 message ClearIntentRequest {
     uint64 shard_id = 1;
     uint64 start_version = 2;
-    repeated bytes keys = 3;
+    bytes user_key = 3;
 }
 
 message ClearIntentResponse {}

@@ -586,18 +586,25 @@ fn is_read_only_request(request: &Request) -> bool {
 
 fn is_executable(descriptor: &GroupDesc, request: &Request) -> bool {
     match request {
-        Request::Get(req) => is_target_shard_exists(descriptor, req.shard_id, &req.key),
+        Request::Get(req) => is_target_shard_exists(descriptor, req.shard_id, &req.user_key),
         Request::Write(req) => {
             is_all_target_shard_exists(descriptor, req.shard_id, &req.deletes, &req.puts)
         }
-        Request::WriteIntent(WriteIntentRequest { write: Some(write), .. }) => {
-            is_all_target_shard_exists(descriptor, write.shard_id, &write.deletes, &write.puts)
+        Request::WriteIntent(WriteIntentRequest { write: Some(write), shard_id, .. }) => {
+            match write {
+                write_intent_request::Write::Delete(delete) => {
+                    is_target_shard_exists(descriptor, *shard_id, &delete.key)
+                }
+                write_intent_request::Write::Put(put) => {
+                    is_target_shard_exists(descriptor, *shard_id, &put.key)
+                }
+            }
         }
         Request::CommitIntent(req) => {
-            req.keys.iter().all(|key| is_target_shard_exists(descriptor, req.shard_id, key))
+            is_target_shard_exists(descriptor, req.shard_id, &req.user_key)
         }
         Request::ClearIntent(req) => {
-            req.keys.iter().all(|key| is_target_shard_exists(descriptor, req.shard_id, key))
+            is_target_shard_exists(descriptor, req.shard_id, &req.user_key)
         }
         _ => false,
     }

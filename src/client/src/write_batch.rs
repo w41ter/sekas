@@ -12,8 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::collections::HashMap;
-use std::iter::zip;
 use std::time::Duration;
 
 use log::{trace, warn};
@@ -22,15 +20,9 @@ use sekas_api::server::v1::group_response_union::Response;
 use sekas_api::server::v1::*;
 
 use crate::{
-    Error, GroupClient, Result, RetryState, RouterGroupState, SekasClient, TxnStateTable,
-    WriteBatchRequest, WriteBatchResponse,
+    Error, GroupClient, Result, RetryState, SekasClient, TxnStateTable, WriteBatchRequest,
+    WriteBatchResponse,
 };
-
-/// A helper enum to hold both [`PutRequest`] and [`DeleteRequest`].
-enum WriteRequest {
-    Put(PutRequest),
-    Delete(DeleteRequest),
-}
 
 /// A structure to hold the context about single write request.
 struct WriteContext {
@@ -70,7 +62,7 @@ impl WriteContext {
         WriteContext { request: WriteRequest::Delete(delete), response: None, index, done: false }
     }
 
-    fn key(&self) -> &[u8] {
+    fn user_key(&self) -> &[u8] {
         match &self.request {
             WriteRequest::Put(put) => &put.key,
             WriteRequest::Delete(del) => &del.key,
@@ -193,49 +185,19 @@ impl WriteBatchContext {
     }
 
     async fn prepare_intents_inner(&mut self) -> Result<bool> {
-        struct GroupRequestContext {
-            group_state: RouterGroupState,
-            #[allow(unused)]
-            shard_desc: ShardDesc,
-            puts: Vec<PutRequest>,
-            deletes: Vec<DeleteRequest>,
-            delete_indexes: Vec<usize>,
-            put_indexes: Vec<usize>,
-        }
-
         let router = self.client.router();
-        let mut req_ctx_map = HashMap::new();
-        for write in &self.writes {
+        let mut handles = Vec::with_capacity(self.writes.len());
+        for (index, write) in self.writes.iter().enumerate() {
             if write.done {
                 continue;
             }
-            let (group_state, shard_desc) = router.find_shard(self.desc.clone(), write.key())?;
-            let ctx = req_ctx_map.entry(shard_desc.id).or_insert_with(|| GroupRequestContext {
-                group_state,
-                shard_desc,
-                puts: Vec::default(),
-                deletes: Vec::default(),
-                delete_indexes: Vec::default(),
-                put_indexes: Vec::default(),
-            });
-            match &write.request {
-                WriteRequest::Put(put) => {
-                    ctx.puts.push(put.clone());
-                    ctx.put_indexes.push(write.index);
-                }
-                WriteRequest::Delete(del) => {
-                    ctx.deletes.push(del.clone());
-                    ctx.delete_indexes.push(write.index);
-                }
-            }
-        }
-
-        let mut handles = Vec::with_capacity(req_ctx_map.len());
-        for (shard_id, ctx) in req_ctx_map {
-            let mut client = GroupClient::new(ctx.group_state, self.client.clone());
+            let (group_state, shard_desc) =
+                router.find_shard(self.desc.clone(), write.user_key())?;
+            let mut client = GroupClient::new(group_state, self.client.clone());
             let req = Request::WriteIntent(WriteIntentRequest {
                 start_version: self.start_version,
-                write: Some(ShardWriteRequest { shard_id, deletes: ctx.deletes, puts: ctx.puts }),
+                shard_id: shard_desc.id,
+                write: Some(write.request.clone()),
             });
             if let Some(duration) = self.retry_state.timeout() {
                 client.set_timeout(duration);
@@ -243,7 +205,7 @@ impl WriteBatchContext {
             let handle = tokio::spawn(async move {
                 match client.request(&req).await? {
                     Response::WriteIntent(WriteIntentResponse { write: Some(resp) }) => {
-                        Ok((resp, ctx.put_indexes, ctx.delete_indexes))
+                        Ok((resp, index))
                     }
                     _ => Err(Error::Internal(
                         "invalid response type, Get is required".to_string().into(),
@@ -255,31 +217,12 @@ impl WriteBatchContext {
 
         for handle in handles {
             match handle.await? {
-                Ok((resp, put_indexes, delete_indexes)) => {
-                    if resp.deletes.len() != delete_indexes.len()
-                        || resp.puts.len() != put_indexes.len()
-                    {
-                        return Err(Error::Internal(
-                            "the write intent response has different num of deletes/puts"
-                                .to_string()
-                                .into(),
-                        ));
-                    }
-
-                    self.num_doing_writes = self
-                        .num_doing_writes
-                        .checked_sub(delete_indexes.len() + put_indexes.len())
-                        .expect("out of range");
-                    for (index, delete) in zip(delete_indexes, resp.deletes) {
-                        let write = &mut self.writes[index];
-                        write.done = true;
-                        write.response = Some(delete);
-                    }
-                    for (index, put) in zip(put_indexes, resp.puts) {
-                        let write = &mut self.writes[index];
-                        write.done = true;
-                        write.response = Some(put);
-                    }
+                Ok((resp, index)) => {
+                    self.num_doing_writes =
+                        self.num_doing_writes.checked_sub(1).expect("out of range");
+                    let write = &mut self.writes[index];
+                    write.done = true;
+                    write.response = Some(resp);
                 }
                 Err(err) => {
                     trace!("txn {} write intent: {err:?}", self.start_version);
@@ -335,13 +278,13 @@ impl WriteBatchContext {
                 continue;
             }
 
-            let key = write.key();
-            let (group_state, shard_desc) = router.find_shard(self.desc.clone(), key)?;
+            let user_key = write.user_key();
+            let (group_state, shard_desc) = router.find_shard(self.desc.clone(), user_key)?;
             let req = CommitIntentRequest {
                 shard_id: shard_desc.id,
                 start_version: self.start_version,
                 commit_version: self.commit_version,
-                keys: vec![key.to_vec()],
+                user_key: user_key.to_vec(),
             };
             let index = write.index;
             let mut client = GroupClient::new(group_state, self.client.clone());

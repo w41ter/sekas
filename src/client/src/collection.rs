@@ -359,16 +359,16 @@ impl Collection {
 
     async fn get_inner(
         &self,
-        key: &[u8],
+        user_key: &[u8],
         timeout: Option<Duration>,
     ) -> crate::Result<Option<Value>> {
         let router = self.client.router();
-        let (group, shard) = router.find_shard(self.co_desc.clone(), key)?;
+        let (group, shard) = router.find_shard(self.co_desc.clone(), user_key)?;
         let mut client = GroupClient::new(group, self.client.clone());
         let req = Request::Get(ShardGetRequest {
             shard_id: shard.id,
             start_version: u64::MAX,
-            key: key.to_owned(),
+            user_key: user_key.to_owned(),
         });
         if let Some(duration) = timeout {
             client.set_timeout(duration);

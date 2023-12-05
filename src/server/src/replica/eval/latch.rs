@@ -15,7 +15,9 @@
 use std::collections::HashMap;
 
 use sekas_api::server::v1::group_request_union::Request;
-use sekas_api::server::v1::{ShardKey, ShardWriteRequest, TxnIntent, TxnState, Value};
+use sekas_api::server::v1::{
+    ShardKey, ShardWriteRequest, TxnIntent, TxnState, Value, WriteRequest,
+};
 
 use crate::{Error, Result};
 
@@ -110,14 +112,16 @@ where
     let (shard_id, mut keys) = match request {
         Request::Write(req) => (req.shard_id, collect_shard_write_keys(req)?),
         Request::WriteIntent(req) => {
-            if let Some(req) = req.write.as_ref() {
-                (req.shard_id, collect_shard_write_keys(req)?)
-            } else {
+            let Some(write) = req.write.as_ref() else {
                 return Ok(None);
+            };
+            match write {
+                WriteRequest::Put(put) => (req.shard_id, vec![put.key.clone()]),
+                WriteRequest::Delete(delete) => (req.shard_id, vec![delete.key.clone()]),
             }
         }
-        Request::CommitIntent(req) => (req.shard_id, req.keys.clone()),
-        Request::ClearIntent(req) => (req.shard_id, req.keys.clone()),
+        Request::CommitIntent(req) => (req.shard_id, vec![req.user_key.clone()]),
+        Request::ClearIntent(req) => (req.shard_id, vec![req.user_key.clone()]),
         Request::Scan(_)
         | Request::Get(_)
         | Request::CreateShard(_)
