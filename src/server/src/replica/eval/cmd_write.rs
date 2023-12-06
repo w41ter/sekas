@@ -14,10 +14,11 @@
 // limitations under the License.
 
 use sekas_api::server::v1::{PutType, ShardWriteRequest, ShardWriteResponse, WriteResponse};
-use sekas_schema::system::txn::TXN_MAX_VERSION;
+use sekas_rock::time::timestamp_nanos;
 
 use super::cas::eval_conditions;
 use crate::engine::{GroupEngine, WriteBatch};
+use crate::node::move_shard::ForwardCtx;
 use crate::replica::ExecCtx;
 use crate::serverpb::v1::EvalResult;
 use crate::{Error, Result};
@@ -27,58 +28,64 @@ pub(crate) async fn batch_write(
     group_engine: &GroupEngine,
     req: &ShardWriteRequest,
 ) -> Result<(Option<EvalResult>, ShardWriteResponse)> {
+    // TODO(walter) only internal shards would write in batch.
     if req.deletes.is_empty() && req.puts.is_empty() {
         return Ok((None, ShardWriteResponse::default()));
+    }
+
+    if let Some(desc) = exec_ctx.move_shard_desc.as_ref() {
+        let shard_id = desc.shard_desc.as_ref().unwrap().id;
+        if shard_id == req.shard_id {
+            let mut payloads = Vec::with_capacity(req.puts.len() + req.deletes.len());
+            for del in &req.deletes {
+                payloads.push(group_engine.get_all_versions(req.shard_id, &del.key).await?);
+            }
+            for put in &req.puts {
+                payloads.push(group_engine.get_all_versions(req.shard_id, &put.key).await?);
+            }
+            let forward_ctx = ForwardCtx { shard_id, dest_group_id: desc.dest_group_id, payloads };
+            return Err(Error::Forward(forward_ctx));
+        }
     }
 
     let mut wb = WriteBatch::default();
     let mut resp = ShardWriteResponse::default();
     let num_deletes = req.deletes.len();
     for (idx, del) in req.deletes.iter().enumerate() {
-        if !del.conditions.is_empty() || del.take_prev_value {
-            // TODO(walter) support get value in parallel.
-            let prev_value = group_engine.get(req.shard_id, &del.key).await?;
-            if let Some(cond_idx) = eval_conditions(prev_value.as_ref(), &del.conditions)? {
-                return Err(Error::CasFailed(idx as u64, cond_idx as u64, prev_value));
-            }
-            if del.take_prev_value {
-                resp.deletes.push(WriteResponse { prev_value });
-            }
+        let prev_value = group_engine.get(req.shard_id, &del.key).await?;
+        if let Some(cond_idx) = eval_conditions(prev_value.as_ref(), &del.conditions)? {
+            return Err(Error::CasFailed(idx as u64, cond_idx as u64, prev_value));
         }
-        if !del.take_prev_value {
-            resp.deletes.push(WriteResponse { prev_value: None });
-        }
-        if exec_ctx.is_migrating_shard(req.shard_id) {
-            panic!("BatchWrite does not support migrating shard");
-        }
-        group_engine.tombstone(&mut wb, req.shard_id, &del.key, TXN_MAX_VERSION)?;
+        let prev_version = prev_value.as_ref().map(|v| v.version).unwrap_or_default();
+        resp.deletes.push(WriteResponse {
+            prev_value: if del.take_prev_value { prev_value } else { None },
+        });
+        let version = std::cmp::max(prev_version + 1, next_version());
+        group_engine.tombstone(&mut wb, req.shard_id, &del.key, version)?;
     }
     for (idx, put) in req.puts.iter().enumerate() {
-        if !put.conditions.is_empty() || put.take_prev_value {
-            // TODO(walter) support get value in parallel.
-            let prev_value = group_engine.get(req.shard_id, &put.key).await?;
-            if let Some(cond_idx) = eval_conditions(prev_value.as_ref(), &put.conditions)? {
-                let idx = num_deletes + idx;
-                return Err(Error::CasFailed(idx as u64, cond_idx as u64, prev_value));
-            }
-            if put.take_prev_value {
-                resp.puts.push(WriteResponse { prev_value });
-            }
-        }
-        if !put.take_prev_value {
-            resp.puts.push(WriteResponse { prev_value: None });
-        }
         if put.put_type != PutType::None as i32 {
             panic!("BatchWrite does not support put operation");
         }
-        if exec_ctx.is_migrating_shard(req.shard_id) {
-            panic!("BatchWrite does not support migrating shard");
-        }
 
-        // FIXME(walter) change flat version, to support move internal shards.
-        group_engine.put(&mut wb, req.shard_id, &put.key, &put.value, TXN_MAX_VERSION)?;
+        let prev_value = group_engine.get(req.shard_id, &put.key).await?;
+        if let Some(cond_idx) = eval_conditions(prev_value.as_ref(), &put.conditions)? {
+            let idx = num_deletes + idx;
+            return Err(Error::CasFailed(idx as u64, cond_idx as u64, prev_value));
+        }
+        let prev_version = prev_value.as_ref().map(|v| v.version).unwrap_or_default();
+        resp.puts.push(WriteResponse {
+            prev_value: if put.take_prev_value { prev_value } else { None },
+        });
+        let version = std::cmp::max(prev_version + 1, next_version());
+        group_engine.put(&mut wb, req.shard_id, &put.key, &put.value, version)?;
     }
     Ok((Some(EvalResult::with_batch(wb.data().to_owned())), resp))
+}
+
+#[inline]
+fn next_version() -> u64 {
+    timestamp_nanos()
 }
 
 #[cfg(test)]

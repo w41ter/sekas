@@ -34,7 +34,7 @@ use crate::{record_latency, NodeConfig, Result};
 pub struct ForwardCtx {
     pub shard_id: u64,
     pub dest_group_id: u64,
-    pub payload: ValueSet,
+    pub payloads: Vec<ValueSet>,
 }
 
 struct MoveShardCoordinator {
@@ -110,13 +110,18 @@ impl MoveShardController {
         })
     }
 
-    pub async fn forward(&self, forward_ctx: ForwardCtx, request: &Request) -> Result<Response> {
+    pub async fn forward(
+        &self,
+        mut forward_ctx: ForwardCtx,
+        request: &Request,
+    ) -> Result<Response> {
         let group_id = forward_ctx.dest_group_id;
         let mut client = self.shared.transport_manager.build_move_shard_client(group_id);
+        forward_ctx.payloads.retain(|f| !f.values.is_empty());
         let req = ForwardRequest {
             shard_id: forward_ctx.shard_id,
             group_id,
-            forward_data: Some(forward_ctx.payload),
+            forward_data: forward_ctx.payloads,
             request: Some(GroupRequestUnion { request: Some(request.clone()) }),
         };
         let resp = client.forward(&req).await?;

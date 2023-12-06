@@ -34,9 +34,9 @@ pub(crate) async fn get<T: LatchManager>(
     if let Some(desc) = exec_ctx.move_shard_desc.as_ref() {
         let shard_id = desc.shard_desc.as_ref().unwrap().id;
         if shard_id == req.shard_id {
-            let payloads = read_shard_all_versions(engine, req.shard_id, &req.user_key).await?;
+            let payload = engine.get_all_versions(shard_id, &req.user_key).await?;
             let forward_ctx =
-                ForwardCtx { shard_id, dest_group_id: desc.dest_group_id, payload: payloads };
+                ForwardCtx { shard_id, dest_group_id: desc.dest_group_id, payloads: vec![payload] };
             return Err(Error::Forward(forward_ctx));
         }
     }
@@ -98,23 +98,6 @@ async fn read_key<T: LatchManager>(
     Ok(None)
 }
 
-pub(super) async fn read_shard_all_versions(
-    engine: &GroupEngine,
-    shard_id: u64,
-    key: &[u8],
-) -> Result<ValueSet> {
-    let snapshot_mode = SnapshotMode::Key { key };
-    let mut snapshot = engine.snapshot(shard_id, snapshot_mode)?;
-    let mut value_set = ValueSet { user_key: key.to_owned(), values: vec![] };
-    if let Some(iter) = snapshot.next() {
-        for entry in iter? {
-            let entry = entry?;
-            value_set.values.push(entry.into());
-        }
-    }
-    Ok(value_set)
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::VecDeque;
@@ -172,38 +155,6 @@ mod tests {
             }
         }
         engine.commit(wb, WriteStates::default(), false).unwrap();
-    }
-
-    #[sekas_macro::test]
-    async fn test_read_shard_all_versions() {
-        let cases = vec![
-            // empty values.
-            vec![],
-            // a tombstone.
-            vec![Value { version: 1, content: None }],
-            // a write.
-            vec![Value { version: 1, content: Some(vec![b'1']) }],
-            // a write overwrite a tombstone.
-            vec![
-                Value { version: 2, content: Some(vec![b'1']) },
-                Value { version: 1, content: None },
-            ],
-            // a tombstone overwrite a write.
-            vec![
-                Value { version: 2, content: None },
-                Value { version: 1, content: Some(vec![b'1']) },
-            ],
-        ];
-
-        let dir = TempDir::new(fn_name!()).unwrap();
-        let engine = create_group_engine(dir.path(), 1, 1, 1).await;
-        for (idx, case) in cases.into_iter().enumerate() {
-            let key = idx.to_string();
-            commit_values(&engine, key.as_bytes(), &case);
-
-            let value_set = read_shard_all_versions(&engine, 1, key.as_bytes()).await.unwrap();
-            assert_eq!(value_set.values, case, "idx = {idx}");
-        }
     }
 
     #[sekas_macro::test]

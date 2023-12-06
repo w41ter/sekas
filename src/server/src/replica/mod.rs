@@ -511,15 +511,6 @@ impl ExecCtx {
     pub fn reset(&mut self) {
         self.move_shard_desc = None;
     }
-
-    #[inline]
-    fn is_migrating_shard(&self, shard_id: u64) -> bool {
-        self.move_shard_desc
-            .as_ref()
-            .and_then(|m| m.shard_desc.as_ref())
-            .map(|d| d.id == shard_id)
-            .unwrap_or_default()
-    }
 }
 
 fn is_change_meta_request(request: &Request) -> bool {

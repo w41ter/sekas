@@ -486,10 +486,10 @@ async fn move_shard_receive_forward_request_after_shard_migrated() {
     let req = ForwardRequest {
         group_id: group_id_2,
         shard_id,
-        forward_data: Some(ValueSet {
+        forward_data: vec![ValueSet {
             user_key: b"a".to_vec(),
             values: vec![Value { content: Some(b"b".to_vec()), version: 1 }],
-        }),
+        }],
         request: Some(GroupRequestUnion {
             request: Some(Request::Write(ShardWriteRequest {
                 shard_id,

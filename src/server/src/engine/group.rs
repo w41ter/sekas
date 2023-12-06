@@ -241,6 +241,20 @@ impl GroupEngine {
         Ok(None)
     }
 
+    /// Get all versions.
+    pub async fn get_all_versions(&self, shard_id: u64, key: &[u8]) -> Result<ValueSet> {
+        let snapshot_mode = SnapshotMode::Key { key };
+        let mut snapshot = self.snapshot(shard_id, snapshot_mode)?;
+        let mut value_set = ValueSet { user_key: key.to_owned(), values: vec![] };
+        if let Some(iter) = snapshot.next() {
+            for entry in iter? {
+                let entry = entry?;
+                value_set.values.push(entry.into());
+            }
+        }
+        Ok(value_set)
+    }
+
     /// Put key value into the corresponding shard.
     pub fn put(
         &self,
@@ -1438,6 +1452,50 @@ mod tests {
 
             let read_state = engine.move_shard_state();
             assert!(matches!(read_state, Some(state) if state == move_shard_state));
+        }
+    }
+
+    fn commit_values(engine: &GroupEngine, key: &[u8], values: &[Value]) {
+        let mut wb = WriteBatch::default();
+        for Value { version, content } in values {
+            if let Some(value) = content {
+                engine.put(&mut wb, 1, key, value, *version).unwrap();
+            } else {
+                engine.tombstone(&mut wb, 1, key, *version).unwrap();
+            }
+        }
+        engine.commit(wb, WriteStates::default(), false).unwrap();
+    }
+
+    #[sekas_macro::test]
+    async fn test_read_shard_all_versions() {
+        let cases = vec![
+            // empty values.
+            vec![],
+            // a tombstone.
+            vec![Value { version: 1, content: None }],
+            // a write.
+            vec![Value { version: 1, content: Some(vec![b'1']) }],
+            // a write overwrite a tombstone.
+            vec![
+                Value { version: 2, content: Some(vec![b'1']) },
+                Value { version: 1, content: None },
+            ],
+            // a tombstone overwrite a write.
+            vec![
+                Value { version: 2, content: None },
+                Value { version: 1, content: Some(vec![b'1']) },
+            ],
+        ];
+
+        let dir = TempDir::new(fn_name!()).unwrap();
+        let engine = create_engine(1, 1, dir.path().join("1").as_path()).await;
+        for (idx, case) in cases.into_iter().enumerate() {
+            let key = idx.to_string();
+            commit_values(&engine, key.as_bytes(), &case);
+
+            let value_set = engine.get_all_versions(1, key.as_bytes()).await.unwrap();
+            assert_eq!(value_set.values, case, "idx = {idx}");
         }
     }
 }

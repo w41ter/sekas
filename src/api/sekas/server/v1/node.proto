@@ -394,7 +394,7 @@ message MoveShardResponse {
 message ForwardRequest {
     uint64 group_id = 1;
     uint64 shard_id = 2;
-    ValueSet forward_data = 3;
+    repeated ValueSet forward_data = 3;
     GroupRequestUnion request = 4;
 }
 

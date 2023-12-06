@@ -20,7 +20,7 @@ use sekas_schema::system::txn::TXN_INTENT_VERSION;
 
 use super::cas::eval_conditions;
 use super::latch::DeferSignalLatchGuard;
-use super::{read_shard_all_versions, LatchGuard};
+use super::LatchGuard;
 use crate::engine::{GroupEngine, SnapshotMode, WriteBatch};
 use crate::node::move_shard::ForwardCtx;
 use crate::replica::ExecCtx;
@@ -33,6 +33,7 @@ pub(crate) async fn write_intent<T: LatchGuard>(
     latch_guard: &mut DeferSignalLatchGuard<T>,
     req: &WriteIntentRequest,
 ) -> Result<(Option<EvalResult>, WriteIntentResponse)> {
+    // TODO(walter) txn for internal shards is not supported.
     let write = req
         .write
         .as_ref()
@@ -43,9 +44,9 @@ pub(crate) async fn write_intent<T: LatchGuard>(
     if let Some(desc) = exec_ctx.move_shard_desc.as_ref() {
         let shard_id = desc.shard_desc.as_ref().unwrap().id;
         if shard_id == req.shard_id {
-            let payloads = read_shard_all_versions(group_engine, req.shard_id, user_key).await?;
+            let payload = group_engine.get_all_versions(req.shard_id, user_key).await?;
             let forward_ctx =
-                ForwardCtx { shard_id, dest_group_id: desc.dest_group_id, payload: payloads };
+                ForwardCtx { shard_id, dest_group_id: desc.dest_group_id, payloads: vec![payload] };
             return Err(Error::Forward(forward_ctx));
         }
     }
@@ -129,10 +130,9 @@ pub(crate) async fn commit_intent<T: LatchGuard>(
     if let Some(desc) = exec_ctx.move_shard_desc.as_ref() {
         let shard_id = desc.shard_desc.as_ref().unwrap().id;
         if shard_id == req.shard_id {
-            let payloads =
-                read_shard_all_versions(group_engine, req.shard_id, &req.user_key).await?;
+            let payload = group_engine.get_all_versions(req.shard_id, &req.user_key).await?;
             let forward_ctx =
-                ForwardCtx { shard_id, dest_group_id: desc.dest_group_id, payload: payloads };
+                ForwardCtx { shard_id, dest_group_id: desc.dest_group_id, payloads: vec![payload] };
             return Err(Error::Forward(forward_ctx));
         }
     }
@@ -180,10 +180,9 @@ pub(crate) async fn clear_intent<T: LatchGuard>(
     if let Some(desc) = exec_ctx.move_shard_desc.as_ref() {
         let shard_id = desc.shard_desc.as_ref().unwrap().id;
         if shard_id == req.shard_id {
-            let payloads =
-                read_shard_all_versions(group_engine, req.shard_id, &req.user_key).await?;
+            let payload = group_engine.get_all_versions(req.shard_id, &req.user_key).await?;
             let forward_ctx =
-                ForwardCtx { shard_id, dest_group_id: desc.dest_group_id, payload: payloads };
+                ForwardCtx { shard_id, dest_group_id: desc.dest_group_id, payloads: vec![payload] };
             return Err(Error::Forward(forward_ctx));
         }
     }

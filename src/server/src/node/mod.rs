@@ -410,13 +410,26 @@ impl Node {
             }
         };
 
-        if let Some(ingest_chunk) = request.forward_data {
-            match replica.ingest_value_set(request.shard_id, &ingest_chunk).await {
-                Ok(_) | Err(Error::ShardNotFound(_)) => {
-                    // Ingest success or shard is migrated.
-                }
-                Err(e) => return Err(e),
+        let shard_id = request.shard_id;
+        let mut ingest_handles = Vec::with_capacity(request.forward_data.len());
+        for value_set in request.forward_data {
+            if value_set.values.is_empty() {
+                continue;
             }
+            let replica_clone = replica.clone();
+            let handle = sekas_runtime::spawn(async move {
+                match replica_clone.ingest_value_set(shard_id, &value_set).await {
+                    Ok(_) | Err(Error::ShardNotFound(_)) => {
+                        // Ingest success or shard is migrated.
+                        Ok(())
+                    }
+                    Err(e) => Err(e),
+                }
+            });
+            ingest_handles.push(handle);
+        }
+        for handle in ingest_handles {
+            handle.await??;
         }
 
         debug_assert!(request.request.is_some());
