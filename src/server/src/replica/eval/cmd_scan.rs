@@ -54,6 +54,7 @@ where
 {
     let mut data = Vec::new();
     let mut total_bytes = 0;
+    let mut has_more = false;
     'OUTER: while let Some(mvcc_iter) = snapshot.next() {
         let mut value_set = ValueSet::default();
         for entry in mvcc_iter? {
@@ -133,11 +134,12 @@ where
             if (req.limit != 0 && req.limit as usize == data.len())
                 || (req.limit_bytes != 0 && req.limit_bytes as usize <= total_bytes)
             {
+                has_more = true;
                 break;
             }
         }
     }
-    Ok(ShardScanResponse { data })
+    Ok(ShardScanResponse { data, has_more })
 }
 
 #[inline]
@@ -152,6 +154,28 @@ fn is_exceeds(target: &Option<Vec<u8>>, user_key: &[u8]) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use sekas_api::server::v1::Value;
+    use sekas_rock::fn_name;
+    use tempdir::TempDir;
+
+    use super::*;
+    use crate::engine::{create_group_engine, WriteBatch, WriteStates};
+    use crate::replica::eval::latch::local::LocalLatchManager;
+
+    const SHARD_ID: u64 = 1;
+
+    fn commit_values(engine: &GroupEngine, key: &[u8], values: &[Value]) {
+        let mut wb = WriteBatch::default();
+        for Value { version, content } in values {
+            if let Some(value) = content {
+                engine.put(&mut wb, SHARD_ID, key, value, *version).unwrap();
+            } else {
+                engine.tombstone(&mut wb, SHARD_ID, key, *version).unwrap();
+            }
+        }
+        engine.commit(wb, WriteStates::default(), false).unwrap();
+    }
+
     #[sekas_macro::test]
     async fn scan_with_txn_intent() {
         // 1. write intent with version 90
@@ -160,5 +184,39 @@ mod tests {
         // 4. write intent with version 99
         // 5. commit intent with version 101
         // 6. scan try resolve intent 90, and it should returns version 95.
+    }
+
+    #[sekas_macro::test]
+    async fn scan_with_limit_should_returns_more() {
+        let dir = TempDir::new(fn_name!()).unwrap();
+        let engine = create_group_engine(dir.path(), 1, 1, 1).await;
+        let latch_mgr = LocalLatchManager::default();
+
+        for i in 1..100u8 {
+            let (key, value) = (vec![i], vec![i]);
+            let value = Value::with_value(value, 100);
+            commit_values(&engine, &key, &[value]);
+        }
+
+        // case 1: scan single key returns has more.
+        let scan_req = ShardScanRequest {
+            shard_id: SHARD_ID,
+            start_version: 1000,
+            limit: 1,
+            ..Default::default()
+        };
+        let resp = scan(&engine, &latch_mgr, &scan_req).await.unwrap();
+        assert!(resp.has_more);
+
+        // case 2: scan all keys returns no more.
+        let scan_req = ShardScanRequest {
+            shard_id: SHARD_ID,
+            start_version: 1000,
+            limit: 1000,
+            ..Default::default()
+        };
+
+        let resp = scan(&engine, &latch_mgr, &scan_req).await.unwrap();
+        assert!(!resp.has_more);
     }
 }

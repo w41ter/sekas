@@ -78,7 +78,7 @@ impl ShardClient {
         });
         let mut client = GroupClient::lazy(self.group_id, self.client.clone());
         match client.request(&req).await? {
-            Response::Scan(ShardScanResponse { data }) => Ok(data),
+            Response::Scan(ShardScanResponse { data, .. }) => Ok(data),
             _ => Err(Error::Internal(
                 "invalid response type, `ShardScanResponse` is required".into(),
             )),
@@ -94,7 +94,7 @@ impl ShardClient {
         });
         let mut client = GroupClient::lazy(self.group_id, self.client.clone());
         match client.request(&req).await? {
-            Response::Scan(ShardScanResponse { data }) => Ok(data
+            Response::Scan(ShardScanResponse { data, .. }) => Ok(data
                 .into_iter()
                 .flat_map(|v| v.values.into_iter().filter_map(|v| v.content))
                 .collect()),

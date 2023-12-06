@@ -192,8 +192,8 @@ pub(crate) fn open_raft_engine(log_path: &Path) -> Result<raft_engine::Engine> {
     Ok(Engine::open(engine_cfg)?)
 }
 
-#[cfg(test)]
 /// A helper function to create [`GroupEngine`].
+#[cfg(test)]
 pub async fn create_group_engine(
     dir: &Path,
     group_id: u64,

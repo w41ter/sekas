@@ -149,7 +149,12 @@ message ShardScanRequest {
     bool include_raw_data = 10;
 }
 
-message ShardScanResponse { repeated ValueSet data = 1; }
+message ShardScanResponse {
+    /// The value set.
+    repeated ValueSet data = 1;
+    /// Has more data to scan?
+    bool has_more = 2;
+}
 
 message WriteIntentRequest {
     uint64 shard_id = 1;
