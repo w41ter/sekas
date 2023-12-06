@@ -187,6 +187,31 @@ mod tests {
     }
 
     #[sekas_macro::test]
+    async fn scan_with_limit_should_returns_all_versions() {
+        let dir = TempDir::new(fn_name!()).unwrap();
+        let engine = create_group_engine(dir.path(), 1, 1, 1).await;
+        let latch_mgr = LocalLatchManager::default();
+
+        let key = vec![0u8];
+        for i in 1..101u8 {
+            let value = vec![i];
+            let value = Value::with_value(value, i as u64);
+            commit_values(&engine, &key, &[value]);
+        }
+
+        let scan_req = ShardScanRequest {
+            shard_id: SHARD_ID,
+            start_version: 1000,
+            limit: 1,
+            include_raw_data: true,
+            ..Default::default()
+        };
+        let resp = scan(&engine, &latch_mgr, &scan_req).await.unwrap();
+        assert_eq!(resp.data.len(), 1);
+        assert_eq!(resp.data[0].values.len(), 100);
+    }
+
+    #[sekas_macro::test]
     async fn scan_with_limit_should_returns_more() {
         let dir = TempDir::new(fn_name!()).unwrap();
         let engine = create_group_engine(dir.path(), 1, 1, 1).await;
