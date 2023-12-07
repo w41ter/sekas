@@ -94,7 +94,7 @@ impl Database {
         let mut retry_state = RetryState::new(self.rpc_timeout);
 
         loop {
-            match self.get_inner(collection_id, &key, retry_state.timeout()).await {
+            match self.get_inner(collection_id, &key, &mut retry_state).await {
                 Ok(value) => {
                     CLIENT_DATABASE_BYTES_TOTAL.tx.inc_by(
                         value
@@ -115,17 +115,20 @@ impl Database {
         &self,
         collection_id: u64,
         user_key: &[u8],
-        timeout: Option<Duration>,
+        retry_state: &mut RetryState,
     ) -> crate::Result<Option<Value>> {
+        let root_client = self.client.root_client();
+        let start_version = root_client.alloc_txn_id(1, retry_state.timeout()).await?;
+
         let router = self.client.router();
         let (group, shard) = router.find_shard(collection_id, user_key)?;
         let mut client = GroupClient::new(group, self.client.clone());
         let req = Request::Get(ShardGetRequest {
             shard_id: shard.id,
-            start_version: u64::MAX,
+            start_version,
             user_key: user_key.to_owned(),
         });
-        if let Some(duration) = timeout {
+        if let Some(duration) = retry_state.timeout() {
             client.set_timeout(duration);
         }
         match client.request(&req).await? {

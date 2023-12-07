@@ -684,6 +684,7 @@ mod tests {
     use sekas_api::server::v1::report_request::GroupUpdates;
     use sekas_api::server::v1::{ReplicaDesc, ReplicaRole};
     use sekas_rock::fn_name;
+    use sekas_schema::system::txn::TXN_MAX_VERSION;
     use tempdir::TempDir;
 
     use super::*;
@@ -874,10 +875,10 @@ mod tests {
         })
     }
 
-    fn build_read_request(key: &[u8]) -> Request {
+    fn build_read_request(key: &[u8], version: u64) -> Request {
         Request::Get(ShardGetRequest {
             shard_id: SHARD_ID,
-            start_version: u64::MAX - 1,
+            start_version: version,
             user_key: key.to_vec(),
         })
     }
@@ -889,7 +890,15 @@ mod tests {
     }
 
     async fn execute_read_request(replica: &Replica, key: &[u8]) -> Option<Value> {
-        let read_req = build_read_request(key);
+        execute_read_request_with_version(replica, key, TXN_MAX_VERSION).await
+    }
+
+    async fn execute_read_request_with_version(
+        replica: &Replica,
+        key: &[u8],
+        version: u64,
+    ) -> Option<Value> {
+        let read_req = build_read_request(key, version);
         let response = execute_on_leader(replica, read_req).await;
         assert!(matches!(response, Response::Get(_)));
         let Response::Get(response) = response else { unreachable!() };
@@ -999,7 +1008,7 @@ mod tests {
         }
     }
 
-    fn build_preapre_request(start_version: u64, key: &[u8], value: &[u8]) -> Request {
+    fn build_prepare_request(start_version: u64, key: &[u8], value: &[u8]) -> Request {
         Request::WriteIntent(WriteIntentRequest {
             start_version,
             shard_id: SHARD_ID,
@@ -1020,7 +1029,7 @@ mod tests {
         key: &[u8],
         value: &[u8],
     ) -> Option<Value> {
-        let write_req = build_preapre_request(start_version, key, value);
+        let write_req = build_prepare_request(start_version, key, value);
         let response = execute_on_leader(replica, write_req).await;
         assert!(matches!(response, Response::WriteIntent(_)));
         let Response::WriteIntent(response) = response else { unreachable!() };
@@ -1102,5 +1111,39 @@ mod tests {
         // read again.
         let value = execute_read_request(&replica, b"123").await;
         assert!(value.is_none());
+    }
+
+    #[sekas_macro::test]
+    async fn read_with_visible_version() {
+        let dir = TempDir::new(fn_name!()).unwrap();
+        let node = bootstrap_node(dir.path()).await;
+        let replica = create_first_replica(&node).await;
+
+        let start_version = 123;
+        let commit_version = 345;
+        execute_prepare_request(&replica, start_version, b"123", b"456").await;
+        execute_commit_request(&replica, start_version, commit_version, b"123").await;
+
+        let value = execute_read_request_with_version(&replica, b"123", 500).await;
+        assert!(
+            matches!(value, Some(v) if v.content.as_ref().unwrap() == b"456" && v.version == commit_version)
+        );
+
+        let second_start_version = 600;
+        let second_commit_version = 700;
+        execute_prepare_request(&replica, second_start_version, b"123", b"456").await;
+        execute_commit_request(&replica, second_start_version, second_commit_version, b"123").await;
+
+        let value = execute_read_request_with_version(&replica, b"123", 650).await;
+        assert!(
+            matches!(value, Some(v) if v.content.as_ref().unwrap() == b"456" && v.version == commit_version)
+        );
+
+        // read again with large version.
+        let value =
+            execute_read_request_with_version(&replica, b"123", second_commit_version + 1).await;
+        assert!(
+            matches!(value, Some(v) if v.content.as_ref().unwrap() == b"456" && v.version == second_commit_version)
+        );
     }
 }
