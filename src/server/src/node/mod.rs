@@ -24,7 +24,7 @@ use std::sync::Arc;
 
 use futures::channel::mpsc;
 use futures::lock::Mutex;
-use log::{debug, info, trace, warn};
+use log::{debug, info, warn};
 use sekas_api::server::v1::*;
 use sekas_client::ClientOptions;
 use sekas_runtime::TaskGroup;
@@ -79,7 +79,7 @@ where
     replica_route_table: ReplicaRouteTable,
 
     raft_mgr: Arc<RaftManager>,
-    migrate_ctrl: MoveShardController,
+    move_shard_ctrl: MoveShardController,
     transport_manager: TransportManager,
     engines: Engines,
     state_engine: StateEngine,
@@ -117,7 +117,7 @@ impl Node {
             raft_route_table,
             replica_route_table: ReplicaRouteTable::new(),
             raft_mgr,
-            migrate_ctrl,
+            move_shard_ctrl: migrate_ctrl,
             engines,
             state_engine,
             task_group: TaskGroup::default(),
@@ -331,7 +331,7 @@ impl Node {
         self.raft_route_table.update(replica_id, raft_node);
 
         // Setup jobs
-        let migrate_handle = self.migrate_ctrl.watch_state_changes(replica.clone(), receiver);
+        let migrate_handle = self.move_shard_ctrl.watch_state_changes(replica.clone(), receiver);
         task_group.add_task(migrate_handle);
 
         let scheduler_handle = setup_scheduler(
@@ -386,18 +386,27 @@ impl Node {
     }
 
     pub async fn execute_request(&self, request: &GroupRequest) -> Result<GroupResponse> {
-        use crate::replica::retry::forwardable_execute;
-
-        trace!("node execute request {request:?}");
+        use crate::replica::retry::execute;
 
         let Some(replica) = self.replica_route_table.find(request.group_id) else {
             return Err(Error::GroupNotFound(request.group_id));
         };
 
-        let resp =
-            forwardable_execute(&self.migrate_ctrl, &replica, &ExecCtx::default(), request).await;
-        trace!("node execute returns response {resp:?}");
-        resp
+        match execute(&replica, &ExecCtx::default(), request).await {
+            Err(Error::Forward(forward_ctx)) => {
+                let request = request
+                    .request
+                    .as_ref()
+                    .and_then(|request| request.request.as_ref())
+                    .ok_or_else(|| {
+                        Error::InvalidArgument("GroupRequest::request is None".into())
+                    })?;
+                let resp = self.move_shard_ctrl.forward(forward_ctx, request).await?;
+                Ok(GroupResponse::new(resp))
+            }
+            Ok(resp) => Ok(resp),
+            Err(err) => Err(err),
+        }
     }
 
     pub async fn forward(&self, request: ForwardRequest) -> Result<ForwardResponse> {
@@ -437,7 +446,11 @@ impl Node {
             GroupRequest { group_id: request.group_id, epoch: 0, request: request.request };
 
         let exec_ctx = ExecCtx::forward(request.shard_id);
-        let resp = execute(&replica, &exec_ctx, &group_request).await?;
+        let resp = match execute(&replica, &exec_ctx, &group_request).await {
+            Err(Error::Forward(_)) => unreachable!(),
+            Err(err) => return Err(err),
+            Ok(resp) => resp,
+        };
         debug_assert!(resp.response.is_some());
         Ok(ForwardResponse { response: resp.response })
     }
@@ -570,7 +583,7 @@ impl Node {
             if !replica.replica_info().is_terminated() {
                 if let Some(ms) = replica.move_shard_state() {
                     let mut state = match MoveShardStep::from_i32(ms.step) {
-                        Some(MoveShardStep::Prepare) => State::Preapre,
+                        Some(MoveShardStep::Prepare) => State::Prepare,
                         Some(MoveShardStep::Moved) => State::Moved,
                         Some(MoveShardStep::Moving) => State::Moving,
                         _ => State::None,

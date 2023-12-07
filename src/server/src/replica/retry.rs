@@ -22,7 +22,6 @@ use sekas_schema::shard;
 
 use super::{ExecCtx, Replica};
 use crate::node::metrics::NODE_RETRY_TOTAL;
-use crate::node::move_shard::MoveShardController;
 use crate::serverpb::v1::MoveShardEvent;
 use crate::{Error, Result};
 
@@ -49,29 +48,7 @@ pub async fn move_shard_with_retry(
     }
 }
 
-/// A wrapper function that detects and completes retries as quickly as
-/// possible.
-#[inline]
 pub async fn execute(
-    replica: &Replica,
-    exec_ctx: &ExecCtx,
-    request: &GroupRequest,
-) -> Result<GroupResponse> {
-    execute_internal(None, replica, exec_ctx, request).await
-}
-
-#[inline]
-pub async fn forwardable_execute(
-    migrate_ctrl: &MoveShardController,
-    replica: &Replica,
-    exec_ctx: &ExecCtx,
-    request: &GroupRequest,
-) -> Result<GroupResponse> {
-    execute_internal(Some(migrate_ctrl), replica, exec_ctx, request).await
-}
-
-async fn execute_internal(
-    move_shard_ctrl: Option<&MoveShardController>,
     replica: &Replica,
     exec_ctx: &ExecCtx,
     request: &GroupRequest,
@@ -98,14 +75,6 @@ async fn execute_internal(
                     GroupResponse::new(resp)
                 };
                 return Ok(resp);
-            }
-            Err(Error::Forward(forward_ctx)) => {
-                if let Some(ctrl) = move_shard_ctrl {
-                    let resp = ctrl.forward(forward_ctx, request).await?;
-                    return Ok(GroupResponse::new(resp));
-                } else {
-                    panic!("receive forward response but no moving shard controller set");
-                }
             }
             Err(Error::ServiceIsBusy(_)) | Err(Error::GroupNotReady(_)) => {
                 // sleep and retry.

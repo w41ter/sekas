@@ -343,7 +343,8 @@ impl Replica {
                 (eval_result, Response::ClearIntent(ClearIntentResponse::default()))
             }
             Request::Scan(req) => {
-                let eval_result = eval::scan(&self.group_engine, &self.latch_mgr, req).await?;
+                let eval_result =
+                    eval::scan(exec_ctx, &self.group_engine, &self.latch_mgr, req).await?;
                 (None, Response::Scan(eval_result))
             }
             Request::CreateShard(req) => {
