@@ -19,12 +19,13 @@ use clap::Parser;
 use log::{debug, info};
 use rand::rngs::OsRng;
 use rand::RngCore;
-use sekas_client::{AppError, ClientOptions, Collection, Database, SekasClient};
+use sekas_client::{AppError, ClientOptions, CollectionDesc, Database, SekasClient};
 use sekas_runtime::sync::WaitGroup;
 use sekas_runtime::{Shutdown, ShutdownNotifier};
 use tokio::runtime::Runtime;
 use tokio::select;
 use tokio::time::MissedTickBehavior;
+use tracing_subscriber::EnvFilter;
 
 use super::config::*;
 use super::report;
@@ -49,6 +50,13 @@ pub struct Command {
 
 impl Command {
     pub fn run(self) {
+        let filter_layer =
+            EnvFilter::try_from_default_env().or_else(|_| EnvFilter::try_new("info")).unwrap();
+        tracing_subscriber::fmt()
+            .with_env_filter(filter_layer)
+            .with_ansi(atty::is(atty::Stream::Stderr))
+            .init();
+
         let cfg = load_config(self).unwrap();
 
         info!("config {:#?}", cfg);
@@ -59,7 +67,11 @@ impl Command {
             .build()
             .unwrap();
 
-        let co = runtime.block_on(async { open_collection(&cfg).await }).expect("open collection");
+        const DEFAULT_COLLECTION: &str = "BENCH_COLLECTION";
+        let db = runtime.block_on(async { open_database(&cfg).await }).expect("open database");
+        let co = runtime
+            .block_on(async { open_collection(&db, DEFAULT_COLLECTION).await })
+            .expect("open collection");
         let notifier = ShutdownNotifier::default();
         let ctx = Context { wait_group: WaitGroup::new(), shutdown: notifier.subscribe(), runtime };
 
@@ -78,7 +90,7 @@ impl Command {
         let num_op = cfg.operation / cfg.worker.num_worker;
         for i in 0..cfg.worker.num_worker {
             let seed = base_seed + i as u64;
-            spawn_worker(&ctx, cfg.clone(), i, seed, num_op, co.clone());
+            spawn_worker(&ctx, cfg.clone(), i, seed, num_op, db.clone(), co.id);
             if let Some(interval) = cfg.worker.start_intervals {
                 if recv.recv_timeout(interval).is_ok() {
                     break;
@@ -97,10 +109,18 @@ impl Command {
     }
 }
 
-fn spawn_worker(ctx: &Context, cfg: AppConfig, i: usize, seed: u64, num_op: usize, co: Collection) {
+fn spawn_worker(
+    ctx: &Context,
+    cfg: AppConfig,
+    i: usize,
+    seed: u64,
+    num_op: usize,
+    db: Database,
+    collection_id: u64,
+) {
     debug!("spawn worker {i} with seed {seed}");
 
-    let job = Job::new(co, seed, num_op, cfg);
+    let job = Job::new(db, collection_id, seed, num_op, cfg);
     let shutdown = ctx.shutdown.clone();
     let wait_group = ctx.wait_group.clone();
     ctx.runtime.spawn(async move {
@@ -124,7 +144,7 @@ async fn create_or_open_database(client: &SekasClient, database: &str) -> Result
     }
 }
 
-async fn create_or_open_collection(db: &Database, collection: &str) -> Result<Collection> {
+async fn create_or_open_collection(db: &Database, collection: &str) -> Result<CollectionDesc> {
     match db.create_collection(collection.to_owned()).await {
         Ok(co) => Ok(co),
         Err(AppError::AlreadyExists(_)) => Ok(db.open_collection(collection.to_owned()).await?),
@@ -132,7 +152,7 @@ async fn create_or_open_collection(db: &Database, collection: &str) -> Result<Co
     }
 }
 
-async fn open_collection(cfg: &AppConfig) -> Result<Collection> {
+async fn open_database(cfg: &AppConfig) -> Result<Database> {
     let opts = ClientOptions {
         connect_timeout: Some(Duration::from_millis(200)),
         timeout: Some(Duration::from_millis(500)),
@@ -147,12 +167,13 @@ async fn open_collection(cfg: &AppConfig) -> Result<Collection> {
             return Err(e.into());
         }
     };
+    Ok(database)
+}
 
-    let co = match database.open_collection(cfg.database.clone()).await {
+async fn open_collection(db: &Database, collection: &str) -> Result<CollectionDesc> {
+    let co = match db.open_collection(collection.to_owned()).await {
         Ok(co) => co,
-        Err(AppError::NotFound(_)) if cfg.create_if_missing => {
-            create_or_open_collection(&database, &cfg.collection).await?
-        }
+        Err(AppError::NotFound(_)) => create_or_open_collection(db, collection).await?,
         Err(e) => {
             return Err(e.into());
         }

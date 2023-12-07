@@ -333,8 +333,8 @@ impl ClusterClient {
         Ok(None)
     }
 
-    pub async fn get_shard_desc(&self, co_desc: &CollectionDesc, key: &[u8]) -> Option<ShardDesc> {
-        self.router.find_shard(co_desc.clone(), key).ok().map(|(_, shard)| shard)
+    pub async fn get_shard_desc(&self, collection_id: u64, key: &[u8]) -> Option<ShardDesc> {
+        self.router.find_shard(collection_id, key).ok().map(|(_, shard)| shard)
     }
 
     pub async fn get_router_group_state(&self, group_id: u64) -> Option<RouterGroupState> {
@@ -343,18 +343,18 @@ impl ClusterClient {
 
     pub async fn find_router_group_state_by_key(
         &self,
-        co_desc: &CollectionDesc,
+        collection_id: u64,
         key: &[u8],
     ) -> Option<RouterGroupState> {
-        let (_, shard) = self.router.find_shard(co_desc.clone(), key).ok()?;
+        let (_, shard) = self.router.find_shard(collection_id, key).ok()?;
         self.router.find_group_by_shard(shard.id).ok()
     }
 
-    pub async fn assert_collection_ready(&self, co_desc: &CollectionDesc) {
+    pub async fn assert_collection_ready(&self, collection_id: u64) {
         let mut ready_group: HashSet<u64> = HashSet::default();
         for i in 0..255u8 {
             for _ in 0..1000 {
-                let state = match self.find_router_group_state_by_key(co_desc, &[i]).await {
+                let state = match self.find_router_group_state_by_key(collection_id, &[i]).await {
                     Some(state) => state,
                     None => {
                         tokio::time::sleep(Duration::from_millis(10)).await;
@@ -363,7 +363,7 @@ impl ClusterClient {
                 };
                 if ready_group.insert(state.id) {
                     self.assert_num_group_voters(state.id, 3).await;
-                    info!("collection {} is ready", co_desc.id);
+                    info!("collection {collection_id} is ready");
                     break;
                 }
             }
@@ -376,7 +376,7 @@ impl ClusterClient {
         for i in 0..256u64 {
             for _ in 0..1000 {
                 let key = i.to_be_bytes().to_vec();
-                let state = match self.find_router_group_state_by_key(&co_desc, &key).await {
+                let state = match self.find_router_group_state_by_key(co_desc.id, &key).await {
                     Some(state) => state,
                     None => {
                         tokio::time::sleep(Duration::from_millis(10)).await;

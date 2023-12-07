@@ -43,12 +43,12 @@ async fn client_to_unreachable_peers() {
     let client = c.app_client_with_options(opts).await;
     let db = client.create_database("test_db".to_string()).await.unwrap();
     let co = db.create_collection("test_co".to_string()).await.unwrap();
-    c.assert_collection_ready(&co.desc()).await;
+    c.assert_collection_ready(co.id).await;
 
     let k = "key".as_bytes().to_vec();
     let v = "value".as_bytes().to_vec();
-    co.put(k.clone(), v).await.unwrap();
-    let r = co.get(k).await.unwrap();
+    db.put(co.id, k.clone(), v).await.unwrap();
+    let r = db.get(co.id, k).await.unwrap();
     let r = r.map(String::from_utf8);
     assert!(matches!(r, Some(Ok(v)) if v == "value"));
 
@@ -58,12 +58,21 @@ async fn client_to_unreachable_peers() {
     let k = "key".as_bytes().to_vec();
     let v = "value-1".as_bytes().to_vec();
     assert!(matches!(
-        co.put(k.clone(), v.clone()).await,
+        db.put(co.id, k.clone(), v.clone()).await,
         Err(AppError::Network(_) | AppError::DeadlineExceeded(_))
     ));
-    assert!(matches!(co.put(k.clone(), v.clone()).await, Err(AppError::DeadlineExceeded(_))));
-    assert!(matches!(co.put(k.clone(), v.clone()).await, Err(AppError::DeadlineExceeded(_))));
-    assert!(matches!(co.put(k.clone(), v.clone()).await, Err(AppError::DeadlineExceeded(_))));
+    assert!(matches!(
+        db.put(co.id, k.clone(), v.clone()).await,
+        Err(AppError::DeadlineExceeded(_))
+    ));
+    assert!(matches!(
+        db.put(co.id, k.clone(), v.clone()).await,
+        Err(AppError::DeadlineExceeded(_))
+    ));
+    assert!(matches!(
+        db.put(co.id, k.clone(), v.clone()).await,
+        Err(AppError::DeadlineExceeded(_))
+    ));
 }
 
 #[sekas_macro::test]
@@ -83,12 +92,12 @@ async fn client_create_duplicated_database_or_collection() {
         db.create_collection("test_co".to_string()).await,
         Err(AppError::AlreadyExists(_))
     ));
-    c.assert_collection_ready(&co.desc()).await;
+    c.assert_collection_ready(co.id).await;
 
     let k = "key".as_bytes().to_vec();
     let v = "value".as_bytes().to_vec();
-    co.put(k.clone(), v).await.unwrap();
-    let r = co.get(k).await.unwrap();
+    db.put(co.id, k.clone(), v).await.unwrap();
+    let r = db.get(co.id, k).await.unwrap();
     let r = r.map(String::from_utf8);
     assert!(matches!(r, Some(Ok(v)) if v == "value"));
 }
@@ -107,12 +116,12 @@ async fn client_access_not_exists_database_or_collection() {
     let db = client.create_database("test_db".to_string()).await.unwrap();
     assert!(matches!(db.open_collection("test_co".to_string()).await, Err(AppError::NotFound(_))));
     let co = db.create_collection("test_co".to_string()).await.unwrap();
-    c.assert_collection_ready(&co.desc()).await;
+    c.assert_collection_ready(co.id).await;
 
     let k = "key".as_bytes().to_vec();
     let v = "value".as_bytes().to_vec();
-    co.put(k.clone(), v).await.unwrap();
-    let r = co.get(k).await.unwrap();
+    db.put(co.id, k.clone(), v).await.unwrap();
+    let r = db.get(co.id, k).await.unwrap();
     let r = r.map(String::from_utf8);
     assert!(matches!(r, Some(Ok(v)) if v == "value"));
 }
@@ -127,24 +136,24 @@ async fn client_request_to_offline_leader() {
     let db = client.create_database("test_db".to_string()).await.unwrap();
     let co = db.create_collection("test_co".to_string()).await.unwrap();
 
-    c.assert_collection_ready(&co.desc()).await;
+    c.assert_collection_ready(co.id).await;
     c.assert_root_group_has_promoted().await;
 
     for i in 0..1000 {
         let k = format!("key-{i}").as_bytes().to_vec();
         let v = format!("value-{i}").as_bytes().to_vec();
-        match co.put(k.clone(), v).await {
+        match db.put(co.id, k.clone(), v).await {
             Ok(_) => {}
             Err(AppError::Network(_)) => continue,
             Err(e) => {
                 panic!("put {k:?}: {e:?}");
             }
         }
-        let r = co.get(k).await.unwrap();
+        let r = db.get(co.id, k).await.unwrap();
         let r = r.map(String::from_utf8);
         assert!(matches!(r, Some(Ok(v)) if v == format!("value-{i}")));
         if i == 100 {
-            let state = c.find_router_group_state_by_key(&co.desc(), b"key").await.unwrap();
+            let state = c.find_router_group_state_by_key(co.id, b"key").await.unwrap();
             let node_id = c.get_group_leader_node_id(state.id).await.unwrap();
             ctx.stop_server(node_id).await;
         }

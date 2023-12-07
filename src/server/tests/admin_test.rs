@@ -42,21 +42,21 @@ async fn balance_init_cluster() {
     tokio::time::sleep(Duration::from_secs(10)).await;
 
     loop {
-        let m = curr_metadata(addrs.to_owned()).await;
+        let m = current_metadata(addrs.to_owned()).await;
         if m.balanced {
             break;
         }
         tokio::time::sleep(Duration::from_secs(1)).await;
     }
 
-    let m = curr_metadata(addrs.to_owned()).await;
+    let m = current_metadata(addrs.to_owned()).await;
     let stats = m
         .nodes
         .iter()
         .map(|n| {
-            let repls = n.replicas.iter().filter(|r| r.group != 0);
-            let leaders = repls.to_owned().filter(|r| r.raft_role == 2);
-            (n.id, repls.count(), leaders.count())
+            let replies = n.replicas.iter().filter(|r| r.group != 0);
+            let leaders = replies.to_owned().filter(|r| r.raft_role == 2);
+            (n.id, replies.count(), leaders.count())
         })
         .collect::<Vec<_>>();
     info!("{stats:?}, balanced: {}", m.balanced);
@@ -74,12 +74,12 @@ async fn admin_delete() {
     {
         let db = c.create_database("test1".into()).await.unwrap();
         let c1 = db.create_collection("test_co1".into()).await.unwrap();
-        c1.put("k1".into(), "v1".into()).await.unwrap();
+        db.put(c1.id, "k1".into(), "v1".into()).await.unwrap();
         db.delete_collection("test_co1".into()).await.unwrap();
         assert!(db.open_collection("test_co1".into()).await.is_err());
         db.create_collection("test_co1".into()).await.unwrap();
         let oc2 = db.open_collection("test_co1".into()).await.unwrap();
-        assert!(oc2.get("k1".into()).await.unwrap().is_none())
+        assert!(db.get(oc2.id, "k1".into()).await.unwrap().is_none())
     }
     {
         c.create_database("test_db1".into()).await.unwrap();
@@ -111,16 +111,21 @@ async fn admin_basic() {
     let new_db_name = "db1".to_owned();
     let new_db_id = 2;
     let new_db = {
-        let pcnt = c.list_database().await.unwrap().len();
+        let cnt = c.list_database().await.unwrap().len();
 
-        assert!(sys_db_col.get(new_db_name.as_bytes().to_owned()).await.unwrap().is_none());
+        assert!(sys_db
+            .get(sys_db_col.id, new_db_name.as_bytes().to_owned())
+            .await
+            .unwrap()
+            .is_none());
 
         let new_db = c.create_database(new_db_name.to_owned()).await.unwrap();
 
-        assert!(c.list_database().await.unwrap().len() == pcnt + 1);
+        assert!(c.list_database().await.unwrap().len() == cnt + 1);
 
         use prost::Message;
-        let db_bytes = sys_db_col.get(new_db_name.to_owned().into_bytes()).await.unwrap().unwrap();
+        let db_bytes =
+            sys_db.get(sys_db_col.id, new_db_name.to_owned().into_bytes()).await.unwrap().unwrap();
         let db_desc = DatabaseDesc::decode(&*db_bytes).unwrap();
         assert!(db_desc.id == new_db_id);
 
@@ -129,20 +134,24 @@ async fn admin_basic() {
 
     // test create collection.
     let new_collection_name = "col1".to_owned();
-    let pcnt = new_db.list_collection().await.unwrap().len();
-    let value = sys_col_col.get(collection_key(new_db_id, &new_collection_name)).await.unwrap();
+    let cnt = new_db.list_collection().await.unwrap().len();
+    let value =
+        sys_db.get(sys_col_col.id, collection_key(new_db_id, &new_collection_name)).await.unwrap();
     assert!(value.is_none());
 
     new_db.create_collection(new_collection_name.to_owned()).await.unwrap();
-    assert!(new_db.list_collection().await.unwrap().len() == pcnt + 1);
+    assert!(new_db.list_collection().await.unwrap().len() == cnt + 1);
 
-    let col_bytes =
-        sys_col_col.get(collection_key(new_db_id, &new_collection_name)).await.unwrap().unwrap();
+    let col_bytes = sys_db
+        .get(sys_col_col.id, collection_key(new_db_id, &new_collection_name))
+        .await
+        .unwrap()
+        .unwrap();
     let col_desc = CollectionDesc::decode(&*col_bytes).unwrap();
     assert_eq!(col_desc.name, new_collection_name);
 
     // check meta data api.
-    let m = curr_metadata(addrs).await;
+    let m = current_metadata(addrs).await;
     let d = m.databases.iter().find(|d| d.name == new_db_name).expect("created database not found");
     d.collections
         .iter()
@@ -158,7 +167,7 @@ fn collection_key(database_id: u64, collection_name: &str) -> Vec<u8> {
     buf
 }
 
-async fn curr_metadata(nodes: Vec<String>) -> diagnosis::Metadata {
+async fn current_metadata(nodes: Vec<String>) -> diagnosis::Metadata {
     let root_addr = find_root(nodes).await;
     let resp = reqwest::get(format!("http://{root_addr}/admin/metadata")).await.unwrap();
     let content = resp.bytes().await.unwrap();

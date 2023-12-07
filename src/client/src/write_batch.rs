@@ -19,13 +19,45 @@ use sekas_api::server::v1::group_request_union::Request;
 use sekas_api::server::v1::group_response_union::Response;
 use sekas_api::server::v1::*;
 
-use crate::{
-    Error, GroupClient, Result, RetryState, SekasClient, TxnStateTable, WriteBatchRequest,
-    WriteBatchResponse,
-};
+use crate::group_client::GroupClient;
+use crate::retry::RetryState;
+use crate::{AppResult, Error, Result, SekasClient, TxnStateTable};
+
+#[derive(Debug, Default, Clone)]
+pub struct WriteBatchRequest {
+    pub deletes: Vec<(u64, DeleteRequest)>,
+    pub puts: Vec<(u64, PutRequest)>,
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct WriteBatchResponse {
+    /// The version of this batch.
+    pub version: u64,
+    /// The prev value of the target key.
+    ///
+    /// Only for the requests with `take_prev_value`.
+    pub deletes: Vec<Option<Value>>,
+    /// The prev value of the target key.
+    ///
+    /// Only for the requests with `take_prev_value`.
+    pub puts: Vec<Option<Value>>,
+}
+
+pub struct WriteBuilder {
+    /// The key to operate.
+    key: Vec<u8>,
+    /// The cas conditions.
+    conditions: Vec<WriteCondition>,
+    /// The TTL of key.
+    ttl: Option<u64>,
+    /// Whether to take prev values.
+    take_prev_value: bool,
+}
 
 /// A structure to hold the context about single write request.
 struct WriteContext {
+    /// The id of collection to write.
+    collection_id: u64,
     /// The request.
     request: WriteRequest,
     /// The response.
@@ -39,7 +71,6 @@ struct WriteContext {
 /// A structure to hold the context about a write batch request.
 pub struct WriteBatchContext {
     client: SekasClient,
-    desc: CollectionDesc,
 
     writes: Vec<WriteContext>,
     /// The number of doing requests.
@@ -53,13 +84,266 @@ pub struct WriteBatchContext {
     retry_state: RetryState,
 }
 
-impl WriteContext {
-    fn with_put((index, put): (usize, PutRequest)) -> Self {
-        WriteContext { request: WriteRequest::Put(put), response: None, index, done: false }
+impl WriteBatchRequest {
+    pub fn add_delete(mut self, collection_id: u64, delete: DeleteRequest) -> Self {
+        self.deletes.push((collection_id, delete));
+        self
     }
 
-    fn with_delete((index, delete): (usize, DeleteRequest)) -> Self {
-        WriteContext { request: WriteRequest::Delete(delete), response: None, index, done: false }
+    pub fn add_put(mut self, collection_id: u64, put: PutRequest) -> Self {
+        self.puts.push((collection_id, put));
+        self
+    }
+}
+
+impl WriteBuilder {
+    pub fn new(key: Vec<u8>) -> Self {
+        WriteBuilder { key, conditions: vec![], ttl: None, take_prev_value: false }
+    }
+
+    /// With ttl, in seconds.
+    ///
+    /// Only works for put request.
+    pub fn with_ttl(mut self, ttl: Option<u64>) -> Self {
+        self.ttl = ttl;
+        self
+    }
+
+    /// Build a put request.
+    pub fn put(self, value: Vec<u8>) -> AppResult<PutRequest> {
+        self.verify_conditions()?;
+        Ok(PutRequest {
+            put_type: PutType::None.into(),
+            key: self.key,
+            value,
+            ttl: self.ttl.unwrap_or_default(),
+            take_prev_value: self.take_prev_value,
+            conditions: self.conditions,
+        })
+    }
+
+    /// Build a put request without any error.
+    pub fn ensure_put(self, value: Vec<u8>) -> PutRequest {
+        self.put(value).expect("Invalid put conditions")
+    }
+
+    /// Build a delete request.
+    pub fn delete(self) -> AppResult<DeleteRequest> {
+        self.verify_conditions()?;
+        Ok(DeleteRequest {
+            key: self.key,
+            conditions: self.conditions,
+            take_prev_value: self.take_prev_value,
+        })
+    }
+
+    /// Build a delete request without any error.
+    pub fn ensure_delete(self) -> DeleteRequest {
+        self.delete().expect("Invalid delete conditions")
+    }
+
+    /// Build a nop request.
+    pub fn nop(self) -> AppResult<PutRequest> {
+        self.verify_conditions()?;
+        Ok(PutRequest {
+            put_type: PutType::Nop.into(),
+            key: self.key,
+            value: vec![],
+            ttl: 0,
+            conditions: self.conditions,
+            take_prev_value: false,
+        })
+    }
+
+    /// Build a nop request without any error.
+    pub fn ensure_nop(self) -> PutRequest {
+        self.nop().expect("Invalid nop conditions")
+    }
+
+    /// Build an add request, the value will be interpreted as i64.
+    #[allow(clippy::should_implement_trait)]
+    pub fn add(self, val: i64) -> AppResult<PutRequest> {
+        self.verify_conditions()?;
+        Ok(PutRequest {
+            put_type: PutType::AddI64.into(),
+            key: self.key,
+            value: val.to_be_bytes().to_vec(),
+            ttl: self.ttl.unwrap_or_default(),
+            conditions: self.conditions,
+            take_prev_value: self.take_prev_value,
+        })
+    }
+
+    /// Build an add request without any error, the value will be interpreted as
+    /// i64.
+    pub fn ensure_add(self, val: i64) -> PutRequest {
+        self.add(val).expect("Invalid add conditions")
+    }
+
+    /// Expect that the max version of the key is less than the input value.
+    ///
+    /// One request only can contains one version related expection.
+    pub fn expect_version_lt(mut self, expect: u64) -> Self {
+        self.conditions.push(WriteCondition {
+            r#type: WriteConditionType::ExpectVersionLt.into(),
+            version: expect,
+            ..Default::default()
+        });
+        self
+    }
+
+    /// Expect that the max version of the key is less than or equals to the
+    /// input value.
+    ///
+    /// One request only can contains one version related expection.
+    pub fn expect_version_le(mut self, expect: u64) -> Self {
+        self.conditions.push(WriteCondition {
+            r#type: WriteConditionType::ExpectVersionLe.into(),
+            version: expect,
+            ..Default::default()
+        });
+        self
+    }
+
+    /// Expect that the max version of the key is great than the input value.
+    ///
+    /// One request only can contains one version related expection.
+    pub fn expect_version_gt(mut self, expect: u64) -> Self {
+        self.conditions.push(WriteCondition {
+            r#type: WriteConditionType::ExpectVersionGt.into(),
+            version: expect,
+            ..Default::default()
+        });
+        self
+    }
+
+    /// Expect that the max version of the key is great than or equal to the
+    /// input value.
+    ///
+    /// One request only can contains one version related expection.
+    pub fn expect_version_ge(mut self, expect: u64) -> Self {
+        self.conditions.push(WriteCondition {
+            r#type: WriteConditionType::ExpectVersionGe.into(),
+            version: expect,
+            ..Default::default()
+        });
+        self
+    }
+
+    /// Expect that the max version of the key is equal to the input value.
+    ///
+    /// One request only can contains one version related expection.
+    pub fn expect_version(mut self, expect: u64) -> Self {
+        self.conditions.push(WriteCondition {
+            r#type: WriteConditionType::ExpectVersion.into(),
+            version: expect,
+            ..Default::default()
+        });
+        self
+    }
+
+    /// Expect that the target key is exists exists.
+    pub fn expect_exists(mut self) -> Self {
+        self.conditions.push(WriteCondition {
+            r#type: WriteConditionType::ExpectExists.into(),
+            ..Default::default()
+        });
+        self
+    }
+
+    /// Expect that the target key is not exists.
+    pub fn expect_not_exists(mut self) -> Self {
+        self.conditions.push(WriteCondition {
+            r#type: WriteConditionType::ExpectNotExists.into(),
+            ..Default::default()
+        });
+        self
+    }
+
+    /// Expect that the target key is equal to the input value.
+    pub fn expect_value(mut self, value: Vec<u8>) -> Self {
+        self.conditions.push(WriteCondition {
+            r#type: WriteConditionType::ExpectValue.into(),
+            value,
+            ..Default::default()
+        });
+        self
+    }
+
+    /// Expect that the key contains the input value.
+    pub fn expect_contains(mut self, value: Vec<u8>) -> Self {
+        self.conditions.push(WriteCondition {
+            r#type: WriteConditionType::ExpectContains.into(),
+            value,
+            ..Default::default()
+        });
+        self
+    }
+
+    /// Expect that the slice of the value is equal to the input value.
+    pub fn expect_slice(mut self, begin: u64, value: Vec<u8>) -> Self {
+        self.conditions.push(WriteCondition {
+            r#type: WriteConditionType::ExpectSlice.into(),
+            value,
+            begin,
+            ..Default::default()
+        });
+        self
+    }
+
+    /// Expect that the value of key is starts with the input value.
+    pub fn expect_starts_with(mut self, value: Vec<u8>) -> Self {
+        self.conditions.push(WriteCondition {
+            r#type: WriteConditionType::ExpectStartsWith.into(),
+            value,
+            ..Default::default()
+        });
+        self
+    }
+
+    /// Expect that the value of key is ends with the input value.
+    pub fn expect_ends_with(mut self, value: Vec<u8>) -> Self {
+        self.conditions.push(WriteCondition {
+            r#type: WriteConditionType::ExpectEndsWith.into(),
+            value,
+            ..Default::default()
+        });
+        self
+    }
+
+    /// Take the prev value.
+    ///
+    /// It is useful for cas operations. Default is `false`.
+    pub fn take_prev_value(mut self) -> Self {
+        self.take_prev_value = true;
+        self
+    }
+
+    fn verify_conditions(&self) -> AppResult<()> {
+        // TODO(walter) check conditions
+        Ok(())
+    }
+}
+
+impl WriteContext {
+    fn with_put((index, (collection_id, put)): (usize, (u64, PutRequest))) -> Self {
+        WriteContext {
+            collection_id,
+            request: WriteRequest::Put(put),
+            response: None,
+            index,
+            done: false,
+        }
+    }
+
+    fn with_delete((index, (collection_id, delete)): (usize, (u64, DeleteRequest))) -> Self {
+        WriteContext {
+            collection_id,
+            request: WriteRequest::Delete(delete),
+            response: None,
+            index,
+            done: false,
+        }
     }
 
     fn user_key(&self) -> &[u8] {
@@ -71,12 +355,7 @@ impl WriteContext {
 }
 
 impl WriteBatchContext {
-    pub fn new(
-        desc: CollectionDesc,
-        request: WriteBatchRequest,
-        client: SekasClient,
-        timeout: Option<Duration>,
-    ) -> Self {
+    pub fn new(request: WriteBatchRequest, client: SekasClient, timeout: Option<Duration>) -> Self {
         let num_deletes = request.deletes.len();
         let num_puts = request.puts.len();
         let num_doing_writes = num_deletes + num_puts;
@@ -86,7 +365,6 @@ impl WriteBatchContext {
 
         WriteBatchContext {
             client,
-            desc,
             writes,
             num_deletes,
             num_doing_writes,
@@ -192,7 +470,7 @@ impl WriteBatchContext {
                 continue;
             }
             let (group_state, shard_desc) =
-                router.find_shard(self.desc.clone(), write.user_key())?;
+                router.find_shard(write.collection_id, write.user_key())?;
             let mut client = GroupClient::new(group_state, self.client.clone());
             let req = Request::WriteIntent(WriteIntentRequest {
                 start_version: self.start_version,
@@ -225,7 +503,7 @@ impl WriteBatchContext {
                     write.response = Some(resp);
                 }
                 Err(err) => {
-                    // FIXME(walter) UPDATE THE CAS FAIELD INDEX.
+                    // FIXME(walter) UPDATE THE CAS FAILED INDEX.
                     trace!("txn {} write intent: {err:?}", self.start_version);
                     if !self.retry_state.is_retryable(&err) {
                         return Err(err);
@@ -280,7 +558,7 @@ impl WriteBatchContext {
             }
 
             let user_key = write.user_key();
-            let (group_state, shard_desc) = router.find_shard(self.desc.clone(), user_key)?;
+            let (group_state, shard_desc) = router.find_shard(write.collection_id, user_key)?;
             let req = CommitIntentRequest {
                 shard_id: shard_desc.id,
                 start_version: self.start_version,

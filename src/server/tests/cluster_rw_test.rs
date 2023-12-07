@@ -47,8 +47,8 @@ async fn cluster_rw_with_single_node() {
 
     let k = "book_name".as_bytes().to_vec();
     let v = "rust_in_actions".as_bytes().to_vec();
-    co.put(k.clone(), v).await.unwrap();
-    let r = co.get(k).await.unwrap();
+    db.put(co.id, k.clone(), v).await.unwrap();
+    let r = db.get(co.id, k).await.unwrap();
     let r = r.map(String::from_utf8);
     assert!(matches!(r, Some(Ok(v)) if v == "rust_in_actions"));
 }
@@ -63,12 +63,12 @@ async fn cluster_rw_put_and_get() {
 
     let db = app.create_database("test_db".to_string()).await.unwrap();
     let co = db.create_collection("test_co".to_string()).await.unwrap();
-    c.assert_collection_ready(&co.desc()).await;
+    c.assert_collection_ready(co.id).await;
 
     let k = "book_name".as_bytes().to_vec();
     let v = "rust_in_actions".as_bytes().to_vec();
-    co.put(k.clone(), v).await.unwrap();
-    let r = co.get(k).await.unwrap();
+    db.put(co.id, k.clone(), v).await.unwrap();
+    let r = db.get(co.id, k).await.unwrap();
     let r = r.map(String::from_utf8);
     assert!(matches!(r, Some(Ok(v)) if v == "rust_in_actions"));
 }
@@ -83,13 +83,13 @@ async fn cluster_rw_put_many_keys() {
 
     let db = app.create_database("test_db".to_string()).await.unwrap();
     let co = db.create_collection("test_co".to_string()).await.unwrap();
-    c.assert_collection_ready(&co.desc()).await;
+    c.assert_collection_ready(co.id).await;
 
     for i in 0..100 {
         let k = format!("key-{i}").as_bytes().to_vec();
         let v = format!("value-{i}").as_bytes().to_vec();
-        co.put(k.clone(), v).await.unwrap();
-        let r = co.get(k).await.unwrap();
+        db.put(co.id, k.clone(), v).await.unwrap();
+        let r = db.get(co.id, k).await.unwrap();
         let r = r.map(String::from_utf8);
         assert!(matches!(r, Some(Ok(v)) if v == format!("value-{i}")));
     }
@@ -106,7 +106,7 @@ async fn cluster_rw_with_config_change() {
 
     let db = app.create_database("test_db".to_string()).await.unwrap();
     let co = db.create_collection("test_co".to_string()).await.unwrap();
-    c.assert_collection_ready(&co.desc()).await;
+    c.assert_collection_ready(co.id).await;
     c.assert_root_group_has_promoted().await;
 
     for i in 0..300 {
@@ -117,8 +117,8 @@ async fn cluster_rw_with_config_change() {
 
         let k = format!("key-{i}").as_bytes().to_vec();
         let v = format!("value-{i}").as_bytes().to_vec();
-        co.put(k.clone(), v).await.unwrap();
-        let r = co.get(k).await.unwrap();
+        db.put(co.id, k.clone(), v).await.unwrap();
+        let r = db.get(co.id, k).await.unwrap();
         let r = r.map(String::from_utf8);
         assert!(matches!(r, Some(Ok(v)) if v == format!("value-{i}")));
     }
@@ -134,18 +134,18 @@ async fn cluster_rw_with_leader_transfer() {
 
     let db = app.create_database("test_db".to_string()).await.unwrap();
     let co = db.create_collection("test_co".to_string()).await.unwrap();
-    c.assert_collection_ready(&co.desc()).await;
+    c.assert_collection_ready(co.id).await;
 
     for i in 0..100 {
         let k = format!("key-{i}").as_bytes().to_vec();
         let v = format!("value-{i}").as_bytes().to_vec();
-        co.put(k.clone(), v).await.unwrap();
-        let r = co.get(k.clone()).await.unwrap();
+        db.put(co.id, k.clone(), v).await.unwrap();
+        let r = db.get(co.id, k.clone()).await.unwrap();
         let r = r.map(String::from_utf8);
         assert!(matches!(r, Some(Ok(v)) if v == format!("value-{i}")));
 
         if i % 10 == 0 {
-            let state = c.find_router_group_state_by_key(&co.desc(), k.as_slice()).await.unwrap();
+            let state = c.find_router_group_state_by_key(co.id, k.as_slice()).await.unwrap();
             let leader_id = state.leader_state.unwrap().0;
             for (id, replica) in state.replicas {
                 if id != leader_id && replica.role == ReplicaRole::Voter as i32 {
@@ -169,26 +169,26 @@ async fn cluster_rw_with_shard_moving() {
 
     let db = app.create_database("test_db".to_string()).await.unwrap();
     let co = db.create_collection("test_co".to_string()).await.unwrap();
-    c.assert_collection_ready(&co.desc()).await;
+    c.assert_collection_ready(co.id).await;
 
-    let source_state = c.find_router_group_state_by_key(&co.desc(), &[0]).await.unwrap();
+    let source_state = c.find_router_group_state_by_key(co.id, &[0]).await.unwrap();
     let prev_group_id = source_state.id;
     let target_group_id = 0;
 
     for i in 0..100 {
         let k = format!("key-{i}").as_bytes().to_vec();
         let v = format!("value-{i}").as_bytes().to_vec();
-        co.put(k.clone(), v).await.unwrap();
-        let r = co.get(k).await.unwrap();
+        db.put(co.id, k.clone(), v).await.unwrap();
+        let r = db.get(co.id, k).await.unwrap();
         let r = r.map(String::from_utf8);
         assert!(matches!(&r, Some(Ok(v)) if v == &format!("value-{i}")), "index {i}: {r:?}");
 
         if i % 10 == 0 {
-            let source_state = c.find_router_group_state_by_key(&co.desc(), &[0]).await.unwrap();
+            let source_state = c.find_router_group_state_by_key(co.id, &[0]).await.unwrap();
             if source_state.id == target_group_id {
                 continue;
             }
-            let shard_desc = c.get_shard_desc(&co.desc(), &[0]).await.unwrap();
+            let shard_desc = c.get_shard_desc(co.id, &[0]).await.unwrap();
             let mut client = c.group(target_group_id);
             spawn(async move {
                 client
@@ -198,7 +198,7 @@ async fn cluster_rw_with_shard_moving() {
             });
         }
     }
-    let source_state = c.find_router_group_state_by_key(&co.desc(), &[0]).await.unwrap();
+    let source_state = c.find_router_group_state_by_key(co.id, &[0]).await.unwrap();
     assert_ne!(source_state.id, prev_group_id);
 }
 
@@ -223,18 +223,18 @@ fn cluster_rw_single_server_large_read_write() {
 
         let db = app.create_database("test_db".to_string()).await.unwrap();
         let co = db.create_collection("test_co".to_string()).await.unwrap();
-        c.assert_collection_ready(&co.desc()).await;
+        c.assert_collection_ready(co.id).await;
 
         let mut rng = SmallRng::seed_from_u64(0);
         let leading = 10;
         for id in 0..655350 {
             let key = format!("user{id:0leading$}").into_bytes();
             let value = next_bytes(&mut rng, 1024..1025);
-            co.put(key, value).await.unwrap();
+            db.put(co.id, key, value).await.unwrap();
         }
         for id in 0..655350 {
             let key = format!("user{id:0leading$}").into_bytes();
-            assert!(co.get(key).await.unwrap().is_some());
+            assert!(db.get(co.id, key).await.unwrap().is_some());
         }
     });
 }
@@ -249,64 +249,54 @@ async fn cluster_rw_put_with_condition() {
 
     let db = app.create_database("test_db".to_string()).await.unwrap();
     let co = db.create_collection("test_co".to_string()).await.unwrap();
-    c.assert_collection_ready(&co.desc()).await;
+    c.assert_collection_ready(co.id).await;
 
     let k = "book_name".as_bytes().to_vec();
     let v = "rust_in_actions".as_bytes().to_vec();
 
     // 1. Put if exists failed
-    let req = WriteBatchRequest {
-        puts: vec![WriteBuilder::new(k.clone()).expect_exists().ensure_put(v.clone())],
-        ..Default::default()
-    };
-    let r = co.write_batch(req).await;
+    let req = WriteBatchRequest::default()
+        .add_put(co.id, WriteBuilder::new(k.clone()).expect_exists().ensure_put(v.clone()));
+    let r = db.write_batch(req).await;
     info!("put if exists failed: {r:?}");
     assert!(matches!(r, Err(Error::CasFailed(0, 0, _))));
 
     // 2. Put if not exists success
-    let req = WriteBatchRequest {
-        puts: vec![WriteBuilder::new(k.clone()).expect_not_exists().ensure_put(v.clone())],
-        ..Default::default()
-    };
-    co.write_batch(req).await.unwrap();
-    let r = co.get(k.clone()).await.unwrap();
+    let req = WriteBatchRequest::default()
+        .add_put(co.id, WriteBuilder::new(k.clone()).expect_not_exists().ensure_put(v.clone()));
+    db.write_batch(req).await.unwrap();
+    let r = db.get(co.id, k.clone()).await.unwrap();
     let r = r.map(String::from_utf8);
     assert!(matches!(r, Some(Ok(v)) if v == "rust_in_actions"));
 
     // 3. Put if not exists failed
-    let req = WriteBatchRequest {
-        puts: vec![WriteBuilder::new(k.clone()).expect_not_exists().ensure_put(v.clone())],
-        ..Default::default()
-    };
-    let r = co.write_batch(req).await;
+    let req = WriteBatchRequest::default()
+        .add_put(co.id, WriteBuilder::new(k.clone()).expect_not_exists().ensure_put(v.clone()));
+    let r = db.write_batch(req).await;
     assert!(matches!(r, Err(Error::CasFailed(0, 0, _))));
 
     // 4. Put if exists success
-    let req = WriteBatchRequest {
-        puts: vec![WriteBuilder::new(k.clone()).expect_exists().ensure_put(v.clone())],
-        ..Default::default()
-    };
-    let r = co.write_batch(req).await;
+    let req = WriteBatchRequest::default()
+        .add_put(co.id, WriteBuilder::new(k.clone()).expect_exists().ensure_put(v.clone()));
+    let r = db.write_batch(req).await;
     assert!(r.is_ok());
 
     // 5.Put with expected value failed
-    let req = WriteBatchRequest {
-        puts: vec![WriteBuilder::new(k.clone())
-            .expect_value(b"rust".to_vec())
-            .ensure_put(v.clone())],
-        ..Default::default()
-    };
-    let r = co.write_batch(req).await;
+    let req = WriteBatchRequest::default().add_put(
+        co.id,
+        WriteBuilder::new(k.clone()).expect_value(b"rust".to_vec()).ensure_put(v.clone()),
+    );
+    let r = db.write_batch(req).await;
     assert!(matches!(r, Err(Error::CasFailed(0, 0, _))));
 
     // 6.Put with expected value success
-    let req = WriteBatchRequest {
-        puts: vec![WriteBuilder::new(k.clone())
+    let req = WriteBatchRequest::default().add_put(
+        co.id,
+        WriteBuilder::new(k.clone())
             .expect_value(b"rust_in_actions".to_vec())
-            .ensure_put(v.clone())],
-        ..Default::default()
-    };
-    let r = co.write_batch(req).await;
+            .ensure_put(v.clone()),
+    );
+    let r = db.write_batch(req).await;
     assert!(r.is_ok());
 }
 
@@ -320,31 +310,29 @@ async fn cluster_rw_concurrent_inc() {
 
     let db = app.create_database("test_db".to_string()).await.unwrap();
     let co = db.create_collection("test_co".to_string()).await.unwrap();
-    c.assert_collection_ready(&co.desc()).await;
+    c.assert_collection_ready(co.id).await;
 
     let k = "book_name".as_bytes().to_vec();
 
     let cloned_co = co.clone();
+    let cloned_db = db.clone();
     let handle_1 = spawn(async move {
         let k = "book_name".as_bytes().to_vec();
         for _ in 0..1000 {
-            let req = WriteBatchRequest {
-                puts: vec![WriteBuilder::new(k.clone()).ensure_add(1)],
-                ..Default::default()
-            };
-            cloned_co.write_batch(req).await.unwrap();
+            let req = WriteBatchRequest::default()
+                .add_put(cloned_co.id, WriteBuilder::new(k.clone()).ensure_add(1));
+            cloned_db.write_batch(req).await.unwrap();
         }
     });
 
     let cloned_co = co.clone();
+    let cloned_db = db.clone();
     let handle_2 = spawn(async move {
         let k = "book_name".as_bytes().to_vec();
         for _ in 0..1000 {
-            let req = WriteBatchRequest {
-                puts: vec![WriteBuilder::new(k.clone()).ensure_add(1)],
-                ..Default::default()
-            };
-            cloned_co.write_batch(req).await.unwrap();
+            let req = WriteBatchRequest::default()
+                .add_put(cloned_co.id, WriteBuilder::new(k.clone()).ensure_add(1));
+            cloned_db.write_batch(req).await.unwrap();
         }
     });
 
@@ -352,6 +340,39 @@ async fn cluster_rw_concurrent_inc() {
     handle_2.await.unwrap();
 
     let expect = 2000i64.to_be_bytes().to_vec();
-    let r = co.get(k.clone()).await.unwrap().unwrap();
+    let r = db.get(co.id, k.clone()).await.unwrap().unwrap();
     assert_eq!(r, expect);
+}
+
+#[sekas_macro::test]
+async fn cluster_rw_write_two_collection_in_batch() {
+    let mut ctx = TestContext::new(fn_name!());
+    ctx.disable_all_balance();
+    let nodes = ctx.bootstrap_servers(3).await;
+    let c = ClusterClient::new(nodes).await;
+    let app = c.app_client().await;
+
+    let db = app.create_database("db".to_string()).await.unwrap();
+    let co1 = db.create_collection("co1".to_string()).await.unwrap();
+    let co2 = db.create_collection("co2".to_string()).await.unwrap();
+    c.assert_collection_ready(co1.id).await;
+    c.assert_collection_ready(co2.id).await;
+
+    let k = "book_name".as_bytes().to_vec();
+    let v = "rust_in_actions".as_bytes().to_vec();
+
+    let req = WriteBatchRequest::default()
+        .add_put(co1.id, WriteBuilder::new(k.clone()).ensure_put(v.clone()))
+        .add_put(co2.id, WriteBuilder::new(k.clone()).ensure_put(v.clone()));
+    db.write_batch(req).await.unwrap();
+
+    let r1 = db.get_raw_value(co1.id, k.clone()).await.unwrap().unwrap();
+    let value = r1.content.map(String::from_utf8);
+    assert!(matches!(value, Some(Ok(v)) if v == "rust_in_actions"));
+
+    let r2 = db.get_raw_value(co2.id, k).await.unwrap().unwrap();
+    let value = r2.content.map(String::from_utf8);
+    assert!(matches!(value, Some(Ok(v)) if v == "rust_in_actions"));
+
+    assert_eq!(r1.version, r2.version);
 }

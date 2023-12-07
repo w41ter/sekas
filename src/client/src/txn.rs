@@ -246,7 +246,7 @@ impl TxnStateTable {
         let router = self.client.router();
         let mut retry_state = RetryState::new(Some(TXN_TIMEOUT));
         loop {
-            let (group_state, shard_desc) = router.find_shard(col::txn_desc(), txn_prefix)?;
+            let (group_state, shard_desc) = router.find_shard(col::txn_col_id(), txn_prefix)?;
             let mut group_client = GroupClient::new(group_state, self.client.clone());
 
             let request = Request::Scan(ShardScanRequest {
@@ -285,7 +285,7 @@ impl TxnStateTable {
     ) -> Result<ShardWriteResponse> {
         let router = self.client.router();
         let key = txn_lower_key(write.hash_tag);
-        let (group_state, shard_desc) = router.find_shard(col::txn_desc(), &key)?;
+        let (group_state, shard_desc) = router.find_shard(col::txn_col_id(), &key)?;
 
         let mut group_client = GroupClient::new(group_state, self.client.clone());
         if let Some(duration) = timeout {

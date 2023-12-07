@@ -362,7 +362,7 @@ message CollectMovingShardStateRequest { uint64 group = 1; }
 message CollectMovingShardStateResponse {
     enum State {
         NONE = 0;
-        PREAPRE = 1;
+        PREPARE = 1;
         MOVING = 2;
         MOVED = 3;
     }

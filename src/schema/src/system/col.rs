@@ -72,3 +72,8 @@ pub fn shard_id(col_id: u64) -> u64 {
     assert!(is_unity_col(col_id));
     col_id
 }
+
+#[inline]
+pub fn txn_col_id() -> u64 {
+    TXN_ID
+}

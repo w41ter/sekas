@@ -28,33 +28,11 @@ struct Command {
     subcmd: SubCommand,
 }
 
-impl Command {
-    fn run(self) -> Result<()> {
-        self.subcmd.run()
-    }
-}
-
 #[derive(Subcommand)]
 enum SubCommand {
     Start(StartCommand),
     Bench(bench::BenchCommand),
     Shell(shell::ShellCommand),
-}
-
-impl SubCommand {
-    fn run(self) -> Result<()> {
-        match self {
-            SubCommand::Start(cmd) => cmd.run(),
-            SubCommand::Bench(cmd) => {
-                cmd.run();
-                Ok(())
-            }
-            SubCommand::Shell(cmd) => {
-                cmd.run();
-                Ok(())
-            }
-        }
-    }
 }
 
 #[derive(Parser)]
@@ -96,6 +74,13 @@ impl StartCommand {
     fn run(self) -> Result<()> {
         use sekas_runtime::{ExecutorOwner, ShutdownNotifier};
 
+        let filter_layer =
+            EnvFilter::try_from_default_env().or_else(|_| EnvFilter::try_new("info")).unwrap();
+        tracing_subscriber::fmt()
+            .with_env_filter(filter_layer)
+            .with_ansi(atty::is(atty::Stream::Stderr))
+            .init();
+
         let mut config = match load_config(&self) {
             Ok(c) => c,
             Err(e) => {
@@ -134,15 +119,17 @@ fn main() -> Result<()> {
         std::process::abort();
     }));
 
-    let filter_layer =
-        EnvFilter::try_from_default_env().or_else(|_| EnvFilter::try_new("info")).unwrap();
-    tracing_subscriber::fmt()
-        .with_env_filter(filter_layer)
-        .with_ansi(atty::is(atty::Stream::Stderr))
-        .init();
-
-    let cmd = Command::parse();
-    cmd.run()
+    match Command::parse().subcmd {
+        SubCommand::Start(cmd) => cmd.run(),
+        SubCommand::Bench(cmd) => {
+            cmd.run();
+            Ok(())
+        }
+        SubCommand::Shell(cmd) => {
+            cmd.run();
+            Ok(())
+        }
+    }
 }
 
 fn load_config(cmd: &StartCommand) -> Result<sekas_server::Config, config::ConfigError> {
@@ -153,6 +140,7 @@ fn load_config(cmd: &StartCommand) -> Result<sekas_server::Config, config::Confi
         .set_default("init", false)?
         .set_default("enable_proxy_service", false)?
         .set_default("cpu_nums", 0u32)?
+        .set_default("root_dir", "/tmp/sekas")?
         .set_default("join_list", Vec::<String>::default())?;
 
     if let Some(conf) = cmd.conf.as_ref() {

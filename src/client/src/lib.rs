@@ -16,7 +16,6 @@
 pub mod error;
 
 mod app_client;
-mod collection;
 mod database;
 mod discovery;
 mod group_client;
@@ -28,10 +27,10 @@ mod shard_client;
 mod txn;
 mod write_batch;
 
+pub use sekas_api::server::v1::CollectionDesc;
 use tonic::async_trait;
 
 pub use crate::app_client::{Client as SekasClient, ClientOptions};
-pub use crate::collection::{Collection, WriteBatchRequest, WriteBatchResponse, WriteBuilder};
 pub use crate::database::Database;
 pub use crate::discovery::{ServiceDiscovery, StaticServiceDiscovery};
 pub use crate::error::{AppError, AppResult, Error, Result};
@@ -41,3 +40,4 @@ pub use crate::retry::RetryState;
 pub use crate::rpc::{ConnManager, NodeClient, RootClient, Router, RouterGroupState};
 pub use crate::shard_client::ShardClient;
 pub use crate::txn::TxnStateTable;
+pub use crate::write_batch::{WriteBatchRequest, WriteBatchResponse, WriteBuilder};

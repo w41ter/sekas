@@ -17,13 +17,14 @@ use std::time::Instant;
 
 use log::trace;
 use rand::prelude::*;
-use sekas_client::Collection;
+use sekas_client::Database;
 
 use super::metrics::*;
 use super::AppConfig;
 
 pub struct Job {
-    co: Collection,
+    db: Database,
+    collection_id: u64,
 
     consumed: usize,
     num_op: usize,
@@ -75,9 +76,9 @@ impl Generator {
 }
 
 impl Job {
-    pub fn new(co: Collection, seed: u64, num_op: usize, cfg: AppConfig) -> Job {
+    pub fn new(db: Database, collection_id: u64, seed: u64, num_op: usize, cfg: AppConfig) -> Job {
         let limited = cfg.data.limited;
-        Job { co, consumed: 0, num_op, gen: Generator::new(seed, cfg, 0..limited) }
+        Job { db, collection_id, consumed: 0, num_op, gen: Generator::new(seed, cfg, 0..limited) }
     }
 }
 
@@ -95,27 +96,28 @@ impl Iterator for Job {
 }
 
 pub async fn worker_main(_id: usize, mut job: Job) {
-    let co = job.co.clone();
+    let db = job.db.clone();
+    let collection_id = job.collection_id;
     for next_op in &mut job {
-        execute(&co, next_op).await;
+        execute(&db, collection_id, next_op).await;
     }
 }
 
-async fn execute(co: &Collection, next_op: NextOp) {
+async fn execute(db: &Database, co: u64, next_op: NextOp) {
     match next_op {
         NextOp::Get { key } => {
-            get(co, key).await;
+            get(db, co, key).await;
         }
         NextOp::Put { key, value } => {
-            put(co, key, value).await;
+            put(db, co, key, value).await;
         }
     }
 }
 
-async fn get(co: &Collection, key: Vec<u8>) {
+async fn get(db: &Database, co: u64, key: Vec<u8>) {
     trace!("send get request");
     let start = Instant::now();
-    match co.get(key).await {
+    match db.get(co, key).await {
         Ok(_) => {
             GET_SUCCESS_REQUEST_TOTAL.inc();
             GET_SUCCESS_REQUEST_DURATION_SECONDS.observe(saturating_elapsed_seconds(start));
@@ -129,10 +131,10 @@ async fn get(co: &Collection, key: Vec<u8>) {
     GET_REQUEST_TOTAL.inc();
 }
 
-async fn put(co: &Collection, key: Vec<u8>, value: Vec<u8>) {
+async fn put(db: &Database, co: u64, key: Vec<u8>, value: Vec<u8>) {
     trace!("send put request");
     let start = Instant::now();
-    match co.put(key, value).await {
+    match db.put(co, key, value).await {
         Ok(_) => {
             PUT_SUCCESS_REQUEST_TOTAL.inc();
             PUT_SUCCESS_REQUEST_DURATION_SECONDS.observe(saturating_elapsed_seconds(start));

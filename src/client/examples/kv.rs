@@ -25,8 +25,8 @@ async fn main() -> Result<(), AppError> {
 
     let k = "book_name".as_bytes().to_vec();
     let v = "rust_in_actions".as_bytes().to_vec();
-    co.put(k.clone(), v).await?;
-    let r = co.get(k).await?;
+    db.put(co.id, k.clone(), v).await?;
+    let r = db.get(co.id, k).await?;
     let r = r.map(String::from_utf8);
     println!("{:?}", r);
     Ok(())

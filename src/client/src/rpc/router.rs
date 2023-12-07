@@ -64,7 +64,7 @@ impl Router {
         let state = Arc::new(Mutex::new(State::default()));
         let state_clone = state.clone();
         let handle = tokio::spawn(async move {
-            log::info!("router start");
+            info!("router start");
             state_main(state_clone, root_client).await;
             log::info!("router end");
         });
@@ -73,13 +73,13 @@ impl Router {
 
     pub fn find_shard(
         &self,
-        desc: CollectionDesc,
+        collection_id: u64,
         key: &[u8],
     ) -> Result<(RouterGroupState, ShardDesc), crate::Error> {
         let state = self.core.state.lock().unwrap();
         let shards = state
             .co_shards_lookup
-            .get(&desc.id)
+            .get(&collection_id)
             .ok_or_else(|| crate::Error::NotFound(format!("shard (key={:?})", key)))?;
         for shard in shards {
             if let Some(RangePartition { start, end }) = shard.range.clone() {

@@ -21,7 +21,7 @@ use clap::Parser;
 use lazy_static::lazy_static;
 use rustyline::error::ReadlineError;
 use rustyline::Editor;
-use sekas_client::{AppError, ClientOptions, Collection, Database, SekasClient};
+use sekas_client::{AppError, ClientOptions, CollectionDesc, Database, SekasClient};
 
 type ParseResult<T = Request> = std::result::Result<T, String>;
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
@@ -32,10 +32,26 @@ pub struct Command {
     /// Sets the address of the target cluster to operate
     #[clap(long, default_value = "0.0.0.0:21805")]
     addrs: Vec<String>,
+
+    /// Sets the log level.
+    #[clap(long)]
+    log_level: Option<tracing::Level>,
 }
 
 impl Command {
     pub fn run(self) {
+        if let Some(level) = self.log_level {
+            tracing_subscriber::fmt()
+                .with_max_level(level)
+                .with_ansi(atty::is(atty::Stream::Stderr))
+                .init();
+        } else {
+            tracing_subscriber::fmt()
+                .with_max_level(tracing::Level::ERROR)
+                .with_ansi(atty::is(atty::Stream::Stderr))
+                .init();
+        }
+
         let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         runtime.block_on(async move {
             editor_main(self.addrs).await;
@@ -67,7 +83,7 @@ struct Session {
     client: SekasClient,
     config: HashMap<String, String>,
     databases: HashMap<String, Database>,
-    collections: HashMap<String, Collection>,
+    collections: HashMap<String, CollectionDesc>,
 }
 
 const CONFIG_DB: &str = "database";
@@ -89,7 +105,7 @@ impl Session {
             Request::Get { key, db, coll } => {
                 let db = self.open_database(&db).await?;
                 let coll = self.open_collection(&db, &coll).await?;
-                if let Some(value) = coll.get(key).await? {
+                if let Some(value) = db.get(coll.id, key).await? {
                     std::io::stdout().write_all(&value)?;
                 }
                 std::io::stdout().write_all(&[b'\n'])?;
@@ -99,13 +115,13 @@ impl Session {
             Request::Put { key, value, db, coll } => {
                 let db = self.open_database(&db).await?;
                 let coll = self.open_collection(&db, &coll).await?;
-                coll.put(key, value).await?;
+                db.put(coll.id, key, value).await?;
                 Ok(())
             }
             Request::Delete { key, db, coll } => {
                 let db = self.open_database(&db).await?;
                 let coll = self.open_collection(&db, &coll).await?;
-                coll.delete(key).await?;
+                db.delete(coll.id, key).await?;
                 Ok(())
             }
         }
@@ -249,7 +265,7 @@ impl Session {
         &mut self,
         db: &Database,
         collection: &str,
-    ) -> Result<Collection> {
+    ) -> Result<CollectionDesc> {
         match db.create_collection(collection.to_owned()).await {
             Ok(co) => {
                 self.collections.insert(format!("{}-{}", db.name(), collection), co.clone());
@@ -282,7 +298,7 @@ impl Session {
         }
     }
 
-    async fn open_collection(&mut self, db: &Database, coll: &str) -> Result<Collection> {
+    async fn open_collection(&mut self, db: &Database, coll: &str) -> Result<CollectionDesc> {
         let create_if_missing =
             self.config.get(CONFIG_CREATE_IF_MISSING).map(|v| v == "true").unwrap_or_default();
 
