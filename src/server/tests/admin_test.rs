@@ -97,7 +97,7 @@ async fn admin_delete() {
 #[sekas_macro::test]
 async fn admin_basic() {
     let node_count = 4;
-    let mut ctx = TestContext::new("db-col-mng-3");
+    let mut ctx = TestContext::new(fn_name!());
     ctx.disable_all_balance();
     let nodes = ctx.bootstrap_servers(node_count).await;
     let addrs = nodes.values().cloned().collect::<Vec<_>>();

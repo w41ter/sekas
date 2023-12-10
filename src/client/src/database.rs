@@ -16,6 +16,7 @@ use std::time::Duration;
 use sekas_api::server::v1::group_request_union::Request;
 use sekas_api::server::v1::group_response_union::Response;
 use sekas_api::server::v1::*;
+use sekas_schema::system::txn::TXN_MAX_VERSION;
 
 use crate::metrics::*;
 use crate::write_batch::WriteBatchContext;
@@ -29,11 +30,14 @@ pub struct Database {
     client: SekasClient,
     desc: DatabaseDesc,
     rpc_timeout: Option<Duration>,
+    /// Read value by ignore any versions.
+    read_without_version: bool,
 }
 
 impl Database {
     pub fn new(client: SekasClient, desc: DatabaseDesc, rpc_timeout: Option<Duration>) -> Self {
-        Database { client, desc, rpc_timeout }
+        let read_without_version = desc.id == sekas_schema::system::db::ID;
+        Database { client, desc, rpc_timeout, read_without_version }
     }
 
     pub async fn create_collection(&self, name: String) -> AppResult<CollectionDesc> {
@@ -118,7 +122,11 @@ impl Database {
         retry_state: &mut RetryState,
     ) -> crate::Result<Option<Value>> {
         let root_client = self.client.root_client();
-        let start_version = root_client.alloc_txn_id(1, retry_state.timeout()).await?;
+        let start_version = if self.read_without_version {
+            TXN_MAX_VERSION
+        } else {
+            root_client.alloc_txn_id(1, retry_state.timeout()).await?
+        };
 
         let router = self.client.router();
         let (group, shard) = router.find_shard(collection_id, user_key)?;

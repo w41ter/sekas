@@ -73,6 +73,7 @@ impl Schema {
 
     pub async fn create_database(&self, desc: DatabaseDesc) -> Result<DatabaseDesc> {
         if self.get_database(&desc.name).await?.is_some() {
+            warn!("create database but it already exists. database={}", desc.name);
             return Err(Error::AlreadyExists(format!("database {}", desc.name.to_owned())));
         }
 

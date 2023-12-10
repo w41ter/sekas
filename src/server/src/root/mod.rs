@@ -616,7 +616,7 @@ impl Root {
                 event: Some(update_event::Event::Database(desc.to_owned())),
             }])
             .await;
-        trace!("create database. database_id={}, database={}", desc.id, name);
+        info!("create database. database_id={}, database={}", desc.id, name);
         Ok(desc)
     }
 
@@ -647,7 +647,7 @@ impl Root {
         self.watcher_hub()
             .notify_deletes(vec![DeleteEvent { event: Some(delete_event::Event::Database(id)) }])
             .await;
-        trace!("delete database. database={name}");
+        info!("delete database. database={name}");
         Ok(())
     }
 
@@ -669,7 +669,7 @@ impl Root {
                 ..Default::default()
             })
             .await?;
-        trace!(
+        info!(
             "prepare create collection. database={database}, collection={collection:?}, collection_id={}", collection.id);
 
         self.do_create_collection(schema.to_owned(), collection.to_owned()).await?;
@@ -750,7 +750,7 @@ impl Root {
                 }])
                 .await;
         }
-        trace!("delete collection, database {}, collection={}", database.name, name);
+        info!("delete collection, database {}, collection={}", database.name, name);
         Ok(())
     }
 
