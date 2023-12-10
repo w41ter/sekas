@@ -18,12 +18,13 @@ use sekas_schema::system::txn::TXN_INTENT_VERSION;
 
 use super::LatchManager;
 use crate::engine::{GroupEngine, MvccIterator, Snapshot, SnapshotMode};
+use crate::node::move_shard::ForwardCtx;
 use crate::replica::ExecCtx;
 use crate::{Error, Result};
 
 /// Scan the specified range.
 pub(crate) async fn scan<T>(
-    _exec_ctx: &ExecCtx,
+    exec_ctx: &ExecCtx,
     engine: &GroupEngine,
     latch_mgr: &T,
     req: &ShardScanRequest,
@@ -31,9 +32,20 @@ pub(crate) async fn scan<T>(
 where
     T: LatchManager,
 {
-    // TODO(walter) support moving shards, maybe we need to merge the values from
-    // source and dest group.
     let mut req = req.clone();
+    let mut forward_target_group_id = None;
+    if let Some(move_shard_desc) = exec_ctx.move_shard_desc.as_ref() {
+        if move_shard_desc.get_shard_id() == req.shard_id
+            && move_shard_desc.src_group_epoch == exec_ctx.group_id
+        {
+            // Scan value set and forward it to target group.
+            req.include_raw_data = true;
+            req.ignore_txn_intent = true;
+            req.start_version = TXN_INTENT_VERSION;
+            forward_target_group_id = Some(move_shard_desc.dest_group_epoch);
+        }
+    }
+
     let snapshot_mode = match &req.prefix {
         Some(prefix) => {
             req.exclude_end_key = false;
@@ -43,7 +55,16 @@ where
         None => SnapshotMode::Start { start_key: req.start_key.as_ref().map(|v| v.as_ref()) },
     };
     let snapshot = engine.snapshot(req.shard_id, snapshot_mode)?;
-    scan_inner(latch_mgr, snapshot, &req).await
+    let resp = scan_inner(latch_mgr, snapshot, &req).await?;
+    if let Some(dest_group_id) = forward_target_group_id {
+        Err(Error::Forward(ForwardCtx {
+            shard_id: req.shard_id,
+            dest_group_id,
+            payloads: resp.data,
+        }))
+    } else {
+        Ok(resp)
+    }
 }
 
 async fn scan_inner<T>(
@@ -521,5 +542,52 @@ mod tests {
         assert_eq!(resp.data[0].values.len(), 2);
         assert_eq!(resp.data[0].values[0].version, TXN_INTENT_VERSION);
         assert_eq!(resp.data[0].values[1].version, 100);
+    }
+
+    #[sekas_macro::test]
+    async fn scan_with_shard_moving_should_ignore_txn_intent() {
+        let dir = TempDir::new(fn_name!()).unwrap();
+        let engine = create_group_engine(dir.path(), 1, 1, 1).await;
+        let latch_mgr = LocalLatchManager::default();
+
+        // prepare keys
+        // a1 [value] TXN INTENT, [value] 100
+        // b1 [tombstone] 90
+        let i: u8 = 1;
+        let key = vec![b'a', i];
+        let value = TxnIntent::with_put(110, Some(vec![1u8, 2, 3])).encode_to_vec();
+        let value = Value::with_value(value, TXN_INTENT_VERSION);
+        commit_values(&engine, &key, &[value]);
+        let value = Value::with_value(vec![i], 100);
+        commit_values(&engine, &key, &[value]);
+
+        let key = vec![b'b', i];
+        let value = Value::tombstone(90);
+        commit_values(&engine, &key, &[value]);
+
+        let scan_req =
+            ShardScanRequest { shard_id: SHARD_ID, start_version: 1000, ..Default::default() };
+        let exec_ctx = ExecCtx {
+            group_id: 123,
+            move_shard_desc: Some(MoveShardDesc {
+                shard_desc: Some(ShardDesc { id: SHARD_ID, ..Default::default() }),
+                src_group_id: 123,
+                src_group_epoch: 123,
+                dest_group_epoch: 123,
+                dest_group_id: 1234,
+            }),
+            ..Default::default()
+        };
+        let values = match scan(&exec_ctx, &engine, &latch_mgr, &scan_req).await {
+            Err(Error::Forward(ctx)) => ctx.payloads,
+            _ => panic!("this request should be forward to target group"),
+        };
+        assert_eq!(values.len(), 2);
+        assert_eq!(values[0].user_key, vec![b'a', 1]);
+        assert_eq!(values[0].values.len(), 2);
+        assert_eq!(values[0].values[0].version, TXN_INTENT_VERSION);
+        assert_eq!(values[0].values[1].version, 100);
+        assert_eq!(values[1].user_key, vec![b'b', 1]);
+        assert_eq!(values[1].values[0].version, 90);
     }
 }
