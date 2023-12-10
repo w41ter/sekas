@@ -38,6 +38,8 @@ where
         if move_shard_desc.get_shard_id() == req.shard_id
             && move_shard_desc.src_group_epoch == exec_ctx.group_id
         {
+            // FIXME(walter) what happen if target group return keys exceeds forward range?
+
             // Scan value set and forward it to target group.
             req.include_raw_data = true;
             req.ignore_txn_intent = true;

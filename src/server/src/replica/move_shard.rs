@@ -98,6 +98,8 @@ impl Replica {
             self.info.replica_id, self.info.group_id, desc, event
         );
 
+        // FIXME(walter) The write acl guard is need here, but if there exists txn conflicts,
+        // the blocking time might be very long?
         let _guard = self.take_write_acl_guard().await;
         if !self.check_move_shard_state_update_early(desc, event)? {
             return Ok(());

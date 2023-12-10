@@ -307,6 +307,7 @@ pub mod remote {
             txn_intent: &TxnIntent,
             commit_version: u64,
         ) -> Result<()> {
+            // FIXME(walter) What happen if the target shard already migrated?
             let mut wb = WriteBatch::default();
             self.core.group_engine.delete(
                 &mut wb,
