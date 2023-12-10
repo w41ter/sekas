@@ -152,7 +152,7 @@ impl TestContext {
             },
             root,
             executor: ExecutorConfig::default(),
-            db: DbConfig::default(),
+            db: DbConfig { max_background_jobs: 2, max_sub_compactions: 1, ..DbConfig::default() },
         };
         let notifier = ShutdownNotifier::new();
         let shutdown = notifier.subscribe();

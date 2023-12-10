@@ -20,7 +20,7 @@ pub enum Error {
     #[error("{0} already exists")]
     AlreadyExists(String),
 
-    #[error("invalid argument {0}")]
+    #[error("invalid argument: {0}")]
     InvalidArgument(String),
 
     #[error("deadline exceeded {0}")]

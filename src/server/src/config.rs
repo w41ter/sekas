@@ -273,7 +273,7 @@ impl DbConfig {
             cfg.rate_limiter_auto_tuned,
         );
 
-        let cache = Cache::new_lru_cache(cfg.block_cache_size).expect("new lrc cache");
+        let cache = Cache::new_lru_cache(cfg.block_cache_size);
 
         let mut blk_opts = BlockBasedOptions::default();
         blk_opts.set_index_type(BlockBasedIndexType::TwoLevelIndexSearch);

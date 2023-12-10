@@ -360,8 +360,8 @@ pub mod remote {
             trace!("txn {start_version} try resolve txn {intent_version}, shard {shard_id} user key {user_key:?}");
             let mut latch_guard = self.acquire(shard_id, user_key).await?;
             // read the txn intent again with latch guard.
-            let mut snapshot =
-                self.core.group_engine.snapshot(shard_id, SnapshotMode::Key { key: user_key })?;
+            let snapshot_mode = SnapshotMode::Key { key: user_key };
+            let mut snapshot = self.core.group_engine.snapshot(shard_id, snapshot_mode)?;
             let Some(mvcc_iter) = snapshot.next() else { return Ok(None) };
             for entry in mvcc_iter? {
                 let entry = entry?;

@@ -584,6 +584,17 @@ impl<'a> SnapshotCore<'a> {
     }
 }
 
+impl<'a, 'b> MvccIterator<'a, 'b> {
+    /// Return the user key of this mvcc iterator.
+    pub fn user_key(&self) -> &[u8] {
+        self.snapshot
+            .core
+            .current_key
+            .as_ref()
+            .expect("the current key always exists if MvccIterator is constructed")
+    }
+}
+
 impl<'a, 'b> Iterator for MvccIterator<'a, 'b> {
     type Item = Result<MvccEntry>;
 
@@ -772,7 +783,7 @@ impl<'a, 'b> rocksdb::WriteBatchIterator for ColumnFamilyDecorator<'a, 'b> {
 impl WriteBatch {
     #[inline]
     pub fn new(content: &[u8]) -> Self {
-        WriteBatch { inner: rocksdb::WriteBatch::new(content) }
+        WriteBatch { inner: rocksdb::WriteBatch::from_data(content) }
     }
 }
 

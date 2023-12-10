@@ -66,7 +66,7 @@ impl ShardClient {
     pub async fn pull(&self, last_key: Option<Vec<u8>>) -> Result<Vec<ValueSet>> {
         let req = Request::Scan(ShardScanRequest {
             shard_id: self.shard_id,
-            start_version: u64::MAX,
+            start_version: sekas_schema::system::txn::TXN_INTENT_VERSION,
             prefix: None,
             limit: 0,
             limit_bytes: 64 * 1024, // 64KB
@@ -75,6 +75,7 @@ impl ShardClient {
             start_key: last_key,
             end_key: None,
             include_raw_data: true,
+            ignore_txn_intent: true,
         });
         let mut client = GroupClient::lazy(self.group_id, self.client.clone());
         match client.request(&req).await? {

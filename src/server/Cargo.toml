@@ -60,7 +60,7 @@ branch = "prost-0.11"
 [dependencies.rocksdb]
 git = "https://github.com/w41ter/rust-rocksdb.git"
 features = ["multi-threaded-cf", "serde1"]
-branch = "v7.4.4-patched"
+branch = "v8.8.1-patched"
 
 [build-dependencies]
 prost-build.workspace = true

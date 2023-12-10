@@ -147,6 +147,8 @@ message ShardScanRequest {
     optional bytes end_key = 9;
     /// Include all data (tombstone) as return values.
     bool include_raw_data = 10;
+    /// Ignore txn intents rather than resolve it.
+    bool ignore_txn_intent = 11;
 }
 
 message ShardScanResponse {

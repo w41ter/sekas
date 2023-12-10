@@ -17,11 +17,13 @@ use sekas_api::server::v1::*;
 use sekas_schema::system::txn::TXN_INTENT_VERSION;
 
 use super::LatchManager;
-use crate::engine::{GroupEngine, Snapshot, SnapshotMode};
+use crate::engine::{GroupEngine, MvccIterator, Snapshot, SnapshotMode};
+use crate::replica::ExecCtx;
 use crate::{Error, Result};
 
 /// Scan the specified range.
 pub(crate) async fn scan<T>(
+    _exec_ctx: &ExecCtx,
     engine: &GroupEngine,
     latch_mgr: &T,
     req: &ShardScanRequest,
@@ -55,91 +57,82 @@ where
     let mut data = Vec::new();
     let mut total_bytes = 0;
     let mut has_more = false;
-    'OUTER: while let Some(mvcc_iter) = snapshot.next() {
-        let mut value_set = ValueSet::default();
-        for entry in mvcc_iter? {
-            let entry = entry?;
-            let (user_key, mut version) = (entry.user_key(), entry.version());
-
-            // skip exclude keys.
-            if req.exclude_start_key && is_equals(&req.start_key, user_key) {
-                continue 'OUTER;
-            }
-
-            if req.exclude_end_key && is_equals(&req.end_key, user_key) {
-                continue 'OUTER;
-            }
-
-            if is_exceeds(&req.end_key, user_key) {
-                break 'OUTER;
-            }
-
-            let value;
-            if version == TXN_INTENT_VERSION {
-                let encoded_intent = entry.value().ok_or_else(|| {
-                    Error::InvalidData(format!(
-                        "the value of intent key {user_key:?} is not exists",
-                    ))
-                })?;
-                let intent = TxnIntent::decode(encoded_intent)?;
-                if intent.start_version > req.start_version {
-                    // skip invisible versions.
-                    continue;
-                }
-                let Some(intent_value) = latch_mgr
-                    .resolve_txn(req.shard_id, user_key, req.start_version, intent.start_version)
-                    .await?
-                else {
-                    // skip empty value.
-                    continue;
-                };
-                if intent_value.version > req.start_version {
-                    // skip invisible versions.
-                    continue;
-                }
-
-                version = intent_value.version;
-                value = intent_value.content;
-                // TODO(walter) what happen if a intent is resolved before
-                // ingest?
-            } else if req.start_version < version {
-                // skip invisible versions.
-                continue;
-            } else {
-                value = entry.value().map(ToOwned::to_owned);
-            }
-
-            if let Some(value) = value {
-                total_bytes += value.len();
-                value_set.values.push(Value { content: Some(value), version });
-            } else if req.include_raw_data {
-                value_set.values.push(Value { content: None, version });
-            }
-
-            if !value_set.values.is_empty() && value_set.user_key.is_empty() {
-                value_set.user_key = user_key.to_owned();
-                total_bytes += value_set.user_key.len();
-            }
-
-            if !req.include_raw_data {
-                // only returns the first non-tombstone version.
-                break;
-            }
+    while let Some(mvcc_iter) = snapshot.next() {
+        let mvcc_iter = mvcc_iter?;
+        if is_exceeds(&req.end_key, mvcc_iter.user_key()) {
+            break;
         }
 
-        if !value_set.values.is_empty() {
-            data.push(value_set);
+        let value_set_opt = scan_value_set(mvcc_iter, latch_mgr, req).await?;
+        let Some((value_set, value_bytes)) = value_set_opt else { continue };
 
-            // ATTN: the iterator needs to ensure that all values of a key are returned.
-            if (req.limit != 0 && req.limit as usize == data.len())
-                || (req.limit_bytes != 0 && req.limit_bytes as usize <= total_bytes)
-            {
-                has_more = true;
-                break;
-            }
+        data.push(value_set);
+        total_bytes += value_bytes;
+
+        // ATTN: the iterator needs to ensure that all values of a key are returned.
+        if (req.limit != 0 && req.limit as usize == data.len())
+            || (req.limit_bytes != 0 && req.limit_bytes as usize <= total_bytes)
+        {
+            has_more = true;
+            break;
         }
     }
     Ok(ShardScanResponse { data, has_more })
+}
+
+async fn scan_value_set<T: LatchManager>(
+    mut mvcc_iter: MvccIterator<'_, '_>,
+    latch_mgr: &T,
+    req: &ShardScanRequest,
+) -> Result<Option<(ValueSet, usize)>> {
+    let mut values = Vec::default();
+    let mut total_bytes = 0;
+    for entry in &mut mvcc_iter {
+        let entry = entry?;
+        let (user_key, mut version) = (entry.user_key(), entry.version());
+        if is_exclude_boundary(req, user_key) {
+            // skip exclude keys.
+            return Ok(None);
+        }
+
+        let value;
+        if version == TXN_INTENT_VERSION && !req.ignore_txn_intent {
+            let intent_value = entry.value().ok_or_else(|| {
+                Error::InvalidData(format!("the value of intent key {user_key:?} is not exists",))
+            })?;
+            match resolve_txn(latch_mgr, req.shard_id, req.start_version, user_key, intent_value)
+                .await?
+            {
+                Some(v) => (value, version) = v,
+                None => continue,
+            }
+        } else if req.start_version < version {
+            // skip invisible versions.
+            continue;
+        } else {
+            value = entry.value().map(ToOwned::to_owned);
+        }
+
+        if let Some(value) = value {
+            total_bytes += value.len();
+            values.push(Value { content: Some(value), version });
+        } else if req.include_raw_data {
+            values.push(Value { content: None, version });
+        }
+
+        if !req.include_raw_data {
+            // only returns the first non-tombstone version.
+            break;
+        }
+    }
+    if values.is_empty() {
+        return Ok(None);
+    }
+
+    let user_key = mvcc_iter.user_key();
+    total_bytes += user_key.len();
+    let value_set = ValueSet { user_key: user_key.to_owned(), values };
+    Ok(Some((value_set, total_bytes)))
 }
 
 #[inline]
@@ -150,6 +143,45 @@ fn is_equals(target: &Option<Vec<u8>>, user_key: &[u8]) -> bool {
 #[inline]
 fn is_exceeds(target: &Option<Vec<u8>>, user_key: &[u8]) -> bool {
     target.as_ref().map(|target_key| target_key.as_slice() < user_key).unwrap_or_default()
+}
+
+#[inline]
+fn is_exclude_boundary(req: &ShardScanRequest, user_key: &[u8]) -> bool {
+    if req.exclude_start_key && is_equals(&req.start_key, user_key) {
+        return true;
+    }
+
+    if req.exclude_end_key && is_equals(&req.end_key, user_key) {
+        return true;
+    }
+
+    false
+}
+
+async fn resolve_txn<T: LatchManager>(
+    latch_mgr: &T,
+    shard_id: u64,
+    start_version: u64,
+    user_key: &[u8],
+    encoded_intent_value: &[u8],
+) -> Result<Option<(Option<Vec<u8>>, u64)>> {
+    let intent = TxnIntent::decode(encoded_intent_value)?;
+    if intent.start_version > start_version {
+        // skip invisible versions.
+        return Ok(None);
+    }
+
+    let intent_value_opt =
+        latch_mgr.resolve_txn(shard_id, user_key, start_version, intent.start_version).await?;
+
+    // skip aborted txn value.
+    let Some(intent_value) = intent_value_opt else { return Ok(None) };
+    if intent_value.version > start_version {
+        // skip invisible versions.
+        return Ok(None);
+    }
+
+    Ok(Some((intent_value.content, intent_value.version)))
 }
 
 #[cfg(test)]
@@ -206,7 +238,7 @@ mod tests {
             include_raw_data: true,
             ..Default::default()
         };
-        let resp = scan(&engine, &latch_mgr, &scan_req).await.unwrap();
+        let resp = scan(&ExecCtx::default(), &engine, &latch_mgr, &scan_req).await.unwrap();
         assert_eq!(resp.data.len(), 1);
         assert_eq!(resp.data[0].values.len(), 100);
     }
@@ -230,7 +262,7 @@ mod tests {
             limit: 1,
             ..Default::default()
         };
-        let resp = scan(&engine, &latch_mgr, &scan_req).await.unwrap();
+        let resp = scan(&ExecCtx::default(), &engine, &latch_mgr, &scan_req).await.unwrap();
         assert!(resp.has_more);
 
         // case 2: scan all keys returns no more.
@@ -241,7 +273,253 @@ mod tests {
             ..Default::default()
         };
 
-        let resp = scan(&engine, &latch_mgr, &scan_req).await.unwrap();
+        let resp = scan(&ExecCtx::default(), &engine, &latch_mgr, &scan_req).await.unwrap();
         assert!(!resp.has_more);
+    }
+
+    #[sekas_macro::test]
+    async fn scan_with_request_range() {
+        let dir = TempDir::new(fn_name!()).unwrap();
+        let engine = create_group_engine(dir.path(), 1, 1, 1).await;
+        let latch_mgr = LocalLatchManager::default();
+
+        for i in 1..100u8 {
+            let (key, value) = (vec![i], vec![i]);
+            let value = Value::with_value(value, 100);
+            commit_values(&engine, &key, &[value]);
+        }
+
+        // case 1: scan exclude start key.
+        let scan_req = ShardScanRequest {
+            shard_id: SHARD_ID,
+            start_version: 1000,
+            start_key: Some(vec![1u8]),
+            exclude_start_key: true,
+            limit: 1,
+            ..Default::default()
+        };
+        let resp = scan(&ExecCtx::default(), &engine, &latch_mgr, &scan_req).await.unwrap();
+        assert_eq!(resp.data.len(), 1);
+        assert_eq!(resp.data[0].user_key, vec![2u8]);
+
+        // case 2: scan exclude end key.
+        let scan_req = ShardScanRequest {
+            shard_id: SHARD_ID,
+            start_version: 1000,
+            start_key: Some(vec![1u8]),
+            end_key: Some(vec![2u8]),
+            exclude_end_key: true,
+            limit: 2,
+            ..Default::default()
+        };
+        let resp = scan(&ExecCtx::default(), &engine, &latch_mgr, &scan_req).await.unwrap();
+        assert!(!resp.has_more);
+        assert_eq!(resp.data.len(), 1);
+        assert_eq!(resp.data[0].user_key, vec![1u8]);
+
+        // case 3: scan in range.
+        let scan_req = ShardScanRequest {
+            shard_id: SHARD_ID,
+            start_version: 1000,
+            start_key: Some(vec![3u8]),
+            end_key: Some(vec![4u8]),
+            ..Default::default()
+        };
+        let resp = scan(&ExecCtx::default(), &engine, &latch_mgr, &scan_req).await.unwrap();
+        assert_eq!(resp.data.len(), 2);
+        assert_eq!(resp.data[0].user_key, vec![3u8]);
+        assert_eq!(resp.data[1].user_key, vec![4u8]);
+    }
+
+    #[sekas_macro::test]
+    async fn scan_with_prefix() {
+        let dir = TempDir::new(fn_name!()).unwrap();
+        let engine = create_group_engine(dir.path(), 1, 1, 1).await;
+        let latch_mgr = LocalLatchManager::default();
+
+        // prepare keys
+        // a1, b1, b2, c1
+        let i: u8 = 1;
+        let (key, value) = (vec![b'a', i], vec![i]);
+        let value = Value::with_value(value, 100);
+        commit_values(&engine, &key, &[value]);
+
+        let (key, value) = (vec![b'b', i], vec![i]);
+        let value = Value::with_value(value, 100);
+        commit_values(&engine, &key, &[value]);
+
+        let i = 2;
+        let (key, value) = (vec![b'b', i], vec![i]);
+        let value = Value::with_value(value, 100);
+        commit_values(&engine, &key, &[value]);
+
+        let i = 1;
+        let (key, value) = (vec![b'c', i], vec![i]);
+        let value = Value::with_value(value, 100);
+        commit_values(&engine, &key, &[value]);
+
+        // case 1. scan b'a'
+        let scan_req = ShardScanRequest {
+            shard_id: SHARD_ID,
+            start_version: 1000,
+            prefix: Some(vec![b'a']),
+            ..Default::default()
+        };
+        let resp = scan(&ExecCtx::default(), &engine, &latch_mgr, &scan_req).await.unwrap();
+        assert_eq!(resp.data.len(), 1);
+        assert_eq!(resp.data[0].user_key, vec![b'a', 1]);
+
+        // case 2. scan b'b'
+        let scan_req = ShardScanRequest {
+            shard_id: SHARD_ID,
+            start_version: 1000,
+            prefix: Some(vec![b'b']),
+            ..Default::default()
+        };
+        let resp = scan(&ExecCtx::default(), &engine, &latch_mgr, &scan_req).await.unwrap();
+        assert_eq!(resp.data.len(), 2);
+        assert_eq!(resp.data[0].user_key, vec![b'b', 1]);
+        assert_eq!(resp.data[1].user_key, vec![b'b', 2]);
+
+        // case 3. scan b'c'
+        let scan_req = ShardScanRequest {
+            shard_id: SHARD_ID,
+            start_version: 1000,
+            prefix: Some(vec![b'c']),
+            ..Default::default()
+        };
+        let resp = scan(&ExecCtx::default(), &engine, &latch_mgr, &scan_req).await.unwrap();
+        assert_eq!(resp.data.len(), 1);
+        assert_eq!(resp.data[0].user_key, vec![b'c', 1]);
+
+        // case 4. scan b'd'
+        let scan_req = ShardScanRequest {
+            shard_id: SHARD_ID,
+            start_version: 1000,
+            prefix: Some(vec![b'd']),
+            ..Default::default()
+        };
+        let resp = scan(&ExecCtx::default(), &engine, &latch_mgr, &scan_req).await.unwrap();
+        assert!(resp.data.is_empty());
+    }
+
+    #[sekas_macro::test]
+    async fn scan_value_set_ignore_tombstones() {
+        let dir = TempDir::new(fn_name!()).unwrap();
+        let engine = create_group_engine(dir.path(), 1, 1, 1).await;
+        let latch_mgr = LocalLatchManager::default();
+
+        // prepare keys
+        // a1 [value] 100,
+        // b1 [tombstone] 100, [value] 90
+        let i: u8 = 1;
+        let (key, value) = (vec![b'a', i], vec![i]);
+        let value = Value::with_value(value, 100);
+        commit_values(&engine, &key, &[value]);
+
+        let key = vec![b'b', i];
+        let value = Value::tombstone(100);
+        commit_values(&engine, &key, &[value]);
+
+        let (key, value) = (vec![b'b', i], vec![i]);
+        let value = Value::with_value(value, 90);
+        commit_values(&engine, &key, &[value]);
+
+        // case 1. the tombstone will be ignored.
+        let scan_req =
+            ShardScanRequest { shard_id: SHARD_ID, start_version: 1000, ..Default::default() };
+        let resp = scan(&ExecCtx::default(), &engine, &latch_mgr, &scan_req).await.unwrap();
+        assert_eq!(resp.data.len(), 1);
+        assert_eq!(resp.data[0].user_key, vec![b'a', 1]);
+
+        // case 2. the value is visible if tombstone is not visible.
+        let scan_req =
+            ShardScanRequest { shard_id: SHARD_ID, start_version: 99, ..Default::default() };
+        let resp = scan(&ExecCtx::default(), &engine, &latch_mgr, &scan_req).await.unwrap();
+        assert_eq!(resp.data.len(), 1);
+        assert_eq!(resp.data[0].user_key, vec![b'b', 1]);
+        assert_eq!(resp.data[0].values[0].version, 90);
+    }
+
+    #[sekas_macro::test]
+    async fn scan_value_set_with_include_raws() {
+        let dir = TempDir::new(fn_name!()).unwrap();
+        let engine = create_group_engine(dir.path(), 1, 1, 1).await;
+        let latch_mgr = LocalLatchManager::default();
+
+        // prepare keys
+        // a1 [value] 100,
+        // b1 [tombstone] 100, [value] 90
+        let i: u8 = 1;
+        let (key, value) = (vec![b'a', i], vec![i]);
+        let value = Value::with_value(value, 100);
+        commit_values(&engine, &key, &[value]);
+
+        let key = vec![b'b', i];
+        let value = Value::tombstone(100);
+        commit_values(&engine, &key, &[value]);
+
+        let (key, value) = (vec![b'b', i], vec![i]);
+        let value = Value::with_value(value, 90);
+        commit_values(&engine, &key, &[value]);
+
+        let scan_req = ShardScanRequest {
+            shard_id: SHARD_ID,
+            start_version: 1000,
+            include_raw_data: true,
+            ..Default::default()
+        };
+        let resp = scan(&ExecCtx::default(), &engine, &latch_mgr, &scan_req).await.unwrap();
+        assert_eq!(resp.data.len(), 2);
+        assert_eq!(resp.data[0].user_key, vec![b'a', 1]);
+        assert_eq!(resp.data[1].user_key, vec![b'b', 1]);
+        assert_eq!(resp.data[1].values.len(), 2);
+        assert_eq!(resp.data[1].values[0].version, 100);
+        assert_eq!(resp.data[1].values[1].version, 90);
+    }
+
+    #[sekas_macro::test]
+    async fn scan_value_set_ignore_txn_intent() {
+        let dir = TempDir::new(fn_name!()).unwrap();
+        let engine = create_group_engine(dir.path(), 1, 1, 1).await;
+        let latch_mgr = LocalLatchManager::default();
+
+        // prepare keys
+        // a1 [value] TXN INTENT, [value] 100
+        let i: u8 = 1;
+        let (key, value) = (vec![b'a', i], vec![i]);
+        let value = Value::with_value(value, TXN_INTENT_VERSION);
+        commit_values(&engine, &key, &[value]);
+        let value = Value::with_value(vec![i], 100);
+        commit_values(&engine, &key, &[value]);
+
+        // case 1: ignore txn intent
+        let scan_req = ShardScanRequest {
+            shard_id: SHARD_ID,
+            start_version: 1000,
+            include_raw_data: true,
+            ignore_txn_intent: true,
+            ..Default::default()
+        };
+        let resp = scan(&ExecCtx::default(), &engine, &latch_mgr, &scan_req).await.unwrap();
+        assert_eq!(resp.data.len(), 1);
+        assert_eq!(resp.data[0].user_key, vec![b'a', 1]);
+        assert_eq!(resp.data[0].values.len(), 1);
+        assert_eq!(resp.data[0].values[0].version, 100);
+
+        // case 2: ignore txn intent and with TXN_INTENT_VERSION
+        let scan_req = ShardScanRequest {
+            shard_id: SHARD_ID,
+            start_version: TXN_INTENT_VERSION,
+            include_raw_data: true,
+            ignore_txn_intent: true,
+            ..Default::default()
+        };
+        let resp = scan(&ExecCtx::default(), &engine, &latch_mgr, &scan_req).await.unwrap();
+        assert_eq!(resp.data.len(), 1);
+        assert_eq!(resp.data[0].user_key, vec![b'a', 1]);
+        assert_eq!(resp.data[0].values.len(), 2);
+        assert_eq!(resp.data[0].values[0].version, TXN_INTENT_VERSION);
+        assert_eq!(resp.data[0].values[1].version, 100);
     }
 }

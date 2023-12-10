@@ -22,7 +22,7 @@ use log::info;
 use sekas_rock::fs::create_dir_all_if_not_exists;
 
 pub(crate) use self::group::{
-    GroupEngine, RawIterator, Snapshot, SnapshotMode, WriteBatch, WriteStates,
+    GroupEngine, MvccIterator, RawIterator, Snapshot, SnapshotMode, WriteBatch, WriteStates,
 };
 pub(crate) use self::state::StateEngine;
 use crate::{DbConfig, Result};
