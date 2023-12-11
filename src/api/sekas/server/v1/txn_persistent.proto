@@ -18,34 +18,34 @@ package sekas.server.v1;
 
 //! This file describes data structures which needs to be saved to disk store.
 
-/// The state of txn records.
+// The state of txn records.
 enum TxnState {
     RUNNING = 0;
     ABORTED = 1;
     COMMITTED = 2;
 }
 
-/// The txn record.
+// The txn record.
 message TxnRecord {
-    /// The state of txn record, the valid conversation is:
-    ///
-    /// RUNNING ------> ABORTED
-    ///           +---> COMMITTED
+    // The state of txn record, the valid conversation is:
+    //
+    // RUNNING ------> ABORTED
+    //           +---> COMMITTED
     TxnState state = 1;
-    /// The heartbeat of txn.
+    // The heartbeat of txn.
     uint64 heartbeat = 2;
-    /// The time-to-live of txn.
+    // The time-to-live of txn.
     uint64 ttl = 3;
-    /// The commit version of txn, it only used when state is equals to COMMITTED.
+    // The commit version of txn, it only used when state is equals to COMMITTED.
     optional uint64 commit_version = 4;
 }
 
-/// The intent created by txn prepare request.
+// The intent created by txn prepare request.
 message TxnIntent {
-    /// The start version of txn.
+    // The start version of txn.
     uint64 start_version = 1;
     bool is_delete = 2;
-    /// The value to apply to state machine. `None` for Nop.
+    // The value to apply to state machine. `None` for Nop.
     optional bytes value = 3;
 }
 

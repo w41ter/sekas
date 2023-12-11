@@ -24,17 +24,17 @@ service Root {
 	rpc Admin(AdminRequest) returns (AdminResponse) {}
 	rpc Watch(WatchRequest) returns (stream WatchResponse) {}
 
-	/// Join a bootstrapped cluster. If the target node is itself not part of a
-	/// bootstrapped cluster, an appropriate error is returned.
+	// Join a bootstrapped cluster. If the target node is itself not part of a
+	// bootstrapped cluster, an appropriate error is returned.
 	rpc Join(JoinNodeRequest) returns (JoinNodeResponse) {}
 
-	/// Report the changes of metadata and volatile states of group or replicas.
+	// Report the changes of metadata and volatile states of group or replicas.
 	rpc Report(ReportRequest) returns (ReportResponse) {}
 
-	/// Alloc replica id and node for the corresponding group.
+	// Alloc replica id and node for the corresponding group.
 	rpc AllocReplica(AllocReplicaRequest) returns (AllocReplicaResponse) {}
 
-	/// Alloc txn id.
+	// Alloc txn id.
 	rpc AllocTxnId(AllocTxnIdRequest) returns (AllocTxnIdResponse) {}
 }
 
@@ -82,15 +82,15 @@ message ReportRequest {
 	message GroupUpdates {
 		uint64 group_id = 1;
 
-		/// The leader is responsible for reporting the `GroupDesc` when the
-		/// `GroupDesc` changes.
+		// The leader is responsible for reporting the `GroupDesc` when the
+		// `GroupDesc` changes.
 		optional GroupDesc group_desc = 2;
 
-		/// Each replica is responsible for reporting itself's volatile state.
+		// Each replica is responsible for reporting itself's volatile state.
 		optional ReplicaState replica_state = 3;
 
-		/// The leader is responsible for reporting the `ScheduleState` when the
-		/// schedule state changes.
+		// The leader is responsible for reporting the `ScheduleState` when the
+		// schedule state changes.
 		optional ScheduleState schedule_state = 4;
 	}
 

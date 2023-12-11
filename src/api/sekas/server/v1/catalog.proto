@@ -16,13 +16,13 @@ syntax = "proto3";
 
 package sekas.server.v1;
 
-/// The database.
+// The database.
 message DatabaseDesc {
     uint64 id = 1;
     string name = 2;
 }
 
-/// The collection.
+// The collection.
 message CollectionDesc {
     uint64 id = 1;
     uint64 db = 2;

@@ -40,7 +40,7 @@ message NodeCapacity {
 }
 
 message RootDesc {
-	/// The epoch of root group which indicates the freshness of root nodes.
+	// The epoch of root group which indicates the freshness of root nodes.
 	uint64 epoch = 1;
 	repeated NodeDesc root_nodes = 2;
 }
@@ -58,17 +58,17 @@ message ShardDesc {
 
 message GroupDesc {
 	uint64 id = 1;
-	/// The version stamp of `GroupDesc`, increment when `shards` or `replicas`
-	/// changes. Used to quickly detect if `GroupDesc` has changed.
-	///
-	/// If config changes, increment by 1 each time, if shard changes, increment
-	/// `1 << 32` each time. Therefore, the upper 32 bits and the lower 32 bits
-	/// represent different types of changes.
-	///
-	/// The number of shard changes is placed in the upper 32 bits, so can judge
-	/// the freshness of shard meta between different groups by simply comparing
-	/// the size. This feature is very useful when shard moving, see
-	/// `GroupStateMachine` for details.
+	// The version stamp of `GroupDesc`, increment when `shards` or `replicas`
+	// changes. Used to quickly detect if `GroupDesc` has changed.
+	//
+	// If config changes, increment by 1 each time, if shard changes, increment
+	// `1 << 32` each time. Therefore, the upper 32 bits and the lower 32 bits
+	// represent different types of changes.
+	//
+	// The number of shard changes is placed in the upper 32 bits, so can judge
+	// the freshness of shard meta between different groups by simply comparing
+	// the size. This feature is very useful when shard moving, see
+	// `GroupStateMachine` for details.
 	uint64 epoch = 2;
 	repeated ShardDesc shards = 3;
 	repeated ReplicaDesc replicas = 4;
@@ -87,15 +87,15 @@ message ReplicaDesc {
 	ReplicaRole role = 3;
 }
 
-/// The volatile state of a group.
+// The volatile state of a group.
 message GroupState {
 	uint64 group_id = 1;
 	optional uint64 leader_id = 2;
 	repeated ReplicaState replicas = 3;
 }
 
-/// The volatile state of a replica. Reports to root when the state of each
-/// replica changes.
+// The volatile state of a replica. Reports to root when the state of each
+// replica changes.
 message ReplicaState {
 	uint64 replica_id = 1;
 	uint64 group_id = 2;
@@ -113,15 +113,15 @@ enum RaftRole {
 }
 
 message MoveShardDesc {
-	/// The descriptor of moving shard.
+	// The descriptor of moving shard.
 	ShardDesc shard_desc = 1;
-	/// The source group of moving shard.
+	// The source group of moving shard.
 	uint64 src_group_id = 2;
-	/// The epoch of source group when this moving is initialized.
+	// The epoch of source group when this moving is initialized.
 	uint64 src_group_epoch = 3;
-	/// The dest group id of moving.
+	// The dest group id of moving.
 	uint64 dest_group_id = 4;
-	/// The epoch of dest group.
+	// The epoch of dest group.
 	uint64 dest_group_epoch = 5;
 }
 

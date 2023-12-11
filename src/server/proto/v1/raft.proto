@@ -1,3 +1,4 @@
+// Copyright 2023-present The Sekas Authors.
 // Copyright 2022 The Engula Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -21,31 +22,31 @@ import "sekas/server/v1/metadata.proto";
 import "v1/metadata.proto";
 
 service Raft {
-  rpc SendMessage(stream RaftMessage) returns (RaftDone) {}
-  rpc RetrieveSnapshot(SnapshotRequest) returns (stream SnapshotChunk) {}
+	rpc SendMessage(stream RaftMessage) returns (RaftDone) {}
+	rpc RetrieveSnapshot(SnapshotRequest) returns (stream SnapshotChunk) {}
 }
 
 message RaftMessage {
-  uint64 group_id = 1;
+	uint64 group_id = 1;
 
-  sekas.server.v1.ReplicaDesc from_replica = 2;
-  sekas.server.v1.ReplicaDesc to_replica = 3;
+	sekas.server.v1.ReplicaDesc from_replica = 2;
+	sekas.server.v1.ReplicaDesc to_replica = 3;
 
-  repeated eraftpb.Message messages = 4;
+	repeated eraftpb.Message messages = 4;
 }
 
 message RaftDone {}
 
 message SnapshotRequest {
-  uint64 replica_id = 1;
+	uint64 replica_id = 1;
 
-  bytes snapshot_id = 2;
+	bytes snapshot_id = 2;
 }
 
 message SnapshotChunk {
-    oneof value {
-        SnapshotFile file = 1;
-        SnapshotMeta meta = 2;
-        bytes chunk_data = 3;
-    }
+		oneof value {
+				SnapshotFile file = 1;
+				SnapshotMeta meta = 2;
+				bytes chunk_data = 3;
+		}
 }

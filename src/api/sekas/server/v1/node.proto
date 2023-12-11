@@ -25,9 +25,9 @@ import "google/protobuf/field_mask.proto";
 
 service Node {
     rpc Batch(BatchRequest) returns (BatchResponse) {}
-    /// A set methods to manipulate node.
+    // A set methods to manipulate node.
     rpc Admin(NodeAdminRequest) returns (NodeAdminResponse) {}
-    /// A set methods about shard moving.
+    // A set methods about shard moving.
     rpc MoveShard(MoveShardRequest) returns (MoveShardResponse) {}
 }
 
@@ -47,7 +47,7 @@ message GroupRequest {
 message GroupResponse {
     GroupResponseUnion response = 1;
 
-    /// Only used in BatchResponse.
+    // Only used in BatchResponse.
     Error error = 2;
 }
 
@@ -63,23 +63,23 @@ message GroupRequestUnion {
         CommitIntentRequest commit_intent = 5;
         ClearIntentRequest clear_intent = 6;
 
-        /// Add a new shard to an existing group.
+        // Add a new shard to an existing group.
         CreateShardRequest create_shard = 7;
 
-        /// Change replicas of an existing group.
+        // Change replicas of an existing group.
         ChangeReplicasRequest change_replicas = 8;
 
-        /// Issue a moving shard request. This request need to send to the dest group.
+        // Issue a moving shard request. This request need to send to the dest group.
         AcceptShardRequest accept_shard = 9;
 
-        /// Transfer leadership to another replicas. This request is executed as a notice, so
-        /// the response doesn't reflect the actual execution result of transferring.
+        // Transfer leadership to another replicas. This request is executed as a notice, so
+        // the response doesn't reflect the actual execution result of transferring.
         TransferRequest transfer = 10;
 
-        /// MoveReplicas delegates the replicas moving to group leader.
-        ///
-        /// Response once the group leader accepts the moving replicas request. When there exists
-        /// some conflicts, such as group is in joint, `Error::AlreadyExists` is returned.
+        // MoveReplicas delegates the replicas moving to group leader.
+        //
+        // Response once the group leader accepts the moving replicas request. When there exists
+        // some conflicts, such as group is in joint, `Error::AlreadyExists` is returned.
         MoveReplicasRequest move_replicas = 11;
     }
 }
@@ -101,14 +101,14 @@ message GroupResponseUnion {
     }
 }
 
-/// The batch writes to a shard which ensure atomic writes.
+// The batch writes to a shard which ensure atomic writes.
 message ShardWriteRequest {
     uint64 shard_id = 1;
     repeated DeleteRequest deletes = 2;
     repeated PutRequest puts = 3;
 }
 
-/// The response of batch writes to a shard.
+// The response of batch writes to a shard.
 message ShardWriteResponse {
     repeated WriteResponse deletes = 1;
     repeated WriteResponse puts = 2;
@@ -125,38 +125,38 @@ message ShardGetResponse {
 }
 
 message ShardScanRequest {
-    /// The id of target shard.
+    // The id of target shard.
     uint64 shard_id = 1;
-    /// The start version of scan request.
+    // The start version of scan request.
     uint64 start_version = 2;
-    /// The maxminum key-values pairs to fetch, 0 means no limit.
+    // The maxminum key-values pairs to fetch, 0 means no limit.
     uint64 limit = 3;
-    /// The maxminum key-value bytes to fetch, 0 means no limit.
+    // The maxminum key-value bytes to fetch, 0 means no limit.
     uint64 limit_bytes = 4;
-    /// Shoud include start key in result? not support in prefix scan.
+    // Shoud include start key in result? not support in prefix scan.
     bool exclude_start_key = 5;
-    /// Shoud include end key in result? not support in prefix scan.
+    // Shoud include end key in result? not support in prefix scan.
     bool exclude_end_key = 6;
-    /// Scan with prefix, if set then `start_key` and `end_key` will be ignored.
-    ///
-    /// The prefix only works with range shard, the behaviour of hash shard is undefined.
+    // Scan with prefix, if set then `start_key` and `end_key` will be ignored.
+    //
+    // The prefix only works with range shard, the behaviour of hash shard is undefined.
     optional bytes prefix = 7;
-    /// The start key for a hash shard will be locate with hash slot.
+    // The start key for a hash shard will be locate with hash slot.
     optional bytes start_key = 8;
-    /// The end key only works with range shard, the behaviour of hash shard is undefined.
+    // The end key only works with range shard, the behaviour of hash shard is undefined.
     optional bytes end_key = 9;
-    /// Include all data (tombstone) as return values.
+    // Include all data (tombstone) as return values.
     bool include_raw_data = 10;
-    /// Ignore txn intents rather than resolve it.
+    // Ignore txn intents rather than resolve it.
     bool ignore_txn_intent = 11;
-    /// Allow scan an moving shard, without forwarding.
+    // Allow scan an moving shard, without forwarding.
     bool allow_scan_moving_shard = 12;
 }
 
 message ShardScanResponse {
-    /// The value set.
+    // The value set.
     repeated ValueSet data = 1;
-    /// Has more data to scan?
+    // Has more data to scan?
     bool has_more = 2;
 }
 
@@ -164,7 +164,7 @@ message WriteIntentRequest {
     uint64 shard_id = 1;
     uint64 start_version = 2;
 
-    /// The write request.
+    // The write request.
     oneof write {
         DeleteRequest delete = 3;
         PutRequest put = 4;
@@ -197,11 +197,11 @@ message NodeAdminRequest {
         GetRootRequest get_root = 1;
         CreateReplicaRequest create_replica = 2;
 
-        /// RemoveReplica allows shuts down and deletes an orphan replica from the
-        /// specified node.
-        ///
-        /// It is only executed when the user specifies a newer `GroupDesc` and the
-        /// replica no longer belongs to the group.
+        // RemoveReplica allows shuts down and deletes an orphan replica from the
+        // specified node.
+        //
+        // It is only executed when the user specifies a newer `GroupDesc` and the
+        // replica no longer belongs to the group.
         RemoveReplicaRequest remove_replica = 3;
         HeartbeatRequest heartbeat = 4;
     }
@@ -258,11 +258,11 @@ enum ChangeReplicaType {
 }
 
 message AcceptShardRequest {
-    /// The source group of this moving shard.
+    // The source group of this moving shard.
     uint64 src_group_id = 1;
-    /// The epoch of source group when issuing this moving shard request.
+    // The epoch of source group when issuing this moving shard request.
     uint64 src_group_epoch = 2;
-    /// The descriptor of moving shard.
+    // The descriptor of moving shard.
     ShardDesc shard_desc = 3;
 }
 
@@ -281,7 +281,7 @@ message HeartbeatRequest {
 
 message HeartbeatResponse {
     uint64 timestamp = 1;
-    /// The epoch of root group which contained in node's `RootDesc`.
+    // The epoch of root group which contained in node's `RootDesc`.
     uint64 root_epoch = 2;
     repeated PiggybackResponse piggybacks = 3;
 }
@@ -322,7 +322,7 @@ message NodeStats {
     uint64 available_space = 1;
     uint32 group_count = 2;
     uint32 leader_count = 3;
-    /// The replicas field in `GroupDesc` is empty.
+    // The replicas field in `GroupDesc` is empty.
     uint64 orphan_replica_count = 4;
     float read_qps = 5;
     float write_qps = 6;
@@ -343,15 +343,15 @@ message ReplicaStats {
 }
 
 message CollectGroupDetailRequest {
-    /// The ID list of the group that needs to get the status, if it is empty, get
-    /// all the groups on the target machine.
+    // The ID list of the group that needs to get the status, if it is empty, get
+    // all the groups on the target machine.
     repeated uint64 groups = 1;
 }
 
 message CollectGroupDetailResponse {
     repeated ReplicaState replica_states = 1;
-    /// If a replica is the leader of group, it also needs to be responsible for
-    /// filling in the `GroupDesc`.
+    // If a replica is the leader of group, it also needs to be responsible for
+    // filling in the `GroupDesc`.
     repeated GroupDesc group_descs = 2;
 }
 

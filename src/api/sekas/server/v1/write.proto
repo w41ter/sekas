@@ -18,21 +18,21 @@ package sekas.server.v1;
 
 import "sekas/server/v1/types.proto";
 
-/// The type of operations to execute.
+// The type of operations to execute.
 enum PutType {
-    /// Normal put operation.
+    // Normal put operation.
     NONE = 0;
-    /// Add an i64 value, warp if the result will exceeds range.
+    // Add an i64 value, warp if the result will exceeds range.
     ADD_I64 = 1;
-    /// Write nothing.
+    // Write nothing.
     NOP = 2;
 }
 
-/// The condition type of write.
+// The condition type of write.
 enum WriteConditionType {
-    /// The target key must exists.
+    // The target key must exists.
     EXPECT_EXISTS = 0;
-    /// The target key must not exists.
+    // The target key must not exists.
     EXPECT_NOT_EXISTS = 1;
     EXPECT_VALUE = 2;
 
@@ -50,44 +50,44 @@ enum WriteConditionType {
     EXPECT_CONTAINS = 11;
 }
 
-/// The write conditions.
+// The write conditions.
 message WriteCondition {
-    /// The type of condition.
+    // The type of condition.
     WriteConditionType type = 1;
-    /// The value of this condition.
+    // The value of this condition.
     bytes value = 2;
     uint64 version = 3;
     uint64 begin = 4;
 }
 
-/// The put request.
+// The put request.
 message PutRequest {
-    /// The put type.
+    // The put type.
     PutType put_type = 1;
-    /// The key to write.
+    // The key to write.
     bytes key = 2;
-    /// The value to write.
+    // The value to write.
     bytes value = 3;
-    /// Time to live, in seconds.
+    // Time to live, in seconds.
     uint64 ttl = 4;
-    /// The cas conditions.
+    // The cas conditions.
     repeated WriteCondition conditions = 5;
-    /// Whether to take previous value.
+    // Whether to take previous value.
     bool take_prev_value = 6;
 }
 
-/// The delete request.
+// The delete request.
 message DeleteRequest {
-    /// The key to delete.
+    // The key to delete.
     bytes key = 1;
-    /// The cas conditions.
+    // The cas conditions.
     repeated WriteCondition conditions = 2;
-    /// Whether to take previous value.
+    // Whether to take previous value.
     bool take_prev_value = 3;
 }
 
-/// The write response.
+// The write response.
 message WriteResponse {
-    /// The previous value of the target, only set if `take_prev_value` is true.
+    // The previous value of the target, only set if `take_prev_value` is true.
     optional Value prev_value = 1;
 }

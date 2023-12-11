@@ -1,3 +1,4 @@
+// Copyright 2023-present The Sekas Authors.
 // Copyright 2022 The Engula Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -33,35 +34,35 @@ message SnapshotFile {
     uint64 size = 3;
 }
 
-/// A NodeIdent uniquely identifies a node in the cluster.
+// A NodeIdent uniquely identifies a node in the cluster.
 message NodeIdent {
     bytes cluster_id = 1;
     uint64 node_id = 2;
 }
 
-/// This indicates the state of metadata of a group replica.
+// This indicates the state of metadata of a group replica.
 enum ReplicaLocalState {
-    /// The key metadata of an replica are created(recoverable by restart), but
-    /// the otheres metadata are still in creating.
+    // The key metadata of an replica are created(recoverable by restart), but
+    // the otheres metadata are still in creating.
     INITIAL = 0;
 
-    /// The replica has been demaged and is in the process of recovery, and once
-    /// recovered, the replica will return to `Normal` state.
+    // The replica has been demaged and is in the process of recovery, and once
+    // recovered, the replica will return to `Normal` state.
     PENDING = 1;
 
-    /// The replica is ready for serving requests.
+    // The replica is ready for serving requests.
     NORMAL = 2;
 
-    /// The replica needs to be deleted, at now it has stopped serving and
-    /// cleaned up the in-memory state, but there is still dirty data on disk that
-    /// needs to be cleaned up.
+    // The replica needs to be deleted, at now it has stopped serving and
+    // cleaned up the in-memory state, but there is still dirty data on disk that
+    // needs to be cleaned up.
     TERMINATED = 3;
 
-    /// The replica has been removed.
-    ///
-    /// In a replication group, the replica data cannot be rolled back. In other
-    /// words, a replica cannot be created multiple times on the same node, so it
-    /// is necessary to record the replicas that this node has served.
+    // The replica has been removed.
+    //
+    // In a replication group, the replica data cannot be rolled back. In other
+    // words, a replica cannot be created multiple times on the same node, so it
+    // is necessary to record the replicas that this node has served.
     TOMBSTONE = 4;
 }
 
@@ -81,21 +82,21 @@ message RaftLocalState {
     EntryID last_truncated = 3;
 }
 
-/// For dest group:
-///   PREPARE -> MOVING -> MOVED -> FINISHED
-///           -> ABORT
-///
-/// For source group:
-///   MOVING -> MOVED -> FINISHED
-///
+// For dest group:
+//   PREPARE -> MOVING -> MOVED -> FINISHED
+//           -> ABORT
+//
+// For source group:
+//   MOVING -> MOVED -> FINISHED
+//
 enum MoveShardStep {
-    /// The dest group shold send request to source group to begin moving. Once
-    /// the source group agrees to start the moving, the moving process must be
-    /// completed.
+    // The dest group shold send request to source group to begin moving. Once
+    // the source group agrees to start the moving, the moving process must be
+    // completed.
     PREPARE = 0;
     MOVING = 1;
-    /// Used in dest group, it should notify the source group that the moving has
-    /// already finished.
+    // Used in dest group, it should notify the source group that the moving has
+    // already finished.
     MOVED = 2;
 
     FINISHED = 3;
@@ -103,46 +104,46 @@ enum MoveShardStep {
 }
 
 message MoveShardState {
-    /// The descriptor of the moving.
+    // The descriptor of the moving.
     sekas.server.v1.MoveShardDesc move_shard = 1;
 
-    /// For dest group, this field saves the last key moved by background
-    /// pulling.
+    // For dest group, this field saves the last key moved by background
+    // pulling.
     optional bytes last_moved_key = 7;
 
-    /// The step of the moving progress.
+    // The step of the moving progress.
     MoveShardStep step = 8;
 }
 
-/// EvalResult is the structured proposal payload.
+// EvalResult is the structured proposal payload.
 message EvalResult {
     WriteBatchRep batch = 1;
     optional SyncOp op = 2;
 }
 
-/// WriteBatchRep is the serialized representation of DB write batch.
+// WriteBatchRep is the serialized representation of DB write batch.
 message WriteBatchRep { bytes data = 1; }
 
-/// SyncOp is a structured message which contain operations must be executed in
-/// order in all replicas.
+// SyncOp is a structured message which contain operations must be executed in
+// order in all replicas.
 message SyncOp {
-    /// Add new shard to existing group.
+    // Add new shard to existing group.
     AddShard add_shard = 1;
-    /// Purge an orphan replica.
+    // Purge an orphan replica.
     PurgeOrphanReplica purge_replica = 2;
-    /// An event of moving shard.
+    // An event of moving shard.
     MoveShard move_shard = 3;
 
-    /// A trick, force prost box the `SyncOp`, because `SyncOp` message is too
-    /// large.
+    // A trick, force prost box the `SyncOp`, because `SyncOp` message is too
+    // large.
     EvalResult must_boxed = 128;
 }
 
 message AddShard { sekas.server.v1.ShardDesc shard = 1; }
 
-/// PurgeOrphanReplica is used by the replica leader. When the replica leader
-/// finds an orphan replica, it can propose a command. After the command is
-/// successfully executed, the replica can be shutdown safely.
+// PurgeOrphanReplica is used by the replica leader. When the replica leader
+// finds an orphan replica, it can propose a command. After the command is
+// successfully executed, the replica can be shutdown safely.
 message PurgeOrphanReplica { uint64 replica_id = 1; }
 
 message MoveShard {
@@ -151,7 +152,7 @@ message MoveShard {
         INGEST = 1;
         COMMIT = 2;
         ABORT = 3;
-        /// Remove moving state.
+        // Remove moving state.
         APPLY = 4;
     }
 
@@ -159,7 +160,7 @@ message MoveShard {
 
     sekas.server.v1.MoveShardDesc desc = 2;
 
-    /// The latest ingested key, used for fault tolerance, locate the cursor that
-    /// has been replicated.
+    // The latest ingested key, used for fault tolerance, locate the cursor that
+    // has been replicated.
     bytes last_ingested_key = 3;
 }

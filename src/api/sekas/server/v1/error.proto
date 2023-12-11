@@ -20,20 +20,20 @@ package sekas.server.v1;
 import "sekas/server/v1/metadata.proto";
 import "sekas/server/v1/types.proto";
 
-/// This file complements some errors that cannot be expressed by grpc status code,
-/// which is usually used with Status::unknown.
-///
-/// These are some errors require retry, and are generally divided into two categories:
-/// 1. Metadata expires, includes `NotLeader`, `EpochNotMatch`, `GroupNotFound`, `NotRoot`.
-///    It needs to retry after updating the metadata.
-/// 2. `ServerIsBusy`: It needs to wait for a period of time and try again.
+// This file complements some errors that cannot be expressed by grpc status code,
+// which is usually used with Status::unknown.
+//
+// These are some errors require retry, and are generally divided into two categories:
+// 1. Metadata expires, includes `NotLeader`, `EpochNotMatch`, `GroupNotFound`, `NotRoot`.
+//    It needs to retry after updating the metadata.
+// 2. `ServerIsBusy`: It needs to wait for a period of time and try again.
 
 
-/// A structured error for passing detailed error information over RPC. It
-/// is usually used with 'grpc-status-details-bin'.
-///
-/// NOTES: The user needs to ensure that if there is an error, then details
-/// must not be empty.
+// A structured error for passing detailed error information over RPC. It
+// is usually used with 'grpc-status-details-bin'.
+//
+// NOTES: The user needs to ensure that if there is an error, then details
+// must not be empty.
 message Error {
     repeated ErrorDetail details = 1;
 }
@@ -56,48 +56,48 @@ message ErrorDetailUnion {
     }
 }
 
-/// This request can only be processed by the group leader, and the target replica is not
-/// the leader of the current group.
+// This request can only be processed by the group leader, and the target replica is not
+// the leader of the current group.
 message NotLeader {
     uint64 group_id = 1;
     uint64 term = 2;
-    /// The leader of the requested group. `None` means that the target replica does not known
-    /// who the current leader is.
+    // The leader of the requested group. `None` means that the target replica does not known
+    // who the current leader is.
     ReplicaDesc leader = 3;
 }
 
-/// This request can only be processed by the root (or root leader), and the target node is
-/// not the replica of root group (or root group leader).
+// This request can only be processed by the root (or root leader), and the target node is
+// not the replica of root group (or root group leader).
 message NotRoot {
-    /// `root` contains the known root members of the node, the first most likely being the leader.
+    // `root` contains the known root members of the node, the first most likely being the leader.
     RootDesc root = 1;
     uint64 term = 2;
-    /// The leader of root group. `None` means that the target replica does not known who
-    /// the current leader is.
+    // The leader of root group. `None` means that the target replica does not known who
+    // the current leader is.
     ReplicaDesc leader = 3;
 }
 
-/// The epoch of metadata carried by the request does not match the epoch of target replica.
+// The epoch of metadata carried by the request does not match the epoch of target replica.
 message EpochNotMatch {
-    /// The saved GroupDesc of target replica.
+    // The saved GroupDesc of target replica.
     GroupDesc descriptor = 1;
 }
 
-/// The current node is busy and needs to retry after a period of time.
+// The current node is busy and needs to retry after a period of time.
 message ServerIsBusy {}
 
-/// The target group was not found, it may have been removed.
+// The target group was not found, it may have been removed.
 message GroupNotFound {
     uint64 group_id = 1;
 }
 
-/// The cas operation is failed.
+// The cas operation is failed.
 message CasFailed {
-    /// The index of mutations.
-    /// It is the index of deletes if index < deletes.len(), otherwise it is the index of puts + deletes.len()
+    // The index of mutations.
+    // It is the index of deletes if index < deletes.len(), otherwise it is the index of puts + deletes.len()
     uint64 index = 1;
-    /// The index of conditions.
+    // The index of conditions.
     uint64 cond_index = 2;
-    /// The prev value of the cas touched key, if take_prev_value is set.
+    // The prev value of the cas touched key, if take_prev_value is set.
     optional Value prev_value = 3;
 }
