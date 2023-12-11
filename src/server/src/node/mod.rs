@@ -25,12 +25,14 @@ use std::sync::Arc;
 use futures::channel::mpsc;
 use futures::lock::Mutex;
 use log::{debug, info, warn};
+use sekas_api::server::v1::group_request_union::Request;
+use sekas_api::server::v1::group_response_union::Response;
 use sekas_api::server::v1::*;
 use sekas_client::ClientOptions;
 use sekas_runtime::TaskGroup;
 
 use self::job::StateChannel;
-use self::move_shard::MoveShardController;
+use self::move_shard::{ForwardCtx, MoveShardController};
 pub use self::route_table::{RaftRouteTable, ReplicaRouteTable};
 use crate::constants::ROOT_GROUP_ID;
 use crate::engine::{Engines, GroupEngine, RawDb, StateEngine};
@@ -401,8 +403,14 @@ impl Node {
                     .ok_or_else(|| {
                         Error::InvalidArgument("GroupRequest::request is None".into())
                     })?;
-                let resp = self.move_shard_ctrl.forward(forward_ctx, request).await?;
-                Ok(GroupResponse::new(resp))
+                if let Request::Scan(scan_request) = request {
+                    let scan_resp =
+                        self.forward_scan_request(replica, forward_ctx, scan_request).await?;
+                    Ok(GroupResponse::new(Response::Scan(scan_resp)))
+                } else {
+                    let resp = self.move_shard_ctrl.forward(forward_ctx, request).await?;
+                    Ok(GroupResponse::new(resp))
+                }
             }
             Ok(resp) => Ok(resp),
             Err(err) => Err(err),
@@ -617,6 +625,36 @@ impl Node {
         }
 
         resp
+    }
+
+    /// Forward scan request to dest group.
+    ///
+    /// Unlike other requests, scan request needs to scan both source and target
+    /// group, then merge the two response into one.
+    async fn forward_scan_request(
+        &self,
+        replica: Arc<Replica>,
+        forward_ctx: ForwardCtx,
+        scan_request: &ShardScanRequest,
+    ) -> Result<ShardScanResponse> {
+        use crate::replica::merge_scan_response;
+
+        let mut req = scan_request.clone();
+        req.allow_scan_moving_shard = true;
+        let req_clone = req.clone();
+        let execute_handle = sekas_runtime::spawn(async move {
+            replica.execute(&mut ExecCtx::default(), &Request::Scan(req_clone)).await
+        });
+        let target_resp =
+            match self.move_shard_ctrl.forward(forward_ctx, &Request::Scan(req)).await? {
+                Response::Scan(scan) => scan,
+                _ => return Err(Error::InvalidData("ShardScanResponse is required".into())),
+            };
+        let source_resp = match execute_handle.await?? {
+            Response::Scan(scan) => scan,
+            _ => return Err(Error::InvalidData("ShardScanResponse is required".into())),
+        };
+        Ok(merge_scan_response(target_resp, source_resp))
     }
 
     #[inline]

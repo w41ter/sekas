@@ -149,6 +149,8 @@ message ShardScanRequest {
     bool include_raw_data = 10;
     /// Ignore txn intents rather than resolve it.
     bool ignore_txn_intent = 11;
+    /// Allow scan an moving shard, without forwarding.
+    bool allow_scan_moving_shard = 12;
 }
 
 message ShardScanResponse {

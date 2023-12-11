@@ -22,6 +22,54 @@ use crate::node::move_shard::ForwardCtx;
 use crate::replica::ExecCtx;
 use crate::{Error, Result};
 
+/// Merge two scan response of an moving shard.
+pub(crate) fn merge_scan_response(
+    target: ShardScanResponse,
+    source: ShardScanResponse,
+) -> ShardScanResponse {
+    let mut target_iter = target.data.into_iter();
+    let mut source_iter = source.data.into_iter();
+    let mut value_sets = Vec::with_capacity(target_iter.len());
+
+    let mut target_next = target_iter.next();
+    let mut source_next = source_iter.next();
+    loop {
+        match (target_next, source_next) {
+            (Some(x), Some(y)) => {
+                if x.user_key == y.user_key {
+                    value_sets.push(x);
+                    target_next = target_iter.next();
+                    source_next = source_iter.next();
+                } else if x.user_key < y.user_key {
+                    value_sets.push(x);
+                    target_next = target_iter.next();
+                    source_next = Some(y);
+                } else {
+                    value_sets.push(y);
+                    target_next = Some(x);
+                    source_next = source_iter.next();
+                }
+            }
+            (Some(x), None) => {
+                value_sets.push(x.clone());
+                target_next = target_iter.next();
+                source_next = None;
+            }
+            (None, Some(y)) if !target.has_more => {
+                // the target response contains all values to scan, so it is safe to contains
+                // all source value sets.
+                value_sets.push(y.clone());
+                target_next = None;
+                source_next = source_iter.next();
+            }
+            (None, Some(_)) | (None, None) => break,
+        };
+    }
+
+    let has_more = target.has_more || source.has_more;
+    ShardScanResponse { data: value_sets, has_more }
+}
+
 /// Scan the specified range.
 pub(crate) async fn scan<T>(
     exec_ctx: &ExecCtx,
@@ -32,22 +80,24 @@ pub(crate) async fn scan<T>(
 where
     T: LatchManager,
 {
-    let mut req = req.clone();
-    let mut forward_target_group_id = None;
-    if let Some(move_shard_desc) = exec_ctx.move_shard_desc.as_ref() {
-        if move_shard_desc.get_shard_id() == req.shard_id
-            && move_shard_desc.src_group_epoch == exec_ctx.group_id
+    if !req.allow_scan_moving_shard {
+        if let Some(dest_group_id) = exec_ctx
+            .move_shard_desc
+            .as_ref()
+            .filter(|desc| {
+                desc.get_shard_id() == req.shard_id && desc.src_group_id == exec_ctx.group_id
+            })
+            .map(|desc| desc.dest_group_id)
         {
-            // FIXME(walter) what happen if target group return keys exceeds forward range?
-
-            // Scan value set and forward it to target group.
-            req.include_raw_data = true;
-            req.ignore_txn_intent = true;
-            req.start_version = TXN_INTENT_VERSION;
-            forward_target_group_id = Some(move_shard_desc.dest_group_epoch);
+            return Err(Error::Forward(ForwardCtx {
+                shard_id: req.shard_id,
+                dest_group_id,
+                payloads: vec![],
+            }));
         }
     }
 
+    let mut req = req.clone();
     let snapshot_mode = match &req.prefix {
         Some(prefix) => {
             req.exclude_end_key = false;
@@ -57,16 +107,7 @@ where
         None => SnapshotMode::Start { start_key: req.start_key.as_ref().map(|v| v.as_ref()) },
     };
     let snapshot = engine.snapshot(req.shard_id, snapshot_mode)?;
-    let resp = scan_inner(latch_mgr, snapshot, &req).await?;
-    if let Some(dest_group_id) = forward_target_group_id {
-        Err(Error::Forward(ForwardCtx {
-            shard_id: req.shard_id,
-            dest_group_id,
-            payloads: resp.data,
-        }))
-    } else {
-        Ok(resp)
-    }
+    scan_inner(latch_mgr, snapshot, &req).await
 }
 
 async fn scan_inner<T>(
@@ -544,52 +585,5 @@ mod tests {
         assert_eq!(resp.data[0].values.len(), 2);
         assert_eq!(resp.data[0].values[0].version, TXN_INTENT_VERSION);
         assert_eq!(resp.data[0].values[1].version, 100);
-    }
-
-    #[sekas_macro::test]
-    async fn scan_with_shard_moving_should_ignore_txn_intent() {
-        let dir = TempDir::new(fn_name!()).unwrap();
-        let engine = create_group_engine(dir.path(), 1, 1, 1).await;
-        let latch_mgr = LocalLatchManager::default();
-
-        // prepare keys
-        // a1 [value] TXN INTENT, [value] 100
-        // b1 [tombstone] 90
-        let i: u8 = 1;
-        let key = vec![b'a', i];
-        let value = TxnIntent::with_put(110, Some(vec![1u8, 2, 3])).encode_to_vec();
-        let value = Value::with_value(value, TXN_INTENT_VERSION);
-        commit_values(&engine, &key, &[value]);
-        let value = Value::with_value(vec![i], 100);
-        commit_values(&engine, &key, &[value]);
-
-        let key = vec![b'b', i];
-        let value = Value::tombstone(90);
-        commit_values(&engine, &key, &[value]);
-
-        let scan_req =
-            ShardScanRequest { shard_id: SHARD_ID, start_version: 1000, ..Default::default() };
-        let exec_ctx = ExecCtx {
-            group_id: 123,
-            move_shard_desc: Some(MoveShardDesc {
-                shard_desc: Some(ShardDesc { id: SHARD_ID, ..Default::default() }),
-                src_group_id: 123,
-                src_group_epoch: 123,
-                dest_group_epoch: 123,
-                dest_group_id: 1234,
-            }),
-            ..Default::default()
-        };
-        let values = match scan(&exec_ctx, &engine, &latch_mgr, &scan_req).await {
-            Err(Error::Forward(ctx)) => ctx.payloads,
-            _ => panic!("this request should be forward to target group"),
-        };
-        assert_eq!(values.len(), 2);
-        assert_eq!(values[0].user_key, vec![b'a', 1]);
-        assert_eq!(values[0].values.len(), 2);
-        assert_eq!(values[0].values[0].version, TXN_INTENT_VERSION);
-        assert_eq!(values[0].values[1].version, 100);
-        assert_eq!(values[1].user_key, vec![b'b', 1]);
-        assert_eq!(values[1].values[0].version, 90);
     }
 }

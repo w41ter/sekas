@@ -30,6 +30,7 @@ use sekas_api::server::v1::*;
 use serde::Serialize;
 
 use self::eval::acquire_row_latches;
+pub(crate) use self::eval::merge_scan_response;
 use self::eval::remote::RemoteLatchManager;
 pub use self::state::{LeaseState, LeaseStateObserver};
 use crate::engine::GroupEngine;
