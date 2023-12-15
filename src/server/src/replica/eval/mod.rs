@@ -29,7 +29,7 @@ pub(crate) use self::cmd_accept_shard::accept_shard;
 pub(crate) use self::cmd_get::get;
 pub(crate) use self::cmd_ingest::ingest_value_set;
 pub(crate) use self::cmd_move_replicas::move_replicas;
-pub(crate) use self::cmd_scan::{scan, merge_scan_response};
+pub(crate) use self::cmd_scan::{merge_scan_response, scan};
 pub(crate) use self::cmd_txn::{clear_intent, commit_intent, write_intent};
 pub(crate) use self::cmd_write::batch_write;
 pub(crate) use self::latch::{acquire_row_latches, remote, LatchGuard, LatchManager};
