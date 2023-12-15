@@ -324,13 +324,18 @@ impl Session {
 }
 
 async fn editor_main(addrs: Vec<String>) {
+    use rustyline::history::MemHistory;
+    use rustyline::Config;
+
     let mut session = new_session(addrs).await.expect("new session");
-    let mut editor = Editor::<()>::new().expect("Editor::new");
+    let cfg = Config::builder().build();
+    let history = MemHistory::new();
+    let mut editor = Editor::<(), _>::with_history(cfg, history).expect("Editor::new");
     loop {
         let readline = editor.readline(">> ");
         match readline {
             Ok(line) => {
-                editor.add_history_entry(line.as_str());
+                let _ = editor.add_history_entry(line.as_str());
                 if let Err(err) = session.parse_and_execute(line.as_bytes()).await {
                     std::io::stderr().write_fmt(format_args!("{:?}\n", err)).unwrap_or_default();
                 }

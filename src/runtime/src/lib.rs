@@ -1,3 +1,4 @@
+// Copyright 2023-present The Sekas Authors.
 // Copyright 2022 The Engula Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -29,6 +30,10 @@ pub use self::executor::*;
 pub use self::group::TaskGroup;
 pub use self::incoming::TcpIncoming;
 pub use self::shutdown::{Shutdown, ShutdownNotifier};
+
+/// An owned dynamically typed [`Future`] for use in cases where you can’t
+/// statically type your result or need to add some indirection.
+pub type BoxFuture<'a, T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send + 'a>>;
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct ExecutorConfig {
