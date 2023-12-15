@@ -1,5 +1,4 @@
 // Copyright 2023-present The Sekas Authors.
-// Copyright 2022 The Engula Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -20,18 +19,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     std::env::set_var("PROTOC", protoc_build::PROTOC);
     std::env::set_var("PROTOC_INCLUDE", protoc_build::PROTOC_INCLUDE);
 
-    tonic_build::configure().compile(
-        &[
-            "sekas/server/v1/catalog.proto",
-            "sekas/server/v1/error.proto",
-            "sekas/server/v1/metadata.proto",
-            "sekas/server/v1/node.proto",
-            "sekas/server/v1/root.proto",
-            "sekas/server/v1/txn_persistent.proto",
-            "sekas/server/v1/types.proto",
-            "sekas/server/v1/write.proto",
-        ],
-        &["."],
-    )?;
+    tonic_build::configure()
+        .compile(&["proto/auth.proto", "proto/kv.proto", "proto/version.proto"], &["."])?;
     Ok(())
 }

@@ -9,6 +9,7 @@ members = [
     "src/runtime",
     "src/schema",
     "src/server",
+    "layers/etcd",
 ]
 resolver = "2"
 

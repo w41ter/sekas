@@ -78,13 +78,22 @@ async fn bootstrap_services(
     let listener = TcpListener::bind(addr).await?;
     let incoming = TcpIncoming::from_listener(listener, true);
 
-    let server = Server::builder()
+    let builder = Server::builder()
         .accept_http1(true) // Support http1 for admin service.
         .add_service(NodeServer::new(server.clone()))
         .add_service(RaftServer::new(server.clone()))
         .add_service(RootServer::new(server.clone()))
-        .add_service(make_admin_service(server.clone()))
-        .serve_with_incoming(incoming);
+        .add_service(make_admin_service(server.clone()));
+
+    #[cfg(feature = "layer_etcd")]
+    let builder = {
+        builder
+            .add_service(sekas_etcd_proxy::make_etcd_kv_service())
+            .add_service(sekas_etcd_proxy::make_etcd_watch_service())
+            .add_service(sekas_etcd_proxy::make_etcd_lease_service())
+    };
+
+    let server = builder.serve_with_incoming(incoming);
 
     sekas_runtime::select! {
         res = server => { res? }

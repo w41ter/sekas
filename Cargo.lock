@@ -2327,6 +2327,20 @@ name = "sekas-engine"
 version = "0.5.0"
 
 [[package]]
+name = "sekas-etcd-proxy"
+version = "0.5.0"
+dependencies = [
+ "crc32fast",
+ "futures",
+ "prost 0.11.9",
+ "prost-types 0.11.9",
+ "protoc-build",
+ "sekas-client",
+ "tonic",
+ "tonic-build",
+]
+
+[[package]]
 name = "sekas-macro"
 version = "0.5.0"
 dependencies = [
@@ -2426,6 +2440,7 @@ dependencies = [
  "rocksdb",
  "sekas-api",
  "sekas-client",
+ "sekas-etcd-proxy",
  "sekas-macro",
  "sekas-rock",
  "sekas-runtime",
