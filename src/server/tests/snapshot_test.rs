@@ -84,7 +84,7 @@ async fn snapshot_send() {
     let shard_id = 234;
     let shard_desc = ShardDesc {
         id: shard_id,
-        collection_id: shard_id,
+        table_id: shard_id,
         range: Some(RangePartition { start: vec![], end: vec![] }),
     };
     create_group(&c, group_id, node_ids.clone(), vec![shard_desc]).await;

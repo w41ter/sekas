@@ -90,14 +90,14 @@ impl Jobs {
     async fn handle_job(&self, job: &BackgroundJob) -> Result<()> {
         info!("start background job: {job:?}");
         let r = match job.job.as_ref().unwrap() {
-            background_job::Job::CreateCollection(create_collection) => {
-                self.handle_create_collection(job, create_collection).await
+            background_job::Job::CreateTable(create_table) => {
+                self.handle_create_table(job, create_table).await
             }
             background_job::Job::CreateOneGroup(create_group) => {
                 self.handle_create_one_group(job, create_group).await
             }
-            background_job::Job::PurgeCollection(purge_collection) => {
-                self.handle_purge_collection(job, purge_collection).await
+            background_job::Job::PurgeTable(purge_table) => {
+                self.handle_purge_table(job, purge_table).await
             }
             background_job::Job::PurgeDatabase(purge_database) => {
                 self.handle_purge_database(job, purge_database).await
@@ -109,29 +109,29 @@ impl Jobs {
 }
 
 impl Jobs {
-    // handle create_collection.
-    async fn handle_create_collection(
+    // handle create_table.
+    async fn handle_create_table(
         &self,
         job: &BackgroundJob,
-        create_collection: &CreateCollectionJob,
+        create_table: &CreateTableJob,
     ) -> Result<()> {
-        let mut create_collection = create_collection.to_owned();
+        let mut create_table = create_table.to_owned();
         loop {
-            let status = CreateCollectionJobStatus::from_i32(create_collection.status).unwrap();
-            let _timer = Self::record_create_collection_step(&status);
+            let status = CreateTableJobStatus::from_i32(create_table.status).unwrap();
+            let _timer = Self::record_create_table_step(&status);
             match status {
-                CreateCollectionJobStatus::CreateCollectionCreating => {
-                    self.handle_wait_create_shard(job.id, &mut create_collection).await?;
+                CreateTableJobStatus::CreateTableCreating => {
+                    self.handle_wait_create_shard(job.id, &mut create_table).await?;
                 }
-                CreateCollectionJobStatus::CreateCollectionRollbacking => {
-                    self.handle_wait_cleanup_shard(job.id, &mut create_collection).await?;
+                CreateTableJobStatus::CreateTableRollbacking => {
+                    self.handle_wait_cleanup_shard(job.id, &mut create_table).await?;
                 }
-                CreateCollectionJobStatus::CreateCollectionWriteDesc => {
-                    self.handle_write_desc(job.id, &mut create_collection).await?;
+                CreateTableJobStatus::CreateTableWriteDesc => {
+                    self.handle_write_desc(job.id, &mut create_table).await?;
                 }
-                CreateCollectionJobStatus::CreateCollectionFinish
-                | CreateCollectionJobStatus::CreateCollectionAbort => {
-                    self.handle_finish_create_collection(job, create_collection).await?;
+                CreateTableJobStatus::CreateTableFinish
+                | CreateTableJobStatus::CreateTableAbort => {
+                    self.handle_finish_create_table(job, create_table).await?;
                     break;
                 }
             }
@@ -142,10 +142,10 @@ impl Jobs {
     async fn handle_wait_create_shard(
         &self,
         job_id: u64,
-        create_collection: &mut CreateCollectionJob,
+        create_table: &mut CreateTableJob,
     ) -> Result<()> {
         loop {
-            let shard = create_collection.wait_create.pop();
+            let shard = create_table.wait_create.pop();
             if shard.is_none() {
                 break;
             }
@@ -158,93 +158,88 @@ impl Jobs {
             info!("try create shard at group {}, shards: {}", group.id, group.shards.len());
             if let Err(err) = self.try_create_shard(group.id, &shard).await {
                 error!(
-                    "create collection shard error and try to rollback: {err:?}. group={}, shard={}",
-                    group.id, shard.id);
-                create_collection.remark = format!("{err:?}");
-                create_collection.wait_cleanup.push(shard);
-                create_collection.status =
-                    CreateCollectionJobStatus::CreateCollectionRollbacking as i32;
-                self.save_create_collection(job_id, create_collection).await?;
+                    "create table shard error and try to rollback: {err:?}. group={}, shard={}",
+                    group.id, shard.id
+                );
+                create_table.remark = format!("{err:?}");
+                create_table.wait_cleanup.push(shard);
+                create_table.status = CreateTableJobStatus::CreateTableRollbacking as i32;
+                self.save_create_table(job_id, create_table).await?;
                 return Ok(());
             }
-            create_collection.wait_cleanup.push(shard);
-            self.save_create_collection(job_id, create_collection).await?;
+            create_table.wait_cleanup.push(shard);
+            self.save_create_table(job_id, create_table).await?;
         }
-        create_collection.status = CreateCollectionJobStatus::CreateCollectionWriteDesc as i32;
-        self.save_create_collection(job_id, create_collection).await?;
+        create_table.status = CreateTableJobStatus::CreateTableWriteDesc as i32;
+        self.save_create_table(job_id, create_table).await?;
         Ok(())
     }
 
     async fn handle_write_desc(
         &self,
         job_id: u64,
-        create_collection: &mut CreateCollectionJob,
+        create_table: &mut CreateTableJob,
     ) -> Result<()> {
         let schema = self.core.root_shared.schema()?;
-        schema.create_collection(create_collection.desc.as_ref().unwrap().to_owned()).await?;
-        create_collection.status = CreateCollectionJobStatus::CreateCollectionFinish as i32;
-        self.save_create_collection(job_id, create_collection).await?;
+        schema.create_table(create_table.desc.as_ref().unwrap().to_owned()).await?;
+        create_table.status = CreateTableJobStatus::CreateTableFinish as i32;
+        self.save_create_table(job_id, create_table).await?;
         Ok(())
     }
 
     async fn handle_wait_cleanup_shard(
         &self,
         job_id: u64,
-        create_collection: &mut CreateCollectionJob,
+        create_table: &mut CreateTableJob,
     ) -> Result<()> {
         loop {
-            let shard = create_collection.wait_cleanup.pop();
+            let shard = create_table.wait_cleanup.pop();
             if shard.is_none() {
                 break;
             }
             let _ = shard; // TODO: delete shard.
-            self.save_create_collection(job_id, create_collection).await?;
+            self.save_create_table(job_id, create_table).await?;
         }
-        create_collection.status = CreateCollectionJobStatus::CreateCollectionAbort as i32;
-        self.save_create_collection(job_id, create_collection).await?;
+        create_table.status = CreateTableJobStatus::CreateTableAbort as i32;
+        self.save_create_table(job_id, create_table).await?;
         Ok(())
     }
 
-    async fn handle_finish_create_collection(
+    async fn handle_finish_create_table(
         &self,
         job: &BackgroundJob,
-        create_collection: CreateCollectionJob,
+        create_table: CreateTableJob,
     ) -> Result<()> {
         let mut job = job.to_owned();
-        job.job = Some(background_job::Job::CreateCollection(create_collection));
+        job.job = Some(background_job::Job::CreateTable(create_table));
         self.core.finish(job).await?;
         Ok(())
     }
 
-    async fn save_create_collection(
-        &self,
-        job_id: u64,
-        create_collection: &CreateCollectionJob,
-    ) -> Result<()> {
+    async fn save_create_table(&self, job_id: u64, create_table: &CreateTableJob) -> Result<()> {
         self.core
             .update(BackgroundJob {
                 id: job_id,
-                job: Some(background_job::Job::CreateCollection(create_collection.to_owned())),
+                job: Some(background_job::Job::CreateTable(create_table.to_owned())),
             })
             .await?;
         Ok(())
     }
 
-    fn record_create_collection_step(step: &CreateCollectionJobStatus) -> Option<HistogramTimer> {
+    fn record_create_table_step(step: &CreateTableJobStatus) -> Option<HistogramTimer> {
         match step {
-            CreateCollectionJobStatus::CreateCollectionCreating => Some(
-                metrics::RECONCILE_CREATE_COLLECTION_STEP_DURATION_SECONDS.create.start_timer(),
-            ),
-            CreateCollectionJobStatus::CreateCollectionRollbacking => Some(
-                metrics::RECONCILE_CREATE_COLLECTION_STEP_DURATION_SECONDS.rollback.start_timer(),
-            ),
-            CreateCollectionJobStatus::CreateCollectionWriteDesc => Some(
-                metrics::RECONCILE_CREATE_COLLECTION_STEP_DURATION_SECONDS.write_desc.start_timer(),
-            ),
-            CreateCollectionJobStatus::CreateCollectionFinish
-            | CreateCollectionJobStatus::CreateCollectionAbort => Some(
-                metrics::RECONCILE_CREATE_COLLECTION_STEP_DURATION_SECONDS.finish.start_timer(),
-            ),
+            CreateTableJobStatus::CreateTableCreating => {
+                Some(metrics::RECONCILE_CREATE_TABLE_STEP_DURATION_SECONDS.create.start_timer())
+            }
+            CreateTableJobStatus::CreateTableRollbacking => {
+                Some(metrics::RECONCILE_CREATE_TABLE_STEP_DURATION_SECONDS.rollback.start_timer())
+            }
+            CreateTableJobStatus::CreateTableWriteDesc => {
+                Some(metrics::RECONCILE_CREATE_TABLE_STEP_DURATION_SECONDS.write_desc.start_timer())
+            }
+            CreateTableJobStatus::CreateTableFinish | CreateTableJobStatus::CreateTableAbort => {
+                Some(metrics::RECONCILE_CREATE_TABLE_STEP_DURATION_SECONDS.finish.start_timer())
+            }
         }
     }
 }
@@ -467,13 +462,13 @@ impl Jobs {
 }
 
 impl Jobs {
-    async fn handle_purge_collection(
+    async fn handle_purge_table(
         &self,
         job: &BackgroundJob,
-        purge_collection: &PurgeCollectionJob,
+        purge_table: &PurgeTableJob,
     ) -> Result<()> {
         let schema = self.core.root_shared.schema()?;
-        let mut group_shards = schema.get_collection_shards(purge_collection.collection_id).await?;
+        let mut group_shards = schema.get_table_shards(purge_table.table_id).await?;
         loop {
             if let Some((group, shard)) = group_shards.pop() {
                 self.try_remove_shard(group, shard.id).await?;
@@ -491,15 +486,15 @@ impl Jobs {
         purge_database: &PurgeDatabaseJob,
     ) -> Result<()> {
         let schema = self.core.root_shared.schema()?;
-        let mut collections = schema.list_database_collections(purge_database.database_id).await?;
+        let mut tables = schema.list_database_tables(purge_database.database_id).await?;
         loop {
-            if let Some(co) = collections.pop() {
+            if let Some(co) = tables.pop() {
                 let job = BackgroundJob {
-                    job: Some(Job::PurgeCollection(PurgeCollectionJob {
+                    job: Some(Job::PurgeTable(PurgeTableJob {
                         database_id: co.db,
-                        collection_id: co.id,
+                        table_id: co.id,
                         database_name: "".to_owned(),
-                        collection_name: co.name.to_owned(),
+                        table_name: co.name.to_owned(),
                         created_time: format!("{:?}", Instant::now()),
                     })),
                     ..Default::default()
@@ -509,7 +504,7 @@ impl Jobs {
                     Err(crate::Error::AlreadyExists(_)) => {}
                     Err(err) => return Err(err),
                 };
-                schema.delete_collection(co).await?;
+                schema.delete_table(co).await?;
                 continue;
             }
             break;
@@ -721,15 +716,12 @@ impl JobCore {
             unreachable!()
         }
         match job.unwrap().job.as_ref().unwrap() {
-            background_job::Job::CreateCollection(job) => {
-                match CreateCollectionJobStatus::from_i32(job.status).unwrap() {
-                    CreateCollectionJobStatus::CreateCollectionFinish => Ok(()),
-                    CreateCollectionJobStatus::CreateCollectionAbort => {
-                        Err(crate::Error::InvalidArgument(format!(
-                            "create collection fail {}",
-                            job.remark
-                        )))
-                    }
+            background_job::Job::CreateTable(job) => {
+                match CreateTableJobStatus::from_i32(job.status).unwrap() {
+                    CreateTableJobStatus::CreateTableFinish => Ok(()),
+                    CreateTableJobStatus::CreateTableAbort => Err(crate::Error::InvalidArgument(
+                        format!("create table fail {}", job.remark),
+                    )),
                     _ => unreachable!(),
                 }
             }
@@ -769,14 +761,14 @@ impl JobCore {
 
 fn res_key(job: &BackgroundJob) -> Option<Vec<u8>> {
     match job.job.as_ref().unwrap() {
-        background_job::Job::CreateCollection(job) => {
+        background_job::Job::CreateTable(job) => {
             let mut key = job.database.to_le_bytes().to_vec();
-            key.extend_from_slice(job.collection_name.as_bytes());
+            key.extend_from_slice(job.table_name.as_bytes());
             Some(key)
         }
-        background_job::Job::PurgeCollection(job) => {
+        background_job::Job::PurgeTable(job) => {
             let mut key = job.database_id.to_le_bytes().to_vec();
-            key.extend_from_slice(job.collection_name.as_bytes());
+            key.extend_from_slice(job.table_name.as_bytes());
             Some(key)
         }
         background_job::Job::CreateOneGroup(_) | background_job::Job::PurgeDatabase(_) => None,

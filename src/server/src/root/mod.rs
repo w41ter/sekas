@@ -461,14 +461,13 @@ impl Root {
         use serde_json::json;
         fn to_json(j: &BackgroundJob) -> serde_json::Value {
             match j.job.as_ref().unwrap() {
-                Job::CreateCollection(c) => {
-                    let state =
-                        format!("{:?}", CreateCollectionJobStatus::from_i32(c.status).unwrap());
+                Job::CreateTable(c) => {
+                    let state = format!("{:?}", CreateTableJobStatus::from_i32(c.status).unwrap());
                     let wait_create = c.wait_create.len();
                     let wait_cleanup = c.wait_cleanup.len();
                     json!({
-                        "type": "create collection",
-                        "name": c.collection_name,
+                        "type": "create table",
+                        "name": c.table_name,
                         "status": state,
                         "wait_create": wait_create,
                         "wait_cleanup": wait_cleanup,
@@ -490,12 +489,12 @@ impl Root {
                         "group_id": group_id,
                     })
                 }
-                Job::PurgeCollection(p) => {
+                Job::PurgeTable(p) => {
                     json!({
-                        "type": "purge collection",
+                        "type": "purge table",
                         "database": p.database_id,
-                        "collection": p.collection_id,
-                        "name": p.collection_name,
+                        "table": p.table_id,
+                        "name": p.table_name,
                     })
                 }
                 Job::PurgeDatabase(p) => {
@@ -526,7 +525,7 @@ impl Root {
             .collect::<Vec<_>>();
         let states = schema.list_replica_state().await?;
         let dbs = schema.list_database().await?;
-        let collections = schema.list_collection().await?;
+        let tables = schema.list_table().await?;
 
         let balanced = !self.scheduler.need_reconcile().await?;
 
@@ -563,10 +562,10 @@ impl Root {
                 .map(|d| Database {
                     id: d.id,
                     name: d.name.to_owned(),
-                    collections: collections
+                    tables: tables
                         .iter()
                         .filter(|c| c.db == d.id)
-                        .map(|c| Collection { id: c.id, name: c.name.to_owned() })
+                        .map(|c| Table { id: c.id, name: c.name.to_owned() })
                         .collect::<Vec<_>>(),
                 })
                 .collect::<Vec<_>>(),
@@ -595,7 +594,7 @@ impl Root {
                         .map(|s| {
                             let range = s.range.as_ref().unwrap();
                             let range = format!("range: {:?} to {:?}", range.start, range.end);
-                            GroupShard { id: s.id, collection: s.collection_id, range }
+                            GroupShard { id: s.id, table: s.table_id, range }
                         })
                         .collect::<Vec<_>>(),
                 })
@@ -651,58 +650,49 @@ impl Root {
         Ok(())
     }
 
-    pub async fn create_collection(
-        &self,
-        name: String,
-        database: String,
-    ) -> Result<CollectionDesc> {
+    pub async fn create_table(&self, name: String, database: String) -> Result<TableDesc> {
         let schema = self.schema()?;
         let db = schema
             .get_database(&database)
             .await?
             .ok_or_else(|| Error::DatabaseNotFound(database.to_owned()))?;
 
-        let collection = schema
-            .prepare_create_collection(CollectionDesc {
+        let table = schema
+            .prepare_create_table(TableDesc {
                 name: name.to_owned(),
                 db: db.id,
                 ..Default::default()
             })
             .await?;
-        info!(
-            "prepare create collection. database={database}, collection={collection:?}, collection_id={}", collection.id);
+        info!("prepare create table. database={database}, table={table:?}, table_id={}", table.id);
 
-        self.do_create_collection(schema.to_owned(), collection.to_owned()).await?;
+        self.do_create_table(schema.to_owned(), table.to_owned()).await?;
 
         self.watcher_hub()
             .notify_updates(vec![UpdateEvent {
-                event: Some(update_event::Event::Collection(collection.to_owned())),
+                event: Some(update_event::Event::Table(table.to_owned())),
             }])
             .await;
 
-        Ok(collection)
+        Ok(table)
     }
 
-    async fn do_create_collection(
-        &self,
-        schema: Arc<Schema>,
-        collection: CollectionDesc,
-    ) -> Result<()> {
+    async fn do_create_table(&self, schema: Arc<Schema>, table: TableDesc) -> Result<()> {
         let wait_create = {
             let range = RangePartition { start: SHARD_MIN.to_owned(), end: SHARD_MAX.to_owned() };
             let id = schema.next_shard_id().await?;
-            vec![ShardDesc { id, collection_id: collection.id.to_owned(), range: Some(range) }]
+            vec![ShardDesc { id, table_id: table.id.to_owned(), range: Some(range) }]
         };
 
         self.jobs
             .submit(
                 BackgroundJob {
-                    job: Some(Job::CreateCollection(CreateCollectionJob {
-                        database: collection.db,
-                        collection_name: collection.name.to_owned(),
+                    job: Some(Job::CreateTable(CreateTableJob {
+                        database: table.db,
+                        table_name: table.name.to_owned(),
                         wait_create,
-                        status: CreateCollectionJobStatus::CreateCollectionCreating as i32,
-                        desc: Some(collection.to_owned()),
+                        status: CreateTableJobStatus::CreateTableCreating as i32,
+                        desc: Some(table.to_owned()),
                         ..Default::default()
                     })),
                     ..Default::default()
@@ -714,28 +704,28 @@ impl Root {
         Ok(())
     }
 
-    pub async fn delete_collection(&self, name: &str, database: &DatabaseDesc) -> Result<()> {
+    pub async fn delete_table(&self, name: &str, database: &DatabaseDesc) -> Result<()> {
         let schema = self.schema()?;
         let db = self
             .get_database(&database.name)
             .await?
             .ok_or_else(|| Error::DatabaseNotFound(database.name.clone()))?;
-        let collection = schema.get_collection(db.id, name).await?;
-        if let Some(collection) = collection {
-            if collection.id < sekas_schema::FIRST_USER_COLLECTION_ID {
-                return Err(Error::InvalidArgument("unsupported delete system collection".into()));
+        let table = schema.get_table(db.id, name).await?;
+        if let Some(table) = table {
+            if table.id < sekas_schema::FIRST_USER_TABLE_ID {
+                return Err(Error::InvalidArgument("unsupported delete system table".into()));
             }
-            let collection_id = collection.id;
+            let table_id = table.id;
             let database_name = db.name.to_owned();
-            let collection_name = collection.name.to_owned();
+            let table_name = table.name.to_owned();
             self.jobs
                 .submit(
                     BackgroundJob {
-                        job: Some(Job::PurgeCollection(PurgeCollectionJob {
+                        job: Some(Job::PurgeTable(PurgeTableJob {
                             database_id: db.id,
-                            collection_id,
+                            table_id,
                             database_name,
-                            collection_name,
+                            table_name,
                             created_time: format!("{:?}", Instant::now()),
                         })),
                         ..Default::default()
@@ -743,14 +733,14 @@ impl Root {
                     false,
                 )
                 .await?;
-            schema.delete_collection(collection).await?;
+            schema.delete_table(table).await?;
             self.watcher_hub()
                 .notify_deletes(vec![DeleteEvent {
-                    event: Some(delete_event::Event::Collection(collection_id)),
+                    event: Some(delete_event::Event::Table(table_id)),
                 }])
                 .await;
         }
-        info!("delete collection, database {}, collection={}", database.name, name);
+        info!("delete table, database {}, table={}", database.name, name);
         Ok(())
     }
 
@@ -762,31 +752,25 @@ impl Root {
         self.schema()?.get_database(name).await
     }
 
-    pub async fn list_collection(&self, database: &DatabaseDesc) -> Result<Vec<CollectionDesc>> {
+    pub async fn list_table(&self, database: &DatabaseDesc) -> Result<Vec<TableDesc>> {
         let schema = self.schema()?;
         let db = schema
             .get_database(&database.name)
             .await?
             .ok_or_else(|| Error::DatabaseNotFound(database.name.clone()))?;
-        Ok(schema
-            .list_collection()
-            .await?
-            .iter()
-            .filter(|c| c.db == db.id)
-            .cloned()
-            .collect::<Vec<_>>())
+        Ok(schema.list_table().await?.iter().filter(|c| c.db == db.id).cloned().collect::<Vec<_>>())
     }
 
-    pub async fn get_collection(
+    pub async fn get_table(
         &self,
         name: &str,
         database: &DatabaseDesc,
-    ) -> Result<Option<CollectionDesc>> {
+    ) -> Result<Option<TableDesc>> {
         let db = self
             .get_database(&database.name)
             .await?
             .ok_or_else(|| Error::DatabaseNotFound(database.name.clone()))?;
-        self.schema()?.get_collection(db.id, name).await
+        self.schema()?.get_table(db.id, name).await
     }
 
     pub async fn watch(&self, cur_groups: HashMap<u64, u64>) -> Result<Watcher> {
@@ -1330,11 +1314,11 @@ pub mod diagnosis {
     pub struct Database {
         pub id: u64,
         pub name: String,
-        pub collections: Vec<Collection>,
+        pub tables: Vec<Table>,
     }
 
     #[derive(Serialize, Deserialize)]
-    pub struct Collection {
+    pub struct Table {
         pub id: u64,
         pub name: String,
     }
@@ -1375,7 +1359,7 @@ pub mod diagnosis {
 
     #[derive(Serialize, Deserialize)]
     pub struct GroupShard {
-        pub collection: u64,
+        pub table: u64,
         pub id: u64,
         pub range: String,
     }

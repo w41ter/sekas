@@ -73,24 +73,24 @@ async fn admin_delete() {
     let c = SekasClient::new(ClientOptions::default(), addrs.to_owned()).await.unwrap();
     {
         let db = c.create_database("test1".into()).await.unwrap();
-        let c1 = db.create_collection("test_co1".into()).await.unwrap();
+        let c1 = db.create_table("test_co1".into()).await.unwrap();
         db.put(c1.id, "k1".into(), "v1".into()).await.unwrap();
-        db.delete_collection("test_co1".into()).await.unwrap();
-        assert!(db.open_collection("test_co1".into()).await.is_err());
-        db.create_collection("test_co1".into()).await.unwrap();
-        let oc2 = db.open_collection("test_co1".into()).await.unwrap();
+        db.delete_table("test_co1".into()).await.unwrap();
+        assert!(db.open_table("test_co1".into()).await.is_err());
+        db.create_table("test_co1".into()).await.unwrap();
+        let oc2 = db.open_table("test_co1".into()).await.unwrap();
         assert!(db.get(oc2.id, "k1".into()).await.unwrap().is_none())
     }
     {
         c.create_database("test_db1".into()).await.unwrap();
         let db1 = c.open_database("test_db1".into()).await.unwrap();
-        db1.create_collection("co1".into()).await.unwrap();
-        assert!(db1.list_collection().await.unwrap().len() == 1);
+        db1.create_table("co1".into()).await.unwrap();
+        assert!(db1.list_table().await.unwrap().len() == 1);
         c.delete_database("test_db1".into()).await.unwrap();
         assert!(c.open_database("test_db1".into()).await.is_err());
         c.create_database("test_db1".into()).await.unwrap();
         let od2 = c.open_database("test_db1".into()).await.unwrap();
-        assert!(od2.list_collection().await.unwrap().is_empty());
+        assert!(od2.list_table().await.unwrap().is_empty());
     }
 }
 
@@ -104,8 +104,8 @@ async fn admin_basic() {
 
     let c = SekasClient::new(ClientOptions::default(), addrs.to_owned()).await.unwrap();
     let sys_db = c.open_database("__system__".to_owned()).await.unwrap();
-    let sys_db_col = sys_db.open_collection("database".to_owned()).await.unwrap();
-    let sys_col_col = sys_db.open_collection("collection".to_owned()).await.unwrap();
+    let sys_db_col = sys_db.open_table("database".to_owned()).await.unwrap();
+    let sys_col_col = sys_db.open_table("table".to_owned()).await.unwrap();
 
     // test create database.
     let new_db_name = "db1".to_owned();
@@ -132,38 +132,31 @@ async fn admin_basic() {
         new_db
     };
 
-    // test create collection.
-    let new_collection_name = "col1".to_owned();
-    let cnt = new_db.list_collection().await.unwrap().len();
-    let value =
-        sys_db.get(sys_col_col.id, collection_key(new_db_id, &new_collection_name)).await.unwrap();
+    // test create table.
+    let new_table_name = "col1".to_owned();
+    let cnt = new_db.list_table().await.unwrap().len();
+    let value = sys_db.get(sys_col_col.id, table_key(new_db_id, &new_table_name)).await.unwrap();
     assert!(value.is_none());
 
-    new_db.create_collection(new_collection_name.to_owned()).await.unwrap();
-    assert!(new_db.list_collection().await.unwrap().len() == cnt + 1);
+    new_db.create_table(new_table_name.to_owned()).await.unwrap();
+    assert!(new_db.list_table().await.unwrap().len() == cnt + 1);
 
-    let col_bytes = sys_db
-        .get(sys_col_col.id, collection_key(new_db_id, &new_collection_name))
-        .await
-        .unwrap()
-        .unwrap();
-    let col_desc = CollectionDesc::decode(&*col_bytes).unwrap();
-    assert_eq!(col_desc.name, new_collection_name);
+    let col_bytes =
+        sys_db.get(sys_col_col.id, table_key(new_db_id, &new_table_name)).await.unwrap().unwrap();
+    let col_desc = TableDesc::decode(&*col_bytes).unwrap();
+    assert_eq!(col_desc.name, new_table_name);
 
     // check meta data api.
     let m = current_metadata(addrs).await;
     let d = m.databases.iter().find(|d| d.name == new_db_name).expect("created database not found");
-    d.collections
-        .iter()
-        .find(|c| c.name == new_collection_name)
-        .expect("created collection not found");
+    d.tables.iter().find(|c| c.name == new_table_name).expect("created table not found");
     assert!(m.nodes.len() == node_count);
 }
 
-fn collection_key(database_id: u64, collection_name: &str) -> Vec<u8> {
-    let mut buf = Vec::with_capacity(core::mem::size_of::<u64>() + collection_name.len());
+fn table_key(database_id: u64, table_name: &str) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(core::mem::size_of::<u64>() + table_name.len());
     buf.extend_from_slice(database_id.to_le_bytes().as_slice());
-    buf.extend_from_slice(collection_name.as_bytes());
+    buf.extend_from_slice(table_name.as_bytes());
     buf
 }
 

@@ -18,11 +18,11 @@ pub mod txn;
 
 use sekas_api::server::v1::*;
 
-/// Return the shards of the system unity collections.
+/// Return the shards of the system unity tables.
 pub fn unity_col_shards() -> Vec<ShardDesc> {
     vec![
         col::database_shard_desc(),
-        col::collection_shard_desc(),
+        col::table_shard_desc(),
         col::meta_shard_desc(),
         col::node_shard_desc(),
         col::group_shard_desc(),
@@ -33,11 +33,11 @@ pub fn unity_col_shards() -> Vec<ShardDesc> {
     ]
 }
 
-/// Return the collections of the system database.
-pub fn collections() -> Vec<CollectionDesc> {
+/// Return the tables of the system database.
+pub fn tables() -> Vec<TableDesc> {
     vec![
         col::database_desc(),
-        col::collection_desc(),
+        col::table_desc(),
         col::meta_desc(),
         col::node_desc(),
         col::group_desc(),

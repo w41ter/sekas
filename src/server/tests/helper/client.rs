@@ -333,8 +333,8 @@ impl ClusterClient {
         Ok(None)
     }
 
-    pub async fn get_shard_desc(&self, collection_id: u64, key: &[u8]) -> Option<ShardDesc> {
-        self.router.find_shard(collection_id, key).ok().map(|(_, shard)| shard)
+    pub async fn get_shard_desc(&self, table_id: u64, key: &[u8]) -> Option<ShardDesc> {
+        self.router.find_shard(table_id, key).ok().map(|(_, shard)| shard)
     }
 
     pub async fn get_router_group_state(&self, group_id: u64) -> Option<RouterGroupState> {
@@ -343,18 +343,18 @@ impl ClusterClient {
 
     pub async fn find_router_group_state_by_key(
         &self,
-        collection_id: u64,
+        table_id: u64,
         key: &[u8],
     ) -> Option<RouterGroupState> {
-        let (_, shard) = self.router.find_shard(collection_id, key).ok()?;
+        let (_, shard) = self.router.find_shard(table_id, key).ok()?;
         self.router.find_group_by_shard(shard.id).ok()
     }
 
-    pub async fn assert_collection_ready(&self, collection_id: u64) {
+    pub async fn assert_table_ready(&self, table_id: u64) {
         let mut ready_group: HashSet<u64> = HashSet::default();
         for i in 0..255u8 {
             for _ in 0..1000 {
-                let state = match self.find_router_group_state_by_key(collection_id, &[i]).await {
+                let state = match self.find_router_group_state_by_key(table_id, &[i]).await {
                     Some(state) => state,
                     None => {
                         tokio::time::sleep(Duration::from_millis(10)).await;
@@ -363,14 +363,14 @@ impl ClusterClient {
                 };
                 if ready_group.insert(state.id) {
                     self.assert_num_group_voters(state.id, 3).await;
-                    info!("collection {collection_id} is ready");
+                    info!("table {table_id} is ready");
                     break;
                 }
             }
         }
     }
 
-    pub async fn assert_system_collection_ready(&self, required_voters: usize) {
+    pub async fn assert_system_table_ready(&self, required_voters: usize) {
         let co_desc = sekas_schema::system::col::txn_desc();
         let mut ready_group: HashSet<u64> = HashSet::default();
         for i in 0..256u64 {

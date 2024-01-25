@@ -42,8 +42,8 @@ async fn client_to_unreachable_peers() {
     };
     let client = c.app_client_with_options(opts).await;
     let db = client.create_database("test_db".to_string()).await.unwrap();
-    let co = db.create_collection("test_co".to_string()).await.unwrap();
-    c.assert_collection_ready(co.id).await;
+    let co = db.create_table("test_co".to_string()).await.unwrap();
+    c.assert_table_ready(co.id).await;
 
     let k = "key".as_bytes().to_vec();
     let v = "value".as_bytes().to_vec();
@@ -76,7 +76,7 @@ async fn client_to_unreachable_peers() {
 }
 
 #[sekas_macro::test]
-async fn client_create_duplicated_database_or_collection() {
+async fn client_create_duplicated_database_or_table() {
     let mut ctx = TestContext::new(fn_name!());
     ctx.disable_all_balance();
     let nodes = ctx.bootstrap_servers(3).await;
@@ -87,12 +87,12 @@ async fn client_create_duplicated_database_or_collection() {
         client.create_database("test_db".to_string()).await,
         Err(AppError::AlreadyExists(_))
     ));
-    let co = db.create_collection("test_co".to_string()).await.unwrap();
+    let co = db.create_table("test_co".to_string()).await.unwrap();
     assert!(matches!(
-        db.create_collection("test_co".to_string()).await,
+        db.create_table("test_co".to_string()).await,
         Err(AppError::AlreadyExists(_))
     ));
-    c.assert_collection_ready(co.id).await;
+    c.assert_table_ready(co.id).await;
 
     let k = "key".as_bytes().to_vec();
     let v = "value".as_bytes().to_vec();
@@ -103,7 +103,7 @@ async fn client_create_duplicated_database_or_collection() {
 }
 
 #[sekas_macro::test]
-async fn client_access_not_exists_database_or_collection() {
+async fn client_access_not_exists_database_or_table() {
     let mut ctx = TestContext::new(fn_name!());
     ctx.disable_all_balance();
     let nodes = ctx.bootstrap_servers(3).await;
@@ -114,9 +114,9 @@ async fn client_access_not_exists_database_or_collection() {
         Err(AppError::NotFound(_))
     ));
     let db = client.create_database("test_db".to_string()).await.unwrap();
-    assert!(matches!(db.open_collection("test_co".to_string()).await, Err(AppError::NotFound(_))));
-    let co = db.create_collection("test_co".to_string()).await.unwrap();
-    c.assert_collection_ready(co.id).await;
+    assert!(matches!(db.open_table("test_co".to_string()).await, Err(AppError::NotFound(_))));
+    let co = db.create_table("test_co".to_string()).await.unwrap();
+    c.assert_table_ready(co.id).await;
 
     let k = "key".as_bytes().to_vec();
     let v = "value".as_bytes().to_vec();
@@ -134,9 +134,9 @@ async fn client_request_to_offline_leader() {
     let c = ClusterClient::new(nodes).await;
     let client = c.app_client().await;
     let db = client.create_database("test_db".to_string()).await.unwrap();
-    let co = db.create_collection("test_co".to_string()).await.unwrap();
+    let co = db.create_table("test_co".to_string()).await.unwrap();
 
-    c.assert_collection_ready(co.id).await;
+    c.assert_table_ready(co.id).await;
     c.assert_root_group_has_promoted().await;
 
     for i in 0..1000 {

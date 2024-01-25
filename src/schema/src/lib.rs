@@ -14,16 +14,16 @@
 pub mod shard;
 pub mod system;
 
-/// The collection id of local states, which allows commit without replicating.
-pub const LOCAL_COLLECTION_ID: u64 = 0;
+/// The table id of local states, which allows commit without replicating.
+pub const LOCAL_TABLE_ID: u64 = 0;
 
-/// The first id for non-system collections.
-pub const FIRST_USER_COLLECTION_ID: u64 = 1024;
+/// The first id for non-system tables.
+pub const FIRST_USER_TABLE_ID: u64 = 1024;
 
-/// The first shard id for txn collection.
+/// The first shard id for txn table.
 pub const FIRST_TXN_SHARD_ID: u64 = 256;
 
-/// The first shard id for non-system collections.
+/// The first shard id for non-system tables.
 pub const FIRST_USER_SHARD_ID: u64 = 1024;
 
 /// The first id for non-system db.

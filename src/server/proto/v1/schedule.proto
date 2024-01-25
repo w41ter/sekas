@@ -105,30 +105,30 @@ message ShedRootLeaderTask { uint64 node_id = 1; }
 message BackgroundJob {
 	uint64 id = 1;
 	oneof job {
-		CreateCollectionJob create_collection = 2;
+		CreateTableJob create_table = 2;
 		CreateOneGroupJob create_one_group = 3;
-		PurgeCollectionJob purge_collection = 4;
+		PurgeTableJob purge_table = 4;
 		PurgeDatabaseJob purge_database = 5;
 	}
 }
 
-message CreateCollectionJob {
+message CreateTableJob {
 	uint64 database = 1;
-	string collection_name = 2;
+	string table_name = 2;
 	repeated sekas.server.v1.ShardDesc wait_create = 3;
 	repeated sekas.server.v1.ShardDesc wait_cleanup = 4;
-	CreateCollectionJobStatus status = 5;
+	CreateTableJobStatus status = 5;
 	string remark = 6;
-	sekas.server.v1.CollectionDesc desc = 7;
+	sekas.server.v1.TableDesc desc = 7;
 	string created_time = 89;
 }
 
-enum CreateCollectionJobStatus {
-	CREATE_COLLECTION_CREATING = 0;
-	CREATE_COLLECTION_ROLLBACKING = 1;
-	CREATE_COLLECTION_WRITE_DESC = 2;
-	CREATE_COLLECTION_FINISH = 3;
-	CREATE_COLLECTION_ABORT = 4;
+enum CreateTableJobStatus {
+	CREATE_TABLE_CREATING = 0;
+	CREATE_TABLE_ROLLBACKING = 1;
+	CREATE_TABLE_WRITE_DESC = 2;
+	CREATE_TABLE_FINISH = 3;
+	CREATE_TABLE_ABORT = 4;
 }
 
 message CreateOneGroupJob {
@@ -150,11 +150,11 @@ enum CreateOneGroupStatus {
 	CREATE_ONE_GROUP_ABORT = 4;
 }
 
-message PurgeCollectionJob {
+message PurgeTableJob {
 	uint64 database_id = 1;
-	uint64 collection_id = 2;
+	uint64 table_id = 2;
 	string database_name = 3;
-	string collection_name = 4;
+	string table_name = 4;
 	string created_time = 5;
 }
 

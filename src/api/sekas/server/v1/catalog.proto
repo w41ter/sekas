@@ -22,8 +22,8 @@ message DatabaseDesc {
     string name = 2;
 }
 
-// The collection.
-message CollectionDesc {
+// The table.
+message TableDesc {
     uint64 id = 1;
     uint64 db = 2;
     string name = 3;

@@ -56,8 +56,8 @@ pub struct WriteBuilder {
 
 /// A structure to hold the context about single write request.
 struct WriteContext {
-    /// The id of collection to write.
-    collection_id: u64,
+    /// The id of table to write.
+    table_id: u64,
     /// The request.
     request: WriteRequest,
     /// The response.
@@ -85,13 +85,13 @@ pub struct WriteBatchContext {
 }
 
 impl WriteBatchRequest {
-    pub fn add_delete(mut self, collection_id: u64, delete: DeleteRequest) -> Self {
-        self.deletes.push((collection_id, delete));
+    pub fn add_delete(mut self, table_id: u64, delete: DeleteRequest) -> Self {
+        self.deletes.push((table_id, delete));
         self
     }
 
-    pub fn add_put(mut self, collection_id: u64, put: PutRequest) -> Self {
-        self.puts.push((collection_id, put));
+    pub fn add_put(mut self, table_id: u64, put: PutRequest) -> Self {
+        self.puts.push((table_id, put));
         self
     }
 }
@@ -326,9 +326,9 @@ impl WriteBuilder {
 }
 
 impl WriteContext {
-    fn with_put((index, (collection_id, put)): (usize, (u64, PutRequest))) -> Self {
+    fn with_put((index, (table_id, put)): (usize, (u64, PutRequest))) -> Self {
         WriteContext {
-            collection_id,
+            table_id,
             request: WriteRequest::Put(put),
             response: None,
             index,
@@ -336,9 +336,9 @@ impl WriteContext {
         }
     }
 
-    fn with_delete((index, (collection_id, delete)): (usize, (u64, DeleteRequest))) -> Self {
+    fn with_delete((index, (table_id, delete)): (usize, (u64, DeleteRequest))) -> Self {
         WriteContext {
-            collection_id,
+            table_id,
             request: WriteRequest::Delete(delete),
             response: None,
             index,
@@ -469,8 +469,7 @@ impl WriteBatchContext {
             if write.done {
                 continue;
             }
-            let (group_state, shard_desc) =
-                router.find_shard(write.collection_id, write.user_key())?;
+            let (group_state, shard_desc) = router.find_shard(write.table_id, write.user_key())?;
             let mut client = GroupClient::new(group_state, self.client.clone());
             let req = Request::WriteIntent(WriteIntentRequest {
                 start_version: self.start_version,
@@ -558,7 +557,7 @@ impl WriteBatchContext {
             }
 
             let user_key = write.user_key();
-            let (group_state, shard_desc) = router.find_shard(write.collection_id, user_key)?;
+            let (group_state, shard_desc) = router.find_shard(write.table_id, user_key)?;
             let req = CommitIntentRequest {
                 shard_id: shard_desc.id,
                 start_version: self.start_version,

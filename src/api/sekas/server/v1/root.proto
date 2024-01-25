@@ -49,7 +49,7 @@ message WatchResponse {
 			GroupDesc group = 2;
 			GroupState group_state = 3;
 			DatabaseDesc database = 4;
-			CollectionDesc collection = 5;
+			TableDesc table = 5;
 		}
 	}
 
@@ -58,7 +58,7 @@ message WatchResponse {
 			uint64 node = 1;
 			uint64 group = 2;
 			uint64 database = 3;
-			uint64 collection = 4;
+			uint64 table = 4;
 			uint64 group_state = 5;
 		}
 	}
@@ -132,11 +132,11 @@ message AdminRequestUnion {
         CreateDatabaseRequest create_database = 3;
         UpdateDatabaseRequest update_database = 4;
         DeleteDatabaseRequest delete_database = 5;
-        GetCollectionRequest get_collection = 6;
-        ListCollectionsRequest list_collections = 7;
-        CreateCollectionRequest create_collection = 8;
-        UpdateCollectionRequest update_collection = 9;
-        DeleteCollectionRequest delete_collection = 10;
+        GetTableRequest get_table = 6;
+        ListTablesRequest list_tables = 7;
+        CreateTableRequest create_table = 8;
+        UpdateTableRequest update_table = 9;
+        DeleteTableRequest delete_table = 10;
     }
 }
 
@@ -147,11 +147,11 @@ message AdminResponseUnion {
         CreateDatabaseResponse create_database = 3;
         UpdateDatabaseResponse update_database = 4;
         DeleteDatabaseResponse delete_database = 5;
-        GetCollectionResponse get_collection = 6;
-        ListCollectionsResponse list_collections = 7;
-        CreateCollectionResponse create_collection = 8;
-        UpdateCollectionResponse update_collection = 9;
-        DeleteCollectionResponse delete_collection = 10;
+        GetTableResponse get_table = 6;
+        ListTablesResponse list_tables = 7;
+        CreateTableResponse create_table = 8;
+        UpdateTableResponse update_table = 9;
+        DeleteTableResponse delete_table = 10;
     }
 }
 
@@ -184,36 +184,36 @@ message DeleteDatabaseRequest {
 
 message DeleteDatabaseResponse {}
 
-message GetCollectionRequest {
-    // Required. The name of the collection.
+message GetTableRequest {
+    // Required. The name of the table.
     string name = 1;
     DatabaseDesc database = 2;
 }
 
-message GetCollectionResponse { CollectionDesc collection = 1; }
+message GetTableResponse { TableDesc table = 1; }
 
-message ListCollectionsRequest {
+message ListTablesRequest {
     DatabaseDesc database = 1;
 }
 
-message ListCollectionsResponse { repeated CollectionDesc collections = 1; }
+message ListTablesResponse { repeated TableDesc tables = 1; }
 
-message CreateCollectionRequest {
-    // Required. The name of the collection.
+message CreateTableRequest {
+    // Required. The name of the table.
     string name = 1;
     DatabaseDesc database = 2;
 }
 
-message CreateCollectionResponse { CollectionDesc collection = 1; }
+message CreateTableResponse { TableDesc table = 1; }
 
-message UpdateCollectionRequest {}
+message UpdateTableRequest {}
 
-message UpdateCollectionResponse {}
+message UpdateTableResponse {}
 
-message DeleteCollectionRequest {
-    // Required. The name of the collection.
+message DeleteTableRequest {
+    // Required. The name of the table.
     string name = 1;
     DatabaseDesc database = 2;
 }
 
-message DeleteCollectionResponse {}
+message DeleteTableResponse {}
