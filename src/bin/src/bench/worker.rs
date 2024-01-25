@@ -24,7 +24,7 @@ use super::AppConfig;
 
 pub struct Job {
     db: Database,
-    collection_id: u64,
+    table_id: u64,
 
     consumed: usize,
     num_op: usize,
@@ -76,9 +76,9 @@ impl Generator {
 }
 
 impl Job {
-    pub fn new(db: Database, collection_id: u64, seed: u64, num_op: usize, cfg: AppConfig) -> Job {
+    pub fn new(db: Database, table_id: u64, seed: u64, num_op: usize, cfg: AppConfig) -> Job {
         let limited = cfg.data.limited;
-        Job { db, collection_id, consumed: 0, num_op, gen: Generator::new(seed, cfg, 0..limited) }
+        Job { db, table_id, consumed: 0, num_op, gen: Generator::new(seed, cfg, 0..limited) }
     }
 }
 
@@ -97,9 +97,9 @@ impl Iterator for Job {
 
 pub async fn worker_main(_id: usize, mut job: Job) {
     let db = job.db.clone();
-    let collection_id = job.collection_id;
+    let table_id = job.table_id;
     for next_op in &mut job {
-        execute(&db, collection_id, next_op).await;
+        execute(&db, table_id, next_op).await;
     }
 }
 

@@ -21,7 +21,7 @@ use clap::Parser;
 use lazy_static::lazy_static;
 use rustyline::error::ReadlineError;
 use rustyline::Editor;
-use sekas_client::{AppError, ClientOptions, CollectionDesc, Database, SekasClient};
+use sekas_client::{AppError, ClientOptions, Database, SekasClient, TableDesc};
 
 type ParseResult<T = Request> = std::result::Result<T, String>;
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
@@ -73,9 +73,9 @@ pub enum Token {
 enum Request {
     None,
     Usage,
-    Get { key: Vec<u8>, db: String, coll: String },
-    Put { key: Vec<u8>, value: Vec<u8>, db: String, coll: String },
-    Delete { key: Vec<u8>, db: String, coll: String },
+    Get { key: Vec<u8>, db: String, table: String },
+    Put { key: Vec<u8>, value: Vec<u8>, db: String, table: String },
+    Delete { key: Vec<u8>, db: String, table: String },
     Config { key: String, value: String },
 }
 
@@ -83,11 +83,11 @@ struct Session {
     client: SekasClient,
     config: HashMap<String, String>,
     databases: HashMap<String, Database>,
-    collections: HashMap<String, CollectionDesc>,
+    tables: HashMap<String, TableDesc>,
 }
 
 const CONFIG_DB: &str = "database";
-const CONFIG_COLL: &str = "collection";
+const CONFIG_COLL: &str = "table";
 const CONFIG_CREATE_IF_MISSING: &str = "create-if-missing";
 
 impl Session {
@@ -102,26 +102,26 @@ impl Session {
                 self.config.insert(key, value);
                 Ok(())
             }
-            Request::Get { key, db, coll } => {
+            Request::Get { key, db, table } => {
                 let db = self.open_database(&db).await?;
-                let coll = self.open_collection(&db, &coll).await?;
-                if let Some(value) = db.get(coll.id, key).await? {
+                let table = self.open_table(&db, &table).await?;
+                if let Some(value) = db.get(table.id, key).await? {
                     std::io::stdout().write_all(&value)?;
                 }
                 std::io::stdout().write_all(&[b'\n'])?;
                 std::io::stdout().flush()?;
                 Ok(())
             }
-            Request::Put { key, value, db, coll } => {
+            Request::Put { key, value, db, table } => {
                 let db = self.open_database(&db).await?;
-                let coll = self.open_collection(&db, &coll).await?;
-                db.put(coll.id, key, value).await?;
+                let table = self.open_table(&db, &table).await?;
+                db.put(table.id, key, value).await?;
                 Ok(())
             }
-            Request::Delete { key, db, coll } => {
+            Request::Delete { key, db, table } => {
                 let db = self.open_database(&db).await?;
-                let coll = self.open_collection(&db, &coll).await?;
-                db.delete(coll.id, key).await?;
+                let table = self.open_table(&db, &table).await?;
+                db.delete(table.id, key).await?;
                 Ok(())
             }
         }
@@ -154,11 +154,11 @@ impl Session {
         };
 
         let (input, db) = self.parse_or_get_config(input, Token::Db, CONFIG_DB)?;
-        let (input, coll) = self.parse_or_get_config(input, Token::Coll, CONFIG_COLL)?;
+        let (input, table) = self.parse_or_get_config(input, Token::Coll, CONFIG_COLL)?;
 
         must_eof(input)?;
 
-        Ok(Request::Get { key, db, coll })
+        Ok(Request::Get { key, db, table })
     }
 
     fn parse_put_request(&self, input: &[u8]) -> ParseResult {
@@ -173,11 +173,11 @@ impl Session {
         };
 
         let (input, db) = self.parse_or_get_config(input, Token::Db, CONFIG_DB)?;
-        let (input, coll) = self.parse_or_get_config(input, Token::Coll, CONFIG_COLL)?;
+        let (input, table) = self.parse_or_get_config(input, Token::Coll, CONFIG_COLL)?;
 
         must_eof(input)?;
 
-        Ok(Request::Put { key, value, db, coll })
+        Ok(Request::Put { key, value, db, table })
     }
 
     fn parse_delete_request(&self, input: &[u8]) -> ParseResult {
@@ -187,11 +187,11 @@ impl Session {
         };
 
         let (input, db) = self.parse_or_get_config(input, Token::Db, CONFIG_DB)?;
-        let (input, coll) = self.parse_or_get_config(input, Token::Coll, CONFIG_COLL)?;
+        let (input, table) = self.parse_or_get_config(input, Token::Coll, CONFIG_COLL)?;
 
         must_eof(input)?;
 
-        Ok(Request::Delete { key, db, coll })
+        Ok(Request::Delete { key, db, table })
     }
 
     fn parse_config_request(&self, input: &[u8]) -> ParseResult {
@@ -261,19 +261,13 @@ impl Session {
         }
     }
 
-    async fn create_or_open_collection(
-        &mut self,
-        db: &Database,
-        collection: &str,
-    ) -> Result<CollectionDesc> {
-        match db.create_collection(collection.to_owned()).await {
+    async fn create_or_open_table(&mut self, db: &Database, table: &str) -> Result<TableDesc> {
+        match db.create_table(table.to_owned()).await {
             Ok(co) => {
-                self.collections.insert(format!("{}-{}", db.name(), collection), co.clone());
+                self.tables.insert(format!("{}-{}", db.name(), table), co.clone());
                 Ok(co)
             }
-            Err(AppError::AlreadyExists(_)) => {
-                Ok(db.open_collection(collection.to_owned()).await?)
-            }
+            Err(AppError::AlreadyExists(_)) => Ok(db.open_table(table.to_owned()).await?),
             Err(e) => Err(e.into()),
         }
     }
@@ -298,21 +292,21 @@ impl Session {
         }
     }
 
-    async fn open_collection(&mut self, db: &Database, coll: &str) -> Result<CollectionDesc> {
+    async fn open_table(&mut self, db: &Database, table: &str) -> Result<TableDesc> {
         let create_if_missing =
             self.config.get(CONFIG_CREATE_IF_MISSING).map(|v| v == "true").unwrap_or_default();
 
-        let name = format!("{}-{}", db.name(), coll);
-        if let Some(co) = self.collections.get(&name).cloned() {
+        let name = format!("{}-{}", db.name(), table);
+        if let Some(co) = self.tables.get(&name).cloned() {
             Ok(co)
         } else {
-            let co = match db.open_collection(coll.to_owned()).await {
+            let co = match db.open_table(table.to_owned()).await {
                 Ok(co) => {
-                    self.collections.insert(coll.to_owned(), co.clone());
+                    self.tables.insert(table.to_owned(), co.clone());
                     co
                 }
                 Err(AppError::NotFound(_)) if create_if_missing => {
-                    self.create_or_open_collection(db, coll).await?
+                    self.create_or_open_table(db, table).await?
                 }
                 Err(e) => {
                     return Err(e.into());
@@ -365,10 +359,10 @@ fn usage() -> Result<()> {
     o("usage: cmd [args]\n\n")?;
     o("commands: \n")?;
     o("\t help             \t show usage\n")?;
-    o("\t config key value \t global parameters, supported [database, collection, create-if-missing]\n")?;
-    o("\t get key [db <db-name>] [coll <co-name>]\n")?;
-    o("\t put key value [db <db-name>] [coll <co-name>]\n")?;
-    o("\t delete key [db <db-name>] [coll <co-name>]\n")?;
+    o("\t config key value \t global parameters, supported [database, table, create-if-missing]\n")?;
+    o("\t get key [db <db-name>] [table <co-name>]\n")?;
+    o("\t put key value [db <db-name>] [table <co-name>]\n")?;
+    o("\t delete key [db <db-name>] [table <co-name>]\n")?;
     Ok(())
 }
 
@@ -382,7 +376,7 @@ async fn new_session(addrs: Vec<String>) -> Result<Session> {
         client,
         config: HashMap::default(),
         databases: HashMap::default(),
-        collections: HashMap::default(),
+        tables: HashMap::default(),
     })
 }
 
@@ -476,7 +470,7 @@ lazy_static! {
         m.insert(Vec::from(&b"help"[..]), Token::Help);
         m.insert(Vec::from(&b"config"[..]), Token::Config);
         m.insert(Vec::from(&b"db"[..]), Token::Db);
-        m.insert(Vec::from(&b"coll"[..]), Token::Coll);
+        m.insert(Vec::from(&b"table"[..]), Token::Coll);
         m
     };
 }

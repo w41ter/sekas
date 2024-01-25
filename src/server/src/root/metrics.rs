@@ -56,7 +56,7 @@ make_static_metric! {
             reallocate_replica,
             migrate_shard,
             transfer_leader,
-            create_collection_shards,
+            create_table_shards,
             shed_group_leaders,
             shed_root_leader,
         }
@@ -80,7 +80,7 @@ make_static_metric! {
             finish,
         }
     }
-    pub struct ReconcileScheduleCreateCollectionStepDuration: Histogram {
+    pub struct ReconcileScheduleCreateTableStepDuration: Histogram {
         "type" => {
             create,
             write_desc,
@@ -161,16 +161,16 @@ lazy_static! {
         ReconcileScheduleReallocateReplicaStepDuration::from(
             &RECONCILE_REALLOCATE_REPLICA_STEP_DURATION_SECONDS_VEC
         );
-    pub static ref RECONCILE_CREATE_COLLECTION_STEP_DURATION_SECONDS_VEC: HistogramVec =
+    pub static ref RECONCILE_CREATE_TABLE_STEP_DURATION_SECONDS_VEC: HistogramVec =
         register_histogram_vec!(
-            "root_reconcile_scheduler_create_collection_step_duration_seconds",
-            "the step create_ collection shards handle duration of root reconcile scheduler",
+            "root_reconcile_scheduler_create_table_step_duration_seconds",
+            "the step create_ table shards handle duration of root reconcile scheduler",
             &["type"]
         )
         .unwrap();
-    pub static ref RECONCILE_CREATE_COLLECTION_STEP_DURATION_SECONDS: ReconcileScheduleCreateCollectionStepDuration =
-        ReconcileScheduleCreateCollectionStepDuration::from(
-            &RECONCILE_CREATE_COLLECTION_STEP_DURATION_SECONDS_VEC
+    pub static ref RECONCILE_CREATE_TABLE_STEP_DURATION_SECONDS: ReconcileScheduleCreateTableStepDuration =
+        ReconcileScheduleCreateTableStepDuration::from(
+            &RECONCILE_CREATE_TABLE_STEP_DURATION_SECONDS_VEC
         );
     pub static ref RECONCILE_RETRY_TASK_TOTAL_VEC: IntCounterVec = register_int_counter_vec!(
         "root_reconcile_scheduler_task_retry_total",

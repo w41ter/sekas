@@ -141,38 +141,32 @@ impl Client {
         Ok(resp.database)
     }
 
-    pub async fn create_collection(
-        &self,
-        db_desc: DatabaseDesc,
-        name: String,
-    ) -> Result<CollectionDesc> {
-        let resp = self.admin(AdminRequestBuilder::create_collection(db_desc, name)).await?;
-        let resp = extract_admin_response!(resp.response, Response::CreateCollection);
-        resp.collection
-            .ok_or_else(|| ClientError::Internal("The collection is not set".to_owned().into()))
+    pub async fn create_table(&self, db_desc: DatabaseDesc, name: String) -> Result<TableDesc> {
+        let resp = self.admin(AdminRequestBuilder::create_table(db_desc, name)).await?;
+        let resp = extract_admin_response!(resp.response, Response::CreateTable);
+        resp.table.ok_or_else(|| ClientError::Internal("The table is not set".to_owned().into()))
     }
 
-    pub async fn delete_collection(&self, db_desc: DatabaseDesc, name: String) -> Result<()> {
-        let resp =
-            self.admin(AdminRequestBuilder::delete_collection(db_desc.clone(), name)).await?;
-        extract_admin_response!(resp.response, Response::DeleteCollection);
+    pub async fn delete_table(&self, db_desc: DatabaseDesc, name: String) -> Result<()> {
+        let resp = self.admin(AdminRequestBuilder::delete_table(db_desc.clone(), name)).await?;
+        extract_admin_response!(resp.response, Response::DeleteTable);
         Ok(())
     }
 
-    pub async fn list_collection(&self, db_desc: DatabaseDesc) -> Result<Vec<CollectionDesc>> {
-        let resp = self.admin(AdminRequestBuilder::list_collection(db_desc)).await?;
-        let resp = extract_admin_response!(resp.response, Response::ListCollections);
-        Ok(resp.collections)
+    pub async fn list_table(&self, db_desc: DatabaseDesc) -> Result<Vec<TableDesc>> {
+        let resp = self.admin(AdminRequestBuilder::list_table(db_desc)).await?;
+        let resp = extract_admin_response!(resp.response, Response::ListTables);
+        Ok(resp.tables)
     }
 
-    pub async fn get_collection(
+    pub async fn get_table(
         &self,
         db_desc: DatabaseDesc,
         name: String,
-    ) -> Result<Option<CollectionDesc>> {
-        let resp = self.admin(AdminRequestBuilder::get_collection(db_desc, name)).await?;
-        let resp = extract_admin_response!(resp.response, Response::GetCollection);
-        Ok(resp.collection)
+    ) -> Result<Option<TableDesc>> {
+        let resp = self.admin(AdminRequestBuilder::get_table(db_desc, name)).await?;
+        let resp = extract_admin_response!(resp.response, Response::GetTable);
+        Ok(resp.table)
     }
 
     pub async fn join_node(&self, req: JoinNodeRequest) -> Result<JoinNodeResponse> {
@@ -425,10 +419,10 @@ impl AdminRequestBuilder {
         }
     }
 
-    pub fn create_collection(database: DatabaseDesc, co_name: String) -> AdminRequest {
+    pub fn create_table(database: DatabaseDesc, co_name: String) -> AdminRequest {
         AdminRequest {
             request: Some(AdminRequestUnion {
-                request: Some(Request::CreateCollection(CreateCollectionRequest {
+                request: Some(Request::CreateTable(CreateTableRequest {
                     name: co_name,
                     database: Some(database),
                 })),
@@ -436,10 +430,10 @@ impl AdminRequestBuilder {
         }
     }
 
-    pub fn delete_collection(database: DatabaseDesc, co_name: String) -> AdminRequest {
+    pub fn delete_table(database: DatabaseDesc, co_name: String) -> AdminRequest {
         AdminRequest {
             request: Some(AdminRequestUnion {
-                request: Some(Request::DeleteCollection(DeleteCollectionRequest {
+                request: Some(Request::DeleteTable(DeleteTableRequest {
                     name: co_name,
                     database: Some(database),
                 })),
@@ -447,20 +441,18 @@ impl AdminRequestBuilder {
         }
     }
 
-    pub fn list_collection(database: DatabaseDesc) -> AdminRequest {
+    pub fn list_table(database: DatabaseDesc) -> AdminRequest {
         AdminRequest {
             request: Some(AdminRequestUnion {
-                request: Some(Request::ListCollections(ListCollectionsRequest {
-                    database: Some(database),
-                })),
+                request: Some(Request::ListTables(ListTablesRequest { database: Some(database) })),
             }),
         }
     }
 
-    pub fn get_collection(database: DatabaseDesc, co_name: String) -> AdminRequest {
+    pub fn get_table(database: DatabaseDesc, co_name: String) -> AdminRequest {
         AdminRequest {
             request: Some(AdminRequestUnion {
-                request: Some(Request::GetCollection(GetCollectionRequest {
+                request: Some(Request::GetTable(GetTableRequest {
                     name: co_name,
                     database: Some(database),
                 })),

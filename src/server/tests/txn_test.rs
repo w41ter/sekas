@@ -34,5 +34,5 @@ fn init() {
 
 #[sekas_macro::test]
 async fn txn_write_batch_basic() {
-    // TODO(walter) add two collection and write in batch.
+    // TODO(walter) add two table and write in batch.
 }

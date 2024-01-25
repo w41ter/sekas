@@ -25,7 +25,7 @@ pub struct AppConfig {
     pub addrs: Vec<String>,
 
     pub database: String,
-    pub collection: String,
+    pub table: String,
     pub create_if_missing: bool,
 
     pub seed: Option<u64>,
@@ -43,7 +43,7 @@ impl Default for AppConfig {
             operation: 100000,
             addrs: vec!["0.0.0.0:21805".into()],
             database: "db".into(),
-            collection: "table".into(),
+            table: "table".into(),
             create_if_missing: true,
             seed: None,
             data: DataConfig::default(),

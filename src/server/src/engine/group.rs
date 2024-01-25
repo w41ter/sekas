@@ -25,7 +25,7 @@ use sekas_api::server::v1::*;
 use sekas_schema::shard;
 
 use super::RawDb;
-use crate::constants::{INITIAL_EPOCH, LOCAL_COLLECTION_ID};
+use crate::constants::{INITIAL_EPOCH, LOCAL_TABLE_ID};
 use crate::serverpb::v1::*;
 use crate::{EngineConfig, Error, Result};
 
@@ -45,7 +45,7 @@ pub struct WriteBatch {
 /// A structure supports grouped data, metadata saving and retriving.
 ///
 /// NOTE: Shard are managed by `GroupEngine` instead of a shard engine, because
-/// shards from different collections in the same group needs to persist on disk
+/// shards from different tables in the same group needs to persist on disk
 /// at the same time, to guarantee the accuracy of applied index.
 #[derive(Clone)]
 pub(crate) struct GroupEngine
@@ -83,7 +83,7 @@ enum SnapshotRange {
 /// analyze and return the data (including tombstone).
 #[derive(Debug)]
 pub(crate) struct Snapshot<'a> {
-    collection_id: u64,
+    table_id: u64,
     range: Option<SnapshotRange>,
 
     core: SnapshotCore<'a>,
@@ -265,11 +265,11 @@ impl GroupEngine {
         version: u64,
     ) -> Result<()> {
         let desc = self.shard_desc(shard_id)?;
-        let collection_id = desc.collection_id;
-        debug_assert_ne!(collection_id, LOCAL_COLLECTION_ID);
+        let table_id = desc.table_id;
+        debug_assert_ne!(table_id, LOCAL_TABLE_ID);
         debug_assert!(shard::belong_to(&desc, key));
 
-        wb.put(keys::mvcc_key(collection_id, key, version), values::data(value));
+        wb.put(keys::mvcc_key(table_id, key, version), values::data(value));
 
         Ok(())
     }
@@ -283,11 +283,11 @@ impl GroupEngine {
         version: u64,
     ) -> Result<()> {
         let desc = self.shard_desc(shard_id)?;
-        let collection_id = desc.collection_id;
-        debug_assert_ne!(collection_id, LOCAL_COLLECTION_ID);
+        let table_id = desc.table_id;
+        debug_assert_ne!(table_id, LOCAL_TABLE_ID);
         debug_assert!(shard::belong_to(&desc, key));
 
-        wb.put(keys::mvcc_key(collection_id, key, version), values::tombstone());
+        wb.put(keys::mvcc_key(table_id, key, version), values::tombstone());
 
         Ok(())
     }
@@ -300,11 +300,11 @@ impl GroupEngine {
         version: u64,
     ) -> Result<()> {
         let desc = self.shard_desc(shard_id)?;
-        let collection_id = desc.collection_id;
-        debug_assert_ne!(collection_id, LOCAL_COLLECTION_ID);
+        let table_id = desc.table_id;
+        debug_assert_ne!(table_id, LOCAL_TABLE_ID);
         debug_assert!(shard::belong_to(&desc, key));
 
-        wb.delete(keys::mvcc_key(collection_id, key, version));
+        wb.delete(keys::mvcc_key(table_id, key, version));
 
         Ok(())
     }
@@ -354,31 +354,31 @@ impl GroupEngine {
         use rocksdb::{Direction, IteratorMode, ReadOptions};
 
         let desc = self.shard_desc(shard_id)?;
-        let collection_id = desc.collection_id;
-        debug_assert_ne!(collection_id, LOCAL_COLLECTION_ID);
+        let table_id = desc.table_id;
+        debug_assert_ne!(table_id, LOCAL_TABLE_ID);
 
         let opts = ReadOptions::default();
         let key = match &mode {
             SnapshotMode::Start { start_key: Some(start_key) } => {
                 debug_assert!(shard::belong_to(&desc, start_key));
-                keys::raw(collection_id, start_key)
+                keys::raw(table_id, start_key)
             }
             SnapshotMode::Start { start_key: None } => {
                 // An empty key is equivalent to range start key.
-                keys::raw(collection_id, &shard::start_key(&desc))
+                keys::raw(table_id, &shard::start_key(&desc))
             }
             SnapshotMode::Key { key } => {
                 debug_assert!(shard::belong_to(&desc, key));
-                keys::raw(collection_id, key)
+                keys::raw(table_id, key)
             }
             SnapshotMode::Prefix { key } => {
                 debug_assert!(shard::belong_to(&desc, key));
-                keys::raw(collection_id, key)
+                keys::raw(table_id, key)
             }
         };
         let inner_mode = IteratorMode::From(&key, Direction::Forward);
         let iter = self.raw_db.iterator_cf_opt(&self.cf_handle(), opts, inner_mode);
-        Ok(Snapshot::new(collection_id, iter, mode, &desc))
+        Ok(Snapshot::new(table_id, iter, mode, &desc))
     }
 
     pub fn raw_iter(&self) -> Result<RawIterator> {
@@ -493,7 +493,7 @@ impl<'a> Iterator for RawIterator<'a> {
 
 impl<'a> Snapshot<'a> {
     fn new<'b>(
-        collection_id: u64,
+        table_id: u64,
         db_iter: rocksdb::DBIterator<'a>,
         snapshot_mode: SnapshotMode<'b>,
         desc: &ShardDesc,
@@ -508,7 +508,7 @@ impl<'a> Snapshot<'a> {
         };
 
         Snapshot {
-            collection_id,
+            table_id,
             range,
             core: SnapshotCore { db_iter, current_key: None, cached_entry: None },
         }
@@ -537,7 +537,7 @@ impl<'a> Snapshot<'a> {
                 }
             }
 
-            if let Err(err) = core.next_entry(self.collection_id)? {
+            if let Err(err) = core.next_entry(self.table_id)? {
                 return Some(Err(err));
             }
         }
@@ -555,7 +555,7 @@ impl<'a> Snapshot<'a> {
                 }
             }
 
-            if let Err(err) = core.next_entry(self.collection_id)? {
+            if let Err(err) = core.next_entry(self.table_id)? {
                 return Some(Err(err));
             }
         }
@@ -563,14 +563,14 @@ impl<'a> Snapshot<'a> {
 }
 
 impl<'a> SnapshotCore<'a> {
-    fn next_entry(&mut self, collection_id: u64) -> Option<Result<()>> {
+    fn next_entry(&mut self, table_id: u64) -> Option<Result<()>> {
         let (key, value) = match self.db_iter.next()? {
             Ok(v) => v,
             Err(err) => return Some(Err(err.into())),
         };
 
         let prefix = &key[..core::mem::size_of::<u64>()];
-        if prefix != collection_id.to_le_bytes().as_slice() {
+        if prefix != table_id.to_le_bytes().as_slice() {
             return None;
         }
 
@@ -675,23 +675,23 @@ mod keys {
     const MIGRATE_STATE: &[u8] = b"MIGRATE_STATE";
 
     #[inline]
-    pub fn raw(collection_id: u64, key: &[u8]) -> Vec<u8> {
+    pub fn raw(table_id: u64, key: &[u8]) -> Vec<u8> {
         if key.is_empty() {
-            collection_id.to_le_bytes().as_slice().to_owned()
+            table_id.to_le_bytes().as_slice().to_owned()
         } else {
-            mvcc_key(collection_id, key, u64::MAX)
+            mvcc_key(table_id, key, u64::MAX)
         }
     }
 
     /// Generate mvcc key with the memcomparable format.
-    pub fn mvcc_key(collection_id: u64, key: &[u8], version: u64) -> Vec<u8> {
+    pub fn mvcc_key(table_id: u64, key: &[u8], version: u64) -> Vec<u8> {
         use std::io::{Cursor, Read};
 
         debug_assert!(!key.is_empty());
         let actual_len = (((key.len() - 1) / 8) + 1) * 9;
         let buf_len = 2 * core::mem::size_of::<u64>() + actual_len;
         let mut buf = Vec::with_capacity(buf_len);
-        buf.extend_from_slice(collection_id.to_le_bytes().as_slice());
+        buf.extend_from_slice(table_id.to_le_bytes().as_slice());
         let mut cursor = Cursor::new(key);
         while !cursor.is_empty() {
             let mut group = [0u8; 8];
@@ -731,7 +731,7 @@ mod keys {
     #[inline]
     pub fn apply_state() -> Vec<u8> {
         let mut buf = Vec::with_capacity(core::mem::size_of::<u64>() + APPLY_STATE.len());
-        buf.extend_from_slice(super::LOCAL_COLLECTION_ID.to_le_bytes().as_slice());
+        buf.extend_from_slice(super::LOCAL_TABLE_ID.to_le_bytes().as_slice());
         buf.extend_from_slice(APPLY_STATE);
         buf
     }
@@ -739,7 +739,7 @@ mod keys {
     #[inline]
     pub fn descriptor() -> Vec<u8> {
         let mut buf = Vec::with_capacity(core::mem::size_of::<u64>() + DESCRIPTOR.len());
-        buf.extend_from_slice(super::LOCAL_COLLECTION_ID.to_le_bytes().as_slice());
+        buf.extend_from_slice(super::LOCAL_TABLE_ID.to_le_bytes().as_slice());
         buf.extend_from_slice(DESCRIPTOR);
         buf
     }
@@ -747,7 +747,7 @@ mod keys {
     #[inline]
     pub fn move_shard_state() -> Vec<u8> {
         let mut buf = Vec::with_capacity(core::mem::size_of::<u64>() + MIGRATE_STATE.len());
-        buf.extend_from_slice(super::LOCAL_COLLECTION_ID.to_le_bytes().as_slice());
+        buf.extend_from_slice(super::LOCAL_TABLE_ID.to_le_bytes().as_slice());
         buf.extend_from_slice(MIGRATE_STATE);
         buf
     }
@@ -1356,7 +1356,7 @@ mod tests {
 
         let mut iter = group_engine.raw_iter().unwrap();
 
-        // First is the local collection datum.
+        // First is the local table datum.
         let (k, _) = iter.next().unwrap().unwrap();
         assert!(k[..] == keys::apply_state());
         let (k, _) = iter.next().unwrap().unwrap();
@@ -1365,7 +1365,7 @@ mod tests {
         // The the user payloads.
         for payload in &payloads {
             let (k, _) = iter.next().unwrap().unwrap();
-            let col_id = group_engine.shard_desc(1).unwrap().collection_id;
+            let col_id = group_engine.shard_desc(1).unwrap().table_id;
             let expect_key = keys::mvcc_key(col_id, payload.key, payload.version);
             assert!(
                 k[..] == expect_key,

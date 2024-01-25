@@ -121,24 +121,24 @@ impl Server {
                 let res = self.handle_list_database(req).await?;
                 admin_response_union::Response::ListDatabases(res)
             }
-            admin_request_union::Request::CreateCollection(req) => {
-                let res = self.handle_create_collection(req).await?;
-                admin_response_union::Response::CreateCollection(res)
+            admin_request_union::Request::CreateTable(req) => {
+                let res = self.handle_create_table(req).await?;
+                admin_response_union::Response::CreateTable(res)
             }
-            admin_request_union::Request::UpdateCollection(_req) => {
+            admin_request_union::Request::UpdateTable(_req) => {
                 todo!()
             }
-            admin_request_union::Request::DeleteCollection(req) => {
-                let res = self.handle_delete_collection(req).await?;
-                admin_response_union::Response::DeleteCollection(res)
+            admin_request_union::Request::DeleteTable(req) => {
+                let res = self.handle_delete_table(req).await?;
+                admin_response_union::Response::DeleteTable(res)
             }
-            admin_request_union::Request::GetCollection(req) => {
-                let res = self.handle_get_collection(req).await?;
-                admin_response_union::Response::GetCollection(res)
+            admin_request_union::Request::GetTable(req) => {
+                let res = self.handle_get_table(req).await?;
+                admin_response_union::Response::GetTable(res)
             }
-            admin_request_union::Request::ListCollections(req) => {
-                let res = self.handle_list_collection(req).await?;
-                admin_response_union::Response::ListCollections(res)
+            admin_request_union::Request::ListTables(req) => {
+                let res = self.handle_list_table(req).await?;
+                admin_response_union::Response::ListTables(res)
             }
         };
         Ok(AdminResponseUnion { response: Some(res) })
@@ -173,48 +173,36 @@ impl Server {
         Ok(ListDatabasesResponse { databases })
     }
 
-    async fn handle_create_collection(
-        &self,
-        req: CreateCollectionRequest,
-    ) -> Result<CreateCollectionResponse> {
-        let database = req.database.ok_or_else(|| {
-            Error::InvalidArgument("CreateCollectionRequest::database".to_owned())
-        })?;
-        let desc = self.root.create_collection(req.name, database.name).await?;
-        Ok(CreateCollectionResponse { collection: Some(desc) })
+    async fn handle_create_table(&self, req: CreateTableRequest) -> Result<CreateTableResponse> {
+        let database = req
+            .database
+            .ok_or_else(|| Error::InvalidArgument("CreateTableRequest::database".to_owned()))?;
+        let desc = self.root.create_table(req.name, database.name).await?;
+        Ok(CreateTableResponse { table: Some(desc) })
     }
 
-    async fn handle_delete_collection(
-        &self,
-        req: DeleteCollectionRequest,
-    ) -> Result<DeleteCollectionResponse> {
+    async fn handle_delete_table(&self, req: DeleteTableRequest) -> Result<DeleteTableResponse> {
         let database = req.database.ok_or_else(|| {
-            Error::InvalidArgument("DeleteCollectionRequest::database is required".to_owned())
+            Error::InvalidArgument("DeleteTableRequest::database is required".to_owned())
         })?;
-        self.root.delete_collection(&req.name, &database).await?;
-        Ok(DeleteCollectionResponse {})
+        self.root.delete_table(&req.name, &database).await?;
+        Ok(DeleteTableResponse {})
     }
 
-    async fn handle_get_collection(
-        &self,
-        req: GetCollectionRequest,
-    ) -> Result<GetCollectionResponse> {
+    async fn handle_get_table(&self, req: GetTableRequest) -> Result<GetTableResponse> {
         let database = req.database.ok_or_else(|| {
-            Error::InvalidArgument("GetCollectionRequest::database is required".to_owned())
+            Error::InvalidArgument("GetTableRequest::database is required".to_owned())
         })?;
-        let collection = self.root.get_collection(&req.name, &database).await?;
-        Ok(GetCollectionResponse { collection })
+        let table = self.root.get_table(&req.name, &database).await?;
+        Ok(GetTableResponse { table })
     }
 
-    async fn handle_list_collection(
-        &self,
-        req: ListCollectionsRequest,
-    ) -> Result<ListCollectionsResponse> {
+    async fn handle_list_table(&self, req: ListTablesRequest) -> Result<ListTablesResponse> {
         let database = req.database.ok_or_else(|| {
-            Error::InvalidArgument("ListCollectionRequest::database is required".to_owned())
+            Error::InvalidArgument("ListTableRequest::database is required".to_owned())
         })?;
-        let collections = self.root.list_collection(&database).await?;
-        Ok(ListCollectionsResponse { collections })
+        let tables = self.root.list_table(&database).await?;
+        Ok(ListTablesResponse { tables })
     }
 
     async fn wrap<T>(&self, result: Result<T>) -> Result<T> {

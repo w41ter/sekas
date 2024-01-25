@@ -728,7 +728,7 @@ mod tests {
     use super::*;
     use crate::constants::INITIAL_EPOCH;
 
-    const COLLECTION_ID: u64 = 1;
+    const TABLE_ID: u64 = 1;
     const NODE_ID: u64 = 2;
     const GROUP_ID: u64 = 3;
     const SHARD_ID: u64 = 4;
@@ -771,7 +771,7 @@ mod tests {
         GroupDesc {
             id: GROUP_ID,
             epoch: INITIAL_EPOCH,
-            shards: vec![ShardDesc::whole(SHARD_ID, COLLECTION_ID)],
+            shards: vec![ShardDesc::whole(SHARD_ID, TABLE_ID)],
             replicas: vec![ReplicaDesc {
                 id: REPLICA_ID,
                 node_id: NODE_ID,

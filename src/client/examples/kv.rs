@@ -21,7 +21,7 @@ async fn main() -> Result<(), AppError> {
     let addrs = vec!["127.0.0.1:21805".to_owned()];
     let client = SekasClient::new(ClientOptions::default(), addrs).await?;
     let db = client.create_database("test_db".to_string()).await?;
-    let co = db.create_collection("test_co".to_string()).await?;
+    let co = db.create_table("test_co".to_string()).await?;
 
     let k = "book_name".as_bytes().to_vec();
     let v = "rust_in_actions".as_bytes().to_vec();

@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use ::sekas_client::{Collection, Database};
+use ::sekas_client::{Table, Database};
 use sekas_api::v1::*;
 use tonic::{Request, Response, Status};
 
@@ -45,18 +45,18 @@ impl sekas_server::Sekas for ProxyServer {
             Request::DeleteDatabase(req) => {
                 Response::DeleteDatabase(self.delete_database(req).await?)
             }
-            Request::GetCollection(req) => Response::GetCollection(self.get_collection(req).await?),
-            Request::ListCollections(req) => {
-                Response::ListCollections(self.list_collections(req).await?)
+            Request::GetTable(req) => Response::GetTable(self.get_table(req).await?),
+            Request::ListTables(req) => {
+                Response::ListTables(self.list_tables(req).await?)
             }
-            Request::CreateCollection(req) => {
-                Response::CreateCollection(self.create_collection(req).await?)
+            Request::CreateTable(req) => {
+                Response::CreateTable(self.create_table(req).await?)
             }
-            Request::UpdateCollection(req) => {
-                Response::UpdateCollection(self.update_collection(req).await?)
+            Request::UpdateTable(req) => {
+                Response::UpdateTable(self.update_table(req).await?)
             }
-            Request::DeleteCollection(req) => {
-                Response::DeleteCollection(self.delete_collection(req).await?)
+            Request::DeleteTable(req) => {
+                Response::DeleteTable(self.delete_table(req).await?)
             }
         };
 
@@ -69,31 +69,31 @@ impl sekas_server::Sekas for ProxyServer {
         &self,
         request: Request<DatabaseRequest>,
     ) -> Result<Response<DatabaseResponse>, Status> {
-        use sekas_api::v1::collection_request_union::Request;
-        use sekas_api::v1::collection_response_union::Response;
+        use sekas_api::v1::table_request_union::Request;
+        use sekas_api::v1::table_response_union::Response;
 
         let request = request.into_inner();
         let request = request.request.ok_or_else(|| {
             Error::InvalidArgument("DatabaseRequest::request is required".to_owned())
         })?;
-        let collection = request.collection.ok_or_else(|| {
-            Error::InvalidArgument("CollectionRequest::collection is required".to_owned())
+        let table = request.table.ok_or_else(|| {
+            Error::InvalidArgument("TableRequest::table is required".to_owned())
         })?;
         let request = request.request.and_then(|r| r.request).ok_or_else(|| {
             Error::InvalidArgument(
-                "CollectionRequest::request or CollectionRequestUnion is required".to_owned(),
+                "TableRequest::request or TableRequestUnion is required".to_owned(),
             )
         })?;
         record_latency!(take_database_request_metrics(&request));
         let resp = match request {
-            Request::Get(req) => Response::Get(self.handle_get(collection, req).await?),
-            Request::Put(req) => Response::Put(self.handle_put(collection, req).await?),
-            Request::Delete(req) => Response::Delete(self.handle_delete(collection, req).await?),
-            Request::Batch(req) => Response::Batch(self.handle_batch(collection, req).await?),
+            Request::Get(req) => Response::Get(self.handle_get(table, req).await?),
+            Request::Put(req) => Response::Put(self.handle_put(table, req).await?),
+            Request::Delete(req) => Response::Delete(self.handle_delete(table, req).await?),
+            Request::Batch(req) => Response::Batch(self.handle_batch(table, req).await?),
         };
         Ok(tonic::Response::new(DatabaseResponse {
-            response: Some(CollectionResponse {
-                response: Some(CollectionResponseUnion { response: Some(resp) }),
+            response: Some(TableResponse {
+                response: Some(TableResponseUnion { response: Some(resp) }),
             }),
         }))
     }
@@ -136,86 +136,86 @@ impl ProxyServer {
         Ok(DeleteDatabaseResponse {})
     }
 
-    async fn get_collection(
+    async fn get_table(
         &self,
-        req: GetCollectionRequest,
-    ) -> Result<GetCollectionResponse, Status> {
+        req: GetTableRequest,
+    ) -> Result<GetTableResponse, Status> {
         let desc = req.database.ok_or_else(|| {
-            Error::InvalidArgument("GetCollectionRequest::database is required".to_owned())
+            Error::InvalidArgument("GetTableRequest::database is required".to_owned())
         })?;
         let name = req.name;
         let database = Database::new(self.client.clone(), desc, None);
-        let collection = database.open_collection(name).await?;
-        Ok(GetCollectionResponse { collection: Some(collection.desc()) })
+        let table = database.open_table(name).await?;
+        Ok(GetTableResponse { table: Some(table.desc()) })
     }
 
-    async fn list_collections(
+    async fn list_tables(
         &self,
-        req: ListCollectionsRequest,
-    ) -> Result<ListCollectionsResponse, Status> {
+        req: ListTablesRequest,
+    ) -> Result<ListTablesResponse, Status> {
         let desc = req.database.ok_or_else(|| {
-            Error::InvalidArgument("ListCollectionRequest::database is required".to_owned())
+            Error::InvalidArgument("ListTableRequest::database is required".to_owned())
         })?;
         let database = Database::new(self.client.clone(), desc, None);
-        let collections = database.list_collection().await?.into_iter().map(|c| c.desc()).collect();
-        Ok(ListCollectionsResponse { collections })
+        let tables = database.list_table().await?.into_iter().map(|c| c.desc()).collect();
+        Ok(ListTablesResponse { tables })
     }
 
-    async fn create_collection(
+    async fn create_table(
         &self,
-        req: CreateCollectionRequest,
-    ) -> Result<CreateCollectionResponse, Status> {
+        req: CreateTableRequest,
+    ) -> Result<CreateTableResponse, Status> {
         let desc = req.database.ok_or_else(|| {
-            Error::InvalidArgument("CreateCollectionRequest::database is required".to_owned())
+            Error::InvalidArgument("CreateTableRequest::database is required".to_owned())
         })?;
         let partition = req.partition.ok_or_else(|| {
-            Error::InvalidArgument("CreateCollectionRequest::partition is required".to_owned())
+            Error::InvalidArgument("CreateTableRequest::partition is required".to_owned())
         })?;
         let name = req.name;
         let database = Database::new(self.client.clone(), desc, None);
-        let collection = database.create_collection(name, Some(partition.into())).await?;
-        Ok(CreateCollectionResponse { collection: Some(collection.desc()) })
+        let table = database.create_table(name, Some(partition.into())).await?;
+        Ok(CreateTableResponse { table: Some(table.desc()) })
     }
 
-    async fn update_collection(
+    async fn update_table(
         &self,
-        _req: UpdateCollectionRequest,
-    ) -> Result<UpdateCollectionResponse, Status> {
-        Err(Status::unimplemented("ProxyServer::update_collection"))
+        _req: UpdateTableRequest,
+    ) -> Result<UpdateTableResponse, Status> {
+        Err(Status::unimplemented("ProxyServer::update_table"))
     }
 
-    async fn delete_collection(
+    async fn delete_table(
         &self,
-        req: DeleteCollectionRequest,
-    ) -> Result<DeleteCollectionResponse, Status> {
+        req: DeleteTableRequest,
+    ) -> Result<DeleteTableResponse, Status> {
         let desc = req.database.ok_or_else(|| {
-            Error::InvalidArgument("DeleteCollectionRequest::database is required".to_owned())
+            Error::InvalidArgument("DeleteTableRequest::database is required".to_owned())
         })?;
         let name = req.name;
         let database = Database::new(self.client.clone(), desc, None);
-        database.delete_collection(name).await?;
-        Ok(DeleteCollectionResponse {})
+        database.delete_table(name).await?;
+        Ok(DeleteTableResponse {})
     }
 }
 
 impl ProxyServer {
     async fn handle_get(
         &self,
-        desc: CollectionDesc,
+        desc: TableDesc,
         req: GetRequest,
     ) -> Result<GetResponse, Status> {
-        let collection = Collection::new(self.client.clone(), desc, None);
-        let resp = collection.get(req.key).await?;
+        let table = Table::new(self.client.clone(), desc, None);
+        let resp = table.get(req.key).await?;
         Ok(GetResponse { value: resp })
     }
 
     async fn handle_put(
         &self,
-        desc: CollectionDesc,
+        desc: TableDesc,
         req: PutRequest,
     ) -> Result<PutResponse, Status> {
-        let collection = Collection::new(self.client.clone(), desc, None);
-        collection
+        let table = Table::new(self.client.clone(), desc, None);
+        table
             .put(req.key, req.value, Some(req.ttl), PutOperation::from_i32(req.op), req.conditions)
             .await?;
         Ok(PutResponse {})
@@ -223,20 +223,20 @@ impl ProxyServer {
 
     async fn handle_delete(
         &self,
-        desc: CollectionDesc,
+        desc: TableDesc,
         req: DeleteRequest,
     ) -> Result<DeleteResponse, Status> {
-        let collection = Collection::new(self.client.clone(), desc, None);
-        collection.delete(req.key, req.conditions).await?;
+        let table = Table::new(self.client.clone(), desc, None);
+        table.delete(req.key, req.conditions).await?;
         Ok(DeleteResponse {})
     }
 
     async fn handle_batch(
         &self,
-        desc: CollectionDesc,
+        desc: TableDesc,
         req: WriteBatchRequest,
     ) -> Result<WriteBatchResponse, Status> {
-        let collection = Collection::new(self.client.clone(), desc, None);
-        Ok(collection.write_batch(req).await?)
+        let table = Table::new(self.client.clone(), desc, None);
+        Ok(table.write_batch(req).await?)
     }
 }

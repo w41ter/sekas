@@ -11,15 +11,15 @@ addrs = [ '0.0.0.0:21805' ]
 # Default: db
 database = 'db'
 
-# Set the name of testing collection.
+# Set the name of testing table.
 # Default: table
-collection = 'table'
+table = 'table'
 
-# Set the num of shards of the testing collection. (Currently only hash sharding is supported)
+# Set the num of shards of the testing table. (Currently only hash sharding is supported)
 # Default: 64
 num_shards = 64
 
-# Set whether to create new collection, if no such collection exists.
+# Set whether to create new table, if no such table exists.
 # Default: true
 create_if_missing = true
 

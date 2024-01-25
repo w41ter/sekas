@@ -43,7 +43,7 @@ async fn cluster_rw_with_single_node() {
     let addrs = vec![node_1_addr];
     let client = SekasClient::new(ClientOptions::default(), addrs).await.unwrap();
     let db = client.create_database("test_db".to_string()).await.unwrap();
-    let co = db.create_collection("test_co".to_string()).await.unwrap();
+    let co = db.create_table("test_co".to_string()).await.unwrap();
 
     let k = "book_name".as_bytes().to_vec();
     let v = "rust_in_actions".as_bytes().to_vec();
@@ -62,8 +62,8 @@ async fn cluster_rw_put_and_get() {
     let app = c.app_client().await;
 
     let db = app.create_database("test_db".to_string()).await.unwrap();
-    let co = db.create_collection("test_co".to_string()).await.unwrap();
-    c.assert_collection_ready(co.id).await;
+    let co = db.create_table("test_co".to_string()).await.unwrap();
+    c.assert_table_ready(co.id).await;
 
     let k = "book_name".as_bytes().to_vec();
     let v = "rust_in_actions".as_bytes().to_vec();
@@ -82,8 +82,8 @@ async fn cluster_rw_put_many_keys() {
     let app = c.app_client().await;
 
     let db = app.create_database("test_db".to_string()).await.unwrap();
-    let co = db.create_collection("test_co".to_string()).await.unwrap();
-    c.assert_collection_ready(co.id).await;
+    let co = db.create_table("test_co".to_string()).await.unwrap();
+    c.assert_table_ready(co.id).await;
 
     for i in 0..100 {
         let k = format!("key-{i}").as_bytes().to_vec();
@@ -105,8 +105,8 @@ async fn cluster_rw_with_config_change() {
     let app = c.app_client().await;
 
     let db = app.create_database("test_db".to_string()).await.unwrap();
-    let co = db.create_collection("test_co".to_string()).await.unwrap();
-    c.assert_collection_ready(co.id).await;
+    let co = db.create_table("test_co".to_string()).await.unwrap();
+    c.assert_table_ready(co.id).await;
     c.assert_root_group_has_promoted().await;
 
     for i in 0..300 {
@@ -133,8 +133,8 @@ async fn cluster_rw_with_leader_transfer() {
     let app = c.app_client().await;
 
     let db = app.create_database("test_db".to_string()).await.unwrap();
-    let co = db.create_collection("test_co".to_string()).await.unwrap();
-    c.assert_collection_ready(co.id).await;
+    let co = db.create_table("test_co".to_string()).await.unwrap();
+    c.assert_table_ready(co.id).await;
 
     for i in 0..100 {
         let k = format!("key-{i}").as_bytes().to_vec();
@@ -168,8 +168,8 @@ async fn cluster_rw_with_shard_moving() {
     let app = c.app_client().await;
 
     let db = app.create_database("test_db".to_string()).await.unwrap();
-    let co = db.create_collection("test_co".to_string()).await.unwrap();
-    c.assert_collection_ready(co.id).await;
+    let co = db.create_table("test_co".to_string()).await.unwrap();
+    c.assert_table_ready(co.id).await;
 
     let source_state = c.find_router_group_state_by_key(co.id, &[0]).await.unwrap();
     let prev_group_id = source_state.id;
@@ -222,8 +222,8 @@ fn cluster_rw_single_server_large_read_write() {
         let app = c.app_client().await;
 
         let db = app.create_database("test_db".to_string()).await.unwrap();
-        let co = db.create_collection("test_co".to_string()).await.unwrap();
-        c.assert_collection_ready(co.id).await;
+        let co = db.create_table("test_co".to_string()).await.unwrap();
+        c.assert_table_ready(co.id).await;
 
         let mut rng = SmallRng::seed_from_u64(0);
         let leading = 10;
@@ -248,8 +248,8 @@ async fn cluster_rw_put_with_condition() {
     let app = c.app_client().await;
 
     let db = app.create_database("test_db".to_string()).await.unwrap();
-    let co = db.create_collection("test_co".to_string()).await.unwrap();
-    c.assert_collection_ready(co.id).await;
+    let co = db.create_table("test_co".to_string()).await.unwrap();
+    c.assert_table_ready(co.id).await;
 
     let k = "book_name".as_bytes().to_vec();
     let v = "rust_in_actions".as_bytes().to_vec();
@@ -309,8 +309,8 @@ async fn cluster_rw_concurrent_inc() {
     let app = c.app_client().await;
 
     let db = app.create_database("test_db".to_string()).await.unwrap();
-    let co = db.create_collection("test_co".to_string()).await.unwrap();
-    c.assert_collection_ready(co.id).await;
+    let co = db.create_table("test_co".to_string()).await.unwrap();
+    c.assert_table_ready(co.id).await;
 
     let k = "book_name".as_bytes().to_vec();
 
@@ -345,7 +345,7 @@ async fn cluster_rw_concurrent_inc() {
 }
 
 #[sekas_macro::test]
-async fn cluster_rw_write_two_collection_in_batch() {
+async fn cluster_rw_write_two_table_in_batch() {
     let mut ctx = TestContext::new(fn_name!());
     ctx.disable_all_balance();
     let nodes = ctx.bootstrap_servers(3).await;
@@ -353,10 +353,10 @@ async fn cluster_rw_write_two_collection_in_batch() {
     let app = c.app_client().await;
 
     let db = app.create_database("db".to_string()).await.unwrap();
-    let co1 = db.create_collection("co1".to_string()).await.unwrap();
-    let co2 = db.create_collection("co2".to_string()).await.unwrap();
-    c.assert_collection_ready(co1.id).await;
-    c.assert_collection_ready(co2.id).await;
+    let co1 = db.create_table("co1".to_string()).await.unwrap();
+    let co2 = db.create_table("co2".to_string()).await.unwrap();
+    c.assert_table_ready(co1.id).await;
+    c.assert_table_ready(co2.id).await;
 
     let k = "book_name".as_bytes().to_vec();
     let v = "rust_in_actions".as_bytes().to_vec();

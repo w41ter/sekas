@@ -42,7 +42,7 @@ pub struct State {
     node_id_lookup: HashMap<u64, String /* ip:port */>,
     db_id_lookup: HashMap<u64, DatabaseDesc>,
     db_name_lookup: HashMap<String, u64>,
-    co_id_lookup: HashMap<u64, CollectionDesc>,
+    co_id_lookup: HashMap<u64, TableDesc>,
     co_name_lookup: HashMap<(u64 /* db */, String), u64>,
     co_shards_lookup: HashMap<u64 /* co */, Vec<ShardDesc>>,
     shard_group_lookup: HashMap<u64 /* shard */, (u64, u64) /* (group, epoch) */>,
@@ -73,13 +73,13 @@ impl Router {
 
     pub fn find_shard(
         &self,
-        collection_id: u64,
+        table_id: u64,
         key: &[u8],
     ) -> Result<(RouterGroupState, ShardDesc), crate::Error> {
         let state = self.core.state.lock().unwrap();
         let shards = state
             .co_shards_lookup
-            .get(&collection_id)
+            .get(&table_id)
             .ok_or_else(|| crate::Error::NotFound(format!("shard (key={:?})", key)))?;
         for shard in shards {
             if let Some(RangePartition { start, end }) = shard.range.clone() {
@@ -168,7 +168,7 @@ impl State {
                 }
                 self.db_name_lookup.insert(name, id);
             }
-            UpdateEvent::Collection(co_desc) => {
+            UpdateEvent::Table(co_desc) => {
                 let desc = co_desc.clone();
                 let (id, name, db) = (co_desc.id, co_desc.name, co_desc.db);
                 if let Some(old_desc) = self.co_id_lookup.insert(id, desc) {
@@ -210,9 +210,9 @@ impl State {
             }
 
             let co_shards_lookup = &mut self.co_shards_lookup;
-            match co_shards_lookup.get_mut(&shard.collection_id) {
+            match co_shards_lookup.get_mut(&shard.table_id) {
                 None => {
-                    co_shards_lookup.insert(shard.collection_id, vec![shard]);
+                    co_shards_lookup.insert(shard.table_id, vec![shard]);
                 }
                 Some(shards) => {
                     shards.retain(|s| s.id != shard.id);
@@ -234,7 +234,7 @@ impl State {
                     self.db_name_lookup.remove(desc.name.as_str());
                 }
             }
-            DeleteEvent::Collection(co) => {
+            DeleteEvent::Table(co) => {
                 if let Some(desc) = self.co_id_lookup.remove(&co) {
                     self.co_name_lookup.remove(&(desc.db, desc.name));
                 }
@@ -319,11 +319,7 @@ mod tests {
     use super::*;
 
     fn shard(id: u64) -> ShardDesc {
-        ShardDesc {
-            id,
-            collection_id: 1,
-            range: Some(RangePartition { start: vec![], end: vec![] }),
-        }
+        ShardDesc { id, table_id: 1, range: Some(RangePartition { start: vec![], end: vec![] }) }
     }
 
     fn descriptor(id: u64, epoch: u64) -> GroupDesc {

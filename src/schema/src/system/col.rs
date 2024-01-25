@@ -14,7 +14,7 @@
 use paste::paste;
 use sekas_api::server::v1::*;
 
-use crate::LOCAL_COLLECTION_ID;
+use crate::LOCAL_TABLE_ID;
 
 macro_rules! decl_unity_range_col {
     ($name:ident, $col_id:expr) => {
@@ -23,8 +23,8 @@ macro_rules! decl_unity_range_col {
             pub const [<$name:upper _ID>]: u64 = $col_id;
             pub const [<$name:upper _SHARD_ID>]: u64 = $col_id;
 
-            pub fn [<$name:lower _desc>]() -> CollectionDesc {
-                CollectionDesc {
+            pub fn [<$name:lower _desc>]() -> TableDesc {
+                TableDesc {
                     id: $col_id,
                     name: stringify!($name).to_owned(),
                     db: crate::system::db::ID,
@@ -34,7 +34,7 @@ macro_rules! decl_unity_range_col {
             pub fn [<$name:lower _shard_desc>]() -> ShardDesc {
                 ShardDesc {
                     id: $col_id,
-                    collection_id: $col_id,
+                    table_id: $col_id,
                     range: Some(RangePartition {
                         start: crate::shard::SHARD_MIN.to_owned(),
                         end: crate::shard::SHARD_MAX.to_owned(),
@@ -45,10 +45,10 @@ macro_rules! decl_unity_range_col {
     };
 }
 
-// ATTN: The col id must large than `LOCAL_COLLECTION_ID`.
+// ATTN: The col id must large than `LOCAL_TABLE_ID`.
 
 decl_unity_range_col!(database, 1);
-decl_unity_range_col!(collection, 2);
+decl_unity_range_col!(table, 2);
 decl_unity_range_col!(meta, 3);
 decl_unity_range_col!(node, 4);
 decl_unity_range_col!(group, 5);
@@ -59,12 +59,12 @@ decl_unity_range_col!(end_unity_col, 100);
 
 decl_unity_range_col!(txn, crate::FIRST_TXN_SHARD_ID);
 
-/// Whether the collection is an unity col (which, only contains one shard).
+/// Whether the table is an unity col (which, only contains one shard).
 pub fn is_unity_col(col_id: u64) -> bool {
-    LOCAL_COLLECTION_ID < col_id && col_id < END_UNITY_COL_ID
+    LOCAL_TABLE_ID < col_id && col_id < END_UNITY_COL_ID
 }
 
-/// The associated shard id of a collection.
+/// The associated shard id of a table.
 ///
 /// See [`decl_range_col`] for details.
 #[inline]

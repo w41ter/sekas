@@ -19,7 +19,7 @@ use clap::Parser;
 use log::{debug, info};
 use rand::rngs::OsRng;
 use rand::RngCore;
-use sekas_client::{AppError, ClientOptions, CollectionDesc, Database, SekasClient};
+use sekas_client::{AppError, ClientOptions, Database, SekasClient, TableDesc};
 use sekas_runtime::sync::WaitGroup;
 use sekas_runtime::{Shutdown, ShutdownNotifier};
 use tokio::runtime::Runtime;
@@ -67,11 +67,10 @@ impl Command {
             .build()
             .unwrap();
 
-        const DEFAULT_COLLECTION: &str = "BENCH_COLLECTION";
+        const DEFAULT_TABLE: &str = "BENCH_TABLE";
         let db = runtime.block_on(async { open_database(&cfg).await }).expect("open database");
-        let co = runtime
-            .block_on(async { open_collection(&db, DEFAULT_COLLECTION).await })
-            .expect("open collection");
+        let co =
+            runtime.block_on(async { open_table(&db, DEFAULT_TABLE).await }).expect("open table");
         let notifier = ShutdownNotifier::default();
         let ctx = Context { wait_group: WaitGroup::new(), shutdown: notifier.subscribe(), runtime };
 
@@ -116,11 +115,11 @@ fn spawn_worker(
     seed: u64,
     num_op: usize,
     db: Database,
-    collection_id: u64,
+    table_id: u64,
 ) {
     debug!("spawn worker {i} with seed {seed}");
 
-    let job = Job::new(db, collection_id, seed, num_op, cfg);
+    let job = Job::new(db, table_id, seed, num_op, cfg);
     let shutdown = ctx.shutdown.clone();
     let wait_group = ctx.wait_group.clone();
     ctx.runtime.spawn(async move {
@@ -144,10 +143,10 @@ async fn create_or_open_database(client: &SekasClient, database: &str) -> Result
     }
 }
 
-async fn create_or_open_collection(db: &Database, collection: &str) -> Result<CollectionDesc> {
-    match db.create_collection(collection.to_owned()).await {
+async fn create_or_open_table(db: &Database, table: &str) -> Result<TableDesc> {
+    match db.create_table(table.to_owned()).await {
         Ok(co) => Ok(co),
-        Err(AppError::AlreadyExists(_)) => Ok(db.open_collection(collection.to_owned()).await?),
+        Err(AppError::AlreadyExists(_)) => Ok(db.open_table(table.to_owned()).await?),
         Err(e) => Err(e.into()),
     }
 }
@@ -170,10 +169,10 @@ async fn open_database(cfg: &AppConfig) -> Result<Database> {
     Ok(database)
 }
 
-async fn open_collection(db: &Database, collection: &str) -> Result<CollectionDesc> {
-    let co = match db.open_collection(collection.to_owned()).await {
+async fn open_table(db: &Database, table: &str) -> Result<TableDesc> {
+    let co = match db.open_table(table.to_owned()).await {
         Ok(co) => co,
-        Err(AppError::NotFound(_)) => create_or_open_collection(db, collection).await?,
+        Err(AppError::NotFound(_)) => create_or_open_table(db, table).await?,
         Err(e) => {
             return Err(e.into());
         }

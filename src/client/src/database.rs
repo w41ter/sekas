@@ -40,39 +40,38 @@ impl Database {
         Database { client, desc, rpc_timeout, read_without_version }
     }
 
-    pub async fn create_collection(&self, name: String) -> AppResult<CollectionDesc> {
-        let desc = self.client.root_client().create_collection(self.desc.clone(), name).await?;
+    pub async fn create_table(&self, name: String) -> AppResult<TableDesc> {
+        let desc = self.client.root_client().create_table(self.desc.clone(), name).await?;
         Ok(desc)
     }
 
-    pub async fn delete_collection(&self, name: String) -> AppResult<()> {
-        self.client.root_client().delete_collection(self.desc.clone(), name).await?;
+    pub async fn delete_table(&self, name: String) -> AppResult<()> {
+        self.client.root_client().delete_table(self.desc.clone(), name).await?;
         Ok(())
     }
 
-    pub async fn list_collection(&self) -> AppResult<Vec<CollectionDesc>> {
-        let collections = self.client.root_client().list_collection(self.desc.clone()).await?;
-        Ok(collections)
+    pub async fn list_table(&self) -> AppResult<Vec<TableDesc>> {
+        let tables = self.client.root_client().list_table(self.desc.clone()).await?;
+        Ok(tables)
     }
 
-    pub async fn open_collection(&self, name: String) -> AppResult<CollectionDesc> {
-        match self.client.root_client().get_collection(self.desc.clone(), name.clone()).await? {
-            None => Err(AppError::NotFound(format!("collection {}", name))),
+    pub async fn open_table(&self, name: String) -> AppResult<TableDesc> {
+        match self.client.root_client().get_table(self.desc.clone(), name.clone()).await? {
+            None => Err(AppError::NotFound(format!("table {}", name))),
             Some(co_desc) => Ok(co_desc),
         }
     }
 
-    pub async fn delete(&self, collection_id: u64, key: Vec<u8>) -> AppResult<()> {
+    pub async fn delete(&self, table_id: u64, key: Vec<u8>) -> AppResult<()> {
         let delete = WriteBuilder::new(key).ensure_delete();
-        let batch =
-            WriteBatchRequest { deletes: vec![(collection_id, delete)], ..Default::default() };
+        let batch = WriteBatchRequest { deletes: vec![(table_id, delete)], ..Default::default() };
         self.write_batch(batch).await?;
         Ok(())
     }
 
-    pub async fn put(&self, collection_id: u64, key: Vec<u8>, value: Vec<u8>) -> AppResult<()> {
+    pub async fn put(&self, table_id: u64, key: Vec<u8>, value: Vec<u8>) -> AppResult<()> {
         let put = WriteBuilder::new(key).ensure_put(value);
-        let batch = WriteBatchRequest { puts: vec![(collection_id, put)], ..Default::default() };
+        let batch = WriteBatchRequest { puts: vec![(table_id, put)], ..Default::default() };
         self.write_batch(batch).await?;
         Ok(())
     }
@@ -82,23 +81,19 @@ impl Database {
         ctx.commit().await
     }
 
-    pub async fn get(&self, collection_id: u64, key: Vec<u8>) -> crate::Result<Option<Vec<u8>>> {
-        let value = self.get_raw_value(collection_id, key).await?;
+    pub async fn get(&self, table_id: u64, key: Vec<u8>) -> crate::Result<Option<Vec<u8>>> {
+        let value = self.get_raw_value(table_id, key).await?;
         Ok(value.and_then(|v| v.content))
     }
 
-    pub async fn get_raw_value(
-        &self,
-        collection_id: u64,
-        key: Vec<u8>,
-    ) -> crate::Result<Option<Value>> {
+    pub async fn get_raw_value(&self, table_id: u64, key: Vec<u8>) -> crate::Result<Option<Value>> {
         CLIENT_DATABASE_BYTES_TOTAL.rx.inc_by(key.len() as u64);
         CLIENT_DATABASE_REQUEST_TOTAL.get.inc();
         record_latency!(&CLIENT_DATABASE_REQUEST_DURATION_SECONDS.get);
         let mut retry_state = RetryState::new(self.rpc_timeout);
 
         loop {
-            match self.get_inner(collection_id, &key, &mut retry_state).await {
+            match self.get_inner(table_id, &key, &mut retry_state).await {
                 Ok(value) => {
                     CLIENT_DATABASE_BYTES_TOTAL.tx.inc_by(
                         value
@@ -117,7 +112,7 @@ impl Database {
 
     async fn get_inner(
         &self,
-        collection_id: u64,
+        table_id: u64,
         user_key: &[u8],
         retry_state: &mut RetryState,
     ) -> crate::Result<Option<Value>> {
@@ -129,7 +124,7 @@ impl Database {
         };
 
         let router = self.client.router();
-        let (group, shard) = router.find_shard(collection_id, user_key)?;
+        let (group, shard) = router.find_shard(table_id, user_key)?;
         let mut client = GroupClient::new(group, self.client.clone());
         let req = Request::Get(ShardGetRequest {
             shard_id: shard.id,

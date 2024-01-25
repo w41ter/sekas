@@ -17,15 +17,15 @@
 use crate::server::v1::{RangePartition, ShardDesc};
 
 impl ShardDesc {
-    pub fn whole(shard_id: u64, collection_id: u64) -> Self {
+    pub fn whole(shard_id: u64, table_id: u64) -> Self {
         ShardDesc {
             id: shard_id,
-            collection_id,
+            table_id,
             range: Some(RangePartition { start: vec![], end: vec![] }),
         }
     }
 
-    pub fn with_range(shard_id: u64, collection_id: u64, start: Vec<u8>, end: Vec<u8>) -> Self {
-        ShardDesc { id: shard_id, collection_id, range: Some(RangePartition { start, end }) }
+    pub fn with_range(shard_id: u64, table_id: u64, start: Vec<u8>, end: Vec<u8>) -> Self {
+        ShardDesc { id: shard_id, table_id, range: Some(RangePartition { start, end }) }
     }
 }

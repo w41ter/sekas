@@ -22,7 +22,7 @@ use lazy_static::lazy_static;
 use log::{debug, info, warn};
 use prost::Message;
 use sekas_api::server::v1::watch_response::{delete_event, update_event, DeleteEvent, UpdateEvent};
-use sekas_api::server::v1::{CollectionDesc, DatabaseDesc, PutRequest, *};
+use sekas_api::server::v1::{DatabaseDesc, PutRequest, TableDesc, *};
 use sekas_rock::time::timestamp_nanos;
 use sekas_schema::system::col;
 
@@ -34,7 +34,7 @@ use crate::transport::TransportManager;
 use crate::{Error, Result};
 
 const META_CLUSTER_ID_KEY: &str = "cluster_id";
-const META_COLLECTION_ID_KEY: &str = "collection_id";
+const META_TABLE_ID_KEY: &str = "table_id";
 const META_DATABASE_ID_KEY: &str = "database_id";
 const META_GROUP_ID_KEY: &str = "group_id";
 const META_NODE_ID_KEY: &str = "node_id";
@@ -46,7 +46,7 @@ const META_TXN_ID_KEY: &str = "txn_id";
 lazy_static! {
     pub static ref ID_GEN_LOCKS: HashMap<String, Mutex<()>> = HashMap::from([
         (META_CLUSTER_ID_KEY.to_owned(), Mutex::new(())),
-        (META_COLLECTION_ID_KEY.to_owned(), Mutex::new(())),
+        (META_TABLE_ID_KEY.to_owned(), Mutex::new(())),
         (META_DATABASE_ID_KEY.to_owned(), Mutex::new(())),
         (META_GROUP_ID_KEY.to_owned(), Mutex::new(())),
         (META_NODE_ID_KEY.to_owned(), Mutex::new(())),
@@ -114,72 +114,64 @@ impl Schema {
         Ok(databases)
     }
 
-    pub async fn prepare_create_collection(&self, desc: CollectionDesc) -> Result<CollectionDesc> {
-        if self.get_collection(desc.db, &desc.name).await?.is_some() {
-            return Err(Error::AlreadyExists(format!("collection {}", desc.name.to_owned())));
+    pub async fn prepare_create_table(&self, desc: TableDesc) -> Result<TableDesc> {
+        if self.get_table(desc.db, &desc.name).await?.is_some() {
+            return Err(Error::AlreadyExists(format!("table {}", desc.name.to_owned())));
         }
         let mut desc = desc.to_owned();
-        desc.id = self.next_id(META_COLLECTION_ID_KEY).await?;
+        desc.id = self.next_id(META_TABLE_ID_KEY).await?;
         Ok(desc)
     }
 
-    pub async fn create_collection(&self, desc: CollectionDesc) -> Result<CollectionDesc> {
-        assert!(self.get_collection(desc.db, &desc.name).await?.is_none());
+    pub async fn create_table(&self, desc: TableDesc) -> Result<TableDesc> {
+        assert!(self.get_table(desc.db, &desc.name).await?.is_none());
         self.put_col(desc.clone()).await?;
         Ok(desc)
     }
 
-    pub async fn get_collection(
-        &self,
-        database: u64,
-        collection: &str,
-    ) -> Result<Option<CollectionDesc>> {
-        let val = self.get(col::COLLECTION_ID, &collection_key(database, collection)).await?;
+    pub async fn get_table(&self, database: u64, table: &str) -> Result<Option<TableDesc>> {
+        let val = self.get(col::TABLE_ID, &table_key(database, table)).await?;
         if val.is_none() {
             return Ok(None);
         }
-        let desc = CollectionDesc::decode(&*val.unwrap()).map_err(|_| {
-            Error::InvalidData(format!("collection desc: {}, {}", database, collection))
-        })?;
+        let desc = TableDesc::decode(&*val.unwrap())
+            .map_err(|_| Error::InvalidData(format!("table desc: {}, {}", database, table)))?;
         Ok(Some(desc))
     }
 
-    pub async fn get_collection_shards(&self, collection_id: u64) -> Result<Vec<(u64, ShardDesc)>> {
+    pub async fn get_table_shards(&self, table_id: u64) -> Result<Vec<(u64, ShardDesc)>> {
         Ok(self
             .list_group()
             .await?
             .iter()
             .flat_map(|g| {
-                g.shards
-                    .iter()
-                    .filter(|s| s.collection_id == collection_id)
-                    .map(|s| (g.id, s.to_owned()))
+                g.shards.iter().filter(|s| s.table_id == table_id).map(|s| (g.id, s.to_owned()))
             })
             .collect::<Vec<_>>())
     }
 
-    pub async fn update_collection(&self, _desc: CollectionDesc) -> Result<()> {
+    pub async fn update_table(&self, _desc: TableDesc) -> Result<()> {
         todo!()
     }
 
-    pub async fn delete_collection(&self, collection: CollectionDesc) -> Result<()> {
-        self.delete(col::COLLECTION_ID, &collection_key(collection.db, &collection.name)).await
+    pub async fn delete_table(&self, table: TableDesc) -> Result<()> {
+        self.delete(col::TABLE_ID, &table_key(table.db, &table.name)).await
     }
 
-    pub async fn list_collection(&self) -> Result<Vec<CollectionDesc>> {
-        let values = self.list(col::COLLECTION_ID).await?;
-        let mut collections = Vec::new();
+    pub async fn list_table(&self) -> Result<Vec<TableDesc>> {
+        let values = self.list(col::TABLE_ID).await?;
+        let mut tables = Vec::new();
         for val in values {
-            let c = CollectionDesc::decode(&*val)
-                .map_err(|_| Error::InvalidData("collection desc".into()))?;
-            collections.push(c);
+            let c =
+                TableDesc::decode(&*val).map_err(|_| Error::InvalidData("table desc".into()))?;
+            tables.push(c);
         }
-        Ok(collections)
+        Ok(tables)
     }
 
-    pub async fn list_database_collections(&self, database: u64) -> Result<Vec<CollectionDesc>> {
-        let collections = self.list_collection().await?;
-        Ok(collections.into_iter().filter(|c| c.db == database).collect::<Vec<_>>())
+    pub async fn list_database_tables(&self, database: u64) -> Result<Vec<TableDesc>> {
+        let tables = self.list_table().await?;
+        Ok(tables.into_iter().filter(|c| c.db == database).collect::<Vec<_>>())
     }
 
     pub async fn add_node(&self, desc: NodeDesc) -> Result<NodeDesc> {
@@ -411,14 +403,14 @@ impl Schema {
             .collect::<Vec<UpdateEvent>>();
         updates.extend_from_slice(&dbs);
 
-        // list collections.
-        let collections = self
-            .list_collection()
+        // list tables.
+        let tables = self
+            .list_table()
             .await?
             .into_iter()
-            .map(|desc| UpdateEvent { event: Some(update_event::Event::Collection(desc)) })
+            .map(|desc| UpdateEvent { event: Some(update_event::Event::Table(desc)) })
             .collect::<Vec<UpdateEvent>>();
-        updates.extend_from_slice(&collections);
+        updates.extend_from_slice(&tables);
 
         // list groups.
         let groups = self
@@ -638,19 +630,19 @@ impl Schema {
         self.put_replica_state(replica_state).await?;
 
         let mut batch =
-            ShardWriteRequest { shard_id: col::shard_id(col::COLLECTION_ID), ..Default::default() };
-        for col in sekas_schema::system::collections() {
+            ShardWriteRequest { shard_id: col::shard_id(col::TABLE_ID), ..Default::default() };
+        for col in sekas_schema::system::tables() {
             batch.puts.push(PutRequest {
-                key: collection_key(col.db, &col.name),
+                key: table_key(col.db, &col.name),
                 value: col.encode_to_vec(),
                 ..Default::default()
             });
         }
         self.batch_write(batch).await?;
 
-        // ATTN: init meta collection will setup cluster id, so it must be the last step
+        // ATTN: init meta table will setup cluster id, so it must be the last step
         // of bootstrap root.
-        self.init_meta_collection(cluster_id.to_owned()).await?;
+        self.init_meta_table(cluster_id.to_owned()).await?;
 
         info!("boostrap root successfully. cluster={}", String::from_utf8_lossy(&cluster_id));
 
@@ -669,7 +661,7 @@ impl Schema {
         self.next_id(META_SHARD_ID_KEY).await
     }
 
-    async fn init_meta_collection(&self, cluster_id: Vec<u8>) -> Result<()> {
+    async fn init_meta_table(&self, cluster_id: Vec<u8>) -> Result<()> {
         let mut batch =
             ShardWriteRequest { shard_id: col::shard_id(col::META_ID), ..Default::default() };
         let mut put_meta =
@@ -680,8 +672,8 @@ impl Schema {
             sekas_schema::FIRST_USER_DATABASE_ID.to_le_bytes().to_vec(),
         );
         put_meta(
-            META_COLLECTION_ID_KEY.into(),
-            sekas_schema::FIRST_USER_COLLECTION_ID.to_le_bytes().to_vec(),
+            META_TABLE_ID_KEY.into(),
+            sekas_schema::FIRST_USER_TABLE_ID.to_le_bytes().to_vec(),
         );
         put_meta(META_GROUP_ID_KEY.into(), (FIRST_GROUP_ID + 1).to_le_bytes().to_vec());
         put_meta(META_NODE_ID_KEY.into(), (FIRST_NODE_ID + 1).to_le_bytes().to_vec());
@@ -708,30 +700,30 @@ impl Schema {
     }
 
     #[inline]
-    async fn get(&self, collection_id: u64, key: &[u8]) -> Result<Option<Vec<u8>>> {
-        let rs = self.store.get(col::shard_id(collection_id), key).await;
+    async fn get(&self, table_id: u64, key: &[u8]) -> Result<Option<Vec<u8>>> {
+        let rs = self.store.get(col::shard_id(table_id), key).await;
         sekas_runtime::yield_now().await;
         rs
     }
 
     #[inline]
-    async fn delete(&self, collection_id: u64, key: &[u8]) -> Result<()> {
-        self.store.delete(col::shard_id(collection_id), key).await
+    async fn delete(&self, table_id: u64, key: &[u8]) -> Result<()> {
+        self.store.delete(col::shard_id(table_id), key).await
     }
 
     #[inline]
-    async fn put(&self, collection_id: u64, key: &[u8], value: Vec<u8>) -> Result<()> {
-        self.store.put(col::shard_id(collection_id), key.to_owned(), value).await
+    async fn put(&self, table_id: u64, key: &[u8], value: Vec<u8>) -> Result<()> {
+        self.store.put(col::shard_id(table_id), key.to_owned(), value).await
     }
 
-    async fn list(&self, collection_id: u64) -> Result<Vec<Vec<u8>>> {
-        let rs = self.list_prefix(collection_id, &[]).await;
+    async fn list(&self, table_id: u64) -> Result<Vec<Vec<u8>>> {
+        let rs = self.list_prefix(table_id, &[]).await;
         sekas_runtime::yield_now().await;
         rs
     }
 
-    async fn list_prefix(&self, collection_id: u64, prefix: &[u8]) -> Result<Vec<Vec<u8>>> {
-        self.store.list(col::shard_id(collection_id), prefix).await
+    async fn list_prefix(&self, table_id: u64, prefix: &[u8]) -> Result<Vec<Vec<u8>>> {
+        self.store.list(col::shard_id(table_id), prefix).await
     }
 
     async fn next_id(&self, id_type: &str) -> Result<u64> {
@@ -791,8 +783,8 @@ impl Schema {
     }
 
     #[inline]
-    async fn put_col(&self, col: CollectionDesc) -> Result<()> {
-        self.put(col::COLLECTION_ID, &collection_key(col.db, &col.name), col.encode_to_vec()).await
+    async fn put_col(&self, col: TableDesc) -> Result<()> {
+        self.put(col::TABLE_ID, &table_key(col.db, &col.name), col.encode_to_vec()).await
     }
 }
 
@@ -831,10 +823,10 @@ impl RemoteStore {
 }
 
 #[inline]
-fn collection_key(database_id: u64, collection_name: &str) -> Vec<u8> {
-    let mut buf = Vec::with_capacity(core::mem::size_of::<u64>() + collection_name.len());
+fn table_key(database_id: u64, table_name: &str) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(core::mem::size_of::<u64>() + table_name.len());
     buf.extend_from_slice(database_id.to_le_bytes().as_slice());
-    buf.extend_from_slice(collection_name.as_bytes());
+    buf.extend_from_slice(table_name.as_bytes());
     buf
 }
 
