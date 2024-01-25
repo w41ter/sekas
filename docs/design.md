@@ -46,11 +46,11 @@ In addition, node is also responsible for providing group-level scheduling, incl
 
 [data-organization]: ./img/data-organization.drawio.svg
 
-Sekas provides two levels of data organization: database and collection.
+Sekas provides two levels of data organization: database and table.
 
-Database is used to provide isolation between tenants; collection is used to provide data isolation within tenants.
+Database is used to provide isolation between tenants; table is used to provide data isolation within tenants.
 
-A collection is partitioned into **Shards** to support elastic scale up or down. Currently sekas supports both range and hash partitions. Shard splitting and merging will be introduced in subsequent releases.
+A table is partitioned into **Shards** to support elastic scale up or down. Currently sekas supports both range and hash partitions. Shard splitting and merging will be introduced in subsequent releases.
 
 Shards are managed by groups, and the replicas of group is also replicas of shards.
 

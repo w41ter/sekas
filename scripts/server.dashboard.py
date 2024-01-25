@@ -429,8 +429,8 @@ def root_reconcile_panels():
                                 "root_reconcile_scheduler_create_group_step_duration_seconds", "type"),
         vector_duration_seconds("root reconcile reallocate replica per step duration",
                                 "root_reconcile_scheduler_reallocate_replica_step_duration_seconds", "type"),
-        vector_duration_seconds("root reconcile create collection shards per step duration",
-                                "root_reconcile_scheduler_create_collection_step_duration_seconds", "type"),
+        vector_duration_seconds("root reconcile create table shards per step duration",
+                                "root_reconcile_scheduler_create_table_step_duration_seconds", "type"),
     )
 
 
