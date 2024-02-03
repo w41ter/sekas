@@ -19,6 +19,7 @@ use sekas_api::server::v1::*;
 use sekas_schema::system::txn::TXN_MAX_VERSION;
 
 use crate::metrics::*;
+use crate::range::{RangeRequest, RangeStream};
 use crate::write_batch::WriteBatchContext;
 use crate::{
     record_latency, AppError, AppResult, GroupClient, RetryState, SekasClient, WriteBatchRequest,
@@ -176,6 +177,53 @@ impl Database {
             Response::Write(resp) => Ok(resp),
             _ => Err(crate::Error::Internal("invalid response type, Write is required".into())),
         }
+    }
+
+    /// To scan a shard.
+    pub async fn scan(
+        &self,
+        request: ShardScanRequest,
+        timeout: Option<Duration>,
+    ) -> crate::Result<ShardScanResponse> {
+        let mut retry_state = RetryState::new(timeout);
+        loop {
+            match self.scan_inner(&request, retry_state.timeout()).await {
+                Ok(value) => {
+                    return Ok(value);
+                }
+                Err(err) => {
+                    retry_state.retry(err).await?;
+                }
+            }
+        }
+    }
+
+    async fn scan_inner(
+        &self,
+        request: &ShardScanRequest,
+        timeout: Option<Duration>,
+    ) -> crate::Result<ShardScanResponse> {
+        let router = self.client.router();
+        let group_state = router.find_group_by_shard(request.shard_id)?;
+        let mut group_client = GroupClient::new(group_state, self.client.clone());
+        if let Some(duration) = timeout {
+            group_client.set_timeout(duration);
+        }
+
+        let request = Request::Scan(request.clone());
+        match group_client.request(&request).await? {
+            Response::Scan(resp) => Ok(resp),
+            _ => Err(crate::Error::Internal("invalid response type, Scan is required".into())),
+        }
+    }
+
+    /// Scan an range.
+    pub fn range(
+        &self,
+        request: RangeRequest,
+        timeout: Option<Duration>,
+    ) -> crate::Result<RangeStream> {
+        Ok(RangeStream::init(self.client.clone(), request, timeout))
     }
 
     #[allow(dead_code)]

@@ -141,9 +141,9 @@ message ShardScanRequest {
     //
     // The prefix only works with range shard, the behaviour of hash shard is undefined.
     optional bytes prefix = 7;
-    // The start key for a hash shard will be locate with hash slot.
+    // The start key of the range, scan all keys if the start key is not specified.
     optional bytes start_key = 8;
-    // The end key only works with range shard, the behaviour of hash shard is undefined.
+    // The end key of the range, scan all keys [start_key, inf) if the end_key is not specified.
     optional bytes end_key = 9;
     // Include all data (tombstone) as return values.
     bool include_raw_data = 10;

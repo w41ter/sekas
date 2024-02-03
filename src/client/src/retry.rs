@@ -38,6 +38,10 @@ impl RetryState {
         self.deadline.map(|d| d.saturating_duration_since(Instant::now()))
     }
 
+    pub fn reset_wait_interval(&mut self) {
+        self.interval_ms = 8;
+    }
+
     pub fn is_retryable(&self, err: &Error) -> bool {
         match err {
             Error::NotFound(_) | Error::EpochNotMatch(_) | Error::GroupNotAccessable(_) => true,

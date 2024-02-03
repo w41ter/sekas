@@ -14,11 +14,14 @@
 // limitations under the License.
 mod helper;
 
+use futures::StreamExt;
 use log::info;
 use rand::prelude::SmallRng;
 use rand::{Rng, SeedableRng};
 use sekas_api::server::v1::ReplicaRole;
-use sekas_client::{ClientOptions, Error, SekasClient, WriteBatchRequest, WriteBuilder};
+use sekas_client::{
+    ClientOptions, Error, RangeRequest, SekasClient, WriteBatchRequest, WriteBuilder,
+};
 use sekas_rock::fn_name;
 
 use crate::helper::client::*;
@@ -375,4 +378,109 @@ async fn cluster_rw_write_two_table_in_batch() {
     assert!(matches!(value, Some(Ok(v)) if v == "rust_in_actions"));
 
     assert_eq!(r1.version, r2.version);
+}
+
+#[sekas_macro::test]
+async fn cluster_rw_entire_range() {
+    let mut ctx = TestContext::new(fn_name!());
+    ctx.disable_all_balance();
+    let nodes = ctx.bootstrap_servers(3).await;
+    let c = ClusterClient::new(nodes).await;
+    let app = c.app_client().await;
+
+    let db = app.create_database("db".to_string()).await.unwrap();
+    let co = db.create_table("co".to_string()).await.unwrap();
+    c.assert_table_ready(co.id).await;
+
+    for i in 0..100 {
+        let k = format!("key {i:010}").into_bytes();
+        let v = format!("value {i}").into_bytes();
+        println!("write key {:?}", k);
+
+        let req = WriteBatchRequest::default()
+            .add_put(co.id, WriteBuilder::new(k.clone()).ensure_put(v.clone()));
+        db.write_batch(req).await.unwrap();
+    }
+
+    let range_request = RangeRequest {
+        table_id: co.id,
+        version: None,
+        range: sekas_client::Range::all(),
+        limit: 10,
+        limit_bytes: 0,
+        buffered_requests: 1,
+    };
+    let mut range_stream = db.range(range_request, None).unwrap();
+
+    let mut index = 0;
+    while let Some(values) = range_stream.next().await {
+        for value_set in values.unwrap() {
+            assert_eq!(
+                value_set.user_key,
+                format!("key {index:010}").into_bytes(),
+                "current index {index}"
+            );
+            assert_eq!(value_set.values.len(), 1, "current index {index}");
+            assert!(
+                matches!(&value_set.values[0].content,
+                Some(bytes) if bytes == &format!("value {index}").into_bytes()),
+                "current index {index}"
+            );
+            index += 1;
+        }
+    }
+    assert_eq!(index, 100);
+}
+
+#[sekas_macro::test]
+async fn cluster_rw_range_with_many_shard() {
+    // FIXME(walter) feature split shard is required.
+    let mut ctx = TestContext::new(fn_name!());
+    ctx.disable_all_balance();
+    let nodes = ctx.bootstrap_servers(3).await;
+    let c = ClusterClient::new(nodes).await;
+    let app = c.app_client().await;
+
+    let db = app.create_database("db".to_string()).await.unwrap();
+    let co = db.create_table("co".to_string()).await.unwrap();
+    c.assert_table_ready(co.id).await;
+
+    for i in 0..100 {
+        let k = format!("key {i:010}").into_bytes();
+        let v = format!("value {i}").into_bytes();
+        println!("write key {:?}", k);
+
+        let req = WriteBatchRequest::default()
+            .add_put(co.id, WriteBuilder::new(k.clone()).ensure_put(v.clone()));
+        db.write_batch(req).await.unwrap();
+    }
+
+    let range_request = RangeRequest {
+        table_id: co.id,
+        version: None,
+        range: sekas_client::Range::all(),
+        limit: 10,
+        limit_bytes: 0,
+        buffered_requests: 1,
+    };
+    let mut range_stream = db.range(range_request, None).unwrap();
+
+    let mut index = 0;
+    while let Some(values) = range_stream.next().await {
+        for value_set in values.unwrap() {
+            assert_eq!(
+                value_set.user_key,
+                format!("key {index:010}").into_bytes(),
+                "current index {index}"
+            );
+            assert_eq!(value_set.values.len(), 1, "current index {index}");
+            assert!(
+                matches!(&value_set.values[0].content,
+                Some(bytes) if bytes == &format!("value {index}").into_bytes()),
+                "current index {index}"
+            );
+            index += 1;
+        }
+    }
+    assert_eq!(index, 100);
 }
