@@ -101,6 +101,19 @@ impl Range {
     }
 }
 
+impl Default for RangeRequest {
+    fn default() -> Self {
+        RangeRequest {
+            table_id: 0,
+            version: None,
+            range: Range::all(),
+            limit: 0,
+            limit_bytes: 0,
+            buffered_requests: 1,
+        }
+    }
+}
+
 impl futures::Stream for RangeStream {
     type Item = crate::Result<Vec<ValueSet>>;
 

@@ -20,7 +20,7 @@ use rand::prelude::SmallRng;
 use rand::{Rng, SeedableRng};
 use sekas_api::server::v1::ReplicaRole;
 use sekas_client::{
-    ClientOptions, Error, RangeRequest, SekasClient, WriteBatchRequest, WriteBuilder,
+    AppError, ClientOptions, RangeRequest, SekasClient, WriteBatchRequest, WriteBuilder,
 };
 use sekas_rock::fn_name;
 
@@ -262,7 +262,7 @@ async fn cluster_rw_put_with_condition() {
         .add_put(co.id, WriteBuilder::new(k.clone()).expect_exists().ensure_put(v.clone()));
     let r = db.write_batch(req).await;
     info!("put if exists failed: {r:?}");
-    assert!(matches!(r, Err(Error::CasFailed(0, 0, _))));
+    assert!(matches!(r, Err(AppError::CasFailed(0, 0, _))));
 
     // 2. Put if not exists success
     let req = WriteBatchRequest::default()
@@ -276,7 +276,7 @@ async fn cluster_rw_put_with_condition() {
     let req = WriteBatchRequest::default()
         .add_put(co.id, WriteBuilder::new(k.clone()).expect_not_exists().ensure_put(v.clone()));
     let r = db.write_batch(req).await;
-    assert!(matches!(r, Err(Error::CasFailed(0, 0, _))));
+    assert!(matches!(r, Err(AppError::CasFailed(0, 0, _))));
 
     // 4. Put if exists success
     let req = WriteBatchRequest::default()
@@ -290,7 +290,7 @@ async fn cluster_rw_put_with_condition() {
         WriteBuilder::new(k.clone()).expect_value(b"rust".to_vec()).ensure_put(v.clone()),
     );
     let r = db.write_batch(req).await;
-    assert!(matches!(r, Err(Error::CasFailed(0, 0, _))));
+    assert!(matches!(r, Err(AppError::CasFailed(0, 0, _))));
 
     // 6.Put with expected value success
     let req = WriteBatchRequest::default().add_put(

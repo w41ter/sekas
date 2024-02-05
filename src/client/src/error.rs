@@ -195,6 +195,14 @@ impl From<AppError> for tonic::Status {
     }
 }
 
+impl From<Error> for tonic::Status {
+    #[inline]
+    fn from(value: Error) -> Self {
+        let error: AppError = value.into();
+        error.into()
+    }
+}
+
 pub fn find_io_error(status: &tonic::Status) -> Option<&std::io::Error> {
     use tonic::Code;
     if status.code() == Code::Unavailable || status.code() == Code::Unknown {

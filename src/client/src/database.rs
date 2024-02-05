@@ -77,17 +77,17 @@ impl Database {
         Ok(())
     }
 
-    pub async fn write_batch(&self, req: WriteBatchRequest) -> crate::Result<WriteBatchResponse> {
+    pub async fn write_batch(&self, req: WriteBatchRequest) -> AppResult<WriteBatchResponse> {
         let ctx = WriteBatchContext::new(req, self.client.clone(), self.rpc_timeout);
-        ctx.commit().await
+        Ok(ctx.commit().await?)
     }
 
-    pub async fn get(&self, table_id: u64, key: Vec<u8>) -> crate::Result<Option<Vec<u8>>> {
+    pub async fn get(&self, table_id: u64, key: Vec<u8>) -> AppResult<Option<Vec<u8>>> {
         let value = self.get_raw_value(table_id, key).await?;
         Ok(value.and_then(|v| v.content))
     }
 
-    pub async fn get_raw_value(&self, table_id: u64, key: Vec<u8>) -> crate::Result<Option<Value>> {
+    pub async fn get_raw_value(&self, table_id: u64, key: Vec<u8>) -> AppResult<Option<Value>> {
         CLIENT_DATABASE_BYTES_TOTAL.rx.inc_by(key.len() as u64);
         CLIENT_DATABASE_REQUEST_TOTAL.get.inc();
         record_latency!(&CLIENT_DATABASE_REQUEST_DURATION_SECONDS.get);
@@ -184,7 +184,7 @@ impl Database {
         &self,
         request: ShardScanRequest,
         timeout: Option<Duration>,
-    ) -> crate::Result<ShardScanResponse> {
+    ) -> AppResult<ShardScanResponse> {
         let mut retry_state = RetryState::new(timeout);
         loop {
             match self.scan_inner(&request, retry_state.timeout()).await {
@@ -222,7 +222,7 @@ impl Database {
         &self,
         request: RangeRequest,
         timeout: Option<Duration>,
-    ) -> crate::Result<RangeStream> {
+    ) -> AppResult<RangeStream> {
         Ok(RangeStream::init(self.client.clone(), request, timeout))
     }
 
