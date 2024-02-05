@@ -35,21 +35,23 @@ pub(crate) fn merge_scan_response(
     let mut source_next = source_iter.next();
     loop {
         match (target_next, source_next) {
-            (Some(x), Some(y)) => {
-                if x.user_key == y.user_key {
-                    value_sets.push(x);
-                    target_next = target_iter.next();
-                    source_next = source_iter.next();
-                } else if x.user_key < y.user_key {
+            (Some(x), Some(y)) => match x.user_key.cmp(&y.user_key) {
+                std::cmp::Ordering::Less => {
                     value_sets.push(x);
                     target_next = target_iter.next();
                     source_next = Some(y);
-                } else {
+                }
+                std::cmp::Ordering::Equal => {
+                    value_sets.push(x);
+                    target_next = target_iter.next();
+                    source_next = source_iter.next();
+                }
+                std::cmp::Ordering::Greater => {
                     value_sets.push(y);
                     target_next = Some(x);
                     source_next = source_iter.next();
                 }
-            }
+            },
             (Some(x), None) => {
                 value_sets.push(x.clone());
                 target_next = target_iter.next();
