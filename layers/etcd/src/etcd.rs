@@ -1,4 +1,4 @@
-// Copyright 2023-present The Sekas Authors.
+// Copyright 2024-present The Sekas Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,23 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#![feature(cursor_remaining)]
-
-mod consts;
-mod etcd;
-mod service;
-mod store;
-
-pub use crate::store::KvStore;
-
-pub fn make_etcd_kv_service() -> etcd::v3::kv_server::KvServer<service::Kv> {
-    todo!()
+pub mod etcdserverpb {
+    #![allow(clippy::all)]
+    tonic::include_proto!("etcdserverpb");
 }
-
-pub fn make_etcd_watch_service() -> etcd::v3::watch_server::WatchServer<service::Watch> {
-    todo!()
+pub mod authpb {
+    #![allow(clippy::all)]
+    tonic::include_proto!("authpb");
 }
-
-pub fn make_etcd_lease_service() -> etcd::v3::lease_server::LeaseServer<service::Lease> {
-    todo!()
+pub mod v3 {
+    pub use super::etcdserverpb::*;
 }

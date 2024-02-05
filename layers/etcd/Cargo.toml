@@ -9,6 +9,8 @@ description = "The Sekas API."
 
 [dependencies]
 sekas-client = { path = "../../src/client" }
+sekas-rock = { path = "../../src/rock" }
+sekas-runtime = { path = "../../src/runtime" }
 
 crc32fast.workspace = true
 futures.workspace = true

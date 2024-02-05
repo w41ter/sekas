@@ -1,4 +1,4 @@
-// Copyright 2023-present The Sekas Authors.
+// Copyright 2024-present The Sekas Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,23 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#![feature(cursor_remaining)]
-
-mod consts;
-mod etcd;
-mod service;
-mod store;
-
-pub use crate::store::KvStore;
-
-pub fn make_etcd_kv_service() -> etcd::v3::kv_server::KvServer<service::Kv> {
-    todo!()
-}
-
-pub fn make_etcd_watch_service() -> etcd::v3::watch_server::WatchServer<service::Watch> {
-    todo!()
-}
-
-pub fn make_etcd_lease_service() -> etcd::v3::lease_server::LeaseServer<service::Lease> {
-    todo!()
-}
+/// The sekas database name of etcd kv store.
+pub const DATABASE_NAME: &str = "etcd";
+/// The sekas table name of etcd kv store.
+pub const KV_NAME: &str = "kv";

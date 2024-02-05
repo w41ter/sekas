@@ -2336,6 +2336,8 @@ dependencies = [
  "prost-types 0.11.9",
  "protoc-build",
  "sekas-client",
+ "sekas-rock",
+ "sekas-runtime",
  "tonic",
  "tonic-build",
 ]
