@@ -91,6 +91,7 @@ async fn read_key<T: LatchManager>(
                     start_version
                 );
                 // This entry is safe for reading.
+                // ATTN: [`read_key`] should return the first entry, include tombstone entry.
                 return Ok(Some(entry.into()));
             }
         }

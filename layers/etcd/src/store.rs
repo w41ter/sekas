@@ -16,7 +16,9 @@ use std::sync::Arc;
 
 use futures::lock::Mutex;
 use futures::StreamExt;
+use prost::Message;
 use sekas_client::{AppError, AppResult, WriteBatchRequest, WriteBuilder};
+use sekas_rock::lexical::lexical_next;
 
 pub use crate::consts::*;
 use crate::etcd::v3::*;
@@ -33,6 +35,11 @@ struct SekasHandle {
 }
 
 impl KvStore {
+    /// Create [`KvStore`] instance.
+    pub fn new(client: sekas_client::SekasClient) -> Self {
+        KvStore { client, handle: Mutex::new(None) }
+    }
+
     /// Create or return the handle of the underlying store used by etcd kv
     /// store.
     async fn ensure_handle(&self) -> AppResult<Arc<SekasHandle>> {
@@ -49,9 +56,9 @@ impl KvStore {
             }
             Err(err) => return Err(err),
         };
-        let table = match db.open_table(KV_NAME.to_owned()).await {
+        let table = match db.open_table(KV_TABLE.to_owned()).await {
             Ok(table) => table,
-            Err(AppError::NotFound(_)) => db.create_table(KV_NAME.to_owned()).await?,
+            Err(AppError::NotFound(_)) => db.create_table(KV_TABLE.to_owned()).await?,
             Err(err) => return Err(err),
         };
 
@@ -66,71 +73,56 @@ impl KvStore {
         let kv_store = self.ensure_handle().await?;
 
         loop {
-            let range_req = sekas_client::RangeRequest {
-                table_id: kv_store.table_id,
-                range: sekas_client::Range::Prefix(request.key.clone()),
-                ..Default::default()
+            // read old value.
+            let mut key_value = match self.get_key_value(&kv_store, request.key.clone()).await? {
+                Some(key_value) => key_value,
+                None if request.ignore_lease || request.ignore_value => {
+                    // See below links for details:
+                    // - https://github.com/etcd-io/etcd/blob/main/server/etcdserver/api/v3rpc/util.go#L96
+                    // - https://github.com/etcd-io/etcd/blob/main/api/v3rpc/rpctypes/error.go
+                    todo!("return key not found")
+                }
+                None => KeyValue::default(),
             };
-            let mut range_stream = kv_store.db.range(range_req, None)?;
-            let mut _exists = false;
-            let mut version: u64 = 0;
-            let mut version_value_version: u64 = 0;
-            let mut lease_id: u64 = 0;
-            let mut _prev_value: Vec<u8> = Vec::default();
-            while let Some(values) = range_stream.next().await {
-                let values = values?;
-                for value_set in values {
-                    let Some(got_value) = value_set.values.last() else { continue };
-                    let (etcd_user_key, record) = keys::revert_record_key(&value_set.user_key);
-                    if etcd_user_key != request.key {
-                        return Err(AppError::Internal(
-                            "the result of range scan with prefix is out of range".into(),
-                        ));
+
+            let mut put_resp = PutResponse::default();
+            if request.prev_kv {
+                put_resp.prev_kv = Some(key_value.clone());
+            }
+            if request.lease != 0 {
+                // with lease
+                todo!("support put with lease");
+            } else {
+                // put without lease.
+
+                // apply request
+                if !request.ignore_value {
+                    key_value.value = request.value.clone();
+                }
+                if !request.ignore_lease {
+                    if key_value.lease != 0 {
+                        todo!("detach key from origin lease");
                     }
-                    _exists = true;
-                    if &record == keys::VERSION {
-                        version_value_version = got_value.version;
+                    if request.lease != 0 {
+                        todo!("attach key to lease")
                     }
-                    if let Some(content) = &got_value.content {
-                        match &record {
-                            keys::LEASE => lease_id = values::u64_from_bytes(content)?,
-                            keys::VALUE => {
-                                _prev_value = content.clone();
-                            }
-                            keys::VERSION => {
-                                version = values::u64_from_bytes(content)?;
-                            }
-                            _ => {
-                                return Err(AppError::Internal(
-                                    format!("unknown record name: {record:?}").into(),
-                                ));
-                            }
-                        }
-                    }
+                    key_value.lease = request.lease;
                 }
             }
 
-            let version_key = keys::record_key(&request.key, keys::VERSION);
-            let lease_key = keys::record_key(&request.key, keys::LEASE);
-            let value_key = keys::record_key(&request.value, keys::VALUE);
+            key_value.version += 1;
+            let mod_revision = key_value.mod_revision;
+            let value = ValueRecord::from(key_value).encode_to_vec();
+            let put_value = if mod_revision == 0 {
+                WriteBuilder::new(request.key.clone()).expect_not_exists().ensure_put(value)
+            } else {
+                WriteBuilder::new(request.key.clone())
+                    .expect_version(mod_revision as u64)
+                    .ensure_put(value)
+            };
 
             let wb = WriteBatchRequest {
-                puts: vec![
-                    (
-                        kv_store.table_id,
-                        WriteBuilder::new(version_key)
-                            .expect_version(version_value_version)
-                            .ensure_put(values::u64_as_bytes(version + 1)),
-                    ),
-                    (
-                        kv_store.table_id,
-                        WriteBuilder::new(lease_key).ensure_put(values::u64_as_bytes(lease_id)),
-                    ),
-                    (
-                        kv_store.table_id,
-                        WriteBuilder::new(value_key).ensure_put(request.value.clone()),
-                    ),
-                ],
+                puts: vec![(kv_store.table_id, put_value)],
                 ..Default::default()
             };
             let resp = match kv_store.db.write_batch(wb).await {
@@ -138,34 +130,94 @@ impl KvStore {
                 Err(AppError::CasFailed(_, _, _)) => continue,
                 Err(err) => return Err(err),
             };
-            return Ok(PutResponse {
-                header: Some(ResponseHeader {
-                    revision: resp.version as i64,
-                    ..Default::default()
-                }),
-                ..Default::default()
-            });
+            put_resp.header = Some(ResponseHeader::with_revision(resp.version as i64));
+            return Ok(put_resp);
         }
     }
 
     pub async fn range(&self, request: &RangeRequest) -> AppResult<RangeResponse> {
         let kv_store = self.ensure_handle().await?;
-
-        if let Some(range_end) = &request.range_end {
-            let range_req = sekas_client::RangeRequest {
-                table_id: kv_store.table_id,
-                range: sekas_client::Range::Range {
-                    begin: Some(request.key.clone()),
-                    end: Some(range_end.clone()),
-                },
-                ..Default::default()
-            };
-            let mut range_stream = kv_store.db.range(range_req, None).unwrap();
-            while let Some(_values) = range_stream.next().await {}
-        } else {
-            // only look up key
+        if request.sort_order != 0 {
+            return Err(AppError::InvalidArgument(
+                "RangeRequest::sort_order is not supported yet".into(),
+            ));
         }
-        todo!()
+        if request.sort_target != 0 {
+            return Err(AppError::InvalidArgument(
+                "RangeRequest::sort_target is not supported yet".into(),
+            ));
+        }
+
+        let range = if let Some(range_end) = &request.range_end {
+            sekas_client::Range::Range {
+                begin: Some(request.key.clone()),
+                end: Some(range_end.clone()),
+            }
+        } else {
+            sekas_client::Range::Range {
+                begin: Some(request.key.clone()),
+                end: Some(lexical_next(&request.key)),
+            }
+        };
+        let version = if request.revision > 0 { Some(request.revision as u64) } else { None };
+        let range_req = sekas_client::RangeRequest {
+            table_id: kv_store.table_id,
+            range,
+            version,
+            limit: request.limit as u64,
+            ..Default::default()
+        };
+        let mut range_stream = kv_store.db.range(range_req, None)?;
+        let mut range_resp = RangeResponse::default();
+        'OUTER: while let Some(value_sets) = range_stream.next().await {
+            let value_sets = value_sets?;
+            for value_set in value_sets {
+                if value_set.values.is_empty() {
+                    return Err(AppError::Internal("value set is empty".into()));
+                }
+                let value = &value_set.values[0];
+                let data = value.content.as_ref().ok_or_else(|| {
+                    AppError::Internal("value content of range request should not be None".into())
+                })?;
+                let key_value = ValueRecord::decode_to_key_value(
+                    &value_set.user_key,
+                    data,
+                    value.version as i64,
+                )?;
+                if request.min_create_revision > 0
+                    && request.min_create_revision > key_value.create_revision
+                {
+                    continue;
+                }
+                if request.max_create_revision > 0
+                    && key_value.create_revision > request.max_create_revision
+                {
+                    continue;
+                }
+                if request.min_mod_revision > 0 && request.min_mod_revision > key_value.mod_revision
+                {
+                    continue;
+                }
+                if request.max_mod_revision > 0 && key_value.mod_revision > request.max_mod_revision
+                {
+                    continue;
+                }
+                range_resp.count += 1;
+                if !request.count_only {
+                    let mut key_value = key_value;
+                    if request.keys_only {
+                        key_value.value.clear();
+                    }
+                    range_resp.kvs.push(key_value);
+                }
+                if range_resp.count == request.limit {
+                    // It will skip zero limit automatically.
+                    range_resp.more = true;
+                    break 'OUTER;
+                }
+            }
+        }
+        Ok(range_resp)
     }
 
     pub async fn delete_range(&self, _req: &DeleteRangeRequest) -> AppResult<DeleteRangeResponse> {
@@ -177,70 +229,38 @@ impl KvStore {
     }
 }
 
-mod keys {
-    pub const LEASE: &[u8; 8] = b"LEASE\x00\x00\x00";
-    pub const VALUE: &[u8; 8] = b"VALUE\x00\x00\x00";
-    pub const VERSION: &[u8; 8] = b"VERSION\x00";
-
-    /// Generate record key with the memcomparable format.
-    pub fn record_key(key: &[u8], record: &[u8; 8]) -> Vec<u8> {
-        use std::io::{Cursor, Read};
-
-        debug_assert!(!key.is_empty());
-        let actual_len = (((key.len() - 1) / 8) + 1) * 9;
-        let buf_len = core::mem::size_of::<[u8; 8]>() + actual_len;
-        let mut buf = Vec::with_capacity(buf_len);
-        let mut cursor = Cursor::new(key);
-        while !cursor.is_empty() {
-            let mut group = [0u8; 8];
-            let mut size = cursor.read(&mut group[..]).unwrap() as u8;
-            debug_assert_ne!(size, 0);
-            if size == 8 && !cursor.is_empty() {
-                size += 1;
-            }
-            buf.extend_from_slice(group.as_slice());
-            buf.push(b'0' + size);
+impl KvStore {
+    async fn get_key_value(
+        &self,
+        kv_store: &SekasHandle,
+        value_key: Vec<u8>,
+    ) -> AppResult<Option<KeyValue>> {
+        if let Some(raw_value) =
+            kv_store.db.get_raw_value(kv_store.table_id, value_key.to_owned()).await?
+        {
+            let Some(content) = raw_value.content else { return Ok(None) };
+            let key_value =
+                ValueRecord::decode_to_key_value(&value_key, &content, raw_value.version as i64)?;
+            Ok(Some(key_value))
+        } else {
+            Ok(None)
         }
-        buf.extend_from_slice(record.as_slice());
-        buf
-    }
-
-    /// Revert the record key, return the user key and record name.
-    pub fn revert_record_key(key: &[u8]) -> (Vec<u8>, [u8; 8]) {
-        use std::io::{Cursor, Read};
-
-        const L: usize = core::mem::size_of::<[u8; 8]>();
-        let len = key.len();
-        debug_assert!(len > L);
-        let encoded_user_key = &key[..(len - L)];
-
-        debug_assert_eq!(encoded_user_key.len() % 9, 0);
-        let num_groups = encoded_user_key.len() / 9;
-        let mut buf = Vec::with_capacity(num_groups * 8);
-        let mut cursor = Cursor::new(encoded_user_key);
-        while !cursor.is_empty() {
-            let mut group = [0u8; 9];
-            let _ = cursor.read(&mut group[..]).unwrap();
-            let num_element = std::cmp::min((group[8] - b'0') as usize, 8);
-            buf.extend_from_slice(&group[..num_element]);
-        }
-
-        let mut record_name = [0u8; 8];
-        record_name.copy_from_slice(&key[(len - L)..]);
-        (buf, record_name)
     }
 }
 
-mod values {
-    use sekas_rock::num::*;
-
-    use super::{AppError, AppResult};
-
-    pub fn u64_as_bytes(val: u64) -> Vec<u8> {
-        val.to_be_bytes().as_slice().to_owned()
-    }
-
-    pub fn u64_from_bytes(bytes: &[u8]) -> AppResult<u64> {
-        decode_u64(bytes).ok_or_else(|| AppError::Internal("invalid numeric format".into()))
+impl ValueRecord {
+    fn decode_to_key_value(key: &[u8], content: &[u8], revision: i64) -> AppResult<KeyValue> {
+        let mut record = ValueRecord::decode(content).unwrap();
+        if record.create == 0 {
+            record.create = revision;
+        }
+        Ok(KeyValue {
+            create_revision: record.create,
+            mod_revision: revision,
+            version: record.version,
+            value: record.data,
+            lease: record.lease,
+            key: key.to_owned(),
+        })
     }
 }

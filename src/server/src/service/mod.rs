@@ -39,6 +39,7 @@ pub struct ProxyServer {
 }
 
 impl ProxyServer {
+    #[allow(dead_code)]
     pub(crate) fn new(transport_manager: &TransportManager) -> Self {
         let opts =
             ClientOptions { connect_timeout: Some(Duration::from_millis(250)), timeout: None };

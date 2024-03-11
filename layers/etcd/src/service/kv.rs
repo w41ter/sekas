@@ -24,6 +24,12 @@ pub struct Kv {
     kv_store: Arc<KvStore>,
 }
 
+impl Kv {
+    pub fn new(kv_store: Arc<KvStore>) -> Self {
+        Kv { kv_store }
+    }
+}
+
 #[tonic::async_trait]
 impl kv_server::Kv for Kv {
     /// Range gets the keys in the range from the key-value store.

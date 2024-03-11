@@ -14,5 +14,15 @@
 
 /// The sekas database name of etcd kv store.
 pub const DATABASE_NAME: &str = "etcd";
-/// The sekas table name of etcd kv store.
-pub const KV_NAME: &str = "kv";
+/// The kv table saves the key value records of the etcd service.
+pub const KV_TABLE: &str = "kv";
+/// The lease table saves the lease records of the etcd service.
+#[allow(dead_code)]
+pub const LEASE_TABLE: &str = "lease";
+/// The lease keys table save the keys belong to one lease records.
+///   key_1 => lease_1
+///   key_2 => lease_1
+///   ...
+///   key_n => lease_m
+#[allow(dead_code)]
+pub const LEASE_KEYS_TABLE: &str = "lease_keys";

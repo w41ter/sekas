@@ -1,0 +1,39 @@
+// Copyright 2024 The Sekas Authors.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+syntax = "proto3";
+package recordpb;
+
+// The persistent value for etcd kv.
+message ValueRecord {
+    // The value.
+    bytes data = 1;
+    // The version of kv.
+    int64 version = 2;
+    // The create revision of kv.
+    // If this field is 0, the MVCC version of this key is the create revision.
+    int64 create = 3;
+    // The lease id of kv.
+    int64 lease = 4;
+}
+
+// The persistent lease for etcd lease.
+message LeaseRecord {
+    // The keys attached to this lease.
+    repeated bytes keys = 1;
+    // The time to live of this lease.
+    int64 TTL = 2;
+    // The deadline of this lease.
+    int64 deadline = 3;
+}

@@ -20,6 +20,33 @@ pub mod authpb {
     #![allow(clippy::all)]
     tonic::include_proto!("authpb");
 }
+
+pub mod recordpb {
+    #![allow(clippy::all)]
+    tonic::include_proto!("recordpb");
+
+    use super::etcdserverpb::KeyValue;
+
+    impl From<KeyValue> for ValueRecord {
+        fn from(key_value: KeyValue) -> Self {
+            ValueRecord {
+                create: key_value.create_revision,
+                data: key_value.value,
+                lease: key_value.lease,
+                version: key_value.version,
+            }
+        }
+    }
+}
+
 pub mod v3 {
     pub use super::etcdserverpb::*;
+    pub use super::recordpb::*;
+
+    impl ResponseHeader {
+        #[inline]
+        pub fn with_revision(revision: i64) -> Self {
+            ResponseHeader { revision, ..Default::default() }
+        }
+    }
 }

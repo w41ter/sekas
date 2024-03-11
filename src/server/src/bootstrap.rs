@@ -30,7 +30,6 @@ use crate::node::Node;
 use crate::root::Root;
 use crate::serverpb::v1::raft_server::RaftServer;
 use crate::serverpb::v1::NodeIdent;
-use crate::service::ProxyServer;
 use crate::transport::TransportManager;
 use crate::{Config, Error, Result, Server};
 
@@ -56,17 +55,14 @@ async fn run_in_async(config: Config, shutdown: Shutdown) -> Result<()> {
     info!("node {} starts serving requests", ident.node_id);
 
     let server = Server { node: Arc::new(node), root, address_resolver };
-
-    let proxy_server =
-        if config.enable_proxy_service { Some(ProxyServer::new(&transport_manager)) } else { None };
-    bootstrap_services(&config.addr, server, proxy_server, shutdown).await
+    bootstrap_services(&config, server, &transport_manager, shutdown).await
 }
 
 /// Listen and serve incoming rpc requests.
 async fn bootstrap_services(
-    addr: &str,
+    cfg: &Config,
     server: Server,
-    _proxy_server: Option<ProxyServer>,
+    _transport_manager: &TransportManager,
     shutdown: Shutdown,
 ) -> Result<()> {
     use sekas_runtime::TcpIncoming;
@@ -75,7 +71,7 @@ async fn bootstrap_services(
 
     use crate::service::admin::make_admin_service;
 
-    let listener = TcpListener::bind(addr).await?;
+    let listener = TcpListener::bind(&cfg.addr).await?;
     let incoming = TcpIncoming::from_listener(listener, true);
 
     let builder = Server::builder()
@@ -87,10 +83,9 @@ async fn bootstrap_services(
 
     #[cfg(feature = "layer_etcd")]
     let builder = {
-        builder
-            .add_service(sekas_etcd_proxy::make_etcd_kv_service())
-            .add_service(sekas_etcd_proxy::make_etcd_watch_service())
-            .add_service(sekas_etcd_proxy::make_etcd_lease_service())
+        let client = _transport_manager.build_client(sekas_client::ClientOptions::default());
+        let kv_store = sekas_etcd_proxy::make_etcd_store(client);
+        builder.add_service(sekas_etcd_proxy::make_etcd_kv_service(kv_store.clone()))
     };
 
     let server = builder.serve_with_incoming(incoming);

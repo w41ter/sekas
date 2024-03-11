@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use log::debug;
 use sekas_api::server::v1::*;
 
 use crate::{Error, Result};
@@ -34,6 +35,7 @@ fn eval_condition(cond: &WriteCondition, value: Option<&Value>) -> Result<bool> 
         return Err(Error::InvalidArgument(format!("Invalid WriteConditionType {}", cond.r#type)));
     };
     if let Some(value) = value {
+        debug!("eval condition {:?} with value {value:?}", r#type);
         match r#type {
             WriteConditionType::ExpectNotExists if value.content.is_some() => Ok(false),
             WriteConditionType::ExpectExists if value.content.is_none() => Ok(false),

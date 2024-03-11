@@ -19,16 +19,26 @@ mod etcd;
 mod service;
 mod store;
 
+use std::sync::Arc;
+
 pub use crate::store::KvStore;
 
-pub fn make_etcd_kv_service() -> etcd::v3::kv_server::KvServer<service::Kv> {
+pub fn make_etcd_kv_service(kv_store: Arc<KvStore>) -> etcd::v3::kv_server::KvServer<service::Kv> {
+    etcd::v3::kv_server::KvServer::new(service::Kv::new(kv_store))
+}
+
+pub fn make_etcd_watch_service(
+    _kv_store: Arc<KvStore>,
+) -> etcd::v3::watch_server::WatchServer<service::Watch> {
     todo!()
 }
 
-pub fn make_etcd_watch_service() -> etcd::v3::watch_server::WatchServer<service::Watch> {
+pub fn make_etcd_lease_service(
+    _kv_store: Arc<KvStore>,
+) -> etcd::v3::lease_server::LeaseServer<service::Lease> {
     todo!()
 }
 
-pub fn make_etcd_lease_service() -> etcd::v3::lease_server::LeaseServer<service::Lease> {
-    todo!()
+pub fn make_etcd_store(client: sekas_client::SekasClient) -> Arc<store::KvStore> {
+    Arc::new(store::KvStore::new(client))
 }
