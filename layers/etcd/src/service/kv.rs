@@ -47,16 +47,20 @@ impl kv_server::Kv for Kv {
     /// and generates a delete event in the event history for every deleted key.
     async fn delete_range(
         &self,
-        _request: Request<DeleteRangeRequest>,
+        req: Request<DeleteRangeRequest>,
     ) -> Result<Response<DeleteRangeResponse>> {
-        todo!()
+        let req = req.into_inner();
+        let resp = self.kv_store.delete_range(&req).await?;
+        Ok(Response::new(resp))
     }
 
     /// Txn processes multiple requests in a single transaction.
     /// A txn request increments the revision of the key-value store
     /// and generates events with the same revision for every completed request.
     /// It is not allowed to modify the same key several times within one txn.
-    async fn txn(&self, _request: Request<TxnRequest>) -> Result<Response<TxnResponse>> {
-        todo!()
+    async fn txn(&self, req: Request<TxnRequest>) -> Result<Response<TxnResponse>> {
+        let req = req.into_inner();
+        let resp = self.kv_store.txn(&req).await?;
+        Ok(Response::new(resp))
     }
 }

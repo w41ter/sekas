@@ -18,6 +18,7 @@ use std::time::Duration;
 use sekas_api::server::v1::group_request_union::Request;
 use sekas_api::server::v1::group_response_union::Response;
 use sekas_api::server::v1::*;
+use sekas_rock::lexical::{lexical_next, lexical_next_boundary};
 use sekas_schema::system::txn::TXN_MAX_VERSION;
 use tokio::sync::mpsc;
 
@@ -182,6 +183,7 @@ impl RangeScanner {
             let (group_state, shard_desc) = router.find_shard(self.table_id, &self.cursor_key)?;
             let mut group_client = GroupClient::new(group_state, self.client.clone());
             if let Err(err) = self.scan_shard(&mut group_client, &shard_desc).await {
+                log::info!("scan shard {err:?}");
                 retry_state.retry(err).await?;
                 continue;
             }
@@ -243,55 +245,10 @@ impl RangeScanner {
     }
 }
 
-fn lexical_next_boundary(bytes: &[u8]) -> Vec<u8> {
-    let mut r = bytes.to_owned();
-    while let Some(&last) = r.last() {
-        if last != 0xFF {
-            break;
-        }
-        r.pop();
-    }
-    if let Some(last) = r.last_mut() {
-        *last += 0x1;
-    }
-    r
-}
-
-fn lexical_next(bytes: &[u8]) -> Vec<u8> {
-    let mut r = bytes.to_owned();
-    r.push(0x0);
-    r
-}
-
 fn is_entire_range_scanned(scan_end: Option<&[u8]>, shard_end: &[u8]) -> bool {
     if let Some(range_end) = scan_end {
-        range_end <= shard_end
+        range_end <= shard_end || shard_end.is_empty()
     } else {
         shard_end.is_empty()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn lexical_next_boundary_basic() {
-        struct TestCase {
-            input: &'static [u8],
-            expect: &'static [u8],
-        }
-        let cases = vec![
-            TestCase { input: b"", expect: b"" },
-            TestCase { input: b"1", expect: b"2" },
-            TestCase { input: b"1\xFF", expect: b"2" },
-            TestCase { input: b"1\xFF\xFF\xFF", expect: b"2" },
-            TestCase { input: b"\xFF\xFF\xFF", expect: b"" },
-            TestCase { input: b"123", expect: b"124" },
-        ];
-        for TestCase { input, expect } in cases {
-            let got = lexical_next_boundary(input);
-            assert_eq!(&got, expect);
-        }
     }
 }

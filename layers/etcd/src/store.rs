@@ -167,6 +167,14 @@ impl KvStore {
         }
         todo!()
     }
+
+    pub async fn delete_range(&self, _req: &DeleteRangeRequest) -> AppResult<DeleteRangeResponse> {
+        todo!()
+    }
+
+    pub async fn txn(&self, _req: &TxnRequest) -> AppResult<TxnResponse> {
+        todo!()
+    }
 }
 
 mod keys {

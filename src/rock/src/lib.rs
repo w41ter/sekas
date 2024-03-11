@@ -14,5 +14,6 @@
 
 pub mod fs;
 pub mod lang;
+pub mod lexical;
 pub mod num;
 pub mod time;
