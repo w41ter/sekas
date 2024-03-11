@@ -252,3 +252,17 @@ fn is_entire_range_scanned(scan_end: Option<&[u8]>, shard_end: &[u8]) -> bool {
         shard_end.is_empty()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn is_entire_range_scanned_basic() {
+        assert!(is_entire_range_scanned(Some(b"test"), b"test"));
+        assert!(is_entire_range_scanned(Some(b"test"), &[]));
+        assert!(is_entire_range_scanned(None, &[]));
+        assert!(!is_entire_range_scanned(None, b"test"));
+        assert!(!is_entire_range_scanned(Some(b"test"), b"tes"));
+    }
+}
