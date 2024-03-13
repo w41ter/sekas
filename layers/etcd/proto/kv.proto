@@ -302,7 +302,7 @@ message DeleteRangeRequest {
   // If range_end is one bit larger than the given key, then the range is all the keys
   // with the prefix (the given key).
   // If range_end is '\0', the range is all keys greater than or equal to the key argument.
-  bytes range_end = 2;
+  optional bytes range_end = 2;
 
   // If prev_kv is set, etcd gets the previous key-value pairs before deleting it.
   // The previous key-value pairs will be returned in the delete response.

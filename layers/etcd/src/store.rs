@@ -18,7 +18,7 @@ use futures::lock::Mutex;
 use futures::StreamExt;
 use prost::Message;
 use sekas_client::{AppError, AppResult, WriteBatchRequest, WriteBuilder};
-use sekas_rock::lexical::lexical_next;
+use sekas_rock::lexical::{lexical_next, lexical_next_boundary};
 
 pub use crate::consts::*;
 use crate::etcd::v3::*;
@@ -148,18 +148,8 @@ impl KvStore {
             ));
         }
 
-        let range = if let Some(range_end) = &request.range_end {
-            sekas_client::Range::Range {
-                begin: Some(request.key.clone()),
-                end: Some(range_end.clone()),
-            }
-        } else {
-            sekas_client::Range::Range {
-                begin: Some(request.key.clone()),
-                end: Some(lexical_next(&request.key)),
-            }
-        };
         let version = if request.revision > 0 { Some(request.revision as u64) } else { None };
+        let range = build_request_range(&request.key, request.range_end.as_deref());
         let range_req = sekas_client::RangeRequest {
             table_id: kv_store.table_id,
             range,
@@ -220,8 +210,60 @@ impl KvStore {
         Ok(range_resp)
     }
 
-    pub async fn delete_range(&self, _req: &DeleteRangeRequest) -> AppResult<DeleteRangeResponse> {
-        todo!()
+    pub async fn delete_range(&self, req: &DeleteRangeRequest) -> AppResult<DeleteRangeResponse> {
+        let kv_store = self.ensure_handle().await?;
+
+        loop {
+            let range = build_request_range(&req.key, req.range_end.as_deref());
+            // TODO: make this range limit as a knob.
+            let range_req = sekas_client::RangeRequest {
+                table_id: kv_store.table_id,
+                range,
+                limit: 128, // reduce txn overhead.
+                ..Default::default()
+            };
+
+            let mut range_stream = kv_store.db.range(range_req, None)?;
+            let mut delete_resp = DeleteRangeResponse::default();
+            let mut deletes = Vec::default();
+            while let Some(value_sets) = range_stream.next().await {
+                for value_set in value_sets? {
+                    let Some((data, version)) = value_set
+                        .values
+                        .first()
+                        .map(|v| v.content.as_ref().map(|c| (c, v.version)))
+                        .flatten()
+                    else {
+                        continue;
+                    };
+                    let key_value = ValueRecord::decode_to_key_value(
+                        &value_set.user_key,
+                        data,
+                        version as i64,
+                    )?;
+                    deletes.push(
+                        WriteBuilder::new(key_value.key.clone())
+                            .expect_version(key_value.mod_revision as u64)
+                            .ensure_delete(),
+                    );
+                    if req.prev_kv {
+                        delete_resp.prev_kvs.push(key_value);
+                    }
+                }
+            }
+
+            let wb = WriteBatchRequest {
+                deletes: deletes.into_iter().map(|v| (kv_store.table_id, v)).collect(),
+                ..Default::default()
+            };
+            let resp = match kv_store.db.write_batch(wb).await {
+                Ok(resp) => resp,
+                Err(AppError::CasFailed(_, _, _)) => continue,
+                Err(err) => return Err(err),
+            };
+            delete_resp.header = Some(ResponseHeader::with_revision(resp.version as i64));
+            return Ok(delete_resp);
+        }
     }
 
     pub async fn txn(&self, _req: &TxnRequest) -> AppResult<TxnResponse> {
@@ -262,5 +304,38 @@ impl ValueRecord {
             lease: record.lease,
             key: key.to_owned(),
         })
+    }
+}
+
+/// Build range from the specified key and range_end.
+///
+/// range_end is the upper bound on the requested range [key, range_end).
+/// If range_end is not given, the request only looks up key
+/// If range_end is '\0', the range is all keys >= key.
+/// If range_end is key plus one (e.g., "aa"+1 == "ab", "a\xff"+1 == "b"),
+/// then the range request gets all keys prefixed with key.
+/// If both key and range_end are '\0', then the range request returns all keys.
+fn build_request_range(key: &[u8], range_end: Option<&[u8]>) -> sekas_client::Range {
+    if let Some(range_end) = range_end.filter(|v| v.is_empty()) {
+        if range_end[0] == b'\0' {
+            if !key.is_empty() && key[0] == b'\0' {
+                // both key and range_end are '\0'.
+                sekas_client::Range::Range { begin: None, end: None }
+            } else {
+                // range_end is '\0'.
+                sekas_client::Range::Range { begin: Some(key.to_owned()), end: None }
+            }
+        } else if range_end == lexical_next_boundary(key) {
+            // range_end is key plus one.
+            sekas_client::Range::Prefix(key.to_owned())
+        } else {
+            sekas_client::Range::Range {
+                begin: Some(key.to_owned()),
+                end: Some(range_end.to_owned()),
+            }
+        }
+    } else {
+        // range_end is not given
+        sekas_client::Range::Range { begin: Some(key.to_owned()), end: Some(lexical_next(key)) }
     }
 }
