@@ -15,7 +15,67 @@
 pub mod etcdserverpb {
     #![allow(clippy::all)]
     tonic::include_proto!("etcdserverpb");
+
+    impl From<&compare::TargetUnion> for compare::CompareTarget {
+        fn from(value: &compare::TargetUnion) -> Self {
+            match value {
+                compare::TargetUnion::Version(_) => compare::CompareTarget::Version,
+                compare::TargetUnion::CreateRevision(_) => compare::CompareTarget::Create,
+                compare::TargetUnion::ModRevision(_) => compare::CompareTarget::Mod,
+                compare::TargetUnion::Value(_) => compare::CompareTarget::Value,
+                compare::TargetUnion::Lease(_) => compare::CompareTarget::Lease,
+            }
+        }
+    }
+
+    impl compare::CompareResult {
+        pub fn is_matched(&self, ord: std::cmp::Ordering) -> bool {
+            match (self, ord) {
+                (compare::CompareResult::Equal, std::cmp::Ordering::Equal)
+                | (compare::CompareResult::Less, std::cmp::Ordering::Less)
+                | (compare::CompareResult::Greater, std::cmp::Ordering::Greater)
+                | (compare::CompareResult::NotEqual, std::cmp::Ordering::Greater)
+                | (compare::CompareResult::NotEqual, std::cmp::Ordering::Less) => true,
+                _ => false,
+            }
+        }
+    }
+
+    impl KeyValue {
+        pub fn compare(&self, target_union: &compare::TargetUnion) -> std::cmp::Ordering {
+            match target_union {
+                compare::TargetUnion::Version(version) => self.version.cmp(version),
+                compare::TargetUnion::CreateRevision(create_revision) => {
+                    self.create_revision.cmp(create_revision)
+                }
+                compare::TargetUnion::ModRevision(mod_revision) => {
+                    self.mod_revision.cmp(mod_revision)
+                }
+                compare::TargetUnion::Value(value) => self.value.cmp(value),
+                compare::TargetUnion::Lease(lease) => self.lease.cmp(lease),
+            }
+        }
+    }
+
+    impl ResponseOp {
+        pub fn put(response: PutResponse) -> Self {
+            ResponseOp { response: Some(response_op::Response::ResponsePut(response)) }
+        }
+
+        pub fn range(response: RangeResponse) -> Self {
+            ResponseOp { response: Some(response_op::Response::ResponseRange(response)) }
+        }
+
+        pub fn delete_range(response: DeleteRangeResponse) -> Self {
+            ResponseOp { response: Some(response_op::Response::ResponseDeleteRange(response)) }
+        }
+
+        pub fn txn(response: TxnResponse) -> Self {
+            ResponseOp { response: Some(response_op::Response::ResponseTxn(response)) }
+        }
+    }
 }
+
 pub mod authpb {
     #![allow(clippy::all)]
     tonic::include_proto!("authpb");

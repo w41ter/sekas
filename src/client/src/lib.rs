@@ -28,7 +28,7 @@ mod shard_client;
 mod txn;
 mod write_batch;
 
-pub use sekas_api::server::v1::TableDesc;
+pub use sekas_api::server::v1::{DeleteRequest, PutRequest, TableDesc};
 use tonic::async_trait;
 
 pub use crate::app_client::{Client as SekasClient, ClientOptions};

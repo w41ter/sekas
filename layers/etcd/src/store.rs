@@ -12,8 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+use async_recursion::async_recursion;
+use futures::channel::mpsc;
 use futures::lock::Mutex;
 use futures::StreamExt;
 use prost::Message;
@@ -29,9 +32,23 @@ pub struct KvStore {
     handle: Mutex<Option<Arc<SekasHandle>>>,
 }
 
+#[derive(Clone)]
 struct SekasHandle {
     db: sekas_client::Database,
     table_id: u64,
+}
+
+struct TxnContext {
+    #[allow(dead_code)]
+    txn_version: u64,
+    puts: Vec<sekas_client::PutRequest>,
+    deletes: Vec<sekas_client::DeleteRequest>,
+}
+
+impl TxnContext {
+    fn new() -> Self {
+        TxnContext { txn_version: 0, puts: Vec::default(), deletes: Vec::default() }
+    }
 }
 
 impl KvStore {
@@ -73,59 +90,9 @@ impl KvStore {
         let kv_store = self.ensure_handle().await?;
 
         loop {
-            // read old value.
-            let mut key_value = match self.get_key_value(&kv_store, request.key.clone()).await? {
-                Some(key_value) => key_value,
-                None if request.ignore_lease || request.ignore_value => {
-                    // See below links for details:
-                    // - https://github.com/etcd-io/etcd/blob/main/server/etcdserver/api/v3rpc/util.go#L96
-                    // - https://github.com/etcd-io/etcd/blob/main/api/v3rpc/rpctypes/error.go
-                    todo!("return key not found")
-                }
-                None => KeyValue::default(),
-            };
-
-            let mut put_resp = PutResponse::default();
-            if request.prev_kv {
-                put_resp.prev_kv = Some(key_value.clone());
-            }
-            if request.lease != 0 {
-                // with lease
-                todo!("support put with lease");
-            } else {
-                // put without lease.
-
-                // apply request
-                if !request.ignore_value {
-                    key_value.value = request.value.clone();
-                }
-                if !request.ignore_lease {
-                    if key_value.lease != 0 {
-                        todo!("detach key from origin lease");
-                    }
-                    if request.lease != 0 {
-                        todo!("attach key to lease")
-                    }
-                    key_value.lease = request.lease;
-                }
-            }
-
-            key_value.version += 1;
-            let mod_revision = key_value.mod_revision;
-            let value = ValueRecord::from(key_value).encode_to_vec();
-            let put_value = if mod_revision == 0 {
-                WriteBuilder::new(request.key.clone()).expect_not_exists().ensure_put(value)
-            } else {
-                WriteBuilder::new(request.key.clone())
-                    .expect_version(mod_revision as u64)
-                    .ensure_put(value)
-            };
-
-            let wb = WriteBatchRequest {
-                puts: vec![(kv_store.table_id, put_value)],
-                ..Default::default()
-            };
-            let resp = match kv_store.db.write_batch(wb).await {
+            let mut txn_ctx = TxnContext::new();
+            let mut put_resp = kv_store.apply_put(&mut txn_ctx, request).await?;
+            let resp = match kv_store.commit(txn_ctx).await {
                 Ok(resp) => resp,
                 Err(AppError::CasFailed(_, _, _)) => continue,
                 Err(err) => return Err(err),
@@ -137,6 +104,217 @@ impl KvStore {
 
     pub async fn range(&self, request: &RangeRequest) -> AppResult<RangeResponse> {
         let kv_store = self.ensure_handle().await?;
+        kv_store.apply_range(request).await
+    }
+
+    pub async fn delete_range(&self, req: &DeleteRangeRequest) -> AppResult<DeleteRangeResponse> {
+        let kv_store = self.ensure_handle().await?;
+
+        loop {
+            let mut txn_ctx = TxnContext::new();
+            let mut delete_resp = kv_store.apply_delete_range(&mut txn_ctx, req).await?;
+            let resp = match kv_store.commit(txn_ctx).await {
+                Ok(resp) => resp,
+                Err(AppError::CasFailed(_, _, _)) => continue,
+                Err(err) => return Err(err),
+            };
+            delete_resp.header = Some(ResponseHeader::with_revision(resp.version as i64));
+            return Ok(delete_resp);
+        }
+    }
+
+    pub async fn txn(&self, req: &TxnRequest) -> AppResult<TxnResponse> {
+        let kv_store = self.ensure_handle().await?;
+        loop {
+            let mut txn_ctx = TxnContext::new();
+            let mut txn_resp = kv_store.apply_txn(&mut txn_ctx, req).await?;
+            let resp = match kv_store.commit(txn_ctx).await {
+                Ok(resp) => resp,
+                Err(AppError::CasFailed(_, _, _)) => continue,
+                Err(err) => return Err(err),
+            };
+            txn_resp.header = Some(ResponseHeader::with_revision(resp.version as i64));
+            return Ok(txn_resp);
+        }
+    }
+}
+
+impl SekasHandle {
+    async fn get_key_value(&self, value_key: Vec<u8>) -> AppResult<Option<KeyValue>> {
+        if let Some(raw_value) = self.db.get_raw_value(self.table_id, value_key.to_owned()).await? {
+            let Some(content) = raw_value.content else { return Ok(None) };
+            let key_value =
+                ValueRecord::decode_to_key_value(&value_key, &content, raw_value.version as i64)?;
+            Ok(Some(key_value))
+        } else {
+            Ok(None)
+        }
+    }
+
+    async fn apply_put(
+        &self,
+        ctx: &mut TxnContext,
+        request: &PutRequest,
+    ) -> AppResult<PutResponse> {
+        // read old value.
+        let mut key_value = match self.get_key_value(request.key.clone()).await? {
+            Some(key_value) => key_value,
+            None if request.ignore_lease || request.ignore_value => {
+                // See below links for details:
+                // - https://github.com/etcd-io/etcd/blob/main/server/etcdserver/api/v3rpc/util.go#L96
+                // - https://github.com/etcd-io/etcd/blob/main/api/v3rpc/rpctypes/error.go
+                todo!("return key not found")
+            }
+            None => KeyValue::default(),
+        };
+
+        let mut put_resp = PutResponse::default();
+        if request.prev_kv {
+            put_resp.prev_kv = Some(key_value.clone());
+        }
+        if request.lease != 0 {
+            // with lease
+            todo!("support put with lease");
+        } else {
+            // put without lease.
+
+            // apply request
+            if !request.ignore_value {
+                key_value.value = request.value.clone();
+            }
+            if !request.ignore_lease {
+                if key_value.lease != 0 {
+                    todo!("detach key from origin lease");
+                }
+                if request.lease != 0 {
+                    todo!("attach key to lease")
+                }
+                key_value.lease = request.lease;
+            }
+        }
+
+        key_value.version += 1;
+        let mod_revision = key_value.mod_revision;
+        let value = ValueRecord::from(key_value).encode_to_vec();
+        let put_value = if mod_revision == 0 {
+            WriteBuilder::new(request.key.clone()).expect_not_exists().ensure_put(value)
+        } else {
+            WriteBuilder::new(request.key.clone())
+                .expect_version(mod_revision as u64)
+                .ensure_put(value)
+        };
+        ctx.puts.push(put_value);
+        Ok(put_resp)
+    }
+
+    #[async_recursion]
+    async fn apply_txn(&self, ctx: &mut TxnContext, req: &TxnRequest) -> AppResult<TxnResponse> {
+        // verify arguments and collect compare target keys.
+        let mut collected_keys = HashSet::new();
+        for compare in &req.compare {
+            if compare.key.is_empty() {
+                return Err(AppError::InvalidArgument("empty compare key is not allowed".into()));
+            }
+
+            let Some(target_union) = compare.target_union.as_ref() else {
+                return Err(AppError::InvalidArgument("target_union is not set".into()));
+            };
+
+            let compare_target: compare::CompareTarget = target_union.into();
+            if compare_target as i32 != compare.target {
+                return Err(AppError::InvalidArgument(
+                    "target_union is not aligned with target".into(),
+                ));
+            }
+
+            // Add in etcd version 3.3
+            if compare.range_end.is_empty() {
+                // TODO(walter) one day we could support this API but limit the num of keys in
+                // the range.
+                return Err(AppError::InvalidArgument("range end is not allowed".into()));
+            }
+
+            if !collected_keys.contains(&compare.key) {
+                collected_keys.insert(compare.key.clone());
+            }
+        }
+
+        // read all keys in the requests.
+        let mut collected_key_values = HashMap::with_capacity(collected_keys.len());
+        let (sender, mut receiver) = mpsc::channel(collected_keys.len());
+        let mut task_handles = Vec::with_capacity(collected_keys.len());
+        for key in collected_keys {
+            let mut sender_clone = sender.clone();
+            let store = self.clone();
+            let handle = sekas_runtime::spawn(async move {
+                // TODO(walter) support read with one version.
+                let result = store.db.get_raw_value(store.table_id, key.clone()).await;
+                let _ = sender_clone.start_send((key, result));
+            });
+            task_handles.push(handle);
+        }
+        while let Some((key, get_raw_value_result)) = receiver.next().await {
+            let key_value = get_raw_value_result?
+                .map(|value| value.content.map(|c| (c, value.version)))
+                .flatten()
+                .map(|(content, version)| {
+                    ValueRecord::decode_to_key_value(&key, &content, version as i64)
+                })
+                .transpose()?;
+            collected_key_values.insert(key, key_value);
+        }
+
+        // compare key-values.
+        let mut passed = true;
+        for compare in &req.compare {
+            let target_union = compare.target_union.as_ref().expect("already checked");
+            let key_value_opt = collected_key_values.get(&compare.key).ok_or_else(|| {
+                AppError::Internal("the key value of the compare target not exists".into())
+            })?;
+
+            // The target key is not exists.
+            let Some(key_value) = key_value_opt else {
+                passed = false;
+                break;
+            };
+
+            if !compare.result().is_matched(key_value.compare(target_union)) {
+                passed = true;
+                break;
+            }
+        }
+
+        let operations = if passed { &req.success } else { &req.failure };
+
+        // execute operations.
+        let mut txn_resp = TxnResponse::default();
+        txn_resp.succeeded = passed;
+        for op in operations {
+            let resp = match &op.request {
+                Some(request_op::Request::RequestPut(put)) => {
+                    ResponseOp::put(self.apply_put(ctx, &put).await?)
+                }
+                Some(request_op::Request::RequestRange(range)) => {
+                    ResponseOp::range(self.apply_range(range).await?)
+                }
+                Some(request_op::Request::RequestDeleteRange(delete)) => {
+                    ResponseOp::delete_range(self.apply_delete_range(ctx, delete).await?)
+                }
+                Some(request_op::Request::RequestTxn(txn)) => {
+                    ResponseOp::txn(self.apply_txn(ctx, &txn).await?)
+                }
+                None => {
+                    return Err(AppError::InvalidArgument(
+                        "the request field of RequestOp is not set".into(),
+                    ));
+                }
+            };
+            txn_resp.responses.push(resp);
+        }
+        Ok(txn_resp)
+    }
+
+    async fn apply_range(&self, request: &RangeRequest) -> AppResult<RangeResponse> {
         if request.sort_order != 0 {
             return Err(AppError::InvalidArgument(
                 "RangeRequest::sort_order is not supported yet".into(),
@@ -151,13 +329,13 @@ impl KvStore {
         let version = if request.revision > 0 { Some(request.revision as u64) } else { None };
         let range = build_request_range(&request.key, request.range_end.as_deref());
         let range_req = sekas_client::RangeRequest {
-            table_id: kv_store.table_id,
+            table_id: self.table_id,
             range,
             version,
             limit: request.limit as u64,
             ..Default::default()
         };
-        let mut range_stream = kv_store.db.range(range_req, None)?;
+        let mut range_stream = self.db.range(range_req, None)?;
         let mut range_resp = RangeResponse::default();
         'OUTER: while let Some(value_sets) = range_stream.next().await {
             let value_sets = value_sets?;
@@ -210,83 +388,54 @@ impl KvStore {
         Ok(range_resp)
     }
 
-    pub async fn delete_range(&self, req: &DeleteRangeRequest) -> AppResult<DeleteRangeResponse> {
-        let kv_store = self.ensure_handle().await?;
+    async fn apply_delete_range(
+        &self,
+        ctx: &mut TxnContext,
+        req: &DeleteRangeRequest,
+    ) -> AppResult<DeleteRangeResponse> {
+        let range = build_request_range(&req.key, req.range_end.as_deref());
+        // TODO: make this range limit as a knob.
+        let range_req = sekas_client::RangeRequest {
+            table_id: self.table_id,
+            range,
+            limit: 128, // reduce txn overhead.
+            ..Default::default()
+        };
 
-        loop {
-            let range = build_request_range(&req.key, req.range_end.as_deref());
-            // TODO: make this range limit as a knob.
-            let range_req = sekas_client::RangeRequest {
-                table_id: kv_store.table_id,
-                range,
-                limit: 128, // reduce txn overhead.
-                ..Default::default()
-            };
-
-            let mut range_stream = kv_store.db.range(range_req, None)?;
-            let mut delete_resp = DeleteRangeResponse::default();
-            let mut deletes = Vec::default();
-            while let Some(value_sets) = range_stream.next().await {
-                for value_set in value_sets? {
-                    let Some((data, version)) = value_set
-                        .values
-                        .first()
-                        .map(|v| v.content.as_ref().map(|c| (c, v.version)))
-                        .flatten()
-                    else {
-                        continue;
-                    };
-                    let key_value = ValueRecord::decode_to_key_value(
-                        &value_set.user_key,
-                        data,
-                        version as i64,
-                    )?;
-                    deletes.push(
-                        WriteBuilder::new(key_value.key.clone())
-                            .expect_version(key_value.mod_revision as u64)
-                            .ensure_delete(),
-                    );
-                    if req.prev_kv {
-                        delete_resp.prev_kvs.push(key_value);
-                    }
+        let mut range_stream = self.db.range(range_req, None)?;
+        let mut delete_resp = DeleteRangeResponse::default();
+        while let Some(value_sets) = range_stream.next().await {
+            for value_set in value_sets? {
+                let Some((data, version)) = value_set
+                    .values
+                    .first()
+                    .map(|v| v.content.as_ref().map(|c| (c, v.version)))
+                    .flatten()
+                else {
+                    continue;
+                };
+                let key_value =
+                    ValueRecord::decode_to_key_value(&value_set.user_key, data, version as i64)?;
+                ctx.deletes.push(
+                    WriteBuilder::new(key_value.key.clone())
+                        .expect_version(key_value.mod_revision as u64)
+                        .ensure_delete(),
+                );
+                if req.prev_kv {
+                    delete_resp.prev_kvs.push(key_value);
                 }
             }
-
-            let wb = WriteBatchRequest {
-                deletes: deletes.into_iter().map(|v| (kv_store.table_id, v)).collect(),
-                ..Default::default()
-            };
-            let resp = match kv_store.db.write_batch(wb).await {
-                Ok(resp) => resp,
-                Err(AppError::CasFailed(_, _, _)) => continue,
-                Err(err) => return Err(err),
-            };
-            delete_resp.header = Some(ResponseHeader::with_revision(resp.version as i64));
-            return Ok(delete_resp);
         }
+
+        return Ok(delete_resp);
     }
 
-    pub async fn txn(&self, _req: &TxnRequest) -> AppResult<TxnResponse> {
-        todo!()
-    }
-}
-
-impl KvStore {
-    async fn get_key_value(
-        &self,
-        kv_store: &SekasHandle,
-        value_key: Vec<u8>,
-    ) -> AppResult<Option<KeyValue>> {
-        if let Some(raw_value) =
-            kv_store.db.get_raw_value(kv_store.table_id, value_key.to_owned()).await?
-        {
-            let Some(content) = raw_value.content else { return Ok(None) };
-            let key_value =
-                ValueRecord::decode_to_key_value(&value_key, &content, raw_value.version as i64)?;
-            Ok(Some(key_value))
-        } else {
-            Ok(None)
-        }
+    async fn commit(&self, txn_ctx: TxnContext) -> AppResult<sekas_client::WriteBatchResponse> {
+        let wb = WriteBatchRequest {
+            puts: txn_ctx.puts.into_iter().map(|v| (self.table_id, v)).collect(),
+            deletes: txn_ctx.deletes.into_iter().map(|v| (self.table_id, v)).collect(),
+        };
+        self.db.write_batch(wb).await
     }
 }
 
