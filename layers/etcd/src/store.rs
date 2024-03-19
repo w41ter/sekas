@@ -20,7 +20,7 @@ use futures::channel::mpsc;
 use futures::lock::Mutex;
 use futures::StreamExt;
 use prost::Message;
-use sekas_client::{AppError, AppResult, WriteBatchRequest, WriteBuilder};
+use sekas_client::{AppError, AppResult};
 use sekas_rock::lexical::{lexical_next, lexical_next_boundary};
 
 pub use crate::consts::*;
@@ -36,19 +36,6 @@ pub struct KvStore {
 struct SekasHandle {
     db: sekas_client::Database,
     table_id: u64,
-}
-
-struct TxnContext {
-    #[allow(dead_code)]
-    txn_version: u64,
-    puts: Vec<sekas_client::PutRequest>,
-    deletes: Vec<sekas_client::DeleteRequest>,
-}
-
-impl TxnContext {
-    fn new() -> Self {
-        TxnContext { txn_version: 0, puts: Vec::default(), deletes: Vec::default() }
-    }
 }
 
 impl KvStore {
@@ -90,9 +77,9 @@ impl KvStore {
         let kv_store = self.ensure_handle().await?;
 
         loop {
-            let mut txn_ctx = TxnContext::new();
-            let mut put_resp = kv_store.apply_put(&mut txn_ctx, request).await?;
-            let resp = match kv_store.commit(txn_ctx).await {
+            let mut txn = kv_store.db.begin_txn();
+            let mut put_resp = kv_store.apply_put(&mut txn, request).await?;
+            let resp = match txn.commit().await {
                 Ok(resp) => resp,
                 Err(AppError::CasFailed(_, _, _)) => continue,
                 Err(err) => return Err(err),
@@ -111,9 +98,9 @@ impl KvStore {
         let kv_store = self.ensure_handle().await?;
 
         loop {
-            let mut txn_ctx = TxnContext::new();
-            let mut delete_resp = kv_store.apply_delete_range(&mut txn_ctx, req).await?;
-            let resp = match kv_store.commit(txn_ctx).await {
+            let mut txn = kv_store.db.begin_txn();
+            let mut delete_resp = kv_store.apply_delete_range(&mut txn, req).await?;
+            let resp = match txn.commit().await {
                 Ok(resp) => resp,
                 Err(AppError::CasFailed(_, _, _)) => continue,
                 Err(err) => return Err(err),
@@ -126,9 +113,9 @@ impl KvStore {
     pub async fn txn(&self, req: &TxnRequest) -> AppResult<TxnResponse> {
         let kv_store = self.ensure_handle().await?;
         loop {
-            let mut txn_ctx = TxnContext::new();
-            let mut txn_resp = kv_store.apply_txn(&mut txn_ctx, req).await?;
-            let resp = match kv_store.commit(txn_ctx).await {
+            let mut inner_txn = kv_store.db.begin_txn();
+            let mut txn_resp = kv_store.apply_txn(&mut inner_txn, req).await?;
+            let resp = match inner_txn.commit().await {
                 Ok(resp) => resp,
                 Err(AppError::CasFailed(_, _, _)) => continue,
                 Err(err) => return Err(err),
@@ -153,7 +140,7 @@ impl SekasHandle {
 
     async fn apply_put(
         &self,
-        ctx: &mut TxnContext,
+        txn: &mut sekas_client::Txn,
         request: &PutRequest,
     ) -> AppResult<PutResponse> {
         // read old value.
@@ -197,18 +184,24 @@ impl SekasHandle {
         let mod_revision = key_value.mod_revision;
         let value = ValueRecord::from(key_value).encode_to_vec();
         let put_value = if mod_revision == 0 {
-            WriteBuilder::new(request.key.clone()).expect_not_exists().ensure_put(value)
+            sekas_client::WriteBuilder::new(request.key.clone())
+                .expect_not_exists()
+                .ensure_put(value)
         } else {
-            WriteBuilder::new(request.key.clone())
+            sekas_client::WriteBuilder::new(request.key.clone())
                 .expect_version(mod_revision as u64)
                 .ensure_put(value)
         };
-        ctx.puts.push(put_value);
+        txn.put(self.table_id, put_value);
         Ok(put_resp)
     }
 
     #[async_recursion]
-    async fn apply_txn(&self, ctx: &mut TxnContext, req: &TxnRequest) -> AppResult<TxnResponse> {
+    async fn apply_txn(
+        &self,
+        txn: &mut sekas_client::Txn,
+        req: &TxnRequest,
+    ) -> AppResult<TxnResponse> {
         // verify arguments and collect compare target keys.
         let mut collected_keys = HashSet::new();
         for compare in &req.compare {
@@ -255,8 +248,7 @@ impl SekasHandle {
         }
         while let Some((key, get_raw_value_result)) = receiver.next().await {
             let key_value = get_raw_value_result?
-                .map(|value| value.content.map(|c| (c, value.version)))
-                .flatten()
+                .and_then(|value| value.content.map(|c| (c, value.version)))
                 .map(|(content, version)| {
                     ValueRecord::decode_to_key_value(&key, &content, version as i64)
                 })
@@ -287,21 +279,20 @@ impl SekasHandle {
         let operations = if passed { &req.success } else { &req.failure };
 
         // execute operations.
-        let mut txn_resp = TxnResponse::default();
-        txn_resp.succeeded = passed;
+        let mut txn_resp = TxnResponse { succeeded: passed, ..Default::default() };
         for op in operations {
             let resp = match &op.request {
                 Some(request_op::Request::RequestPut(put)) => {
-                    ResponseOp::put(self.apply_put(ctx, &put).await?)
+                    ResponseOp::put(self.apply_put(txn, put).await?)
                 }
                 Some(request_op::Request::RequestRange(range)) => {
                     ResponseOp::range(self.apply_range(range).await?)
                 }
                 Some(request_op::Request::RequestDeleteRange(delete)) => {
-                    ResponseOp::delete_range(self.apply_delete_range(ctx, delete).await?)
+                    ResponseOp::delete_range(self.apply_delete_range(txn, delete).await?)
                 }
-                Some(request_op::Request::RequestTxn(txn)) => {
-                    ResponseOp::txn(self.apply_txn(ctx, &txn).await?)
+                Some(request_op::Request::RequestTxn(inner_txn_req)) => {
+                    ResponseOp::txn(self.apply_txn(txn, inner_txn_req).await?)
                 }
                 None => {
                     return Err(AppError::InvalidArgument(
@@ -390,7 +381,7 @@ impl SekasHandle {
 
     async fn apply_delete_range(
         &self,
-        ctx: &mut TxnContext,
+        txn: &mut sekas_client::Txn,
         req: &DeleteRangeRequest,
     ) -> AppResult<DeleteRangeResponse> {
         let range = build_request_range(&req.key, req.range_end.as_deref());
@@ -409,15 +400,15 @@ impl SekasHandle {
                 let Some((data, version)) = value_set
                     .values
                     .first()
-                    .map(|v| v.content.as_ref().map(|c| (c, v.version)))
-                    .flatten()
+                    .and_then(|v| v.content.as_ref().map(|c| (c, v.version)))
                 else {
                     continue;
                 };
                 let key_value =
                     ValueRecord::decode_to_key_value(&value_set.user_key, data, version as i64)?;
-                ctx.deletes.push(
-                    WriteBuilder::new(key_value.key.clone())
+                txn.delete(
+                    self.table_id,
+                    sekas_client::WriteBuilder::new(key_value.key.clone())
                         .expect_version(key_value.mod_revision as u64)
                         .ensure_delete(),
                 );
@@ -427,15 +418,7 @@ impl SekasHandle {
             }
         }
 
-        return Ok(delete_resp);
-    }
-
-    async fn commit(&self, txn_ctx: TxnContext) -> AppResult<sekas_client::WriteBatchResponse> {
-        let wb = WriteBatchRequest {
-            puts: txn_ctx.puts.into_iter().map(|v| (self.table_id, v)).collect(),
-            deletes: txn_ctx.deletes.into_iter().map(|v| (self.table_id, v)).collect(),
-        };
-        self.db.write_batch(wb).await
+        Ok(delete_resp)
     }
 }
 

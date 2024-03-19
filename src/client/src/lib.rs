@@ -42,4 +42,4 @@ pub use crate::retry::RetryState;
 pub use crate::rpc::{ConnManager, NodeClient, RootClient, Router, RouterGroupState};
 pub use crate::shard_client::ShardClient;
 pub use crate::txn::TxnStateTable;
-pub use crate::write_batch::{WriteBatchRequest, WriteBatchResponse, WriteBuilder};
+pub use crate::write_batch::{Txn, WriteBatchResponse, WriteBuilder};

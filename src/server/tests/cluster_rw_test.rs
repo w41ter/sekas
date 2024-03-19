@@ -19,9 +19,7 @@ use log::info;
 use rand::prelude::SmallRng;
 use rand::{Rng, SeedableRng};
 use sekas_api::server::v1::ReplicaRole;
-use sekas_client::{
-    AppError, ClientOptions, RangeRequest, SekasClient, WriteBatchRequest, WriteBuilder,
-};
+use sekas_client::{AppError, ClientOptions, RangeRequest, SekasClient, WriteBuilder};
 use sekas_rock::fn_name;
 
 use crate::helper::client::*;
@@ -258,48 +256,50 @@ async fn cluster_rw_put_with_condition() {
     let v = "rust_in_actions".as_bytes().to_vec();
 
     // 1. Put if exists failed
-    let req = WriteBatchRequest::default()
-        .add_put(co.id, WriteBuilder::new(k.clone()).expect_exists().ensure_put(v.clone()));
-    let r = db.write_batch(req).await;
+    let mut txn = db.begin_txn();
+    txn.put(co.id, WriteBuilder::new(k.clone()).expect_exists().ensure_put(v.clone()));
+    let r = txn.commit().await;
     info!("put if exists failed: {r:?}");
     assert!(matches!(r, Err(AppError::CasFailed(0, 0, _))));
 
     // 2. Put if not exists success
-    let req = WriteBatchRequest::default()
-        .add_put(co.id, WriteBuilder::new(k.clone()).expect_not_exists().ensure_put(v.clone()));
-    db.write_batch(req).await.unwrap();
+    let mut txn = db.begin_txn();
+    txn.put(co.id, WriteBuilder::new(k.clone()).expect_not_exists().ensure_put(v.clone()));
+    txn.commit().await.unwrap();
     let r = db.get(co.id, k.clone()).await.unwrap();
     let r = r.map(String::from_utf8);
     assert!(matches!(r, Some(Ok(v)) if v == "rust_in_actions"));
 
     // 3. Put if not exists failed
-    let req = WriteBatchRequest::default()
-        .add_put(co.id, WriteBuilder::new(k.clone()).expect_not_exists().ensure_put(v.clone()));
-    let r = db.write_batch(req).await;
+    let mut txn = db.begin_txn();
+    txn.put(co.id, WriteBuilder::new(k.clone()).expect_not_exists().ensure_put(v.clone()));
+    let r = txn.commit().await;
     assert!(matches!(r, Err(AppError::CasFailed(0, 0, _))));
 
     // 4. Put if exists success
-    let req = WriteBatchRequest::default()
-        .add_put(co.id, WriteBuilder::new(k.clone()).expect_exists().ensure_put(v.clone()));
-    let r = db.write_batch(req).await;
+    let mut txn = db.begin_txn();
+    txn.put(co.id, WriteBuilder::new(k.clone()).expect_exists().ensure_put(v.clone()));
+    let r = txn.commit().await;
     assert!(r.is_ok());
 
     // 5.Put with expected value failed
-    let req = WriteBatchRequest::default().add_put(
+    let mut txn = db.begin_txn();
+    txn.put(
         co.id,
         WriteBuilder::new(k.clone()).expect_value(b"rust".to_vec()).ensure_put(v.clone()),
     );
-    let r = db.write_batch(req).await;
+    let r = txn.commit().await;
     assert!(matches!(r, Err(AppError::CasFailed(0, 0, _))));
 
     // 6.Put with expected value success
-    let req = WriteBatchRequest::default().add_put(
+    let mut txn = db.begin_txn();
+    txn.put(
         co.id,
         WriteBuilder::new(k.clone())
             .expect_value(b"rust_in_actions".to_vec())
             .ensure_put(v.clone()),
     );
-    let r = db.write_batch(req).await;
+    let r = txn.commit().await;
     assert!(r.is_ok());
 }
 
@@ -322,9 +322,9 @@ async fn cluster_rw_concurrent_inc() {
     let handle_1 = spawn(async move {
         let k = "book_name".as_bytes().to_vec();
         for _ in 0..1000 {
-            let req = WriteBatchRequest::default()
-                .add_put(cloned_co.id, WriteBuilder::new(k.clone()).ensure_add(1));
-            cloned_db.write_batch(req).await.unwrap();
+            let mut txn = cloned_db.begin_txn();
+            txn.put(cloned_co.id, WriteBuilder::new(k.clone()).ensure_add(1));
+            txn.commit().await.unwrap();
         }
     });
 
@@ -333,9 +333,9 @@ async fn cluster_rw_concurrent_inc() {
     let handle_2 = spawn(async move {
         let k = "book_name".as_bytes().to_vec();
         for _ in 0..1000 {
-            let req = WriteBatchRequest::default()
-                .add_put(cloned_co.id, WriteBuilder::new(k.clone()).ensure_add(1));
-            cloned_db.write_batch(req).await.unwrap();
+            let mut txn = cloned_db.begin_txn();
+            txn.put(cloned_co.id, WriteBuilder::new(k.clone()).ensure_add(1));
+            txn.commit().await.unwrap();
         }
     });
 
@@ -364,10 +364,10 @@ async fn cluster_rw_write_two_table_in_batch() {
     let k = "book_name".as_bytes().to_vec();
     let v = "rust_in_actions".as_bytes().to_vec();
 
-    let req = WriteBatchRequest::default()
-        .add_put(co1.id, WriteBuilder::new(k.clone()).ensure_put(v.clone()))
-        .add_put(co2.id, WriteBuilder::new(k.clone()).ensure_put(v.clone()));
-    db.write_batch(req).await.unwrap();
+    let mut txn = db.begin_txn();
+    txn.put(co1.id, WriteBuilder::new(k.clone()).ensure_put(v.clone()));
+    txn.put(co2.id, WriteBuilder::new(k.clone()).ensure_put(v.clone()));
+    txn.commit().await.unwrap();
 
     let r1 = db.get_raw_value(co1.id, k.clone()).await.unwrap().unwrap();
     let value = r1.content.map(String::from_utf8);
@@ -397,9 +397,9 @@ async fn cluster_rw_entire_range() {
         let v = format!("value {i}").into_bytes();
         println!("write key {:?}", k);
 
-        let req = WriteBatchRequest::default()
-            .add_put(co.id, WriteBuilder::new(k.clone()).ensure_put(v.clone()));
-        db.write_batch(req).await.unwrap();
+        let mut txn = db.begin_txn();
+        txn.put(co.id, WriteBuilder::new(k.clone()).ensure_put(v.clone()));
+        txn.commit().await.unwrap();
     }
 
     let range_request = RangeRequest {
@@ -450,9 +450,9 @@ async fn cluster_rw_range_with_many_shard() {
         let v = format!("value {i}").into_bytes();
         println!("write key {:?}", k);
 
-        let req = WriteBatchRequest::default()
-            .add_put(co.id, WriteBuilder::new(k.clone()).ensure_put(v.clone()));
-        db.write_batch(req).await.unwrap();
+        let mut txn = db.begin_txn();
+        txn.put(co.id, WriteBuilder::new(k.clone()).ensure_put(v.clone()));
+        txn.commit().await.unwrap();
     }
 
     let range_request = RangeRequest {

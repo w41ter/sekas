@@ -18,13 +18,18 @@ use log::{trace, warn};
 use sekas_api::server::v1::group_request_union::Request;
 use sekas_api::server::v1::group_response_union::Response;
 use sekas_api::server::v1::*;
+use sekas_schema::system::txn::TXN_MAX_VERSION;
 
 use crate::group_client::GroupClient;
+use crate::metrics::*;
+use crate::range::RangeStream;
 use crate::retry::RetryState;
-use crate::{AppResult, Error, Result, SekasClient, TxnStateTable};
+use crate::{
+    record_latency, AppResult, Database, Error, RangeRequest, Result, SekasClient, TxnStateTable,
+};
 
 #[derive(Debug, Default, Clone)]
-pub struct WriteBatchRequest {
+struct WriteBatchRequest {
     pub deletes: Vec<(u64, DeleteRequest)>,
     pub puts: Vec<(u64, PutRequest)>,
 }
@@ -43,6 +48,7 @@ pub struct WriteBatchResponse {
     pub puts: Vec<Option<Value>>,
 }
 
+/// A structure to build write request.
 pub struct WriteBuilder {
     /// The key to operate.
     key: Vec<u8>,
@@ -52,6 +58,18 @@ pub struct WriteBuilder {
     ttl: Option<u64>,
     /// Whether to take prev values.
     take_prev_value: bool,
+}
+
+/// A structure to support transaction.
+pub struct Txn {
+    /// The database to submit transactions.
+    db: Database,
+    /// The transaction start version.
+    start_version: Option<u64>,
+    /// The put request to submit.
+    puts: Vec<(u64, PutRequest)>,
+    /// The delete request to submit.
+    deletes: Vec<(u64, DeleteRequest)>,
 }
 
 /// A structure to hold the context about single write request.
@@ -82,18 +100,6 @@ pub struct WriteBatchContext {
     commit_version: u64,
 
     retry_state: RetryState,
-}
-
-impl WriteBatchRequest {
-    pub fn add_delete(mut self, table_id: u64, delete: DeleteRequest) -> Self {
-        self.deletes.push((table_id, delete));
-        self
-    }
-
-    pub fn add_put(mut self, table_id: u64, put: PutRequest) -> Self {
-        self.puts.push((table_id, put));
-        self
-    }
 }
 
 impl WriteBuilder {
@@ -325,6 +331,189 @@ impl WriteBuilder {
     }
 }
 
+impl Txn {
+    pub fn new(db: Database) -> Self {
+        Txn { db, start_version: None, puts: Vec::default(), deletes: Vec::default() }
+    }
+
+    /// Issue a delete request to transaction.
+    #[inline]
+    pub fn delete(&mut self, table_id: u64, delete_req: DeleteRequest) {
+        self.deletes.push((table_id, delete_req));
+    }
+
+    /// Issue a put request to transaction.
+    #[inline]
+    pub fn put(&mut self, table_id: u64, put_req: PutRequest) {
+        self.puts.push((table_id, put_req));
+    }
+
+    /// Commit this transaction.
+    pub async fn commit(mut self) -> AppResult<WriteBatchResponse> {
+        let start_version = self.get_start_version().await?;
+        let req = WriteBatchRequest { deletes: self.deletes, puts: self.puts };
+        let ctx =
+            WriteBatchContext::new(start_version, req, self.db.client.clone(), self.db.rpc_timeout);
+        Ok(ctx.commit().await?)
+    }
+
+    /// Get key value with in an transaction.
+    pub async fn get(&mut self, table_id: u64, key: Vec<u8>) -> AppResult<Option<Vec<u8>>> {
+        let value = self.get_raw_value(table_id, key).await?;
+        Ok(value.and_then(|v| v.content))
+    }
+
+    /// Get a raw key value from this transaction.
+    pub async fn get_raw_value(&mut self, table_id: u64, key: Vec<u8>) -> AppResult<Option<Value>> {
+        CLIENT_DATABASE_BYTES_TOTAL.rx.inc_by(key.len() as u64);
+        CLIENT_DATABASE_REQUEST_TOTAL.get.inc();
+        record_latency!(&CLIENT_DATABASE_REQUEST_DURATION_SECONDS.get);
+        let mut retry_state = RetryState::new(self.db.rpc_timeout);
+
+        loop {
+            match self.get_inner(table_id, &key, &mut retry_state).await {
+                Ok(value) => {
+                    CLIENT_DATABASE_BYTES_TOTAL.tx.inc_by(
+                        value
+                            .as_ref()
+                            .map(|v| v.content.as_ref().map(Vec::len).unwrap_or_default())
+                            .unwrap_or_default() as u64,
+                    );
+                    return Ok(value);
+                }
+                Err(err) => {
+                    retry_state.retry(err).await?;
+                }
+            }
+        }
+    }
+
+    async fn get_inner(
+        &mut self,
+        table_id: u64,
+        user_key: &[u8],
+        retry_state: &mut RetryState,
+    ) -> crate::Result<Option<Value>> {
+        let start_version = if self.db.read_without_version {
+            TXN_MAX_VERSION
+        } else {
+            self.get_start_version().await?
+        };
+
+        let router = self.db.client.router();
+        let (group, shard) = router.find_shard(table_id, user_key)?;
+        let mut client = GroupClient::new(group, self.db.client.clone());
+        let req = Request::Get(ShardGetRequest {
+            shard_id: shard.id,
+            start_version,
+            user_key: user_key.to_owned(),
+        });
+        if let Some(duration) = retry_state.timeout() {
+            client.set_timeout(duration);
+        }
+        match client.request(&req).await? {
+            Response::Get(ShardGetResponse { value }) => Ok(value),
+            _ => Err(crate::Error::Internal("invalid response type, Get is required".into())),
+        }
+    }
+
+    /// To issue a batch writes to a shard.
+    #[allow(dead_code)]
+    pub(crate) async fn write(
+        &self,
+        request: ShardWriteRequest,
+    ) -> crate::Result<ShardWriteResponse> {
+        let mut retry_state = RetryState::new(None);
+        loop {
+            match self.write_inner(&request, retry_state.timeout()).await {
+                Ok(value) => {
+                    return Ok(value);
+                }
+                Err(err) => {
+                    retry_state.retry(err).await?;
+                }
+            }
+        }
+    }
+
+    async fn write_inner(
+        &self,
+        request: &ShardWriteRequest,
+        timeout: Option<Duration>,
+    ) -> crate::Result<ShardWriteResponse> {
+        let router = self.db.client.router();
+        let group_state = router.find_group_by_shard(request.shard_id)?;
+        let mut group_client = GroupClient::new(group_state, self.db.client.clone());
+        if let Some(duration) = timeout {
+            group_client.set_timeout(duration);
+        }
+
+        let request = Request::Write(request.clone());
+        match group_client.request(&request).await? {
+            Response::Write(resp) => Ok(resp),
+            _ => Err(crate::Error::Internal("invalid response type, Write is required".into())),
+        }
+    }
+
+    /// To scan a shard.
+    pub async fn scan(
+        &self,
+        request: ShardScanRequest,
+        timeout: Option<Duration>,
+    ) -> AppResult<ShardScanResponse> {
+        let mut retry_state = RetryState::new(timeout);
+        loop {
+            match self.scan_inner(&request, retry_state.timeout()).await {
+                Ok(value) => {
+                    return Ok(value);
+                }
+                Err(err) => {
+                    retry_state.retry(err).await?;
+                }
+            }
+        }
+    }
+
+    async fn scan_inner(
+        &self,
+        request: &ShardScanRequest,
+        timeout: Option<Duration>,
+    ) -> crate::Result<ShardScanResponse> {
+        let router = self.db.client.router();
+        let group_state = router.find_group_by_shard(request.shard_id)?;
+        let mut group_client = GroupClient::new(group_state, self.db.client.clone());
+        if let Some(duration) = timeout {
+            group_client.set_timeout(duration);
+        }
+
+        let request = Request::Scan(request.clone());
+        match group_client.request(&request).await? {
+            Response::Scan(resp) => Ok(resp),
+            _ => Err(crate::Error::Internal("invalid response type, Scan is required".into())),
+        }
+    }
+
+    /// Scan an range.
+    pub fn range(
+        &self,
+        request: RangeRequest,
+        timeout: Option<Duration>,
+    ) -> AppResult<RangeStream> {
+        // FIXME(walter) remove the request.version field.
+        Ok(RangeStream::init(self.db.client.clone(), request, timeout))
+    }
+
+    async fn get_start_version(&mut self) -> crate::Result<u64> {
+        if let Some(version) = self.start_version {
+            return Ok(version);
+        }
+
+        let version = self.db.client.root_client().alloc_txn_id(1, None).await?;
+        self.start_version = Some(version);
+        Ok(version)
+    }
+}
+
 impl WriteContext {
     fn with_put((index, (table_id, put)): (usize, (u64, PutRequest))) -> Self {
         WriteContext {
@@ -355,7 +544,12 @@ impl WriteContext {
 }
 
 impl WriteBatchContext {
-    pub fn new(request: WriteBatchRequest, client: SekasClient, timeout: Option<Duration>) -> Self {
+    fn new(
+        start_version: u64,
+        request: WriteBatchRequest,
+        client: SekasClient,
+        timeout: Option<Duration>,
+    ) -> Self {
         let num_deletes = request.deletes.len();
         let num_puts = request.puts.len();
         let num_doing_writes = num_deletes + num_puts;
@@ -368,7 +562,7 @@ impl WriteBatchContext {
             writes,
             num_deletes,
             num_doing_writes,
-            start_version: 0,
+            start_version,
             commit_version: 0,
             retry_state: RetryState::new(timeout),
         }
@@ -378,11 +572,7 @@ impl WriteBatchContext {
         // TODO: check parameters
 
         // TODO: handle errors to abort txn.
-        log::info!("try alloc txn version");
-        self.start_version = self.alloc_txn_version().await?;
-        log::info!("alloc txn version {}", self.start_version);
         self.start_txn().await?;
-        log::info!("start txn {}", self.start_version);
 
         let start_version = self.start_version;
         let txn_table = TxnStateTable::new(self.client.clone(), self.retry_state.timeout());
@@ -408,11 +598,8 @@ impl WriteBatchContext {
 
     async fn commit_inner(mut self) -> Result<WriteBatchResponse> {
         self.prepare_intents().await?;
-        log::info!("prepare intents {}", self.start_version);
         self.commit_version = self.alloc_txn_version().await?;
-        log::info!("allocate commit txn version {} {}", self.start_version, self.commit_version);
         self.commit_txn().await?;
-        log::info!("commit txn version {} {}", self.start_version, self.commit_version);
         let version = self.commit_version;
 
         let mut deletes = Vec::with_capacity(self.num_deletes);
@@ -429,7 +616,6 @@ impl WriteBatchContext {
         }
 
         self.commit_intents();
-        log::info!("commit intents");
         Ok(WriteBatchResponse { version, deletes, puts })
     }
 
