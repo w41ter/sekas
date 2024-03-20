@@ -64,9 +64,7 @@ impl Router {
         let state = Arc::new(Mutex::new(State::default()));
         let state_clone = state.clone();
         let handle = tokio::spawn(async move {
-            info!("router start");
             state_main(state_clone, root_client).await;
-            log::info!("router end");
         });
         Router { core: Arc::new(RouterCore { handle, state }) }
     }
@@ -86,9 +84,9 @@ impl Router {
                 if start.as_slice() > key {
                     continue;
                 }
-                if (end.as_slice() < key) || (end.is_empty())
+
                 // end = vec![] means MAX
-                {
+                if (end.as_slice() < key) || (end.is_empty()) {
                     let group_state = state.find_group_by_shard(shard.id).ok_or_else(|| {
                         crate::Error::NotFound(format!("shard (key={key:?}) group"))
                     })?;

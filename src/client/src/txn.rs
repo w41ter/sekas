@@ -1,4 +1,4 @@
-// Copyright 2023 The Sekas Authors.
+// Copyright 2023-present The Sekas Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -11,267 +11,427 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+
 use std::time::Duration;
 
-use log::{debug, trace, warn};
+use log::{trace, warn};
 use sekas_api::server::v1::group_request_union::Request;
 use sekas_api::server::v1::group_response_union::Response;
 use sekas_api::server::v1::*;
-use sekas_rock::num::decode_u64;
-use sekas_rock::time::timestamp_millis;
-use sekas_schema::system::keys::{self, txn_lower_key};
-use sekas_schema::system::{self, col};
+use sekas_runtime::sync::OnceCell;
+use sekas_schema::system::txn::TXN_MAX_VERSION;
 
-use crate::{Error, GroupClient, Result, RetryState, SekasClient, WriteBuilder};
+use crate::group_client::GroupClient;
+use crate::metrics::*;
+use crate::range::RangeStream;
+use crate::retry::RetryState;
+use crate::{
+    record_latency, AppResult, Database, Error, RangeRequest, Result, SekasClient, TxnStateTable,
+};
 
-const TXN_TIMEOUT: Duration = Duration::from_secs(5);
+#[derive(Debug, Default, Clone)]
+struct WriteBatchRequest {}
 
-#[derive(Default, Debug)]
-pub struct TxnRecord {
-    /// The txn unique id.
-    pub start_version: u64,
-    /// The state of txn record, the valid conversation is:
+#[derive(Debug, Default, Clone)]
+pub struct WriteBatchResponse {
+    /// The version of this batch.
+    pub version: u64,
+    /// The prev value of the target key.
     ///
-    /// RUNNING ------> ABORTED
-    ///           +---> COMMITTED
-    pub state: TxnState,
-    /// The heartbeat of txn.
-    pub heartbeat: u64,
-    /// The commit version of txn, it only used when state is equals to
-    /// COMMITTED.
-    pub commit_version: Option<u64>,
+    /// Only for the requests with `take_prev_value`.
+    pub deletes: Vec<Option<Value>>,
+    /// The prev value of the target key.
+    ///
+    /// Only for the requests with `take_prev_value`.
+    pub puts: Vec<Option<Value>>,
 }
 
-#[derive(Default)]
-struct TxnWriteRequest {
-    hash_tag: u8,
-    puts: Vec<PutRequest>,
-    deletes: Vec<DeleteRequest>,
+/// A structure to build write request.
+pub struct WriteBuilder {
+    /// The key to operate.
+    key: Vec<u8>,
+    /// The cas conditions.
+    conditions: Vec<WriteCondition>,
+    /// The TTL of key.
+    ttl: Option<u64>,
+    /// Whether to take prev values.
+    take_prev_value: bool,
 }
 
-#[derive(Debug)]
-pub struct TxnStateTable {
+/// A structure to support ACID transaction.
+pub struct Txn {
+    /// The database to submit transactions.
+    db: Database,
+    /// The transaction start version.
+    start_version: OnceCell<u64>,
+    /// The put request to submit.
+    puts: Vec<(u64, PutRequest)>,
+    /// The delete request to submit.
+    deletes: Vec<(u64, DeleteRequest)>,
+}
+
+/// A structure to hold the context about single write request.
+struct WriteContext {
+    /// The id of table to write.
+    table_id: u64,
+    /// The request.
+    request: WriteRequest,
+    /// The response.
+    response: Option<WriteResponse>,
+    /// The index in the requests.
+    index: usize,
+    /// Is this request has been accepted.
+    done: bool,
+}
+
+/// A structure to hold the context about a write batch request.
+pub struct WriteBatchContext {
     client: SekasClient,
-    timeout: Option<Duration>,
+
+    writes: Vec<WriteContext>,
+    /// The number of doing requests.
+    num_doing_writes: usize,
+    /// The number of delete requests in this batch.
+    num_deletes: usize,
+
+    start_version: u64,
+    commit_version: u64,
+
+    retry_state: RetryState,
 }
 
-impl TxnStateTable {
-    pub fn new(client: SekasClient, timeout: Option<Duration>) -> Self {
-        TxnStateTable { client, timeout }
+impl WriteBuilder {
+    pub fn new(key: Vec<u8>) -> Self {
+        WriteBuilder { key, conditions: vec![], ttl: None, take_prev_value: false }
     }
 
-    /// Begin a new transaction with the specified txn version.
+    /// With ttl, in seconds. (WIP)
     ///
-    /// [`Error::InvalidArgument`] is returned if the specified txn has been
-    /// committed or aborted.
-    pub async fn begin_txn(&self, start_version: u64) -> Result<()> {
-        let state_value = TxnState::Running.as_str_name().as_bytes().to_vec();
-        let heartbeat_value = timestamp_millis().to_le_bytes().to_vec();
-        let hash_tag = system::txn::hash_tag(start_version);
-        let request = TxnWriteRequest {
-            hash_tag,
-            puts: vec![
-                WriteBuilder::new(keys::txn_state_key(hash_tag, start_version))
-                    .expect_not_exists()
-                    .take_prev_value()
-                    .ensure_put(state_value),
-                WriteBuilder::new(keys::txn_heartbeat_key(hash_tag, start_version))
-                    .ensure_put(heartbeat_value),
-            ],
-            ..Default::default()
-        };
-
-        let (idx, cond_idx, prev_value) = match self.write(request).await {
-            Err(Error::CasFailed(idx, cond_idx, prev_value)) => (idx, cond_idx, prev_value),
-            Err(err) => return Err(err),
-            Ok(_) => return Ok(()),
-        };
-
-        if idx != 0 || cond_idx != 0 {
-            return Err(Error::Internal(format!("invalid cas failed response, idx {idx} and cond idx {cond_idx} are not expected").into()));
-        }
-        let Some(prev_value) = prev_value.as_ref().and_then(|v| v.content.as_ref()) else {
-            return Err(Error::NotFound(format!("target txn {start_version}")));
-        };
-
-        let prev_state = parse_txn_state(prev_value)?;
-        debug!("try begin txn {start_version}, but prev state is {}", prev_state.as_str_name());
-        match prev_state {
-            TxnState::Running => Ok(()),
-            TxnState::Committed | TxnState::Aborted => Err(Error::InvalidArgument(format!(
-                "txn {start_version}, txn already {}",
-                prev_state.as_str_name()
-            ))),
-        }
+    /// Only works for put request.
+    pub fn with_ttl(mut self, ttl: Option<u64>) -> Self {
+        self.ttl = ttl;
+        self
     }
 
-    /// Update the txn heartbeat.
-    pub async fn heartbeat(&self, start_version: u64) -> Result<()> {
-        let heartbeat_value = txn_u64_value(timestamp_millis());
-        let hash_tag = system::txn::hash_tag(start_version);
-        let request = TxnWriteRequest {
-            hash_tag,
-            puts: vec![WriteBuilder::new(keys::txn_heartbeat_key(hash_tag, start_version))
-                .expect_exists()
-                .ensure_put(heartbeat_value)],
-            ..Default::default()
-        };
-
-        match self.write(request).await {
-            Err(Error::CasFailed(_, _, _)) => {
-                warn!("update txn {start_version} heartbeat, but the target txn is not exists");
-                Ok(())
-            }
-            Err(err) => Err(err),
-            Ok(_) => Ok(()),
-        }
+    /// Build a put request.
+    pub fn put(self, value: Vec<u8>) -> AppResult<PutRequest> {
+        self.verify_conditions()?;
+        Ok(PutRequest {
+            put_type: PutType::None.into(),
+            key: self.key,
+            value,
+            ttl: self.ttl.unwrap_or_default(),
+            take_prev_value: self.take_prev_value,
+            conditions: self.conditions,
+        })
     }
 
-    /// Commit the transaction specified by `start_version`.
+    /// Build a put request without any error.
+    pub fn ensure_put(self, value: Vec<u8>) -> PutRequest {
+        self.put(value).expect("Invalid put conditions")
+    }
+
+    /// Build a delete request.
+    pub fn delete(self) -> AppResult<DeleteRequest> {
+        self.verify_conditions()?;
+        Ok(DeleteRequest {
+            key: self.key,
+            conditions: self.conditions,
+            take_prev_value: self.take_prev_value,
+        })
+    }
+
+    /// Build a delete request without any error.
+    pub fn ensure_delete(self) -> DeleteRequest {
+        self.delete().expect("Invalid delete conditions")
+    }
+
+    /// Build a nop request.
+    pub fn nop(self) -> AppResult<PutRequest> {
+        self.verify_conditions()?;
+        Ok(PutRequest {
+            put_type: PutType::Nop.into(),
+            key: self.key,
+            value: vec![],
+            ttl: 0,
+            conditions: self.conditions,
+            take_prev_value: false,
+        })
+    }
+
+    /// Build a nop request without any error.
+    pub fn ensure_nop(self) -> PutRequest {
+        self.nop().expect("Invalid nop conditions")
+    }
+
+    /// Build an add request, the value will be interpreted as i64.
+    #[allow(clippy::should_implement_trait)]
+    pub fn add(self, val: i64) -> AppResult<PutRequest> {
+        self.verify_conditions()?;
+        Ok(PutRequest {
+            put_type: PutType::AddI64.into(),
+            key: self.key,
+            value: val.to_be_bytes().to_vec(),
+            ttl: self.ttl.unwrap_or_default(),
+            conditions: self.conditions,
+            take_prev_value: self.take_prev_value,
+        })
+    }
+
+    /// Build an add request without any error, the value will be interpreted as
+    /// i64.
+    pub fn ensure_add(self, val: i64) -> PutRequest {
+        self.add(val).expect("Invalid add conditions")
+    }
+
+    /// Expect that the max version of the key is less than the input value.
     ///
-    /// [`Error::InvalidArgument`] is returned if the specified start version
-    /// has been aborted.
-    pub async fn commit_txn(&self, start_version: u64, commit_version: u64) -> Result<()> {
-        debug_assert!(start_version < commit_version);
-
-        let hash_tag = system::txn::hash_tag(start_version);
-        let request = TxnWriteRequest {
-            hash_tag,
-            puts: vec![
-                WriteBuilder::new(keys::txn_state_key(hash_tag, start_version))
-                    .expect_value(txn_state_value(TxnState::Running))
-                    .take_prev_value()
-                    .ensure_put(txn_state_value(TxnState::Committed)),
-                WriteBuilder::new(keys::txn_commit_key(hash_tag, start_version))
-                    .ensure_put(txn_u64_value(commit_version)),
-                WriteBuilder::new(keys::txn_heartbeat_key(hash_tag, start_version))
-                    .ensure_put(txn_u64_value(timestamp_millis())),
-            ],
+    /// One request only can contains one version related expection.
+    pub fn expect_version_lt(mut self, expect: u64) -> Self {
+        self.conditions.push(WriteCondition {
+            r#type: WriteConditionType::ExpectVersionLt.into(),
+            version: expect,
             ..Default::default()
-        };
-
-        let (idx, cond_idx, prev_value) = match self.write(request).await {
-            Err(Error::CasFailed(idx, cond_idx, prev_value)) => (idx, cond_idx, prev_value),
-            Err(err) => return Err(err),
-            Ok(_) => return Ok(()),
-        };
-
-        if idx != 0 || cond_idx != 0 {
-            return Err(Error::Internal(format!("invalid cas failed response, idx {idx} and cond idx {cond_idx} are not expected").into()));
-        }
-        let Some(prev_value) = prev_value.as_ref().and_then(|v| v.content.as_ref()) else {
-            return Err(Error::NotFound(format!("target txn {start_version}")));
-        };
-
-        let prev_state = parse_txn_state(prev_value)?;
-        debug!("try commit txn {start_version}, but prev state is {}", prev_state.as_str_name());
-        match prev_state {
-            TxnState::Running => Err(Error::Internal(
-                "invalid cas failed response, the expect value is TxnState::Running, but failed"
-                    .to_string()
-                    .into(),
-            )),
-            TxnState::Committed => {
-                // ATTN: here assumes that only one could commit a txn, so the commit version is
-                // always equals.
-                Ok(())
-            }
-            TxnState::Aborted => {
-                Err(Error::InvalidArgument(format!("txn {start_version}, txn already aborted")))
-            }
-        }
+        });
+        self
     }
 
-    /// Get the corresponding txn record.
-    pub async fn get_txn_record(&self, start_version: u64) -> Result<Option<TxnRecord>> {
-        let hash_tag = system::txn::hash_tag(start_version);
-        let txn_prefix = keys::txn_prefix(hash_tag, start_version);
-        let scan_resp = self.scan_txn_keys(&txn_prefix).await?;
-        parse_txn_record(hash_tag, start_version, scan_resp.data)
-    }
-
-    /// Abort the transaction specified by `start_version`.
+    /// Expect that the max version of the key is less than or equals to the
+    /// input value.
     ///
-    /// [`Error::InvalidArgument`] is returned if the specified txn has been
-    /// committed.
-    pub async fn abort_txn(&self, start_version: u64) -> Result<()> {
-        let expect_state_value = txn_state_value(TxnState::Running);
-        let state_value = txn_state_value(TxnState::Aborted);
-        let heartbeat_value = txn_u64_value(timestamp_millis());
-        let hash_tag = system::txn::hash_tag(start_version);
-        let request = TxnWriteRequest {
-            hash_tag,
-            puts: vec![
-                WriteBuilder::new(keys::txn_state_key(hash_tag, start_version))
-                    .expect_value(expect_state_value)
-                    .take_prev_value()
-                    .ensure_put(state_value),
-                WriteBuilder::new(keys::txn_heartbeat_key(hash_tag, start_version))
-                    .ensure_put(heartbeat_value),
-            ],
+    /// One request only can contains one version related expection.
+    pub fn expect_version_le(mut self, expect: u64) -> Self {
+        self.conditions.push(WriteCondition {
+            r#type: WriteConditionType::ExpectVersionLe.into(),
+            version: expect,
             ..Default::default()
-        };
+        });
+        self
+    }
 
-        let (idx, cond_idx, prev_value) = match self.write(request).await {
-            Err(Error::CasFailed(idx, cond_idx, prev_value)) => (idx, cond_idx, prev_value),
-            Err(err) => return Err(err),
-            Ok(_) => return Ok(()),
-        };
+    /// Expect that the max version of the key is great than the input value.
+    ///
+    /// One request only can contains one version related expection.
+    pub fn expect_version_gt(mut self, expect: u64) -> Self {
+        self.conditions.push(WriteCondition {
+            r#type: WriteConditionType::ExpectVersionGt.into(),
+            version: expect,
+            ..Default::default()
+        });
+        self
+    }
 
-        if idx != 0 || cond_idx != 0 {
-            return Err(Error::Internal(format!("invalid cas failed response, idx {idx} and cond idx {cond_idx} are not expected").into()));
-        }
-        let Some(prev_value) = prev_value.as_ref().and_then(|v| v.content.as_ref()) else {
-            return Err(Error::NotFound(format!("target txn {start_version}")));
-        };
+    /// Expect that the max version of the key is great than or equal to the
+    /// input value.
+    ///
+    /// One request only can contains one version related expection.
+    pub fn expect_version_ge(mut self, expect: u64) -> Self {
+        self.conditions.push(WriteCondition {
+            r#type: WriteConditionType::ExpectVersionGe.into(),
+            version: expect,
+            ..Default::default()
+        });
+        self
+    }
 
-        let prev_state = parse_txn_state(prev_value)?;
-        debug!("try abort txn {start_version}, but prev state is {}", prev_state.as_str_name());
-        match prev_state {
-            TxnState::Running => Err(Error::Internal(
-                "invalid cas failed response, the expect value is TxnState::Running, but failed"
-                    .to_string()
-                    .into(),
-            )),
-            TxnState::Committed => {
-                Err(Error::InvalidArgument(format!("txn {start_version}, txn already committed")))
-            }
-            TxnState::Aborted => Ok(()),
-        }
+    /// Expect that the max version of the key is equal to the input value.
+    ///
+    /// One request only can contains one version related expection.
+    pub fn expect_version(mut self, expect: u64) -> Self {
+        self.conditions.push(WriteCondition {
+            r#type: WriteConditionType::ExpectVersion.into(),
+            version: expect,
+            ..Default::default()
+        });
+        self
+    }
+
+    /// Expect that the target key is exists exists.
+    pub fn expect_exists(mut self) -> Self {
+        self.conditions.push(WriteCondition {
+            r#type: WriteConditionType::ExpectExists.into(),
+            ..Default::default()
+        });
+        self
+    }
+
+    /// Expect that the target key is not exists.
+    pub fn expect_not_exists(mut self) -> Self {
+        self.conditions.push(WriteCondition {
+            r#type: WriteConditionType::ExpectNotExists.into(),
+            ..Default::default()
+        });
+        self
+    }
+
+    /// Expect that the target key is equal to the input value.
+    pub fn expect_value(mut self, value: Vec<u8>) -> Self {
+        self.conditions.push(WriteCondition {
+            r#type: WriteConditionType::ExpectValue.into(),
+            value,
+            ..Default::default()
+        });
+        self
+    }
+
+    /// Expect that the key contains the input value.
+    pub fn expect_contains(mut self, value: Vec<u8>) -> Self {
+        self.conditions.push(WriteCondition {
+            r#type: WriteConditionType::ExpectContains.into(),
+            value,
+            ..Default::default()
+        });
+        self
+    }
+
+    /// Expect that the slice of the value is equal to the input value.
+    pub fn expect_slice(mut self, begin: u64, value: Vec<u8>) -> Self {
+        self.conditions.push(WriteCondition {
+            r#type: WriteConditionType::ExpectSlice.into(),
+            value,
+            begin,
+            ..Default::default()
+        });
+        self
+    }
+
+    /// Expect that the value of key is starts with the input value.
+    pub fn expect_starts_with(mut self, value: Vec<u8>) -> Self {
+        self.conditions.push(WriteCondition {
+            r#type: WriteConditionType::ExpectStartsWith.into(),
+            value,
+            ..Default::default()
+        });
+        self
+    }
+
+    /// Expect that the value of key is ends with the input value.
+    pub fn expect_ends_with(mut self, value: Vec<u8>) -> Self {
+        self.conditions.push(WriteCondition {
+            r#type: WriteConditionType::ExpectEndsWith.into(),
+            value,
+            ..Default::default()
+        });
+        self
+    }
+
+    /// Take the prev value.
+    ///
+    /// It is useful for cas operations. Default is `false`.
+    pub fn take_prev_value(mut self) -> Self {
+        self.take_prev_value = true;
+        self
+    }
+
+    fn verify_conditions(&self) -> AppResult<()> {
+        // TODO(walter) check conditions
+        Ok(())
     }
 }
 
-impl TxnStateTable {
-    async fn scan_txn_keys(&self, txn_prefix: &[u8]) -> Result<ShardScanResponse> {
-        let router = self.client.router();
-        let mut retry_state = RetryState::new(Some(TXN_TIMEOUT));
+impl Txn {
+    pub(crate) fn new(db: Database) -> Self {
+        Txn { db, start_version: OnceCell::new(), puts: Vec::default(), deletes: Vec::default() }
+    }
+
+    /// Issue a delete request to transaction.
+    #[inline]
+    pub fn delete(&mut self, table_id: u64, delete_req: DeleteRequest) {
+        self.deletes.push((table_id, delete_req));
+    }
+
+    /// Issue a put request to transaction.
+    #[inline]
+    pub fn put(&mut self, table_id: u64, put_req: PutRequest) {
+        self.puts.push((table_id, put_req));
+    }
+
+    /// Commit this transaction.
+    pub async fn commit(self) -> AppResult<WriteBatchResponse> {
+        let start_version = self.get_start_version().await?;
+        let ctx = WriteBatchContext::new(
+            start_version,
+            self.deletes,
+            self.puts,
+            self.db.client.clone(),
+            self.db.client.options().timeout,
+        );
+        Ok(ctx.commit().await?)
+    }
+
+    /// Get key value with in an transaction.
+    pub async fn get(&self, table_id: u64, key: Vec<u8>) -> AppResult<Option<Vec<u8>>> {
+        let value = self.get_raw_value(table_id, key).await?;
+        Ok(value.and_then(|v| v.content))
+    }
+
+    /// Get a raw key value from this transaction.
+    pub async fn get_raw_value(&self, table_id: u64, key: Vec<u8>) -> AppResult<Option<Value>> {
+        CLIENT_DATABASE_BYTES_TOTAL.rx.inc_by(key.len() as u64);
+        CLIENT_DATABASE_REQUEST_TOTAL.get.inc();
+        record_latency!(&CLIENT_DATABASE_REQUEST_DURATION_SECONDS.get);
+        let mut retry_state = RetryState::new(self.db.client.options().timeout);
+
         loop {
-            let (group_state, shard_desc) = router.find_shard(col::txn_col_id(), txn_prefix)?;
-            let mut group_client = GroupClient::new(group_state, self.client.clone());
-
-            let request = Request::Scan(ShardScanRequest {
-                shard_id: shard_desc.id,
-                start_version: system::txn::TXN_MAX_VERSION,
-                prefix: Some(txn_prefix.to_vec()),
-                ..Default::default()
-            });
-            match group_client.request(&request).await {
-                Ok(Response::Scan(resp)) => return Ok(resp),
-                Ok(_) => {
-                    return Err(Error::Internal("invalid response type, Scan is required".into()))
+            match self.get_inner(table_id, &key, &mut retry_state).await {
+                Ok(value) => {
+                    CLIENT_DATABASE_BYTES_TOTAL.tx.inc_by(
+                        value
+                            .as_ref()
+                            .map(|v| v.content.as_ref().map(Vec::len).unwrap_or_default())
+                            .unwrap_or_default() as u64,
+                    );
+                    return Ok(value);
                 }
-                Err(err) => retry_state.retry(err).await?,
+                Err(err) => {
+                    retry_state.retry(err).await?;
+                }
             }
         }
     }
 
-    async fn write(&self, request: TxnWriteRequest) -> Result<ShardWriteResponse> {
-        let mut retry_state = RetryState::new(self.timeout);
+    async fn get_inner(
+        &self,
+        table_id: u64,
+        user_key: &[u8],
+        retry_state: &mut RetryState,
+    ) -> crate::Result<Option<Value>> {
+        let start_version = if self.db.read_without_version {
+            TXN_MAX_VERSION
+        } else {
+            self.get_start_version().await?
+        };
+
+        let router = self.db.client.router();
+        let (group, shard) = router.find_shard(table_id, user_key)?;
+        let mut client = GroupClient::new(group, self.db.client.clone());
+        let req = Request::Get(ShardGetRequest {
+            shard_id: shard.id,
+            start_version,
+            user_key: user_key.to_owned(),
+        });
+        if let Some(duration) = retry_state.timeout() {
+            client.set_timeout(duration);
+        }
+        match client.request(&req).await? {
+            Response::Get(ShardGetResponse { value }) => Ok(value),
+            _ => Err(crate::Error::Internal("invalid response type, Get is required".into())),
+        }
+    }
+
+    /// To issue a batch writes to a shard.
+    #[allow(dead_code)]
+    pub(crate) async fn write(
+        &self,
+        request: ShardWriteRequest,
+    ) -> crate::Result<ShardWriteResponse> {
+        let mut retry_state = RetryState::new(None);
         loop {
             match self.write_inner(&request, retry_state.timeout()).await {
-                Ok(value) => return Ok(value),
+                Ok(value) => {
+                    return Ok(value);
+                }
                 Err(err) => {
-                    trace!("write txn request: {err:?}");
                     retry_state.retry(err).await?;
                 }
             }
@@ -280,286 +440,348 @@ impl TxnStateTable {
 
     async fn write_inner(
         &self,
-        write: &TxnWriteRequest,
+        request: &ShardWriteRequest,
         timeout: Option<Duration>,
-    ) -> Result<ShardWriteResponse> {
-        let router = self.client.router();
-        let key = txn_lower_key(write.hash_tag);
-        let (group_state, shard_desc) = router.find_shard(col::txn_col_id(), &key)?;
-
-        let mut group_client = GroupClient::new(group_state, self.client.clone());
+    ) -> crate::Result<ShardWriteResponse> {
+        let router = self.db.client.router();
+        let group_state = router.find_group_by_shard(request.shard_id)?;
+        let mut group_client = GroupClient::new(group_state, self.db.client.clone());
         if let Some(duration) = timeout {
             group_client.set_timeout(duration);
         }
 
-        let request = Request::Write(ShardWriteRequest {
-            shard_id: shard_desc.id,
-            deletes: write.deletes.clone(),
-            puts: write.puts.clone(),
-        });
+        let request = Request::Write(request.clone());
         match group_client.request(&request).await? {
             Response::Write(resp) => Ok(resp),
             _ => Err(crate::Error::Internal("invalid response type, Write is required".into())),
         }
     }
-}
 
-fn parse_txn_record(
-    hash_tag: u8,
-    start_version: u64,
-    values: Vec<ValueSet>,
-) -> Result<Option<TxnRecord>> {
-    // The scan response output orders.
-    let txn_commit_key = keys::txn_commit_key(hash_tag, start_version);
-    let txn_heartbeat_key = keys::txn_heartbeat_key(hash_tag, start_version);
-    let txn_state_key = keys::txn_state_key(hash_tag, start_version);
-
-    let mut txn_record = TxnRecord::default();
-    let mut it = values.into_iter().peekable();
-    match it.peek() {
-        Some(value_set) => {
-            if value_set.user_key == txn_commit_key {
-                let commit_version = parse_txn_value(value_set, parse_u64)?;
-                txn_record.commit_version = Some(commit_version);
-                let _ = it.next();
+    /// To scan a shard.
+    pub async fn scan(
+        &self,
+        request: ShardScanRequest,
+        timeout: Option<Duration>,
+    ) -> AppResult<ShardScanResponse> {
+        let mut retry_state = RetryState::new(timeout);
+        loop {
+            match self.scan_inner(&request, retry_state.timeout()).await {
+                Ok(value) => {
+                    return Ok(value);
+                }
+                Err(err) => {
+                    retry_state.retry(err).await?;
+                }
             }
         }
-        None => {
-            // No any key returned.
-            return Ok(None);
+    }
+
+    async fn scan_inner(
+        &self,
+        request: &ShardScanRequest,
+        timeout: Option<Duration>,
+    ) -> crate::Result<ShardScanResponse> {
+        let router = self.db.client.router();
+        let group_state = router.find_group_by_shard(request.shard_id)?;
+        let mut group_client = GroupClient::new(group_state, self.db.client.clone());
+        if let Some(duration) = timeout {
+            group_client.set_timeout(duration);
+        }
+
+        let request = Request::Scan(request.clone());
+        match group_client.request(&request).await? {
+            Response::Scan(resp) => Ok(resp),
+            _ => Err(crate::Error::Internal("invalid response type, Scan is required".into())),
         }
     }
 
-    txn_record.start_version = start_version;
-    txn_record.heartbeat = parse_next_txn_key(&mut it, &txn_heartbeat_key, parse_u64)?;
-    txn_record.state = parse_next_txn_key(&mut it, &txn_state_key, parse_txn_state)?;
-    if it.next().is_some() {
-        return Err(Error::Internal(
-            format!("not all txn record keys are consumed, start version: {start_version}").into(),
-        ));
+    /// Scan an range.
+    pub fn range(
+        &self,
+        request: RangeRequest,
+        timeout: Option<Duration>,
+    ) -> AppResult<RangeStream> {
+        // FIXME(walter) remove the request.version field.
+        Ok(RangeStream::init(self.db.client.clone(), request, timeout))
     }
 
-    Ok(Some(txn_record))
+    async fn get_start_version(&self) -> crate::Result<u64> {
+        self.start_version
+            .get_or_try_init(|| async { self.db.client.root_client().alloc_txn_id(1, None).await })
+            .await
+            .copied()
+    }
 }
 
-fn parse_u64(bytes: &[u8]) -> Result<u64> {
-    decode_u64(bytes).ok_or_else(|| {
-        Error::Internal(
-            format!("8 bytes is required to parse u64, but got {} bytes", bytes.len()).into(),
-        )
-    })
+impl WriteContext {
+    fn with_put((index, (table_id, put)): (usize, (u64, PutRequest))) -> Self {
+        WriteContext {
+            table_id,
+            request: WriteRequest::Put(put),
+            response: None,
+            index,
+            done: false,
+        }
+    }
+
+    fn with_delete((index, (table_id, delete)): (usize, (u64, DeleteRequest))) -> Self {
+        WriteContext {
+            table_id,
+            request: WriteRequest::Delete(delete),
+            response: None,
+            index,
+            done: false,
+        }
+    }
+
+    fn user_key(&self) -> &[u8] {
+        match &self.request {
+            WriteRequest::Put(put) => &put.key,
+            WriteRequest::Delete(del) => &del.key,
+        }
+    }
 }
 
-fn parse_txn_state(bytes: &[u8]) -> Result<TxnState> {
-    std::str::from_utf8(bytes)
-        .ok()
-        .and_then(TxnState::from_str_name)
-        .ok_or_else(|| Error::Internal(format!("unknown txn state value: {bytes:?}").into()))
-}
+impl WriteBatchContext {
+    fn new(
+        start_version: u64,
+        deletes: Vec<(u64, DeleteRequest)>,
+        puts: Vec<(u64, PutRequest)>,
+        client: SekasClient,
+        timeout: Option<Duration>,
+    ) -> Self {
+        let num_deletes = deletes.len();
+        let num_puts = puts.len();
+        let num_doing_writes = num_deletes + num_puts;
+        let mut writes = Vec::with_capacity(num_doing_writes);
+        writes.extend(deletes.into_iter().enumerate().map(WriteContext::with_delete));
+        writes.extend(puts.into_iter().enumerate().map(WriteContext::with_put));
 
-fn parse_txn_value<Fn, T>(value_set: &ValueSet, parser: Fn) -> Result<T>
-where
-    Fn: FnOnce(&[u8]) -> Result<T>,
-{
-    value_set
-        .values
-        .first()
-        .and_then(|v| v.content.as_ref())
-        .ok_or_else(|| Error::Internal("at lease a value in scan value set is required".into()))
-        .map(Vec::as_slice)
-        .and_then(parser)
-}
+        WriteBatchContext {
+            client,
+            writes,
+            num_deletes,
+            num_doing_writes,
+            start_version,
+            commit_version: 0,
+            retry_state: RetryState::new(timeout),
+        }
+    }
 
-fn parse_next_txn_key<Fn, T, I>(it: &mut I, key: &[u8], parser: Fn) -> Result<T>
-where
-    I: Iterator<Item = ValueSet>,
-    Fn: FnOnce(&[u8]) -> Result<T>,
-{
-    let value_set = it
-        .next()
-        .filter(|v| v.user_key == key)
-        .ok_or_else(|| Error::Internal(format!("the next key {key:?} is required").into()))?;
-    parse_txn_value(&value_set, parser)
-}
+    pub async fn commit(mut self) -> Result<WriteBatchResponse> {
+        // TODO: check parameters
 
-#[inline]
-fn txn_state_value(state: TxnState) -> Vec<u8> {
-    state.as_str_name().as_bytes().to_vec()
-}
+        // TODO: handle errors to abort txn.
+        self.start_txn().await?;
 
-#[inline]
-fn txn_u64_value(val: u64) -> Vec<u8> {
-    val.to_be_bytes().to_vec()
-}
+        let start_version = self.start_version;
+        let txn_table = TxnStateTable::new(self.client.clone(), self.retry_state.timeout());
 
-#[cfg(test)]
-mod tests {
-    use sekas_schema::system::keys::{
-        txn_commit_key, txn_heartbeat_key, txn_prefix, txn_state_key,
-    };
+        tokio::select! {
+            _ = Self::lease_txn(txn_table, start_version) => {
+                unreachable!()
+            },
+            resp = self.commit_inner() => {
+                resp
+            }
+        }
+    }
 
-    use super::*;
+    async fn lease_txn(txn_table: TxnStateTable, start_version: u64) -> ! {
+        loop {
+            if let Err(err) = txn_table.heartbeat(start_version).await {
+                warn!("txn {start_version} lease heartbeat: {err}");
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
 
-    #[test]
-    fn encode_and_parse_value() {
-        let states = vec![TxnState::Running, TxnState::Committed, TxnState::Aborted];
-        for expect_state in states {
-            let bytes = txn_state_value(expect_state);
-            let state = parse_txn_state(&bytes);
-            assert!(
-                matches!(state, Ok(state) if state == expect_state),
-                "expect state: {}, but got {state:?}",
-                expect_state.as_str_name()
-            );
+    async fn commit_inner(mut self) -> Result<WriteBatchResponse> {
+        self.prepare_intents().await?;
+        self.commit_version = self.alloc_txn_version().await?;
+        self.commit_txn().await?;
+        let version = self.commit_version;
+
+        let mut deletes = Vec::with_capacity(self.num_deletes);
+        let mut puts = Vec::with_capacity(self.writes.len() - self.num_deletes);
+        for write in &mut self.writes {
+            match &write.request {
+                WriteRequest::Delete(_) => {
+                    deletes.push(write.response.take().and_then(|v| v.prev_value));
+                }
+                WriteRequest::Put(_) => {
+                    puts.push(write.response.take().and_then(|v| v.prev_value));
+                }
+            }
         }
 
-        let val = parse_u64(&txn_u64_value(u64::MAX)).unwrap();
-        assert_eq!(val, u64::MAX);
-        let val = parse_u64(&txn_u64_value(0)).unwrap();
-        assert_eq!(val, 0);
+        self.commit_intents();
+        Ok(WriteBatchResponse { version, deletes, puts })
     }
 
-    #[test]
-    fn parse_empty_txn_record() {
-        let result = parse_txn_record(1, 1, vec![]);
-        assert!(matches!(result, Ok(None)));
+    async fn alloc_txn_version(&mut self) -> Result<u64> {
+        let root_client = self.client.root_client();
+        loop {
+            match root_client.alloc_txn_id(1, self.retry_state.timeout()).await {
+                Ok(value) => {
+                    return Ok(value);
+                }
+                Err(err) => {
+                    self.retry_state.retry(err).await?;
+                }
+            }
+        }
     }
 
-    #[test]
-    fn parse_begin_txn_record() {
-        let hash_tag = 1;
-        let txn_id = 123;
-        let state_key = txn_state_key(hash_tag, txn_id);
-        let heartbeat_key = txn_heartbeat_key(hash_tag, txn_id);
-        let values = vec![
-            ValueSet {
-                user_key: heartbeat_key.clone(),
-                values: vec![
-                    Value::with_value(txn_u64_value(123), 1), // heartbeat.
-                ],
-            },
-            ValueSet {
-                user_key: state_key.clone(),
-                values: vec![
-                    Value::with_value(txn_state_value(TxnState::Running), 1), // state
-                ],
-            },
-        ];
-
-        let txn_record =
-            parse_txn_record(hash_tag, txn_id, values).expect("no error").expect("value exists");
-        assert_eq!(txn_record.heartbeat, 123);
-        assert_eq!(txn_record.state, TxnState::Running);
+    async fn start_txn(&mut self) -> Result<()> {
+        TxnStateTable::new(self.client.clone(), self.retry_state.timeout())
+            .begin_txn(self.start_version)
+            .await
     }
 
-    #[test]
-    fn parse_commit_txn_record() {
-        let hash_tag = 1;
-        let txn_id = 123;
-        let commit_key = txn_commit_key(hash_tag, txn_id);
-        let state_key = txn_state_key(hash_tag, txn_id);
-        let heartbeat_key = txn_heartbeat_key(hash_tag, txn_id);
-        let values = vec![
-            ValueSet {
-                user_key: commit_key.clone(),
-                values: vec![
-                    Value::with_value(txn_u64_value(321), 1), // commit version.
-                ],
-            },
-            ValueSet {
-                user_key: heartbeat_key.clone(),
-                values: vec![
-                    Value::with_value(txn_u64_value(123), 1), // heartbeat.
-                ],
-            },
-            ValueSet {
-                user_key: state_key.clone(),
-                values: vec![
-                    Value::with_value(txn_state_value(TxnState::Running), 1), // state
-                ],
-            },
-        ];
-
-        let txn_record =
-            parse_txn_record(hash_tag, txn_id, values).expect("no error").expect("value exists");
-        assert_eq!(txn_record.commit_version, Some(321));
-        assert_eq!(txn_record.heartbeat, 123);
-        assert_eq!(txn_record.state, TxnState::Running);
+    async fn prepare_intents(&mut self) -> Result<()> {
+        loop {
+            if !self.prepare_intents_inner().await? {
+                return Ok(());
+            }
+            self.retry_state.force_retry().await?;
+        }
     }
 
-    #[test]
-    fn parse_abort_txn_record() {
-        let hash_tag = 1;
-        let txn_id = 123;
-        let state_key = txn_state_key(hash_tag, txn_id);
-        let heartbeat_key = txn_heartbeat_key(hash_tag, txn_id);
-        let values = vec![
-            ValueSet {
-                user_key: heartbeat_key.clone(),
-                values: vec![
-                    Value::with_value(txn_u64_value(123), 1), // heartbeat.
-                ],
-            },
-            ValueSet {
-                user_key: state_key.clone(),
-                values: vec![
-                    Value::with_value(txn_state_value(TxnState::Aborted), 1), // state
-                ],
-            },
-        ];
+    async fn prepare_intents_inner(&mut self) -> Result<bool> {
+        let router = self.client.router();
+        let mut handles = Vec::with_capacity(self.writes.len());
+        for (index, write) in self.writes.iter().enumerate() {
+            if write.done {
+                continue;
+            }
+            let (group_state, shard_desc) = router.find_shard(write.table_id, write.user_key())?;
+            let mut client = GroupClient::new(group_state, self.client.clone());
+            let req = Request::WriteIntent(WriteIntentRequest {
+                start_version: self.start_version,
+                shard_id: shard_desc.id,
+                write: Some(write.request.clone()),
+            });
+            if let Some(duration) = self.retry_state.timeout() {
+                client.set_timeout(duration);
+            }
+            let handle = tokio::spawn(async move {
+                match client.request(&req).await? {
+                    Response::WriteIntent(WriteIntentResponse { write: Some(resp) }) => {
+                        Ok((resp, index))
+                    }
+                    _ => Err(Error::Internal(
+                        "invalid response type, Get is required".to_string().into(),
+                    )),
+                }
+            });
+            handles.push(handle);
+        }
 
-        let txn_record =
-            parse_txn_record(hash_tag, txn_id, values).expect("no error").expect("value exists");
-        assert_eq!(txn_record.heartbeat, 123);
-        assert_eq!(txn_record.state, TxnState::Aborted);
+        for handle in handles {
+            match handle.await? {
+                Ok((resp, index)) => {
+                    self.num_doing_writes =
+                        self.num_doing_writes.checked_sub(1).expect("out of range");
+                    let write = &mut self.writes[index];
+                    write.done = true;
+                    write.response = Some(resp);
+                }
+                Err(err) => {
+                    // FIXME(walter) UPDATE THE CAS FAILED INDEX.
+                    trace!("txn {} write intent: {err:?}", self.start_version);
+                    if !self.retry_state.is_retryable(&err) {
+                        return Err(err);
+                    }
+                }
+            }
+        }
+        trace!("txn {} write intent left {} writes", self.start_version, self.num_doing_writes);
+        Ok(self.num_doing_writes > 0)
     }
 
-    #[test]
-    fn parse_partial_txn_record() {
-        let hash_tag = 1;
-        let txn_id = 123;
-        let state_key = txn_state_key(hash_tag, txn_id);
-        let values = vec![ValueSet {
-            user_key: state_key.clone(),
-            values: vec![
-                Value::with_value(txn_state_value(TxnState::Running), 1), // state
-            ],
-        }];
-
-        let result = parse_txn_record(hash_tag, txn_id, values);
-        assert!(matches!(result, Err(Error::Internal(_))));
+    async fn commit_txn(&mut self) -> Result<()> {
+        TxnStateTable::new(self.client.clone(), self.retry_state.timeout())
+            .commit_txn(self.start_version, self.commit_version)
+            .await
     }
 
-    #[test]
-    fn parse_txn_record_consume_all_keys() {
-        let hash_tag = 1;
-        let txn_id = 123;
-        let state_key = txn_state_key(hash_tag, txn_id);
-        let heartbeat_key = txn_heartbeat_key(hash_tag, txn_id);
-        let mut other_key = txn_prefix(hash_tag, txn_id);
-        other_key.extend_from_slice(b"zzzz");
-        let values = vec![
-            ValueSet {
-                user_key: heartbeat_key.clone(),
-                values: vec![
-                    Value::with_value(txn_u64_value(123), 1), // heartbeat.
-                ],
-            },
-            ValueSet {
-                user_key: state_key.clone(),
-                values: vec![
-                    Value::with_value(txn_state_value(TxnState::Aborted), 1), // state
-                ],
-            },
-            ValueSet {
-                user_key: other_key,
-                values: vec![
-                    Value::with_value(txn_state_value(TxnState::Aborted), 1), // state
-                ],
-            },
-        ];
+    #[allow(unused)]
+    async fn abort_txn(&mut self) -> Result<()> {
+        TxnStateTable::new(self.client.clone(), self.retry_state.timeout())
+            .abort_txn(self.start_version)
+            .await
+    }
 
-        let result = parse_txn_record(hash_tag, txn_id, values);
-        assert!(matches!(result, Err(Error::Internal(_))));
+    fn commit_intents(mut self) {
+        tokio::spawn(async move {
+            self.num_doing_writes = self.writes.len();
+            for write in &mut self.writes {
+                write.done = false;
+            }
+
+            for i in [1, 3, 5] {
+                match self.commit_intents_inner().await {
+                    Ok(false) => break,
+                    Ok(true) => tokio::time::sleep(Duration::from_millis(i)).await,
+                    Err(err) => {
+                        warn!("txn {} commit intents: {}", self.start_version, err);
+                        break;
+                    }
+                }
+            }
+        });
+    }
+
+    async fn commit_intents_inner(&mut self) -> Result<bool> {
+        let router = self.client.router();
+
+        let mut handles = Vec::with_capacity(self.writes.len());
+        for write in &self.writes {
+            if write.done {
+                continue;
+            }
+
+            let user_key = write.user_key();
+            let (group_state, shard_desc) = router.find_shard(write.table_id, user_key)?;
+            let req = CommitIntentRequest {
+                shard_id: shard_desc.id,
+                start_version: self.start_version,
+                commit_version: self.commit_version,
+                user_key: user_key.to_vec(),
+            };
+            let index = write.index;
+            let mut client = GroupClient::new(group_state, self.client.clone());
+            let handle = tokio::spawn(async move {
+                match client.request(&Request::CommitIntent(req)).await {
+                    Ok(Response::CommitIntent(CommitIntentResponse {})) => Ok(index),
+                    _ => Err(Error::Internal(
+                        "invalid response, `CommitIntent` is required".to_string().into(),
+                    )),
+                }
+            });
+            handles.push(handle);
+        }
+        for handle in handles {
+            match handle.await? {
+                Ok(index) => {
+                    self.writes[index].done = true;
+                    self.num_doing_writes =
+                        self.num_doing_writes.checked_sub(1).expect("out of range");
+                }
+                Err(err) => {
+                    if !self.retry_state.is_retryable(&err) {
+                        return Err(err);
+                    }
+                }
+            }
+        }
+        trace!("txn {} commit intent left {} writes", self.start_version, self.num_doing_writes);
+        Ok(self.num_doing_writes > 0)
+    }
+
+    #[allow(unused)]
+    async fn clear_intents(&mut self) -> Result<()> {
+        todo!()
     }
 }

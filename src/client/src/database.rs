@@ -13,43 +13,45 @@
 // limitations under the License.
 use std::time::Duration;
 
-use sekas_api::server::v1::group_request_union::Request;
-use sekas_api::server::v1::group_response_union::Response;
 use sekas_api::server::v1::*;
 
 use crate::range::{RangeRequest, RangeStream};
-use crate::{AppError, AppResult, GroupClient, RetryState, SekasClient, Txn, WriteBuilder};
+use crate::{AppError, AppResult, SekasClient, Txn, WriteBuilder};
 
 #[derive(Debug, Clone)]
 pub struct Database {
     pub(crate) client: SekasClient,
     pub(crate) desc: DatabaseDesc,
-    pub(crate) rpc_timeout: Option<Duration>,
     /// Read value by ignore any versions.
     pub(crate) read_without_version: bool,
 }
 
 impl Database {
-    pub fn new(client: SekasClient, desc: DatabaseDesc, rpc_timeout: Option<Duration>) -> Self {
+    /// Create a new database instance.
+    pub(crate) fn new(client: SekasClient, desc: DatabaseDesc) -> Self {
         let read_without_version = desc.id == sekas_schema::system::db::ID;
-        Database { client, desc, rpc_timeout, read_without_version }
+        Database { client, desc, read_without_version }
     }
 
+    /// Create a new table if not exists.
     pub async fn create_table(&self, name: String) -> AppResult<TableDesc> {
         let desc = self.client.root_client().create_table(self.desc.clone(), name).await?;
         Ok(desc)
     }
 
+    /// Delete a specified table.
     pub async fn delete_table(&self, name: String) -> AppResult<()> {
         self.client.root_client().delete_table(self.desc.clone(), name).await?;
         Ok(())
     }
 
+    /// List tables in the database.
     pub async fn list_table(&self) -> AppResult<Vec<TableDesc>> {
         let tables = self.client.root_client().list_table(self.desc.clone()).await?;
         Ok(tables)
     }
 
+    /// Open a table.
     pub async fn open_table(&self, name: String) -> AppResult<TableDesc> {
         match self.client.root_client().get_table(self.desc.clone(), name.clone()).await? {
             None => Err(AppError::NotFound(format!("table {}", name))),
@@ -57,6 +59,7 @@ impl Database {
         }
     }
 
+    /// A helper function to delete a key.
     #[inline]
     pub async fn delete(&self, table_id: u64, key: Vec<u8>) -> AppResult<()> {
         let mut txn = Txn::new(self.clone());
@@ -65,6 +68,7 @@ impl Database {
         Ok(())
     }
 
+    /// A helper function to put a key value.
     #[inline]
     pub async fn put(&self, table_id: u64, key: Vec<u8>, value: Vec<u8>) -> AppResult<()> {
         let mut txn = Txn::new(self.clone());
@@ -73,62 +77,29 @@ impl Database {
         Ok(())
     }
 
+    /// Begin a transcation at the database, which supports serializable
+    /// snapshot isolation (WIP...)
     #[inline]
     pub fn begin_txn(&self) -> Txn {
         Txn::new(self.clone())
     }
 
+    /// A helper function to get the value of a key.
     #[inline]
     pub async fn get(&self, table_id: u64, key: Vec<u8>) -> AppResult<Option<Vec<u8>>> {
-        let mut txn = Txn::new(self.clone());
+        let txn = Txn::new(self.clone());
         txn.get(table_id, key).await
     }
 
+    /// A helper function to get the raw value (version, tombstone ...) of a
+    /// key.
     #[inline]
     pub async fn get_raw_value(&self, table_id: u64, key: Vec<u8>) -> AppResult<Option<Value>> {
-        let mut txn = Txn::new(self.clone());
+        let txn = Txn::new(self.clone());
         txn.get_raw_value(table_id, key).await
     }
 
-    /// To issue a batch writes to a shard.
-    #[allow(dead_code)]
-    pub(crate) async fn write(
-        &self,
-        request: ShardWriteRequest,
-    ) -> crate::Result<ShardWriteResponse> {
-        let mut retry_state = RetryState::new(None);
-        loop {
-            match self.write_inner(&request, retry_state.timeout()).await {
-                Ok(value) => {
-                    return Ok(value);
-                }
-                Err(err) => {
-                    retry_state.retry(err).await?;
-                }
-            }
-        }
-    }
-
-    async fn write_inner(
-        &self,
-        request: &ShardWriteRequest,
-        timeout: Option<Duration>,
-    ) -> crate::Result<ShardWriteResponse> {
-        let router = self.client.router();
-        let group_state = router.find_group_by_shard(request.shard_id)?;
-        let mut group_client = GroupClient::new(group_state, self.client.clone());
-        if let Some(duration) = timeout {
-            group_client.set_timeout(duration);
-        }
-
-        let request = Request::Write(request.clone());
-        match group_client.request(&request).await? {
-            Response::Write(resp) => Ok(resp),
-            _ => Err(crate::Error::Internal("invalid response type, Write is required".into())),
-        }
-    }
-
-    /// To scan a shard.
+    /// A helper function to scan an range in a shard.
     #[inline]
     pub async fn scan(
         &self,
@@ -139,7 +110,7 @@ impl Database {
         txn.scan(request, timeout).await
     }
 
-    /// Scan an range.
+    /// A helper function to scan an range.
     pub fn range(
         &self,
         request: RangeRequest,
@@ -149,11 +120,13 @@ impl Database {
         txn.range(request, timeout)
     }
 
+    /// Return the name of the database.
     #[allow(dead_code)]
     pub fn name(&self) -> String {
         self.desc.name.to_owned()
     }
 
+    /// Return the desc of the database.
     #[inline]
     pub fn desc(&self) -> DatabaseDesc {
         self.desc.clone()

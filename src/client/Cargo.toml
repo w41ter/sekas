@@ -10,6 +10,7 @@ description = "The Sekas API."
 [dependencies]
 sekas-api = { version = "0.5", path = "../api" }
 sekas-rock = { version = "0.5", path = "../rock" }
+sekas-runtime = { version = "0.5", path = "../runtime" }
 sekas-schema = { version = "0.5", path = "../schema" }
 
 async-stream.workspace = true

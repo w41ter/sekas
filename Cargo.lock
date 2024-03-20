@@ -2323,6 +2323,7 @@ dependencies = [
  "prost 0.11.9",
  "sekas-api",
  "sekas-rock",
+ "sekas-runtime",
  "sekas-schema",
  "socket2 0.4.10",
  "thiserror",

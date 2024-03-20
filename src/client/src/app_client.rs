@@ -31,7 +31,7 @@ pub struct ClientOptions {
 }
 
 #[derive(Debug, Clone)]
-pub struct Client {
+pub struct SekasClient {
     inner: Arc<ClientInner>,
 }
 
@@ -43,7 +43,7 @@ struct ClientInner {
     conn_manager: ConnManager,
 }
 
-impl Client {
+impl SekasClient {
     pub async fn new(opts: ClientOptions, addrs: Vec<String>) -> AppResult<Self> {
         let conn_manager = if let Some(connect_timeout) = opts.connect_timeout {
             ConnManager::with_connect_timeout(connect_timeout)
@@ -63,51 +63,53 @@ impl Client {
         root_client: RootClient,
         conn_manager: ConnManager,
     ) -> Self {
-        Client { inner: Arc::new(ClientInner { opts, root_client, router, conn_manager }) }
+        SekasClient { inner: Arc::new(ClientInner { opts, root_client, router, conn_manager }) }
     }
 
+    /// Create a new database if it not exists.
     pub async fn create_database(&self, name: String) -> AppResult<Database> {
         let db_desc = self.inner.root_client.create_database(name).await?;
-        Ok(Database::new(self.clone(), db_desc, self.rpc_timeout()))
+        Ok(Database::new(self.clone(), db_desc))
     }
 
+    /// Delete a database.
     pub async fn delete_database(&self, name: String) -> AppResult<()> {
         self.inner.root_client.delete_database(name).await?;
         Ok(())
     }
 
+    /// List the databases.
     pub async fn list_database(&self) -> AppResult<Vec<Database>> {
         let databases = self.inner.root_client.list_database().await?;
-        Ok(databases
-            .into_iter()
-            .map(|desc| Database::new(self.clone(), desc, self.rpc_timeout()))
-            .collect::<Vec<_>>())
+        Ok(databases.into_iter().map(|desc| Database::new(self.clone(), desc)).collect::<Vec<_>>())
     }
 
+    /// Open a database.
     pub async fn open_database(&self, name: String) -> AppResult<Database> {
         match self.inner.root_client.get_database(name.clone()).await? {
             None => Err(AppError::NotFound(format!("database {}", name))),
-            Some(desc) => Ok(Database::new(self.clone(), desc, self.rpc_timeout())),
+            Some(desc) => Ok(Database::new(self.clone(), desc)),
         }
     }
 
+    /// Return the options.
     #[inline]
-    pub(crate) fn root_client(&self) -> RootClient {
-        self.inner.root_client.clone()
+    pub fn options(&self) -> &ClientOptions {
+        &self.inner.opts
     }
 
     #[inline]
-    pub(crate) fn router(&self) -> Router {
-        self.inner.router.clone()
+    pub(crate) fn root_client(&self) -> &RootClient {
+        &self.inner.root_client
     }
 
     #[inline]
-    pub(crate) fn conn_mgr(&self) -> ConnManager {
-        self.inner.conn_manager.clone()
+    pub(crate) fn router(&self) -> &Router {
+        &self.inner.router
     }
 
     #[inline]
-    fn rpc_timeout(&self) -> Option<Duration> {
-        self.inner.opts.timeout
+    pub(crate) fn conn_mgr(&self) -> &ConnManager {
+        &self.inner.conn_manager
     }
 }

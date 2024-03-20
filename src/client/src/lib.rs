@@ -26,12 +26,12 @@ mod retry;
 mod rpc;
 mod shard_client;
 mod txn;
-mod write_batch;
+mod txn_table;
 
 pub use sekas_api::server::v1::{DeleteRequest, PutRequest, TableDesc};
 use tonic::async_trait;
 
-pub use crate::app_client::{Client as SekasClient, ClientOptions};
+pub use crate::app_client::{ClientOptions, SekasClient};
 pub use crate::database::Database;
 pub use crate::discovery::{ServiceDiscovery, StaticServiceDiscovery};
 pub use crate::error::{AppError, AppResult, Error, Result};
@@ -41,5 +41,5 @@ pub use crate::range::{Range, RangeRequest};
 pub use crate::retry::RetryState;
 pub use crate::rpc::{ConnManager, NodeClient, RootClient, Router, RouterGroupState};
 pub use crate::shard_client::ShardClient;
-pub use crate::txn::TxnStateTable;
-pub use crate::write_batch::{Txn, WriteBatchResponse, WriteBuilder};
+pub use crate::txn::{Txn, WriteBatchResponse, WriteBuilder};
+pub use crate::txn_table::TxnStateTable;

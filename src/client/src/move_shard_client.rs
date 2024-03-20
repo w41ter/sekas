@@ -20,6 +20,7 @@ use crate::retry::RetryState;
 use crate::shard_client::ShardClient;
 use crate::{Error, Result, SekasClient};
 
+/// FIXME(walter) refactor it!
 /// `MigrateClient` wraps `GroupClient` and provides retry for moving shard
 /// related functions.
 pub struct MoveShardClient {

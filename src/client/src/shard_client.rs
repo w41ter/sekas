@@ -21,6 +21,7 @@ use crate::group_client::GroupClient;
 use crate::retry::RetryState;
 use crate::{Error, Result, SekasClient, WriteBuilder};
 
+/// FIXME(walter) refactor it!
 /// `ShardClient` wraps `GroupClient` and provides retry for shard-related
 /// functions.
 ///

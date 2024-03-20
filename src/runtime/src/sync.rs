@@ -1,4 +1,5 @@
 // Copyright 2022 The Engula Authors.
+// Copyright 2024 The Sekas Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,6 +15,8 @@
 
 use std::sync::{Arc, Mutex};
 use std::task::{Poll, Waker};
+
+pub use tokio::sync::OnceCell;
 
 #[derive(Default)]
 pub struct WaitGroup {
