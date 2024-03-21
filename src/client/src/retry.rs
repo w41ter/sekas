@@ -17,6 +17,9 @@ use std::time::{Duration, Instant};
 
 use crate::{Error, Result};
 
+const MIN_INTERVAL_MS: u64 = 8;
+const MAX_INTERVAL_MS: u64 = 3000;
+
 pub struct RetryState {
     interval_ms: u64,
     deadline: Option<Instant>,
@@ -24,13 +27,28 @@ pub struct RetryState {
 
 impl Default for RetryState {
     fn default() -> Self {
-        RetryState::new(None)
+        RetryState { interval_ms: MIN_INTERVAL_MS, deadline: None }
     }
 }
 
 impl RetryState {
-    pub fn new(timeout: Option<Duration>) -> Self {
-        RetryState { interval_ms: 8, deadline: timeout.and_then(|d| Instant::now().checked_add(d)) }
+    pub fn new(timeout: Duration) -> Self {
+        RetryState { interval_ms: MIN_INTERVAL_MS, deadline: Instant::now().checked_add(timeout) }
+    }
+
+    pub fn with_timeout_opt(timeout: Option<Duration>) -> Self {
+        RetryState {
+            interval_ms: MIN_INTERVAL_MS,
+            deadline: timeout.and_then(|v| Instant::now().checked_add(v)),
+        }
+    }
+
+    pub fn with_deadline(deadline: Instant) -> Self {
+        Self::with_deadline_opt(Some(deadline))
+    }
+
+    pub fn with_deadline_opt(deadline: Option<Instant>) -> Self {
+        RetryState { interval_ms: MIN_INTERVAL_MS, deadline }
     }
 
     #[inline]
@@ -39,7 +57,7 @@ impl RetryState {
     }
 
     pub fn reset_wait_interval(&mut self) {
-        self.interval_ms = 8;
+        self.interval_ms = MIN_INTERVAL_MS;
     }
 
     pub fn is_retryable(&self, err: &Error) -> bool {
@@ -80,7 +98,7 @@ impl RetryState {
             }
         }
         tokio::time::sleep(interval).await;
-        self.interval_ms = std::cmp::min(self.interval_ms * 2, 250);
+        self.interval_ms = std::cmp::min(self.interval_ms * 2, MAX_INTERVAL_MS);
         Ok(())
     }
 }

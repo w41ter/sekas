@@ -326,7 +326,7 @@ impl SekasHandle {
             limit: request.limit as u64,
             ..Default::default()
         };
-        let mut range_stream = self.db.range(range_req, None)?;
+        let mut range_stream = self.db.range(range_req).await?;
         let mut range_resp = RangeResponse::default();
         'OUTER: while let Some(value_sets) = range_stream.next().await {
             let value_sets = value_sets?;
@@ -393,7 +393,7 @@ impl SekasHandle {
             ..Default::default()
         };
 
-        let mut range_stream = self.db.range(range_req, None)?;
+        let mut range_stream = self.db.range(range_req).await?;
         let mut delete_resp = DeleteRangeResponse::default();
         while let Some(value_sets) = range_stream.next().await {
             for value_set in value_sets? {

@@ -13,7 +13,7 @@
 // limitations under the License.
 use std::pin::Pin;
 use std::task::{Context, Poll};
-use std::time::Duration;
+use std::time::Instant;
 
 use sekas_api::server::v1::group_request_union::Request;
 use sekas_api::server::v1::group_response_union::Response;
@@ -44,7 +44,8 @@ pub enum Range {
 pub struct RangeRequest {
     /// The table to scan.
     pub table_id: u64,
-    /// The start version to scan.
+    /// The start version to scan, if this field is set, the txn start version
+    /// will be ignored.
     pub version: Option<u64>,
     /// The range to scan.
     pub range: Range,
@@ -137,7 +138,7 @@ impl RangeStream {
     pub fn init(
         client: SekasClient,
         request: RangeRequest,
-        timeout: Option<Duration>,
+        deadline: Option<Instant>,
     ) -> RangeStream {
         let (sender, receiver) = mpsc::channel(request.buffered_requests);
         let (cursor_key, end_key) = match request.range {
@@ -163,27 +164,26 @@ impl RangeStream {
         // Spawn a task to fetch value set in background.
         let handle = tokio::spawn(async move {
             let mut scanner = scanner;
-            scanner.scan(timeout).await;
+            scanner.scan(deadline).await;
         });
         RangeStream { fetch_handle: Some(handle), receiver }
     }
 }
 
 impl RangeScanner {
-    async fn scan(&mut self, timeout: Option<Duration>) {
-        if let Err(err) = self.scan_inner(timeout).await {
+    async fn scan(&mut self, deadline: Option<Instant>) {
+        if let Err(err) = self.scan_inner(deadline).await {
             let _ = self.sender.send(Err(err)).await;
         }
     }
 
-    async fn scan_inner(&mut self, timeout: Option<Duration>) -> crate::Result<()> {
-        let mut retry_state = RetryState::new(timeout);
+    async fn scan_inner(&mut self, deadline: Option<Instant>) -> crate::Result<()> {
+        let mut retry_state = RetryState::with_deadline_opt(deadline);
         while self.state == ScannerState::Normal {
             let router = self.client.router();
             let (group_state, shard_desc) = router.find_shard(self.table_id, &self.cursor_key)?;
             let mut group_client = GroupClient::new(group_state, self.client.clone());
             if let Err(err) = self.scan_shard(&mut group_client, &shard_desc).await {
-                log::info!("scan shard {err:?}");
                 retry_state.retry(err).await?;
                 continue;
             }

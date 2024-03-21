@@ -34,7 +34,7 @@ impl MoveShardClient {
     }
 
     pub async fn acquire_shard(&mut self, desc: &MoveShardDesc) -> Result<()> {
-        let mut retry_state = RetryState::new(None);
+        let mut retry_state = RetryState::default();
 
         loop {
             let mut client = self.group_client();
@@ -49,7 +49,7 @@ impl MoveShardClient {
     }
 
     pub async fn move_out(&mut self, desc: &MoveShardDesc) -> Result<()> {
-        let mut retry_state = RetryState::new(None);
+        let mut retry_state = RetryState::default();
 
         loop {
             let mut client = self.group_client();
@@ -67,7 +67,7 @@ impl MoveShardClient {
         shard_id: u64,
         last_key: Option<Vec<u8>>,
     ) -> Result<Vec<ValueSet>> {
-        let mut retry_state = RetryState::new(None);
+        let mut retry_state = RetryState::default();
 
         loop {
             let client = ShardClient::new(self.group_id, shard_id, self.client.clone());
@@ -81,7 +81,7 @@ impl MoveShardClient {
     }
 
     pub async fn forward(&mut self, req: &ForwardRequest) -> Result<ForwardResponse> {
-        let mut retry_state = RetryState::new(None);
+        let mut retry_state = RetryState::default();
 
         loop {
             let mut client = self.group_client();

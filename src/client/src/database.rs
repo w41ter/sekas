@@ -11,7 +11,6 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-use std::time::Duration;
 
 use sekas_api::server::v1::*;
 
@@ -101,23 +100,15 @@ impl Database {
 
     /// A helper function to scan an range in a shard.
     #[inline]
-    pub async fn scan(
-        &self,
-        request: ShardScanRequest,
-        timeout: Option<Duration>,
-    ) -> AppResult<ShardScanResponse> {
+    pub async fn scan(&self, request: ShardScanRequest) -> AppResult<ShardScanResponse> {
         let txn = Txn::new(self.clone());
-        txn.scan(request, timeout).await
+        txn.scan(request).await
     }
 
     /// A helper function to scan an range.
-    pub fn range(
-        &self,
-        request: RangeRequest,
-        timeout: Option<Duration>,
-    ) -> AppResult<RangeStream> {
+    pub async fn range(&self, request: RangeRequest) -> AppResult<RangeStream> {
         let txn = Txn::new(self.clone());
-        txn.range(request, timeout)
+        txn.range(request).await
     }
 
     /// Return the name of the database.

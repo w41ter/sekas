@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use log::{trace, warn};
 use sekas_api::server::v1::group_request_union::Request;
@@ -62,6 +62,13 @@ pub struct WriteBuilder {
 pub struct Txn {
     /// The database to submit transactions.
     db: Database,
+    /// The deadline of this txn. The expired txn will be aborted.
+    ///
+    /// The default value is inherited from database, and it can be overwrite by
+    /// [`Txn::set_timeout`].
+    ///
+    /// FIXME(walter) abort expired txn.
+    deadline: Option<Instant>,
     /// The transaction start version.
     start_version: OnceCell<u64>,
     /// The put request to submit.
@@ -331,7 +338,14 @@ impl WriteBuilder {
 
 impl Txn {
     pub(crate) fn new(db: Database) -> Self {
-        Txn { db, start_version: OnceCell::new(), puts: Vec::default(), deletes: Vec::default() }
+        let deadline = db.client.options().timeout.map(|v| Instant::now() + v);
+        Txn {
+            db,
+            deadline,
+            start_version: OnceCell::new(),
+            puts: Vec::default(),
+            deletes: Vec::default(),
+        }
     }
 
     /// Issue a delete request to transaction.
@@ -354,7 +368,7 @@ impl Txn {
             self.deletes,
             self.puts,
             self.db.client.clone(),
-            self.db.client.options().timeout,
+            self.deadline,
         );
         Ok(ctx.commit().await?)
     }
@@ -370,10 +384,10 @@ impl Txn {
         CLIENT_DATABASE_BYTES_TOTAL.rx.inc_by(key.len() as u64);
         CLIENT_DATABASE_REQUEST_TOTAL.get.inc();
         record_latency!(&CLIENT_DATABASE_REQUEST_DURATION_SECONDS.get);
-        let mut retry_state = RetryState::new(self.db.client.options().timeout);
+        let mut retry_state = RetryState::with_deadline_opt(self.deadline);
 
         loop {
-            match self.get_inner(table_id, &key, &mut retry_state).await {
+            match self.get_inner(table_id, &key, retry_state.timeout()).await {
                 Ok(value) => {
                     CLIENT_DATABASE_BYTES_TOTAL.tx.inc_by(
                         value
@@ -394,26 +408,19 @@ impl Txn {
         &self,
         table_id: u64,
         user_key: &[u8],
-        retry_state: &mut RetryState,
+        timeout: Option<Duration>,
     ) -> crate::Result<Option<Value>> {
-        let start_version = if self.db.read_without_version {
-            TXN_MAX_VERSION
-        } else {
-            self.get_start_version().await?
-        };
-
+        let start_version = self.get_read_version().await?;
         let router = self.db.client.router();
         let (group, shard) = router.find_shard(table_id, user_key)?;
-        let mut client = GroupClient::new(group, self.db.client.clone());
         let req = Request::Get(ShardGetRequest {
             shard_id: shard.id,
             start_version,
             user_key: user_key.to_owned(),
         });
-        if let Some(duration) = retry_state.timeout() {
-            client.set_timeout(duration);
-        }
-        match client.request(&req).await? {
+        let mut group_client = GroupClient::new(group, self.db.client.clone());
+        group_client.set_timeout_opt(timeout);
+        match group_client.request(&req).await? {
             Response::Get(ShardGetResponse { value }) => Ok(value),
             _ => Err(crate::Error::Internal("invalid response type, Get is required".into())),
         }
@@ -425,7 +432,7 @@ impl Txn {
         &self,
         request: ShardWriteRequest,
     ) -> crate::Result<ShardWriteResponse> {
-        let mut retry_state = RetryState::new(None);
+        let mut retry_state = RetryState::with_deadline_opt(self.deadline);
         loop {
             match self.write_inner(&request, retry_state.timeout()).await {
                 Ok(value) => {
@@ -446,10 +453,7 @@ impl Txn {
         let router = self.db.client.router();
         let group_state = router.find_group_by_shard(request.shard_id)?;
         let mut group_client = GroupClient::new(group_state, self.db.client.clone());
-        if let Some(duration) = timeout {
-            group_client.set_timeout(duration);
-        }
-
+        group_client.set_timeout_opt(timeout);
         let request = Request::Write(request.clone());
         match group_client.request(&request).await? {
             Response::Write(resp) => Ok(resp),
@@ -458,14 +462,10 @@ impl Txn {
     }
 
     /// To scan a shard.
-    pub async fn scan(
-        &self,
-        request: ShardScanRequest,
-        timeout: Option<Duration>,
-    ) -> AppResult<ShardScanResponse> {
-        let mut retry_state = RetryState::new(timeout);
+    pub async fn scan(&self, mut request: ShardScanRequest) -> AppResult<ShardScanResponse> {
+        let mut retry_state = RetryState::with_deadline_opt(self.deadline);
         loop {
-            match self.scan_inner(&request, retry_state.timeout()).await {
+            match self.scan_inner(&mut request, retry_state.timeout()).await {
                 Ok(value) => {
                     return Ok(value);
                 }
@@ -478,17 +478,15 @@ impl Txn {
 
     async fn scan_inner(
         &self,
-        request: &ShardScanRequest,
+        request: &mut ShardScanRequest,
         timeout: Option<Duration>,
     ) -> crate::Result<ShardScanResponse> {
+        request.start_version = self.get_read_version().await?;
         let router = self.db.client.router();
         let group_state = router.find_group_by_shard(request.shard_id)?;
-        let mut group_client = GroupClient::new(group_state, self.db.client.clone());
-        if let Some(duration) = timeout {
-            group_client.set_timeout(duration);
-        }
-
         let request = Request::Scan(request.clone());
+        let mut group_client = GroupClient::new(group_state, self.db.client.clone());
+        group_client.set_timeout_opt(timeout);
         match group_client.request(&request).await? {
             Response::Scan(resp) => Ok(resp),
             _ => Err(crate::Error::Internal("invalid response type, Scan is required".into())),
@@ -496,13 +494,11 @@ impl Txn {
     }
 
     /// Scan an range.
-    pub fn range(
-        &self,
-        request: RangeRequest,
-        timeout: Option<Duration>,
-    ) -> AppResult<RangeStream> {
-        // FIXME(walter) remove the request.version field.
-        Ok(RangeStream::init(self.db.client.clone(), request, timeout))
+    pub async fn range(&self, mut request: RangeRequest) -> AppResult<RangeStream> {
+        if request.version.is_none() {
+            request.version = Some(self.get_read_version().await?);
+        }
+        Ok(RangeStream::init(self.db.client.clone(), request, self.deadline))
     }
 
     async fn get_start_version(&self) -> crate::Result<u64> {
@@ -510,6 +506,14 @@ impl Txn {
             .get_or_try_init(|| async { self.db.client.root_client().alloc_txn_id(1, None).await })
             .await
             .copied()
+    }
+
+    async fn get_read_version(&self) -> crate::Result<u64> {
+        if self.db.read_without_version {
+            Ok(TXN_MAX_VERSION)
+        } else {
+            self.get_start_version().await
+        }
     }
 }
 
@@ -548,7 +552,7 @@ impl WriteBatchContext {
         deletes: Vec<(u64, DeleteRequest)>,
         puts: Vec<(u64, PutRequest)>,
         client: SekasClient,
-        timeout: Option<Duration>,
+        deadline: Option<Instant>,
     ) -> Self {
         let num_deletes = deletes.len();
         let num_puts = puts.len();
@@ -564,7 +568,7 @@ impl WriteBatchContext {
             num_doing_writes,
             start_version,
             commit_version: 0,
-            retry_state: RetryState::new(timeout),
+            retry_state: RetryState::with_deadline_opt(deadline),
         }
     }
 

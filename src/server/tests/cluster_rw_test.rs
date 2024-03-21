@@ -410,7 +410,7 @@ async fn cluster_rw_entire_range() {
         limit_bytes: 0,
         buffered_requests: 1,
     };
-    let mut range_stream = db.range(range_request, None).unwrap();
+    let mut range_stream = db.range(range_request).await.unwrap();
 
     let mut index = 0;
     while let Some(values) = range_stream.next().await {
@@ -463,7 +463,7 @@ async fn cluster_rw_range_with_many_shard() {
         limit_bytes: 0,
         buffered_requests: 1,
     };
-    let mut range_stream = db.range(range_request, None).unwrap();
+    let mut range_stream = db.range(range_request).await.unwrap();
 
     let mut index = 0;
     while let Some(values) = range_stream.next().await {

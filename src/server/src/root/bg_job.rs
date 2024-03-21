@@ -517,7 +517,7 @@ impl Jobs {
 impl Jobs {
     async fn try_create_shard(&self, group_id: u64, desc: &ShardDesc) -> Result<()> {
         let mut group_client = self.core.root_shared.transport_manager.lazy_group_client(group_id);
-        let mut retry_state = RetryState::new(Some(Duration::from_secs(10)));
+        let mut retry_state = RetryState::new(Duration::from_secs(10));
         loop {
             match group_client.create_shard(desc).await {
                 Ok(()) => return Ok(()),

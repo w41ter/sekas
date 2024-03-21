@@ -107,6 +107,13 @@ impl GroupClient {
         self.timeout = Some(timeout);
     }
 
+    /// Apply a timeout to next request issued via this client.
+    ///
+    /// NOTES: it depends the underlying request metadata (grpc-timeout header).
+    pub fn set_timeout_opt(&mut self, timeout: Option<Duration>) {
+        self.timeout = timeout;
+    }
+
     async fn invoke<F, O, V>(&mut self, op: F) -> Result<V>
     where
         F: Fn(InvokeContext, NodeClient) -> O,

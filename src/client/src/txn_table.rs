@@ -244,7 +244,7 @@ impl TxnStateTable {
 impl TxnStateTable {
     async fn scan_txn_keys(&self, txn_prefix: &[u8]) -> Result<ShardScanResponse> {
         let router = self.client.router();
-        let mut retry_state = RetryState::new(Some(TXN_TIMEOUT));
+        let mut retry_state = RetryState::new(TXN_TIMEOUT);
         loop {
             let (group_state, shard_desc) = router.find_shard(col::txn_col_id(), txn_prefix)?;
             let mut group_client = GroupClient::new(group_state, self.client.clone());
@@ -266,7 +266,7 @@ impl TxnStateTable {
     }
 
     async fn write(&self, request: TxnWriteRequest) -> Result<ShardWriteResponse> {
-        let mut retry_state = RetryState::new(self.timeout);
+        let mut retry_state = RetryState::with_timeout_opt(self.timeout);
         loop {
             match self.write_inner(&request, retry_state.timeout()).await {
                 Ok(value) => return Ok(value),

@@ -39,7 +39,7 @@ impl ShardClient {
     }
 
     pub async fn prefix_list(&self, prefix: &[u8]) -> Result<Vec<Vec<u8>>> {
-        let mut retry_state = RetryState::new(None);
+        let mut retry_state = RetryState::default();
 
         loop {
             match self.prefix_list_inner(prefix).await {
@@ -52,7 +52,7 @@ impl ShardClient {
     }
 
     pub async fn delete(&self, key: &[u8]) -> Result<()> {
-        let mut retry_state = RetryState::new(None);
+        let mut retry_state = RetryState::default();
 
         loop {
             match self.delete_inner(key).await {
