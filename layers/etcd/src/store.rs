@@ -448,7 +448,7 @@ impl ValueRecord {
 /// then the range request gets all keys prefixed with key.
 /// If both key and range_end are '\0', then the range request returns all keys.
 fn build_request_range(key: &[u8], range_end: Option<&[u8]>) -> sekas_client::Range {
-    if let Some(range_end) = range_end.filter(|v| v.is_empty()) {
+    if let Some(range_end) = range_end.filter(|v| !v.is_empty()) {
         if range_end[0] == b'\0' {
             if !key.is_empty() && key[0] == b'\0' {
                 // both key and range_end are '\0'.

@@ -18,7 +18,7 @@ use std::time::Instant;
 use sekas_api::server::v1::group_request_union::Request;
 use sekas_api::server::v1::group_response_union::Response;
 use sekas_api::server::v1::*;
-use sekas_rock::lexical::{lexical_next, lexical_next_boundary};
+use sekas_rock::lexical::lexical_next_boundary;
 use sekas_schema::system::txn::TXN_MAX_VERSION;
 use tokio::sync::mpsc;
 
@@ -141,13 +141,7 @@ impl RangeStream {
         deadline: Option<Instant>,
     ) -> RangeStream {
         let (sender, receiver) = mpsc::channel(request.buffered_requests);
-        let (cursor_key, end_key) = match request.range {
-            Range::Prefix(prefix) => {
-                let end = lexical_next(&prefix);
-                (prefix, Some(end))
-            }
-            Range::Range { begin, end } => (begin.unwrap_or_default(), end),
-        };
+        let (cursor_key, end_key) = extract_request_range(request.range);
         let scanner = RangeScanner {
             client,
             sender,
@@ -218,6 +212,7 @@ impl RangeScanner {
                 limit_bytes: self.limit_bytes,
                 start_key: Some(begin_key),
                 end_key: self.end_key.clone(),
+                exclude_end_key: true,
                 ..Default::default()
             };
             let scan_resp = match group_client.request(&Request::Scan(req)).await? {
@@ -245,6 +240,16 @@ impl RangeScanner {
     }
 }
 
+fn extract_request_range(range: Range) -> (Vec<u8>, Option<Vec<u8>>) {
+    match range {
+        Range::Prefix(prefix) => {
+            let end = lexical_next_boundary(&prefix);
+            (prefix, Some(end))
+        }
+        Range::Range { begin, end } => (begin.unwrap_or_default(), end),
+    }
+}
+
 fn is_entire_range_scanned(scan_end: Option<&[u8]>, shard_end: &[u8]) -> bool {
     if let Some(range_end) = scan_end {
         range_end <= shard_end || shard_end.is_empty()
@@ -264,5 +269,41 @@ mod tests {
         assert!(is_entire_range_scanned(None, &[]));
         assert!(!is_entire_range_scanned(None, b"test"));
         assert!(!is_entire_range_scanned(Some(b"test"), b"tes"));
+    }
+
+    #[test]
+    fn extract_request_range_basic() {
+        struct TestCase {
+            range: Range,
+            start: Vec<u8>,
+            end: Option<Vec<u8>>,
+        }
+        let cases = vec![
+            TestCase {
+                range: Range::Prefix(b"aa".to_vec()),
+                start: b"aa".to_vec(),
+                end: Some(b"ab".to_vec()),
+            },
+            TestCase {
+                range: Range::Prefix(b"a\xFF".to_vec()),
+                start: b"a\xFF".to_vec(),
+                end: Some(b"b".to_vec()),
+            },
+            TestCase {
+                range: Range::Range { begin: None, end: Some(b"b".to_vec()) },
+                start: b"".to_vec(),
+                end: Some(b"b".to_vec()),
+            },
+            TestCase {
+                range: Range::Range { begin: Some(b"a".to_vec()), end: None },
+                start: b"a".to_vec(),
+                end: None,
+            },
+        ];
+        for TestCase { range, start, end } in cases {
+            let (start_key, end_key) = extract_request_range(range);
+            assert_eq!(start_key, start);
+            assert_eq!(end_key, end);
+        }
     }
 }
