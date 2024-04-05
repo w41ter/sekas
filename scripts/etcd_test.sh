@@ -10,8 +10,24 @@ function etcd_verify() {
 
     local inputs=$(echo "${args[@]}")
     printf "etcdctl %-64s\n" "${inputs}"
-    # diff -E -Z -b -w -B <(etcdctl ${args[@]}) <(echo -e "${expect}")
     if diff -E -Z -b -w -B <(etcdctl ${args[@]}) <(echo -e "${expect}"); then
+        # move the cursor to previous lines.
+        printf '\033[1A'
+        printf "etcdctl %-64s [PASS]\n" "${inputs}"
+    else
+        exit -1
+    fi
+}
+
+# like etcd_verify, but only works for txn
+function etcd_txn_verify() {
+    local args=("$@")
+    local expect=${args[-1]}
+    unset args[-1]
+
+    local inputs=$(echo "${args[@]}")
+    printf "etcdctl %-64s\n" "${inputs}"
+    if diff -E -Z -b -w -B <(etcdctl txn) <(echo -e "${expect}"); then
         # move the cursor to previous lines.
         printf '\033[1A'
         printf "etcdctl %-64s [PASS]\n" "${inputs}"
@@ -73,13 +89,11 @@ etcd_verify get a z ""
 
 # === txn releated operations ===
 
-echo "begin txn releated operations ..."
-
 # put if not exists
 #
 # CreateRevision 0 means key was not exists
 # See https://github.com/etcd-io/etcd/issues/6740 for details.
-etcdctl txn <<EOF
+etcd_txn_verify "txn put if not exists" "SUCCESS\nOK" <<EOF
 c("foo") = "0"
 
 put bar foo
@@ -89,7 +103,7 @@ EOF
 etcd_verify get bar "bar\nfoo"
 
 # test version
-etcdctl txn <<EOF
+etcd_txn_verify "txn get" "SUCCESS\nbar\nfoo" <<EOF
 ver("foo") = "0"
 ver("bar") = "1"
 ver("bar") > "0"
@@ -101,7 +115,7 @@ get bar
 EOF
 
 # delete if exists
-etcdctl txn <<EOF
+etcd_txn_verify "txn delete if exists" "SUCCESS\n0" <<EOF
 m("bar") > "0"
 
 del bar
@@ -111,7 +125,7 @@ EOF
 etcd_verify get bar ""
 
 # batch put and get
-etcdctl txn <<EOF
+etcd_txn_verify "txn batch put" "SUCCESS\nOK\nOK" <<EOF
 c("foo") = "0"
 c("bar") = "0"
 
@@ -125,7 +139,7 @@ etcd_verify get foo "foo\nboo"
 etcd_verify get far "far\nbar"
 
 # failure
-etcdctl txn <<EOF
+etcd_txn_verify "txn put when failure" "FAILURE\n\nOK" <<EOF
 c("foo") = "0"
 
 put success success
