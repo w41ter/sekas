@@ -42,6 +42,18 @@ pub mod etcdserverpb {
     }
 
     impl KeyValue {
+        pub fn not_exists(key: &[u8]) -> Self {
+            KeyValue {
+                key: key.to_vec(),
+                // create_revision 0 means that the key is not exists.
+                create_revision: 0,
+                mod_revision: 0,
+                version: 0,
+                lease: 0,
+                value: Vec::default(),
+            }
+        }
+
         pub fn compare(&self, target_union: &compare::TargetUnion) -> std::cmp::Ordering {
             match target_union {
                 compare::TargetUnion::Version(version) => self.version.cmp(version),

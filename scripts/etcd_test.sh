@@ -1,6 +1,8 @@
 #!/bin/bash
 set -euo pipefail
 
+# See https://github.com/etcd-io/etcd/blob/main/etcdctl/README.md.
+
 function etcd_verify() {
     local args=("$@")
     local expect=${args[-1]}
@@ -17,6 +19,9 @@ function etcd_verify() {
         exit -1
     fi
 }
+
+# clear all data before testing.
+etcdctl del --range a z >/dev/null 2>&1
 
 # === put related operations ===
 
@@ -65,3 +70,70 @@ etcd_verify get k2 ""
 # delete entire range
 etcd_verify del --range a z "0"
 etcd_verify get a z ""
+
+# === txn releated operations ===
+
+echo "begin txn releated operations ..."
+
+# put if not exists
+#
+# CreateRevision 0 means key was not exists
+# See https://github.com/etcd-io/etcd/issues/6740 for details.
+etcdctl txn <<EOF
+c("foo") = "0"
+
+put bar foo
+
+
+EOF
+etcd_verify get bar "bar\nfoo"
+
+# test version
+etcdctl txn <<EOF
+ver("foo") = "0"
+ver("bar") = "1"
+ver("bar") > "0"
+ver("foo") < "1"
+
+get bar
+
+
+EOF
+
+# delete if exists
+etcdctl txn <<EOF
+m("bar") > "0"
+
+del bar
+
+
+EOF
+etcd_verify get bar ""
+
+# batch put and get
+etcdctl txn <<EOF
+c("foo") = "0"
+c("bar") = "0"
+
+put far bar
+put foo boo
+
+
+EOF
+
+etcd_verify get foo "foo\nboo"
+etcd_verify get far "far\nbar"
+
+# failure
+etcdctl txn <<EOF
+c("foo") = "0"
+
+put success success
+
+put failure failure
+
+EOF
+
+etcd_verify get success ""
+etcd_verify get failure "failure\nfailure"
+etcd_verify del --range a z "0"

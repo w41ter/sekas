@@ -19,8 +19,6 @@ tonic.workspace = true
 prost.workspace = true
 prost-types.workspace = true
 
-async-recursion = "1.1"
-
 [build-dependencies]
 tonic-build.workspace = true
 protoc-build.workspace = true

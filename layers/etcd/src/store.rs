@@ -15,7 +15,6 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use async_recursion::async_recursion;
 use futures::channel::mpsc;
 use futures::lock::Mutex;
 use futures::StreamExt;
@@ -196,7 +195,6 @@ impl SekasHandle {
         Ok(put_resp)
     }
 
-    #[async_recursion]
     async fn apply_txn(
         &self,
         txn: &mut sekas_client::Txn,
@@ -221,7 +219,7 @@ impl SekasHandle {
             }
 
             // Add in etcd version 3.3
-            if compare.range_end.is_empty() {
+            if !compare.range_end.is_empty() {
                 // TODO(walter) one day we could support this API but limit the num of keys in
                 // the range.
                 return Err(AppError::InvalidArgument("range end is not allowed".into()));
@@ -246,13 +244,16 @@ impl SekasHandle {
             });
             task_handles.push(handle);
         }
+        drop(sender);
+
         while let Some((key, get_raw_value_result)) = receiver.next().await {
             let key_value = get_raw_value_result?
                 .and_then(|value| value.content.map(|c| (c, value.version)))
                 .map(|(content, version)| {
                     ValueRecord::decode_to_key_value(&key, &content, version as i64)
                 })
-                .transpose()?;
+                .transpose()?
+                .unwrap_or_else(|| KeyValue::not_exists(&key));
             collected_key_values.insert(key, key_value);
         }
 
@@ -260,18 +261,12 @@ impl SekasHandle {
         let mut passed = true;
         for compare in &req.compare {
             let target_union = compare.target_union.as_ref().expect("already checked");
-            let key_value_opt = collected_key_values.get(&compare.key).ok_or_else(|| {
+            let key_value = collected_key_values.get(&compare.key).ok_or_else(|| {
                 AppError::Internal("the key value of the compare target not exists".into())
             })?;
 
-            // The target key is not exists.
-            let Some(key_value) = key_value_opt else {
-                passed = false;
-                break;
-            };
-
             if !compare.result().is_matched(key_value.compare(target_union)) {
-                passed = true;
+                passed = false;
                 break;
             }
         }
@@ -292,7 +287,7 @@ impl SekasHandle {
                     ResponseOp::delete_range(self.apply_delete_range(txn, delete).await?)
                 }
                 Some(request_op::Request::RequestTxn(inner_txn_req)) => {
-                    ResponseOp::txn(self.apply_txn(txn, inner_txn_req).await?)
+                    ResponseOp::txn(Box::pin(self.apply_txn(txn, inner_txn_req)).await?)
                 }
                 None => {
                     return Err(AppError::InvalidArgument(
