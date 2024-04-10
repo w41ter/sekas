@@ -20,6 +20,7 @@ use sekas_api::server::v1::group_response_union::Response;
 use sekas_api::server::v1::*;
 use sekas_runtime::sync::OnceCell;
 use sekas_schema::system::txn::TXN_MAX_VERSION;
+use tokio::sync::mpsc;
 
 use crate::group_client::GroupClient;
 use crate::metrics::*;
@@ -499,6 +500,25 @@ impl Txn {
             request.version = Some(self.get_read_version().await?);
         }
         Ok(RangeStream::init(self.db.client.clone(), request, self.deadline))
+    }
+
+    /// Watch an key.
+    pub async fn watch(
+        &self,
+        _table_id: u64,
+        _key: &[u8],
+    ) -> AppResult<mpsc::UnboundedReceiver<AppResult<Value>>> {
+        todo!()
+    }
+
+    /// Watch an key with version.
+    pub async fn watch_with_version(
+        &self,
+        _table_id: u64,
+        _key: &[u8],
+        _version: u64,
+    ) -> AppResult<mpsc::UnboundedReceiver<AppResult<Value>>> {
+        todo!()
     }
 
     async fn get_start_version(&self) -> crate::Result<u64> {

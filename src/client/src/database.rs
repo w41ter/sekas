@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use sekas_api::server::v1::*;
+use tokio::sync::mpsc;
 
 use crate::range::{RangeRequest, RangeStream};
 use crate::{AppError, AppResult, SekasClient, Txn, WriteBuilder};
@@ -109,6 +110,24 @@ impl Database {
     pub async fn range(&self, request: RangeRequest) -> AppResult<RangeStream> {
         let txn = Txn::new(self.clone());
         txn.range(request).await
+    }
+
+    /// A helper function to watch a key.
+    pub async fn watch(
+        &self,
+        table_id: u64,
+        key: &[u8],
+    ) -> AppResult<mpsc::UnboundedReceiver<AppResult<Value>>> {
+        Txn::new(self.clone()).watch(table_id, key).await
+    }
+
+    pub async fn watch_with_version(
+        &self,
+        table_id: u64,
+        key: &[u8],
+        version: u64,
+    ) -> AppResult<mpsc::UnboundedReceiver<AppResult<Value>>> {
+        Txn::new(self.clone()).watch_with_version(table_id, key, version).await
     }
 
     /// Return the name of the database.

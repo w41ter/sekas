@@ -484,3 +484,85 @@ async fn cluster_rw_range_with_many_shard() {
     }
     assert_eq!(index, 100);
 }
+
+#[ignore]
+#[sekas_macro::test]
+async fn cluster_rw_watch_key() {
+    let mut ctx = TestContext::new(fn_name!());
+    ctx.disable_all_balance();
+    let nodes = ctx.bootstrap_servers(3).await;
+    let c = ClusterClient::new(nodes).await;
+    let app = c.app_client().await;
+
+    let db = app.create_database("db".to_string()).await.unwrap();
+    let co = db.create_table("co".to_string()).await.unwrap();
+    c.assert_table_ready(co.id).await;
+
+    const KEY: &str = "key";
+    let db_clone = db.clone();
+    let table_id = co.id;
+    spawn(async move {
+        // watch the key.
+        let mut receiver = db_clone.watch(table_id, KEY.as_bytes()).await.unwrap();
+        for i in 1..101 {
+            let value = receiver.recv().await.unwrap().unwrap();
+            let content = value.content.unwrap();
+            assert_eq!(content.len(), core::mem::size_of::<i64>());
+            let mut buf = [0u8; 8];
+            buf[..].copy_from_slice(&content);
+            let count = i64::from_be_bytes(buf);
+            assert_eq!(count, i);
+        }
+    });
+
+    // update
+    for _ in 0..100 {
+        let mut txn = db.begin_txn();
+        txn.put(co.id, WriteBuilder::new(KEY.as_bytes().to_vec()).ensure_add(1));
+        txn.commit().await.unwrap();
+    }
+}
+
+#[ignore]
+#[sekas_macro::test]
+async fn cluster_rw_watch_key_with_version() {
+    let mut ctx = TestContext::new(fn_name!());
+    ctx.disable_all_balance();
+    let nodes = ctx.bootstrap_servers(3).await;
+    let c = ClusterClient::new(nodes).await;
+    let app = c.app_client().await;
+
+    let db = app.create_database("db".to_string()).await.unwrap();
+    let co = db.create_table("co".to_string()).await.unwrap();
+    c.assert_table_ready(co.id).await;
+
+    const KEY: &str = "key";
+    let mut txn = db.begin_txn();
+    txn.put(co.id, WriteBuilder::new(KEY.as_bytes().to_vec()).ensure_add(1));
+    txn.commit().await.unwrap();
+    let version = db.get_raw_value(co.id, KEY.as_bytes().to_vec()).await.unwrap().unwrap().version;
+
+    let db_clone = db.clone();
+    let table_id = co.id;
+    spawn(async move {
+        // watch the key.
+        let mut receiver =
+            db_clone.watch_with_version(table_id, KEY.as_bytes(), version).await.unwrap();
+        for i in 1..101 {
+            let value = receiver.recv().await.unwrap().unwrap();
+            let content = value.content.unwrap();
+            assert_eq!(content.len(), core::mem::size_of::<i64>());
+            let mut buf = [0u8; 8];
+            buf[..].copy_from_slice(&content);
+            let count = i64::from_be_bytes(buf);
+            assert_eq!(count, i + 1); // the target version should be skipped.
+        }
+    });
+
+    // update
+    for _ in 0..100 {
+        let mut txn = db.begin_txn();
+        txn.put(co.id, WriteBuilder::new(KEY.as_bytes().to_vec()).ensure_add(1));
+        txn.commit().await.unwrap();
+    }
+}
