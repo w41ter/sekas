@@ -22,7 +22,7 @@ use lazy_static::lazy_static;
 use log::{debug, info, warn};
 use prost::Message;
 use sekas_api::server::v1::watch_response::{delete_event, update_event, DeleteEvent, UpdateEvent};
-use sekas_api::server::v1::{DatabaseDesc, PutRequest, TableDesc, *};
+use sekas_api::server::v1::*;
 use sekas_rock::time::timestamp_nanos;
 use sekas_schema::system::col;
 

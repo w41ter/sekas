@@ -16,7 +16,7 @@
 use std::sync::Arc;
 
 use sekas_api::server::v1::group_request_union::Request::{self, *};
-use sekas_api::server::v1::{GroupRequest, GroupRequestUnion, *};
+use sekas_api::server::v1::*;
 
 use crate::constants::ROOT_GROUP_ID;
 use crate::replica::Replica;

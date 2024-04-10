@@ -21,7 +21,6 @@ use self::policy_replica_cnt::ReplicaCountPolicy;
 use self::policy_shard_cnt::ShardCountPolicy;
 use self::source::NodeFilter;
 use super::{metrics, OngoingStats, RootShared};
-use crate::constants::REPLICA_PER_GROUP;
 use crate::{Result, RootConfig};
 
 #[cfg(test)]

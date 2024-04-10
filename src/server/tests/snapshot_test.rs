@@ -15,7 +15,7 @@ mod helper;
 
 use helper::context::TestContext;
 use sekas_api::server::v1::group_request_union::Request;
-use sekas_api::server::v1::{PutRequest, *};
+use sekas_api::server::v1::*;
 use sekas_client::RetryState;
 use sekas_rock::fn_name;
 

@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 use tonic::{Request, Response, Status};
 
-use crate::etcd::v3::{kv_server, *};
+use crate::etcd::v3::*;
 use crate::store::KvStore;
 
 type Result<T> = std::result::Result<T, Status>;

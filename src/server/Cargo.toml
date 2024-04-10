@@ -78,7 +78,7 @@ ctor = "0.1"
 quote = "1.0"
 rand = { version = "0.8", features = ["small_rng"] }
 reqwest = { version = "0.11", features = ["json"] }
-socket2 = "0.4"
+socket2 = "0.5"
 syn = "2.0"
 tempdir = "0.3"
 tracing-subscriber = { version = "0.3", features = ["std", "env-filter"] }

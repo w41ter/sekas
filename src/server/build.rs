@@ -13,7 +13,6 @@
 // limitations under the License.
 
 use std::error::Error;
-use std::result::Result;
 
 fn main() -> Result<(), Box<dyn Error>> {
     std::env::set_var("PROTOC", protoc_build::PROTOC);

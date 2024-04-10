@@ -20,7 +20,7 @@ use std::sync::Arc;
 use log::{debug, error, info};
 use prost::Message;
 use raft::prelude::*;
-use raft::{GetEntriesContext, RaftState};
+use raft::GetEntriesContext;
 use raft_engine::{Command, Engine, LogBatch, MessageExt};
 use sekas_api::server::v1::*;
 
@@ -567,10 +567,9 @@ fn other_store_error(e: raft_engine::Error) -> raft::Error {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
 
     use log::info;
-    use raft_engine::{Config, Engine};
+    use raft_engine::Config;
     use sekas_runtime::*;
     use tempdir::TempDir;
 

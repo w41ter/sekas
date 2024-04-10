@@ -92,7 +92,6 @@ mod tests {
     use futures::channel::oneshot;
 
     use super::*;
-    use crate::executor::ExecutorOwner;
     use crate::*;
 
     #[test]

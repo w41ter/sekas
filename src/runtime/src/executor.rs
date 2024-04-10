@@ -22,6 +22,7 @@ use pin_project::pin_project;
 use crate::ExecutorConfig;
 
 enum TaskState {
+    #[allow(dead_code)]
     First(Instant),
     Polled(Duration),
 }

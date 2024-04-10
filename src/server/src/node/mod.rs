@@ -717,10 +717,7 @@ mod tests {
     use std::path::Path;
     use std::time::Duration;
 
-    use sekas_api::server::v1::group_request_union::Request;
-    use sekas_api::server::v1::group_response_union::Response;
     use sekas_api::server::v1::report_request::GroupUpdates;
-    use sekas_api::server::v1::{ReplicaDesc, ReplicaRole};
     use sekas_rock::fn_name;
     use sekas_schema::system::txn::TXN_MAX_VERSION;
     use tempdir::TempDir;

@@ -12,6 +12,11 @@ GRCOV := $(shell command -v grcov 2> /dev/null)
 build:
 	$(V)cargo build
 
+.PHONY: etcd
+## etcd : Run etcd server
+etcd:
+	cargo run --all-features -- start --db /tmp/store --addr '127.0.0.1:2379' --init
+
 .PHONY: lint
 ## lint : Lint codespace
 lint:
@@ -25,7 +30,12 @@ fmt:
 .PHONY: test
 ## test : Run test
 test:
-	$(V)cargo test --workspace
+	$(V)cargo test --workspace -- $(FILTER)
+
+.PHONY: clean
+## clean : Clean build env
+clean:
+	$(V)cargo clean
 
 .PHONY: coverage
 ## coverage : Run test with coverage
@@ -34,9 +44,8 @@ ifndef GRCOV
 	$(error "grcov is not avaiable, please install it by: cargo install grcov")
 endif
 
-	$(V)CARGO_INCREMENTAL=0 \
-		RUSTFLAGS="-Zprofile -Ccodegen-units=1 -Copt-level=0 -Clink-dead-code -Coverflow-checks=off -Zpanic_abort_tests -Cpanic=abort" \
-		RUSTDOCFLAGS="-Cpanic=abort" \
+	# $(V)CARGO_INCREMENTAL=0
+	$(V)RUSTFLAGS="-Zprofile" \
 		cargo test --workspace -- $(FILTER)
 	$(V)grcov . -s . --binary-path ./target/debug/ \
 		-t lcov \

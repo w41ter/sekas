@@ -37,6 +37,7 @@ pub struct WriteTask {
 
     /// Snapshot specifies the snapshot to be saved to stable storage.
     pub snapshot: Option<Snapshot>,
+    #[allow(dead_code)]
     pub must_sync: bool,
     post_ready: PostReady,
 }

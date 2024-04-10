@@ -35,6 +35,7 @@ pub struct Server {
 
 #[derive(Clone)]
 pub struct ProxyServer {
+    #[allow(dead_code)]
     pub client: SekasClient,
 }
 

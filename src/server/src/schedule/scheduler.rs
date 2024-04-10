@@ -63,6 +63,7 @@ pub struct ScheduleContext<'a> {
     pub group_id: u64,
     pub replica_id: u64,
     pub current_term: u64,
+    #[allow(dead_code)]
     pub execution_time: Duration,
     pub replica: Arc<Replica>,
     pub(crate) transport_manager: &'a TransportManager,

@@ -322,7 +322,6 @@ impl<T: Message> IntoRequest<T> for RpcTimeout<T> {
 #[cfg(test)]
 mod timeout_error_tests {
     use std::net::SocketAddr;
-    use std::time::Duration;
 
     use socket2::{Domain, Socket, Type};
     use tonic::transport::Endpoint;
@@ -384,8 +383,11 @@ mod transport_error_tests {
     use std::net::SocketAddr;
     use std::os::unix::prelude::{FromRawFd, IntoRawFd};
     use std::panic;
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
     use std::time::Duration;
 
+    use futures::Stream;
     use log::info;
     use sekas_api::server::v1::node_server::NodeServer;
     use sekas_api::server::v1::*;
@@ -397,10 +399,21 @@ mod transport_error_tests {
     use crate::error::{find_io_error, retryable_rpc_err, transport_err};
 
     struct MockedServer {}
+    struct MockWatchStream {}
+
+    impl Stream for MockWatchStream {
+        type Item = Result<WatchKeyResponse, tonic::Status>;
+
+        fn poll_next(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+            Poll::Ready(None)
+        }
+    }
 
     #[allow(unused)]
     #[tonic::async_trait]
     impl node_server::Node for MockedServer {
+        type WatchStream = MockWatchStream;
+
         async fn batch(
             &self,
             request: tonic::Request<sekas_api::server::v1::BatchRequest>,
@@ -421,6 +434,13 @@ mod transport_error_tests {
             request: tonic::Request<sekas_api::server::v1::MoveShardRequest>,
         ) -> Result<tonic::Response<sekas_api::server::v1::MoveShardResponse>, tonic::Status>
         {
+            todo!()
+        }
+
+        async fn watch(
+            &self,
+            _req: tonic::Request<sekas_api::server::v1::WatchKeyRequest>,
+        ) -> Result<tonic::Response<MockWatchStream>, tonic::Status> {
             todo!()
         }
     }

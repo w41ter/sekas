@@ -18,7 +18,7 @@ use sekas_api::server::v1::*;
 use crate::group_client::GroupClient;
 use crate::retry::RetryState;
 use crate::shard_client::ShardClient;
-use crate::{Error, Result, SekasClient};
+use crate::{Result, SekasClient};
 
 /// FIXME(walter) refactor it!
 /// `MigrateClient` wraps `GroupClient` and provides retry for moving shard
@@ -40,7 +40,7 @@ impl MoveShardClient {
             let mut client = self.group_client();
             match client.acquire_shard(desc).await {
                 Ok(()) => return Ok(()),
-                e @ Err(Error::EpochNotMatch(..)) => return e,
+                e @ Err(crate::Error::EpochNotMatch(..)) => return e,
                 Err(err) => {
                     retry_state.retry(err).await?;
                 }

@@ -56,6 +56,7 @@ pub struct ReplicaInfo {
     local_state: AtomicI32,
 }
 
+#[allow(dead_code)]
 enum MetaAclGuard<'a> {
     Read(tokio::sync::RwLockReadGuard<'a, ()>),
     Write(tokio::sync::RwLockWriteGuard<'a, ()>),

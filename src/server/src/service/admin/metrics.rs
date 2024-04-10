@@ -15,7 +15,7 @@
 use std::collections::HashMap;
 
 use lazy_static::lazy_static;
-use prometheus::{self, register_int_counter, IntCounter, TextEncoder};
+use prometheus::{register_int_counter, IntCounter, TextEncoder};
 use tonic::codegen::*;
 
 use crate::root::RootCollector;

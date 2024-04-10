@@ -21,8 +21,27 @@ use super::metrics::*;
 use crate::serverpb::v1::MoveShardEvent;
 use crate::{record_latency, record_latency_opt, Error, Server};
 
+pub struct WatchKeyStream {}
+
+impl futures::Stream for WatchKeyStream {
+    type Item = Result<WatchKeyResponse, Status>;
+
+    fn poll_next(
+        self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        // 1. scan the key to obtain the base version.
+        // 2. watch key's updation.
+        // 3. read the key value and return
+        // 4. skip to 1
+        todo!()
+    }
+}
+
 #[crate::async_trait]
 impl node_server::Node for Server {
+    type WatchStream = WatchKeyStream;
+
     async fn batch(
         &self,
         request: Request<BatchRequest>,
@@ -105,6 +124,13 @@ impl node_server::Node for Server {
             }
         };
         Ok(Response::new(MoveShardResponse { response: Some(resp) }))
+    }
+
+    async fn watch(
+        &self,
+        _request: Request<WatchKeyRequest>,
+    ) -> Result<Response<WatchKeyStream>, Status> {
+        todo!()
     }
 }
 

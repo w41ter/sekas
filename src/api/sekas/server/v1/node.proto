@@ -29,6 +29,7 @@ service Node {
     rpc Admin(NodeAdminRequest) returns (NodeAdminResponse) {}
     // A set methods about shard moving.
     rpc MoveShard(MoveShardRequest) returns (MoveShardResponse) {}
+    rpc Watch(WatchKeyRequest) returns (stream WatchKeyResponse) {}
 }
 
 message BatchRequest {
@@ -422,3 +423,26 @@ message MoveOutRequest {
 }
 
 message MoveOutResponse {}
+
+// The request to issue a watch stream.
+message WatchKeyRequest {
+    // The target shard id;
+    uint64 shard_id = 1;
+    // The target group id.
+    uint64 group_id = 2;
+    // The key to watch.
+    bytes key = 3;
+    // The current version of the key to watch.
+    uint64 version = 4;
+}
+
+// The watch response.
+message WatchKeyResponse {
+    enum WatchResult {
+        SHARD_MOVED = 0;
+        VALUE_UPDATED = 1;
+    }
+
+    WatchResult result = 1;
+    optional Value value = 2;
+}

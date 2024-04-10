@@ -306,6 +306,18 @@ impl StateMachine for GroupStateMachine {
             std::mem::take(&mut self.plugged_write_states),
             false,
         )?;
+
+        struct TriggerIterator {}
+        impl rocksdb::WriteBatchIterator for TriggerIterator {
+            fn put(&mut self, key: Box<[u8]>, value: Box<[u8]>) {}
+
+            fn delete(&mut self, key: Box<[u8]>) {}
+        }
+        let mut trigger_iter = TriggerIterator {};
+        for batch in &self.plugged_write_batches {
+            batch.iterate(&mut trigger_iter);
+        }
+
         self.plugged_write_batches.clear();
         self.flush_updated_events(term);
 

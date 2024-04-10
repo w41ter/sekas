@@ -16,7 +16,7 @@ use std::task::{Context, Poll};
 
 use tonic::{Request, Response, Status, Streaming};
 
-use crate::etcd::v3::{lease_server, *};
+use crate::etcd::v3::*;
 
 type Result<T> = std::result::Result<T, Status>;
 

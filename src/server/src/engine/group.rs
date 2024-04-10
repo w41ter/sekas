@@ -846,8 +846,6 @@ impl Drop for SlowIoGuard {
 }
 
 mod internal {
-    use prost::Message;
-
     use super::*;
 
     pub(super) fn descriptor(
@@ -906,7 +904,6 @@ fn next_message<T: prost::Message + Default>(
 
 #[cfg(test)]
 mod tests {
-    use sekas_api::server::v1::ShardDesc;
     use sekas_rock::fn_name;
     use tempdir::TempDir;
 

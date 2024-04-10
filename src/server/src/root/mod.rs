@@ -45,14 +45,13 @@ use self::bg_job::Jobs;
 pub use self::collector::RootCollector;
 use self::diagnosis::Metadata;
 use self::schedule::ReconcileScheduler;
-use self::schema::ReplicaNodes;
 pub(crate) use self::schema::*;
 use self::store::RootStore;
 pub use self::watch::{WatchHub, Watcher};
 use crate::constants::ROOT_GROUP_ID;
 use crate::node::{Node, Replica, ReplicaRouteTable};
 use crate::serverpb::v1::background_job::Job;
-use crate::serverpb::v1::{reconcile_task, *};
+use crate::serverpb::v1::*;
 use crate::transport::TransportManager;
 use crate::{Config, Error, Result, RootConfig};
 
