@@ -144,14 +144,13 @@ fn is_sst_file<P: AsRef<Path>>(path: P) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
     use std::sync::Arc;
 
-    use sekas_api::server::v1::{GroupDesc, ShardDesc};
+    use sekas_api::server::v1::ShardDesc;
     use tempdir::TempDir;
 
     use super::*;
-    use crate::engine::{GroupEngine, WriteBatch, WriteStates};
+    use crate::engine::{WriteBatch, WriteStates};
     use crate::EngineConfig;
 
     async fn create_engine(dir: &Path, group_id: u64, shard_id: u64) -> GroupEngine {

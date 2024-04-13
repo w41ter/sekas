@@ -25,7 +25,7 @@ use sekas_schema::shard;
 use tonic::{Code, Status};
 
 use crate::metrics::*;
-use crate::rpc::{NodeClient, RequestBatchBuilder, RouterGroupState, RpcTimeout};
+use crate::rpc::{NodeClient, RouterGroupState, RpcTimeout};
 use crate::{record_latency_opt, Error, Result, SekasClient};
 
 #[derive(Clone, Debug, Default)]
@@ -47,7 +47,6 @@ struct InvokeOpt<'a> {
 struct InvokeContext {
     group_id: u64,
     epoch: u64,
-    node_id: u64,
     timeout: Option<Duration>,
 }
 
@@ -139,7 +138,7 @@ impl GroupClient {
         while let Some((node_id, client)) = self.recommend_client() {
             trace!("group {group_id} issue rpc request with index {index} to node {node_id}");
             index += 1;
-            let ctx = InvokeContext { group_id, epoch: self.epoch, node_id, timeout: self.timeout };
+            let ctx = InvokeContext { group_id, epoch: self.epoch, timeout: self.timeout };
             match op(ctx, client).await {
                 Err(status) => self.apply_status(status, &opt)?,
                 Ok(s) => return Ok(s),
@@ -354,20 +353,16 @@ impl GroupClient {
     pub async fn request(&mut self, request: &Request) -> Result<Response> {
         let op = |ctx: InvokeContext, client: NodeClient| {
             let latency = take_group_request_metrics(request);
-            let req = BatchRequest {
-                node_id: ctx.node_id,
-                requests: vec![GroupRequest {
-                    group_id: ctx.group_id,
-                    epoch: ctx.epoch,
-                    request: Some(GroupRequestUnion { request: Some(request.clone()) }),
-                }],
+            let req = GroupRequest {
+                group_id: ctx.group_id,
+                epoch: ctx.epoch,
+                request: Some(GroupRequestUnion { request: Some(request.clone()) }),
             };
             async move {
                 record_latency_opt!(latency);
                 client
-                    .batch_group_requests(RpcTimeout::new(ctx.timeout, req))
+                    .group_request(RpcTimeout::new(ctx.timeout, req))
                     .await
-                    .and_then(Self::batch_response)
                     .and_then(Self::group_response)
             }
         };
@@ -378,14 +373,6 @@ impl GroupClient {
             ignore_transport_error: false,
         };
         self.invoke_with_opt(op, opt).await
-    }
-
-    fn batch_response<T>(mut resps: Vec<T>) -> Result<T, Status> {
-        if resps.is_empty() {
-            Err(Status::internal("response of batch request is empty".to_owned()))
-        } else {
-            Ok(resps.pop().unwrap())
-        }
     }
 
     fn group_response(resp: GroupResponse) -> Result<Response, Status> {
@@ -407,15 +394,9 @@ impl GroupClient {
     pub async fn create_shard(&mut self, desc: &ShardDesc) -> Result<()> {
         let op = |ctx: InvokeContext, client: NodeClient| {
             let desc = desc.to_owned();
-            let req = RequestBatchBuilder::new(ctx.node_id)
-                .create_shard(ctx.group_id, ctx.epoch, desc)
-                .build();
+            let req = GroupRequest::create_shard(ctx.group_id, ctx.epoch, desc);
             async move {
-                let resp = client
-                    .batch_group_requests(req)
-                    .await
-                    .and_then(Self::batch_response)
-                    .and_then(Self::group_response)?;
+                let resp = client.group_request(req).await.and_then(Self::group_response)?;
                 match resp {
                     Response::CreateShard(_) => Ok(()),
                     _ => Err(Status::internal("invalid response type, CreateShard is required")),
@@ -428,15 +409,9 @@ impl GroupClient {
     pub async fn transfer_leader(&mut self, dest_replica: u64) -> Result<()> {
         let op = |ctx: InvokeContext, client: NodeClient| {
             let dest_replica = dest_replica.to_owned();
-            let req = RequestBatchBuilder::new(ctx.node_id)
-                .transfer_leader(ctx.group_id, ctx.epoch, dest_replica)
-                .build();
+            let req = GroupRequest::transfer_leader(ctx.group_id, ctx.epoch, dest_replica);
             async move {
-                let resp = client
-                    .batch_group_requests(req)
-                    .await
-                    .and_then(Self::batch_response)
-                    .and_then(Self::group_response)?;
+                let resp = client.group_request(req).await.and_then(Self::group_response)?;
                 match resp {
                     Response::Transfer(_) => Ok(()),
                     _ => Err(Status::internal("invalid response type, Transfer is required")),
@@ -451,15 +426,9 @@ impl GroupClient {
     pub async fn remove_group_replica(&mut self, remove_replica: u64) -> Result<()> {
         let op = |ctx: InvokeContext, client: NodeClient| {
             let remove_replica = remove_replica.to_owned();
-            let req = RequestBatchBuilder::new(ctx.node_id)
-                .remove_replica(ctx.group_id, ctx.epoch, remove_replica)
-                .build();
+            let req = GroupRequest::remove_replica(ctx.group_id, ctx.epoch, remove_replica);
             async move {
-                let resp = client
-                    .batch_group_requests(req)
-                    .await
-                    .and_then(Self::batch_response)
-                    .and_then(Self::group_response)?;
+                let resp = client.group_request(req).await.and_then(Self::group_response)?;
                 match resp {
                     Response::ChangeReplicas(_) => Ok(()),
                     _ => Err(Status::internal("invalid response type, ChangeReplicas is required")),
@@ -471,15 +440,9 @@ impl GroupClient {
 
     pub async fn add_replica(&mut self, replica: u64, node: u64) -> Result<()> {
         let op = |ctx: InvokeContext, client: NodeClient| {
-            let req = RequestBatchBuilder::new(ctx.node_id)
-                .add_replica(ctx.group_id, ctx.epoch, replica, node)
-                .build();
+            let req = GroupRequest::add_replica(ctx.group_id, ctx.epoch, replica, node);
             async move {
-                let resp = client
-                    .batch_group_requests(req)
-                    .await
-                    .and_then(Self::batch_response)
-                    .and_then(Self::group_response)?;
+                let resp = client.group_request(req).await.and_then(Self::group_response)?;
                 match resp {
                     Response::ChangeReplicas(_) => Ok(()),
                     _ => Err(Status::internal("invalid response type, ChangeReplicas is required")),
@@ -510,15 +473,9 @@ impl GroupClient {
 
     pub async fn add_learner(&mut self, replica: u64, node: u64) -> Result<()> {
         let op = |ctx: InvokeContext, client: NodeClient| {
-            let req = RequestBatchBuilder::new(ctx.node_id)
-                .add_learner(ctx.group_id, ctx.epoch, replica, node)
-                .build();
+            let req = GroupRequest::add_learner(ctx.group_id, ctx.epoch, replica, node);
             async move {
-                let resp = client
-                    .batch_group_requests(req)
-                    .await
-                    .and_then(Self::batch_response)
-                    .and_then(Self::group_response)?;
+                let resp = client.group_request(req).await.and_then(Self::group_response)?;
                 match resp {
                     Response::ChangeReplicas(_) => Ok(()),
                     _ => Err(Status::internal("invalid response type, ChangeReplicas is required")),
@@ -535,15 +492,10 @@ impl GroupClient {
         shard: &ShardDesc,
     ) -> Result<()> {
         let op = |ctx: InvokeContext, client: NodeClient| {
-            let req = RequestBatchBuilder::new(ctx.node_id)
-                .accept_shard(ctx.group_id, ctx.epoch, src_group, src_epoch, shard)
-                .build();
+            let req =
+                GroupRequest::accept_shard(ctx.group_id, ctx.epoch, src_group, src_epoch, shard);
             async move {
-                let resp = client
-                    .batch_group_requests(req)
-                    .await
-                    .and_then(Self::batch_response)
-                    .and_then(Self::group_response)?;
+                let resp = client.group_request(req).await.and_then(Self::group_response)?;
                 match resp {
                     Response::AcceptShard(_) => Ok(()),
                     _ => Err(Status::internal("invalid response type, AcceptShard is required")),

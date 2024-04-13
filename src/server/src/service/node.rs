@@ -14,7 +14,6 @@
 // limitations under the License.
 
 use sekas_api::server::v1::*;
-use sekas_runtime::JoinHandle;
 use tonic::{Request, Response, Status};
 
 use super::metrics::*;
@@ -42,27 +41,16 @@ impl futures::Stream for WatchKeyStream {
 impl node_server::Node for Server {
     type WatchStream = WatchKeyStream;
 
-    async fn batch(
+    async fn group(
         &self,
-        request: Request<BatchRequest>,
-    ) -> Result<Response<BatchResponse>, Status> {
-        let batch_request = request.into_inner();
-        record_latency!(take_batch_request_metrics(&batch_request));
-        if batch_request.requests.len() == 1 {
-            let request = batch_request.requests.into_iter().next().expect("already checked");
-            let server = self.clone();
-            let response =
-                Box::pin(async move { server.submit_group_request(&request).await }).await;
-            Ok(Response::new(BatchResponse { responses: vec![response] }))
-        } else {
-            let handles = self.submit_group_requests(batch_request.requests);
-            let mut responses = Vec::with_capacity(handles.len());
-            for handle in handles {
-                responses.push(handle.await.map_err(Error::from)?);
-            }
-
-            Ok(Response::new(BatchResponse { responses }))
-        }
+        request: Request<GroupRequest>,
+    ) -> Result<Response<GroupResponse>, Status> {
+        let group_request = request.into_inner();
+        record_latency_opt!(take_group_request_metrics(&group_request));
+        let server = self.clone();
+        let response =
+            self.node.execute_request(&group_request).await.unwrap_or_else(error_to_response);
+        Ok(Response::new(response))
     }
 
     async fn admin(
@@ -214,22 +202,6 @@ impl Server {
             self.node.update_root(root).await?;
         }
         Ok(SyncRootResponse {})
-    }
-
-    async fn submit_group_request(&self, request: &GroupRequest) -> GroupResponse {
-        record_latency_opt!(take_group_request_metrics(request));
-        self.node.execute_request(request).await.unwrap_or_else(error_to_response)
-    }
-
-    fn submit_group_requests(&self, requests: Vec<GroupRequest>) -> Vec<JoinHandle<GroupResponse>> {
-        let mut handles = Vec::with_capacity(requests.len());
-        for request in requests.into_iter() {
-            let server = self.clone();
-            let handle =
-                sekas_runtime::spawn(async move { server.submit_group_request(&request).await });
-            handles.push(handle);
-        }
-        handles
     }
 }
 

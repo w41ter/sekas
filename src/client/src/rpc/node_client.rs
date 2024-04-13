@@ -93,13 +93,13 @@ impl Client {
         }
     }
 
-    pub async fn batch_group_requests(
+    pub async fn group_request(
         &self,
-        req: impl IntoRequest<BatchRequest>,
-    ) -> Result<Vec<GroupResponse>, tonic::Status> {
+        req: impl IntoRequest<GroupRequest>,
+    ) -> Result<GroupResponse, tonic::Status> {
         let mut client = self.client.clone();
-        let res = client.batch(req).await?;
-        Ok(res.into_inner().responses)
+        let res = client.group(req).await?;
+        Ok(res.into_inner())
     }
 
     pub async fn root_heartbeat(
@@ -168,133 +168,6 @@ impl Client {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct RequestBatchBuilder {
-    node_id: u64,
-    requests: Vec<GroupRequest>,
-}
-
-impl RequestBatchBuilder {
-    pub fn new(node_id: u64) -> Self {
-        Self { node_id, requests: vec![] }
-    }
-
-    pub fn create_shard(mut self, group_id: u64, epoch: u64, shard_desc: ShardDesc) -> Self {
-        self.requests.push(GroupRequest {
-            group_id,
-            epoch,
-            request: Some(GroupRequestUnion {
-                request: Some(group_request_union::Request::CreateShard(CreateShardRequest {
-                    shard: Some(shard_desc),
-                })),
-            }),
-        });
-        self
-    }
-
-    pub fn add_replica(mut self, group_id: u64, epoch: u64, replica_id: u64, node_id: u64) -> Self {
-        let change_replicas = ChangeReplicasRequest {
-            change_replicas: Some(ChangeReplicas {
-                changes: vec![ChangeReplica {
-                    change_type: ChangeReplicaType::Add.into(),
-                    replica_id,
-                    node_id,
-                }],
-            }),
-        };
-
-        self.requests.push(GroupRequest {
-            group_id,
-            epoch,
-            request: Some(GroupRequestUnion {
-                request: Some(group_request_union::Request::ChangeReplicas(change_replicas)),
-            }),
-        });
-        self
-    }
-
-    pub fn add_learner(mut self, group_id: u64, epoch: u64, replica_id: u64, node_id: u64) -> Self {
-        let change_replicas = ChangeReplicasRequest {
-            change_replicas: Some(ChangeReplicas {
-                changes: vec![ChangeReplica {
-                    change_type: ChangeReplicaType::AddLearner.into(),
-                    replica_id,
-                    node_id,
-                }],
-            }),
-        };
-
-        self.requests.push(GroupRequest {
-            group_id,
-            epoch,
-            request: Some(GroupRequestUnion {
-                request: Some(group_request_union::Request::ChangeReplicas(change_replicas)),
-            }),
-        });
-        self
-    }
-
-    pub fn remove_replica(mut self, group_id: u64, epoch: u64, replica_id: u64) -> Self {
-        let change_replicas = ChangeReplicasRequest {
-            change_replicas: Some(ChangeReplicas {
-                changes: vec![ChangeReplica {
-                    change_type: ChangeReplicaType::Remove.into(),
-                    replica_id,
-                    ..Default::default()
-                }],
-            }),
-        };
-
-        self.requests.push(GroupRequest {
-            group_id,
-            epoch,
-            request: Some(GroupRequestUnion {
-                request: Some(group_request_union::Request::ChangeReplicas(change_replicas)),
-            }),
-        });
-        self
-    }
-
-    pub fn accept_shard(
-        mut self,
-        group_id: u64,
-        epoch: u64,
-        src_group_id: u64,
-        src_group_epoch: u64,
-        shard_desc: &ShardDesc,
-    ) -> Self {
-        self.requests.push(GroupRequest {
-            group_id,
-            epoch,
-            request: Some(GroupRequestUnion {
-                request: Some(group_request_union::Request::AcceptShard(AcceptShardRequest {
-                    src_group_id,
-                    src_group_epoch,
-                    shard_desc: Some(shard_desc.to_owned()),
-                })),
-            }),
-        });
-        self
-    }
-
-    pub fn transfer_leader(mut self, group_id: u64, epoch: u64, transferee: u64) -> Self {
-        self.requests.push(GroupRequest {
-            group_id,
-            epoch,
-            request: Some(GroupRequestUnion {
-                request: Some(group_request_union::Request::Transfer(TransferRequest {
-                    transferee,
-                })),
-            }),
-        });
-        self
-    }
-
-    pub fn build(self) -> BatchRequest {
-        BatchRequest { node_id: self.node_id, requests: self.requests }
-    }
-}
-
 #[derive(Default, Clone, Debug)]
 pub struct RpcTimeout<T: Message> {
     timeout: Option<Duration>,
@@ -338,9 +211,8 @@ mod timeout_error_tests {
             .connect_timeout(Duration::from_millis(100))
             .connect_lazy();
         let client = NodeClient::new(channel);
-        let req = RequestBatchBuilder::new(0).transfer_leader(1, 1, 1).build();
-        match client.batch_group_requests(RpcTimeout::new(Some(Duration::from_secs(3)), req)).await
-        {
+        let req = GroupRequest::transfer_leader(1, 1, 1);
+        match client.group_request(RpcTimeout::new(Some(Duration::from_secs(3)), req)).await {
             Ok(_) => unreachable!(),
             Err(status) => {
                 assert!(retryable_rpc_err(&status), "Expect Code::TimedOut, but got {status:?}");
@@ -360,11 +232,8 @@ mod timeout_error_tests {
             .connect_timeout(Duration::from_millis(100))
             .connect_lazy();
         let client = NodeClient::new(channel);
-        let req = RequestBatchBuilder::new(0).transfer_leader(1, 1, 1).build();
-        match client
-            .batch_group_requests(RpcTimeout::new(Some(Duration::from_millis(100)), req))
-            .await
-        {
+        let req = GroupRequest::transfer_leader(1, 1, 1);
+        match client.group_request(RpcTimeout::new(Some(Duration::from_millis(100)), req)).await {
             Ok(_) => unreachable!(),
             Err(status) => {
                 assert!(
@@ -395,7 +264,7 @@ mod transport_error_tests {
     use tokio::sync::oneshot;
     use tonic::transport::Endpoint;
 
-    use super::{Client as NodeClient, RequestBatchBuilder};
+    use super::Client as NodeClient;
     use crate::error::{find_io_error, retryable_rpc_err, transport_err};
 
     struct MockedServer {}
@@ -414,10 +283,10 @@ mod transport_error_tests {
     impl node_server::Node for MockedServer {
         type WatchStream = MockWatchStream;
 
-        async fn batch(
+        async fn group(
             &self,
-            request: tonic::Request<sekas_api::server::v1::BatchRequest>,
-        ) -> Result<tonic::Response<sekas_api::server::v1::BatchResponse>, tonic::Status> {
+            request: tonic::Request<sekas_api::server::v1::GroupRequest>,
+        ) -> Result<tonic::Response<sekas_api::server::v1::GroupResponse>, tonic::Status> {
             todo!()
         }
 
@@ -464,9 +333,9 @@ mod transport_error_tests {
             .await
             .unwrap();
         let client = NodeClient::new(channel);
-        let req = RequestBatchBuilder::new(0).transfer_leader(1, 1, 1).build();
+        let req = GroupRequest::transfer_leader(1, 1, 1);
         drop(socket);
-        match client.batch_group_requests(req).await {
+        match client.group_request(req).await {
             Ok(_) => unreachable!(),
             Err(status) => {
                 info!("message {} details {status:?}", status.message());
@@ -573,8 +442,8 @@ mod transport_error_tests {
                 .await
                 .unwrap();
             let client = NodeClient::new(channel);
-            let req = RequestBatchBuilder::new(0).transfer_leader(1, 1, 1).build();
-            match client.batch_group_requests(req).await {
+            let req = GroupRequest::transfer_leader(1, 1, 1);
+            match client.group_request(req).await {
                 Ok(_) => unreachable!(),
                 Err(status) => {
                     info!("message {} details {status:?}", status.message());

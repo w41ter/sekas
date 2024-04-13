@@ -24,20 +24,13 @@ import "sekas/server/v1/write.proto";
 import "google/protobuf/field_mask.proto";
 
 service Node {
-    rpc Batch(BatchRequest) returns (BatchResponse) {}
+    rpc Group(GroupRequest) returns (GroupResponse) {}
     // A set methods to manipulate node.
     rpc Admin(NodeAdminRequest) returns (NodeAdminResponse) {}
     // A set methods about shard moving.
     rpc MoveShard(MoveShardRequest) returns (MoveShardResponse) {}
     rpc Watch(WatchKeyRequest) returns (stream WatchKeyResponse) {}
 }
-
-message BatchRequest {
-    uint64 node_id = 1;
-    repeated GroupRequest requests = 2;
-}
-
-message BatchResponse { repeated GroupResponse responses = 1; }
 
 message GroupRequest {
     uint64 group_id = 1;
@@ -47,8 +40,6 @@ message GroupRequest {
 
 message GroupResponse {
     GroupResponseUnion response = 1;
-
-    // Only used in BatchResponse.
     Error error = 2;
 }
 

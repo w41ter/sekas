@@ -18,6 +18,6 @@ mod root_client;
 mod router;
 
 pub use self::conn_manager::ConnManager;
-pub use self::node_client::{Client as NodeClient, RequestBatchBuilder, RpcTimeout};
+pub use self::node_client::{Client as NodeClient, RpcTimeout};
 pub use self::root_client::Client as RootClient;
 pub use self::router::{Router, RouterGroupState};

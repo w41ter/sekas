@@ -124,32 +124,6 @@ pub fn take_group_request_metrics(request: &GroupRequest) -> Option<&'static His
     }
 }
 
-// For batch request.
-lazy_static! {
-    pub static ref NODE_SERVICE_BATCH_REQUEST_TOTAL: IntCounter = register_int_counter!(
-        "node_service_batch_request_total",
-        "The total batch requests of node service",
-    )
-    .unwrap();
-    pub static ref NODE_SERVICE_BATCH_REQUEST_SIZE: Histogram = register_histogram!(
-        "node_service_batch_request_size",
-        "The batch size of batch requests of node service",
-    )
-    .unwrap();
-    pub static ref NODE_SERVICE_BATCH_REQUEST_DURATION_SECONDS: Histogram = register_histogram!(
-        "node_service_batch_request_duration_seconds",
-        "The intervals of batch requests of node service",
-        exponential_buckets(0.00005, 1.8, 26).unwrap(),
-    )
-    .unwrap();
-}
-
-pub fn take_batch_request_metrics(request: &BatchRequest) -> &'static Histogram {
-    NODE_SERVICE_BATCH_REQUEST_SIZE.observe(request.requests.len() as f64);
-    NODE_SERVICE_BATCH_REQUEST_TOTAL.inc();
-    &NODE_SERVICE_BATCH_REQUEST_DURATION_SECONDS
-}
-
 macro_rules! simple_node_method {
     ($name: ident) => {
         paste::paste! {
