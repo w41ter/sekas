@@ -14,6 +14,7 @@
 
 use std::time::{Duration, Instant};
 
+use futures::StreamExt;
 use log::{trace, warn};
 use sekas_api::server::v1::group_request_union::Request;
 use sekas_api::server::v1::group_response_union::Response;
@@ -503,11 +504,7 @@ impl Txn {
     }
 
     /// Watch an key.
-    pub async fn watch(
-        &self,
-        table_id: u64,
-        key: &[u8],
-    ) -> AppResult<mpsc::UnboundedReceiver<AppResult<Value>>> {
+    pub async fn watch(&self, table_id: u64, key: &[u8]) -> AppResult<WatchKeyStream> {
         let version = self.get_start_version().await?;
         self.watch_with_version(table_id, key, version).await
     }
@@ -518,30 +515,24 @@ impl Txn {
         table_id: u64,
         key: &[u8],
         version: u64,
-    ) -> AppResult<mpsc::UnboundedReceiver<AppResult<Value>>> {
+    ) -> AppResult<WatchKeyStream> {
+        // TODO(walter) watch a key might have different deadline.
         let mut retry_state = RetryState::with_deadline_opt(self.deadline);
-        loop {
-            // let router = self.db.client.router();
-            // let group_state = router.find_shard(table_id, key)?;
+        let (sender, receiver) = mpsc::unbounded_channel();
+        let db = self.db.clone();
+        let user_key = key.to_vec();
+        let _handler = sekas_runtime::spawn(async move {
+            let mut ctx = WatchContext { table_id, version, user_key, sender };
+            while let Err(err) = watch_key(&mut ctx, &db, retry_state.timeout()).await {
+                if let Err(err) = retry_state.retry(err.into()).await {
+                    if ctx.sender.send(Err(err.into())).is_err() {
+                        break;
+                    }
+                }
+            }
+        });
 
-            // let request = Request::Scan(request.clone());
-            // let mut group_client = GroupClient::new(group_state, self.db.client.clone());
-            // group_client.set_timeout_opt(timeout);
-            // match group_client.request(&request).await? {
-            //     Response::Scan(resp) => Ok(resp),
-            //     _ => Err(crate::Error::Internal("invalid response type, Scan is required".into())),
-            // }
-            // match self.scan_inner(&mut request, retry_state.timeout()).await {
-            //     Ok(value) => {
-            //         return Ok(value);
-            //     }
-            //     Err(err) => {
-            //         retry_state.retry(err).await?;
-            //     }
-            // }
-        }
-
-        todo!()
+        Ok(WatchKeyStream { _handler, receiver })
     }
 
     async fn get_start_version(&self) -> crate::Result<u64> {
@@ -831,4 +822,48 @@ impl WriteBatchContext {
     async fn clear_intents(&mut self) -> Result<()> {
         todo!()
     }
+}
+
+pub struct WatchKeyStream {
+    _handler: sekas_runtime::JoinHandle<()>,
+    receiver: mpsc::UnboundedReceiver<AppResult<Value>>,
+}
+
+impl futures::Stream for WatchKeyStream {
+    type Item = AppResult<Value>;
+
+    fn poll_next(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        self.get_mut().receiver.poll_recv(cx)
+    }
+}
+
+struct WatchContext {
+    table_id: u64,
+    version: u64,
+    user_key: Vec<u8>,
+
+    sender: mpsc::UnboundedSender<AppResult<Value>>,
+}
+
+async fn watch_key(ctx: &mut WatchContext, db: &Database, timeout: Option<Duration>) -> Result<()> {
+    let router = db.client.router();
+    let (group_state, shard_desc) = router.find_shard(ctx.table_id, &ctx.user_key)?;
+    let mut group_client = GroupClient::new(group_state, db.client.clone());
+    group_client.set_timeout_opt(timeout);
+    let mut stream = group_client.watch_key(shard_desc.id, &ctx.user_key, ctx.version).await?;
+    while let Some(resp) = stream.next().await {
+        let resp = resp?;
+        // TODO(walter) handle shard moved.
+        let value = resp.value.ok_or_else(|| {
+            Error::Internal("The value field in WatchKeyResponse is required".into())
+        })?;
+        if ctx.sender.send(Ok(value)).is_err() {
+            // This stream has been closed.
+            break;
+        }
+    }
+    Ok(())
 }

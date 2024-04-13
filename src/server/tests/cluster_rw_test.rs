@@ -505,7 +505,7 @@ async fn cluster_rw_watch_key() {
         // watch the key.
         let mut receiver = db_clone.watch(table_id, KEY.as_bytes()).await.unwrap();
         for i in 1..101 {
-            let value = receiver.recv().await.unwrap().unwrap();
+            let value = receiver.next().await.unwrap().unwrap();
             let content = value.content.unwrap();
             assert_eq!(content.len(), core::mem::size_of::<i64>());
             let mut buf = [0u8; 8];
@@ -549,7 +549,7 @@ async fn cluster_rw_watch_key_with_version() {
         let mut receiver =
             db_clone.watch_with_version(table_id, KEY.as_bytes(), version).await.unwrap();
         for i in 1..101 {
-            let value = receiver.recv().await.unwrap().unwrap();
+            let value = receiver.next().await.unwrap().unwrap();
             let content = value.content.unwrap();
             assert_eq!(content.len(), core::mem::size_of::<i64>());
             let mut buf = [0u8; 8];

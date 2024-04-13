@@ -17,6 +17,7 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::time::{Duration, Instant};
 
+use futures::StreamExt;
 use log::{debug, trace, warn};
 use sekas_api::server::v1::group_request_union::Request;
 use sekas_api::server::v1::group_response_union::Response;
@@ -372,6 +373,40 @@ impl GroupClient {
             accurate_epoch: false,
             ignore_transport_error: false,
         };
+        self.invoke_with_opt(op, opt).await
+    }
+
+    pub async fn watch_key(
+        &mut self,
+        shard_id: u64,
+        user_key: &[u8],
+        version: u64,
+    ) -> Result<impl futures::Stream<Item = Result<WatchKeyResponse, tonic::Status>>> {
+        let op = |ctx: InvokeContext, client: NodeClient| {
+            let watch_key_req = WatchKeyRequest {
+                group_id: ctx.group_id,
+                shard_id,
+                key: user_key.to_vec(),
+                version,
+            };
+            let req = GroupRequest {
+                group_id: ctx.group_id,
+                epoch: ctx.epoch,
+                request: Some(GroupRequestUnion {
+                    request: Some(Request::WatchKey(watch_key_req)),
+                }),
+            };
+            async move {
+                Ok(client.group_request(RpcTimeout::new(ctx.timeout, req)).await?.map(|stream| {
+                    stream.and_then(Self::group_response).and_then(|resp| match resp {
+                        Response::WatchKey(resp) => Ok(resp),
+                        _ => Err(Error::Internal("WatchKeyResponse is required".into()).into()),
+                    })
+                }))
+            }
+        };
+
+        let opt = InvokeOpt { request: None, accurate_epoch: false, ignore_transport_error: false };
         self.invoke_with_opt(op, opt).await
     }
 

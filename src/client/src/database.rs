@@ -13,9 +13,9 @@
 // limitations under the License.
 
 use sekas_api::server::v1::*;
-use tokio::sync::mpsc;
 
 use crate::range::{RangeRequest, RangeStream};
+use crate::txn::WatchKeyStream;
 use crate::{AppError, AppResult, SekasClient, Txn, WriteBuilder};
 
 #[derive(Debug, Clone)]
@@ -113,11 +113,7 @@ impl Database {
     }
 
     /// A helper function to watch a key.
-    pub async fn watch(
-        &self,
-        table_id: u64,
-        key: &[u8],
-    ) -> AppResult<mpsc::UnboundedReceiver<AppResult<Value>>> {
+    pub async fn watch(&self, table_id: u64, key: &[u8]) -> AppResult<WatchKeyStream> {
         Txn::new(self.clone()).watch(table_id, key).await
     }
 
@@ -126,7 +122,7 @@ impl Database {
         table_id: u64,
         key: &[u8],
         version: u64,
-    ) -> AppResult<mpsc::UnboundedReceiver<AppResult<Value>>> {
+    ) -> AppResult<WatchKeyStream> {
         Txn::new(self.clone()).watch_with_version(table_id, key, version).await
     }
 
