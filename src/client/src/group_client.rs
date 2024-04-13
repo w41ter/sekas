@@ -361,7 +361,7 @@ impl GroupClient {
             async move {
                 record_latency_opt!(latency);
                 client
-                    .group_request(RpcTimeout::new(ctx.timeout, req))
+                    .unary_group_request(RpcTimeout::new(ctx.timeout, req))
                     .await
                     .and_then(Self::group_response)
             }
@@ -396,7 +396,7 @@ impl GroupClient {
             let desc = desc.to_owned();
             let req = GroupRequest::create_shard(ctx.group_id, ctx.epoch, desc);
             async move {
-                let resp = client.group_request(req).await.and_then(Self::group_response)?;
+                let resp = client.unary_group_request(req).await.and_then(Self::group_response)?;
                 match resp {
                     Response::CreateShard(_) => Ok(()),
                     _ => Err(Status::internal("invalid response type, CreateShard is required")),
@@ -411,7 +411,7 @@ impl GroupClient {
             let dest_replica = dest_replica.to_owned();
             let req = GroupRequest::transfer_leader(ctx.group_id, ctx.epoch, dest_replica);
             async move {
-                let resp = client.group_request(req).await.and_then(Self::group_response)?;
+                let resp = client.unary_group_request(req).await.and_then(Self::group_response)?;
                 match resp {
                     Response::Transfer(_) => Ok(()),
                     _ => Err(Status::internal("invalid response type, Transfer is required")),
@@ -428,7 +428,7 @@ impl GroupClient {
             let remove_replica = remove_replica.to_owned();
             let req = GroupRequest::remove_replica(ctx.group_id, ctx.epoch, remove_replica);
             async move {
-                let resp = client.group_request(req).await.and_then(Self::group_response)?;
+                let resp = client.unary_group_request(req).await.and_then(Self::group_response)?;
                 match resp {
                     Response::ChangeReplicas(_) => Ok(()),
                     _ => Err(Status::internal("invalid response type, ChangeReplicas is required")),
@@ -442,7 +442,7 @@ impl GroupClient {
         let op = |ctx: InvokeContext, client: NodeClient| {
             let req = GroupRequest::add_replica(ctx.group_id, ctx.epoch, replica, node);
             async move {
-                let resp = client.group_request(req).await.and_then(Self::group_response)?;
+                let resp = client.unary_group_request(req).await.and_then(Self::group_response)?;
                 match resp {
                     Response::ChangeReplicas(_) => Ok(()),
                     _ => Err(Status::internal("invalid response type, ChangeReplicas is required")),
@@ -475,7 +475,7 @@ impl GroupClient {
         let op = |ctx: InvokeContext, client: NodeClient| {
             let req = GroupRequest::add_learner(ctx.group_id, ctx.epoch, replica, node);
             async move {
-                let resp = client.group_request(req).await.and_then(Self::group_response)?;
+                let resp = client.unary_group_request(req).await.and_then(Self::group_response)?;
                 match resp {
                     Response::ChangeReplicas(_) => Ok(()),
                     _ => Err(Status::internal("invalid response type, ChangeReplicas is required")),
@@ -495,7 +495,7 @@ impl GroupClient {
             let req =
                 GroupRequest::accept_shard(ctx.group_id, ctx.epoch, src_group, src_epoch, shard);
             async move {
-                let resp = client.group_request(req).await.and_then(Self::group_response)?;
+                let resp = client.unary_group_request(req).await.and_then(Self::group_response)?;
                 match resp {
                     Response::AcceptShard(_) => Ok(()),
                     _ => Err(Status::internal("invalid response type, AcceptShard is required")),

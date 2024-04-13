@@ -310,7 +310,6 @@ mod tests {
 
     use futures::channel::oneshot;
     use log::info;
-    use sekas_api::server::v1::PutRequest;
     use sekas_client::WriteBuilder;
     use sekas_rock::fn_name;
     use tempdir::TempDir;

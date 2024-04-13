@@ -393,6 +393,9 @@ impl Replica {
                 self.raft_group.transfer_leader(req.transferee)?;
                 return Ok(Response::Transfer(TransferResponse {}));
             }
+            Request::WatchKey(_) => {
+                todo!("support watch key")
+            }
         };
 
         if let Some(eval_result) = eval_result_opt {
@@ -528,6 +531,7 @@ fn is_change_meta_request(request: &Request) -> bool {
         | Request::Scan(_)
         | Request::WriteIntent(_)
         | Request::CommitIntent(_)
-        | Request::ClearIntent(_) => false,
+        | Request::ClearIntent(_)
+        | Request::WatchKey(_) => false,
     }
 }

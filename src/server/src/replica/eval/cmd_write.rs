@@ -97,7 +97,6 @@ mod tests {
 
     use super::*;
     use crate::engine::{create_group_engine, WriteStates};
-    use crate::Error;
 
     const SHARD_ID: u64 = 1;
 

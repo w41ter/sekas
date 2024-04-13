@@ -128,7 +128,8 @@ where
         | Request::ChangeReplicas(_)
         | Request::AcceptShard(_)
         | Request::Transfer(_)
-        | Request::MoveReplicas(_) => return Ok(None),
+        | Request::MoveReplicas(_)
+        | Request::WatchKey(_) => return Ok(None),
     };
 
     if keys.is_empty() {
@@ -430,7 +431,7 @@ pub mod remote {
                                 .core
                                 .get_latch_mut(self.shard_key.shard_id, &self.shard_key.user_key);
                             entry.intent_waiters.push_back(sender);
-                            self.latch_mgr.transfer_latch_guard(&mut entry);
+                            self.latch_mgr.transfer_latch_guard(&mut *entry);
                         }
                         debug_assert!(self.hold, "resolve txn should hold the lock");
                         self.hold = false;

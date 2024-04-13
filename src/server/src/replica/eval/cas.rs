@@ -74,8 +74,6 @@ fn eval_condition(cond: &WriteCondition, value: Option<&Value>) -> Result<bool> 
 
 #[cfg(test)]
 mod tests {
-    use sekas_api::server::v1::{Value, WriteCondition, WriteConditionType};
-
     use super::*;
 
     #[test]

@@ -31,6 +31,7 @@ make_static_metric! {
             create_shard,
             move_replicas,
             change_replicas,
+            watch_key,
         }
     }
     pub struct GroupRequestDuration: Histogram {
@@ -119,6 +120,10 @@ pub fn take_group_request_metrics(request: &GroupRequest) -> Option<&'static His
         Some(Request::ClearIntent(_)) => {
             NODE_SERVICE_GROUP_REQUEST_TOTAL.clear_intent.inc();
             Some(&NODE_SERVICE_GROUP_REQUEST_DURATION_SECONDS.clear_intent)
+        }
+        Some(Request::WatchKey(_)) => {
+            NODE_SERVICE_GROUP_REQUEST_TOTAL.watch_key.inc();
+            None
         }
         None => None,
     }

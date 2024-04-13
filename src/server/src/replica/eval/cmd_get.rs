@@ -104,7 +104,6 @@ mod tests {
     use std::collections::VecDeque;
     use std::sync::Mutex;
 
-    use sekas_api::server::v1::Value;
     use sekas_rock::fn_name;
     use tempdir::TempDir;
 

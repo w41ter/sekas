@@ -505,19 +505,42 @@ impl Txn {
     /// Watch an key.
     pub async fn watch(
         &self,
-        _table_id: u64,
-        _key: &[u8],
+        table_id: u64,
+        key: &[u8],
     ) -> AppResult<mpsc::UnboundedReceiver<AppResult<Value>>> {
-        todo!()
+        let version = self.get_start_version().await?;
+        self.watch_with_version(table_id, key, version).await
     }
 
     /// Watch an key with version.
     pub async fn watch_with_version(
         &self,
-        _table_id: u64,
-        _key: &[u8],
-        _version: u64,
+        table_id: u64,
+        key: &[u8],
+        version: u64,
     ) -> AppResult<mpsc::UnboundedReceiver<AppResult<Value>>> {
+        let mut retry_state = RetryState::with_deadline_opt(self.deadline);
+        loop {
+            // let router = self.db.client.router();
+            // let group_state = router.find_shard(table_id, key)?;
+
+            // let request = Request::Scan(request.clone());
+            // let mut group_client = GroupClient::new(group_state, self.db.client.clone());
+            // group_client.set_timeout_opt(timeout);
+            // match group_client.request(&request).await? {
+            //     Response::Scan(resp) => Ok(resp),
+            //     _ => Err(crate::Error::Internal("invalid response type, Scan is required".into())),
+            // }
+            // match self.scan_inner(&mut request, retry_state.timeout()).await {
+            //     Ok(value) => {
+            //         return Ok(value);
+            //     }
+            //     Err(err) => {
+            //         retry_state.retry(err).await?;
+            //     }
+            // }
+        }
+
         todo!()
     }
 

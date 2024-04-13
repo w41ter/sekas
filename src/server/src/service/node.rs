@@ -13,6 +13,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::pin::Pin;
+
+use async_stream::try_stream;
+use futures::StreamExt;
 use sekas_api::server::v1::*;
 use tonic::{Request, Response, Status};
 
@@ -20,37 +24,48 @@ use super::metrics::*;
 use crate::serverpb::v1::MoveShardEvent;
 use crate::{record_latency, record_latency_opt, Error, Server};
 
-pub struct WatchKeyStream {}
+pub struct GroupStream {
+    inner: Pin<Box<dyn futures::Stream<Item = Result<GroupResponse, Status>> + Send>>,
+}
 
-impl futures::Stream for WatchKeyStream {
-    type Item = Result<WatchKeyResponse, Status>;
+impl futures::Stream for GroupStream {
+    type Item = Result<GroupResponse, Status>;
 
     fn poll_next(
         self: std::pin::Pin<&mut Self>,
-        _cx: &mut std::task::Context<'_>,
+        cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Self::Item>> {
         // 1. scan the key to obtain the base version.
         // 2. watch key's updation.
         // 3. read the key value and return
         // 4. skip to 1
-        todo!()
+        self.get_mut().inner.poll_next_unpin(cx)
+    }
+}
+
+fn handle_group_request(
+    server: Server,
+    request: GroupRequest,
+) -> impl futures::Stream<Item = Result<GroupResponse, Status>> {
+    try_stream! {
+        record_latency_opt!(take_group_request_metrics(&request));
+        let response =
+            server.node.execute_request(&request).await.unwrap_or_else(error_to_response);
+        yield response;
     }
 }
 
 #[crate::async_trait]
 impl node_server::Node for Server {
-    type WatchStream = WatchKeyStream;
+    type GroupStream = GroupStream;
 
     async fn group(
         &self,
         request: Request<GroupRequest>,
-    ) -> Result<Response<GroupResponse>, Status> {
-        let group_request = request.into_inner();
-        record_latency_opt!(take_group_request_metrics(&group_request));
-        let server = self.clone();
-        let response =
-            self.node.execute_request(&group_request).await.unwrap_or_else(error_to_response);
-        Ok(Response::new(response))
+    ) -> Result<Response<Self::GroupStream>, Status> {
+        let group_response_stream =
+            Box::pin(handle_group_request(self.clone(), request.into_inner()));
+        Ok(Response::new(GroupStream { inner: group_response_stream }))
     }
 
     async fn admin(
@@ -114,12 +129,12 @@ impl node_server::Node for Server {
         Ok(Response::new(MoveShardResponse { response: Some(resp) }))
     }
 
-    async fn watch(
-        &self,
-        _request: Request<WatchKeyRequest>,
-    ) -> Result<Response<WatchKeyStream>, Status> {
-        todo!()
-    }
+    // async fn watch(
+    //     &self,
+    //     _request: Request<WatchKeyRequest>,
+    // ) -> Result<Response<BatchStream>, Status> {
+    //     todo!()
+    // }
 }
 
 impl Server {

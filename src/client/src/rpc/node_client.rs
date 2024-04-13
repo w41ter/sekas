@@ -96,10 +96,22 @@ impl Client {
     pub async fn group_request(
         &self,
         req: impl IntoRequest<GroupRequest>,
-    ) -> Result<GroupResponse, tonic::Status> {
+    ) -> Result<tonic::Streaming<GroupResponse>, tonic::Status> {
         let mut client = self.client.clone();
         let res = client.group(req).await?;
         Ok(res.into_inner())
+    }
+
+    pub async fn unary_group_request(
+        &self,
+        req: impl IntoRequest<GroupRequest>,
+    ) -> Result<GroupResponse, tonic::Status> {
+        let mut client = self.client.clone();
+        let res = client.group(req).await?;
+        res.into_inner()
+            .message()
+            .await?
+            .ok_or_else(|| tonic::Status::internal("group response stream is empty"))
     }
 
     pub async fn root_heartbeat(
@@ -268,10 +280,10 @@ mod transport_error_tests {
     use crate::error::{find_io_error, retryable_rpc_err, transport_err};
 
     struct MockedServer {}
-    struct MockWatchStream {}
+    struct MockGroupStream {}
 
-    impl Stream for MockWatchStream {
-        type Item = Result<WatchKeyResponse, tonic::Status>;
+    impl Stream for MockGroupStream {
+        type Item = Result<GroupResponse, tonic::Status>;
 
         fn poll_next(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
             Poll::Ready(None)
@@ -281,12 +293,12 @@ mod transport_error_tests {
     #[allow(unused)]
     #[tonic::async_trait]
     impl node_server::Node for MockedServer {
-        type WatchStream = MockWatchStream;
+        type GroupStream = MockGroupStream;
 
         async fn group(
             &self,
             request: tonic::Request<sekas_api::server::v1::GroupRequest>,
-        ) -> Result<tonic::Response<sekas_api::server::v1::GroupResponse>, tonic::Status> {
+        ) -> Result<tonic::Response<Self::GroupStream>, tonic::Status> {
             todo!()
         }
 
@@ -303,13 +315,6 @@ mod transport_error_tests {
             request: tonic::Request<sekas_api::server::v1::MoveShardRequest>,
         ) -> Result<tonic::Response<sekas_api::server::v1::MoveShardResponse>, tonic::Status>
         {
-            todo!()
-        }
-
-        async fn watch(
-            &self,
-            _req: tonic::Request<sekas_api::server::v1::WatchKeyRequest>,
-        ) -> Result<tonic::Response<MockWatchStream>, tonic::Status> {
             todo!()
         }
     }

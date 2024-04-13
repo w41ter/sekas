@@ -252,7 +252,6 @@ async fn resolve_txn<T: LatchManager>(
 
 #[cfg(test)]
 mod tests {
-    use sekas_api::server::v1::Value;
     use sekas_rock::fn_name;
     use tempdir::TempDir;
 

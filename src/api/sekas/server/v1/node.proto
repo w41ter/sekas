@@ -24,12 +24,12 @@ import "sekas/server/v1/write.proto";
 import "google/protobuf/field_mask.proto";
 
 service Node {
-    rpc Group(GroupRequest) returns (GroupResponse) {}
+    rpc Group(GroupRequest) returns (stream GroupResponse) {}
     // A set methods to manipulate node.
     rpc Admin(NodeAdminRequest) returns (NodeAdminResponse) {}
     // A set methods about shard moving.
     rpc MoveShard(MoveShardRequest) returns (MoveShardResponse) {}
-    rpc Watch(WatchKeyRequest) returns (stream WatchKeyResponse) {}
+    // rpc Watch(WatchKeyRequest) returns (stream WatchKeyResponse) {}
 }
 
 message GroupRequest {
@@ -73,6 +73,9 @@ message GroupRequestUnion {
         // Response once the group leader accepts the moving replicas request. When there exists
         // some conflicts, such as group is in joint, `Error::AlreadyExists` is returned.
         MoveReplicasRequest move_replicas = 11;
+
+        // Watch a key's updation.
+        WatchKeyRequest watch_key = 12;
     }
 }
 
@@ -90,6 +93,7 @@ message GroupResponseUnion {
         AcceptShardResponse accept_shard = 9;
         TransferResponse transfer = 10;
         MoveReplicasResponse move_replicas = 11;
+        WatchKeyResponse watch_key = 12;
     }
 }
 

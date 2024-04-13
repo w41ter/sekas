@@ -33,6 +33,8 @@ make_static_metric! {
             create_shard,
             move_replicas,
             change_replicas,
+
+            watch,
         }
     }
     pub struct GroupRequestDuration: Histogram {
@@ -128,6 +130,10 @@ pub fn take_group_request_metrics(
         Request::MoveReplicas(_) => {
             GROUP_CLIENT_GROUP_REQUEST_TOTAL.move_replicas.inc();
             Some(&GROUP_CLIENT_GROUP_REQUEST_DURATION_SECONDS.move_replicas)
+        }
+        Request::WatchKey(_) => {
+            GROUP_CLIENT_GROUP_REQUEST_TOTAL.watch.inc();
+            None
         }
     }
 }
