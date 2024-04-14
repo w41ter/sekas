@@ -604,7 +604,7 @@ impl<'a, 'b> Iterator for MvccIterator<'a, 'b> {
 }
 
 impl MvccEntry {
-    fn new(key: Box<[u8]>, value: Box<[u8]>) -> Self {
+    pub fn new(key: Box<[u8]>, value: Box<[u8]>) -> Self {
         let user_key = keys::revert_mvcc_key(&key);
         MvccEntry { key, user_key, value }
     }

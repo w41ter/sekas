@@ -23,6 +23,7 @@ use std::sync::atomic::AtomicI32;
 use std::sync::{Arc, Mutex};
 use std::task::Poll;
 
+use futures::channel::mpsc;
 use log::{info, warn};
 use sekas_api::server::v1::group_request_union::Request;
 use sekas_api::server::v1::group_response_union::Response;
@@ -32,6 +33,7 @@ use serde::Serialize;
 use self::eval::acquire_row_latches;
 pub(crate) use self::eval::merge_scan_response;
 use self::eval::remote::RemoteLatchManager;
+use self::fsm::WatchEvent;
 pub use self::state::{LeaseState, LeaseStateObserver};
 use crate::engine::GroupEngine;
 use crate::error::BusyReason;
@@ -73,9 +75,14 @@ pub struct ExecCtx {
     /// The epoch of `GroupDesc` carried in this request.
     pub epoch: u64,
 
+    pub watch_event_sender: Option<WatchEventSender>,
+
     /// The move shard desc, filled by `check_request_early`.
     move_shard_desc: Option<MoveShardDesc>,
 }
+
+type WatchEventSender = mpsc::UnboundedSender<WatchEvent>;
+type WatcherSender = std::sync::mpsc::Sender<((u64, Box<[u8]>), WatchEventSender)>;
 
 pub struct Replica
 where
@@ -84,6 +91,7 @@ where
     info: Arc<ReplicaInfo>,
     group_engine: GroupEngine,
     raft_group: RaftGroup,
+    watcher_sender: WatcherSender,
     lease_state: Arc<Mutex<LeaseState>>,
     move_replicas_provider: Arc<MoveReplicasProvider>,
     meta_acl: Arc<tokio::sync::RwLock<()>>,
@@ -119,6 +127,7 @@ impl Replica {
         group_engine: GroupEngine,
         sekas_client: sekas_client::SekasClient,
         move_replicas_provider: Arc<MoveReplicasProvider>,
+        watcher_sender: WatcherSender,
     ) -> Self {
         let latch_mgr =
             RemoteLatchManager::new(sekas_client, group_engine.clone(), raft_group.clone());
@@ -127,6 +136,7 @@ impl Replica {
             group_engine,
             raft_group,
             lease_state,
+            watcher_sender,
             move_replicas_provider,
             meta_acl: Arc::default(),
             // FIXME(walter) create latch manager if epoch changed.
@@ -160,10 +170,8 @@ impl Replica {
             return Err(Error::GroupNotFound(self.info.group_id));
         }
 
-        log::trace!("group {} take acl guard", self.info.group_id);
         let _acl_guard = self.take_acl_guard(request).await;
         self.check_request_early(exec_ctx, request)?;
-        log::trace!("group {} eval command {request:?}", self.info.group_id);
         self.evaluate_command(exec_ctx, request).await
     }
 
@@ -300,9 +308,7 @@ impl Replica {
         // Acquire row latches one by one. The implementation guarantees that there will
         // be no deadlock, so waiting while holding `read/write_acl_guard` will
         // not affect other requests.
-        log::trace!("group {} before acquire row latches", self.info.group_id);
         let mut latches = acquire_row_latches(&self.latch_mgr, request).await?;
-        log::trace!("group {} acquire all row latches", self.info.group_id);
         let (eval_result_opt, resp) = match &request {
             Request::Get(req) => {
                 let value = eval::get(exec_ctx, &self.group_engine, &self.latch_mgr, req).await?;
@@ -393,8 +399,17 @@ impl Replica {
                 self.raft_group.transfer_leader(req.transferee)?;
                 return Ok(Response::Transfer(TransferResponse {}));
             }
-            Request::WatchKey(_) => {
-                todo!("support watch key")
+            Request::WatchKey(req) => {
+                let shard_id = req.shard_id;
+                let user_key = Box::from(req.key.as_slice());
+                let watcher = exec_ctx
+                    .watch_event_sender
+                    .clone()
+                    .expect("The watch_event_sender must exists for WatchKeyRequest");
+                self.watcher_sender
+                    .send(((shard_id, user_key), watcher))
+                    .expect("The FSM must be existance");
+                return Ok(Response::WatchKey(WatchKeyResponse::default()));
             }
         };
 

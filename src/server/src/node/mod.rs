@@ -38,7 +38,7 @@ use crate::constants::ROOT_GROUP_ID;
 use crate::engine::{Engines, GroupEngine, RawDb, StateEngine};
 use crate::raftgroup::snap::RecycleSnapMode;
 use crate::raftgroup::{ChannelManager, RaftGroup, RaftManager, SnapManager};
-use crate::replica::fsm::GroupStateMachine;
+use crate::replica::fsm::{GroupStateMachine, WatchHub};
 pub use crate::replica::Replica;
 use crate::replica::{ExecCtx, LeaseState, LeaseStateObserver, ReplicaInfo};
 use crate::schedule::MoveReplicasProvider;
@@ -302,6 +302,8 @@ impl Node {
             group_engine.move_shard_state(),
             sender,
         )));
+        let (watcher_sender, watcher_receiver) = std::sync::mpsc::channel();
+        let watch_hub = WatchHub::new(watcher_receiver);
         let raft_node = start_raft_group(
             &self.cfg,
             &self.raft_mgr,
@@ -310,6 +312,7 @@ impl Node {
             channel.clone(),
             group_engine.clone(),
             &task_group,
+            watch_hub,
         )
         .await?;
 
@@ -327,6 +330,7 @@ impl Node {
             group_engine,
             client,
             move_replicas_provider.clone(),
+            watcher_sender,
         );
         let replica = Arc::new(replica);
         self.replica_route_table.update(replica.clone());
@@ -387,14 +391,18 @@ impl Node {
         Ok(())
     }
 
-    pub async fn execute_request(&self, request: &GroupRequest) -> Result<GroupResponse> {
+    pub async fn execute_request(
+        &self,
+        exec_ctx: &ExecCtx,
+        request: &GroupRequest,
+    ) -> Result<GroupResponse> {
         use crate::replica::retry::execute;
 
         let Some(replica) = self.replica_route_table.find(request.group_id) else {
             return Err(Error::GroupNotFound(request.group_id));
         };
 
-        match execute(&replica, &ExecCtx::default(), request).await {
+        match execute(&replica, exec_ctx, request).await {
             Err(Error::Forward(forward_ctx)) => {
                 let request = request
                     .request
@@ -697,15 +705,18 @@ async fn start_raft_group(
     channel: Arc<StateChannel>,
     group_engine: GroupEngine,
     task_group: &TaskGroup,
+    watch_hub: WatchHub,
 ) -> Result<RaftGroup> {
     let group_id = info.group_id;
     let state_observer =
         Box::new(LeaseStateObserver::new(info.clone(), lease_state.clone(), channel));
+
     let fsm = GroupStateMachine::new(
         cfg.replica.clone(),
         info.clone(),
         group_engine.clone(),
         state_observer.clone(),
+        watch_hub,
     );
     raft_mgr
         .start_raft_group(group_id, info.replica_id, info.node_id, fsm, state_observer, task_group)

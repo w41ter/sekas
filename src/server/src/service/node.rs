@@ -14,13 +14,19 @@
 // limitations under the License.
 
 use std::pin::Pin;
+use std::task::{Context, Poll};
 
 use async_stream::try_stream;
+use futures::channel::mpsc;
 use futures::StreamExt;
+use sekas_api::server::v1::group_request_union::Request as ShardRequest;
+use sekas_api::server::v1::group_response_union::Response as ShardResponse;
+use sekas_api::server::v1::watch_key_response::WatchResult;
 use sekas_api::server::v1::*;
 use tonic::{Request, Response, Status};
 
 use super::metrics::*;
+use crate::replica::ExecCtx;
 use crate::serverpb::v1::MoveShardEvent;
 use crate::{record_latency, record_latency_opt, Error, Server};
 
@@ -31,10 +37,7 @@ pub struct GroupStream {
 impl futures::Stream for GroupStream {
     type Item = Result<GroupResponse, Status>;
 
-    fn poll_next(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Option<Self::Item>> {
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         // 1. scan the key to obtain the base version.
         // 2. watch key's updation.
         // 3. read the key value and return
@@ -49,9 +52,98 @@ fn handle_group_request(
 ) -> impl futures::Stream<Item = Result<GroupResponse, Status>> {
     try_stream! {
         record_latency_opt!(take_group_request_metrics(&request));
-        let response =
-            server.node.execute_request(&request).await.unwrap_or_else(error_to_response);
-        yield response;
+        let mut exec_ctx = ExecCtx::default();
+        let inner_request = request
+            .request
+            .as_ref()
+            .and_then(|request| request.request.as_ref())
+            .ok_or_else(|| Error::InvalidArgument("GroupRequest::request is None".into()))?;
+        if !matches!(inner_request, ShardRequest::WatchKey(_)) {
+            let response =
+                server.node.execute_request(&exec_ctx, &request).await.unwrap_or_else(error_to_response);
+            yield response;
+            return;
+        }
+
+        let ShardRequest::WatchKey(watch_key_req) = inner_request else { panic!("unreachable") };
+        let (sender, mut receiver) = mpsc::unbounded();
+        exec_ctx.watch_event_sender = Some(sender);
+        if let Err(err) = server.node.execute_request(&exec_ctx, &request).await {
+            yield error_to_response(err);
+            return;
+        }
+
+        // scan the key to obtain an version.
+        let scan_req = ShardScanRequest {
+            shard_id: watch_key_req.shard_id,
+            start_version: watch_key_req.version,
+            limit: 0,
+            limit_bytes: 0,
+            end_key: None,
+            exclude_end_key: true,
+            exclude_start_key: false,
+            prefix: None,
+            start_key: Some(watch_key_req.key.clone()),
+            include_raw_data: true,
+            ignore_txn_intent: true,
+            allow_scan_moving_shard: true,
+        };
+        let group_scan_req = GroupRequest {
+            group_id: request.group_id,
+            epoch: request.epoch,
+            request: Some(GroupRequestUnion {
+                request: Some(ShardRequest::Scan(scan_req)),
+            }),
+        };
+        let resp = match server.node.execute_request(&exec_ctx, &group_scan_req).await {
+            Ok(resp) => resp,
+            Err(err) => {
+                yield error_to_response(err);
+                return;
+            }
+        };
+        let ShardResponse::Scan(mut scan_resp) = resp.response
+            .expect("The GroupResponse::resposne is required")
+            .response
+            .expect("The GroupResponseUnion::response is required")
+            else { panic!("The ScanResponse is required in here") };
+        if scan_resp.has_more {
+            panic!("We should ensure that this scan request will returns the entire value set of an key");
+        }
+        if scan_resp.data.len() != 1 {
+            panic!("The scan request issues one key but got {} value set", scan_resp.data.len());
+        }
+        let value_set = &mut scan_resp.data[0];
+        for value in std::mem::take(&mut value_set.values) {
+            let watch_key_resp = WatchKeyResponse {
+                result: WatchResult::ValueUpdated as i32,
+                value: Some(value),
+            };
+            yield GroupResponse {
+                response: Some(GroupResponseUnion {
+                    response: Some(ShardResponse::WatchKey(watch_key_resp)),
+                }),
+                ..Default::default()
+            };
+        }
+        // TODO(walter) change receiver to async channel.
+        while let Some(event) = receiver.next().await {
+            let value = Value {
+                content: event.value.map(|v| Vec::from(v)),
+                version: event.version,
+            };
+            let watch_key_resp = WatchKeyResponse {
+                result: WatchResult::ValueUpdated as i32,
+                value: Some(value),
+            };
+            yield GroupResponse {
+                response: Some(GroupResponseUnion {
+                    response: Some(ShardResponse::WatchKey(watch_key_resp)),
+                }),
+                ..Default::default()
+            };
+        }
+        // TODO(walter) send retry instruction to client.
     }
 }
 

@@ -15,9 +15,9 @@
 
 mod checkpoint;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{mpsc, Arc};
 
 use log::{info, trace, warn};
 use sekas_api::server::v1::{
@@ -26,7 +26,7 @@ use sekas_api::server::v1::{
 };
 
 use super::ReplicaInfo;
-use crate::engine::{GroupEngine, WriteBatch, WriteStates};
+use crate::engine::{GroupEngine, MvccEntry, WriteBatch, WriteStates};
 use crate::raftgroup::{ApplyEntry, SnapshotBuilder, StateMachine};
 use crate::serverpb::v1::*;
 use crate::{ReplicaConfig, Result};
@@ -53,6 +53,84 @@ pub trait StateMachineObserver: Send + Sync {
     fn on_move_shard_state_updated(&mut self, state: Option<MoveShardState>);
 }
 
+pub struct WatchEvent {
+    /// The version of this watch updation.
+    pub version: u64,
+    /// The values of this updation.
+    pub value: Option<Box<[u8]>>,
+    /// The key of this updation.
+    pub key: Box<[u8]>,
+}
+
+type WatchTrigger = futures::channel::mpsc::UnboundedSender<WatchEvent>;
+type WatchTarget = (u64, Box<[u8]>);
+
+pub struct WatchHub {
+    receivers: mpsc::Receiver<(WatchTarget, WatchTrigger)>,
+    watchers: HashMap<Box<[u8]>, Vec<WatchTrigger>>,
+    watcher_indexes: HashMap<Box<[u8]>, u64>,
+    shard_indexes: HashMap<u64, HashSet<Box<[u8]>>>,
+}
+
+impl WatchHub {
+    pub fn new(receivers: mpsc::Receiver<(WatchTarget, WatchTrigger)>) -> Self {
+        WatchHub {
+            receivers,
+            watchers: HashMap::default(),
+            watcher_indexes: HashMap::default(),
+            shard_indexes: HashMap::default(),
+        }
+    }
+
+    fn handle_register_events(&mut self) {
+        while let Ok((target, trigger)) = self.receivers.try_recv() {
+            let (shard_id, user_key) = target;
+            if let Some(triggers) = self.watchers.get_mut(&user_key) {
+                triggers.push(trigger);
+            } else {
+                self.shard_indexes
+                    .entry(shard_id)
+                    .or_insert_with(HashSet::default)
+                    .insert(user_key.clone());
+                self.watcher_indexes.insert(user_key.clone(), shard_id);
+                self.watchers.insert(user_key, vec![trigger]);
+            }
+        }
+    }
+}
+
+impl rocksdb::WriteBatchIterator for GroupStateMachine {
+    fn put(&mut self, key: Box<[u8]>, value: Box<[u8]>) {
+        let entry = MvccEntry::new(key, value);
+        let user_key = entry.user_key();
+        if let Some(senders) = self.watch_hub.watchers.get_mut(user_key) {
+            senders.retain_mut(|sender| {
+                let event = WatchEvent {
+                    version: entry.version(),
+                    key: user_key.into(),
+                    value: entry.value().map(Into::into),
+                };
+                sender.start_send(event).is_ok()
+            });
+            if senders.is_empty() {
+                // All watchers are closed.
+                self.watch_hub.watchers.remove(user_key);
+                if let Some(shard_id) = self.watch_hub.watcher_indexes.remove(user_key) {
+                    if let Some(keys) = self.watch_hub.shard_indexes.get_mut(&shard_id) {
+                        keys.remove(user_key);
+                        if keys.is_empty() {
+                            self.watch_hub.shard_indexes.remove(&shard_id);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // We don't care the delete entry.
+    fn delete(&mut self, _: Box<[u8]>) {}
+}
+
 pub struct GroupStateMachine
 where
     Self: Send,
@@ -62,9 +140,11 @@ where
 
     group_engine: GroupEngine,
     observer: Box<dyn StateMachineObserver>,
+    watch_hub: WatchHub,
 
     plugged_write_batches: Vec<WriteBatch>,
     plugged_write_states: WriteStates,
+    move_out_shards: HashSet<u64>, // May a option value is enough?
 
     /// Whether `GroupDesc` changes during apply.
     desc_updated: bool,
@@ -78,6 +158,7 @@ impl GroupStateMachine {
         info: Arc<ReplicaInfo>,
         group_engine: GroupEngine,
         observer: Box<dyn StateMachineObserver>,
+        watch_hub: WatchHub,
     ) -> Self {
         let apply_state = group_engine.flushed_apply_state().expect("access flushed index");
         GroupStateMachine {
@@ -85,8 +166,10 @@ impl GroupStateMachine {
             info,
             group_engine,
             observer,
+            watch_hub,
             plugged_write_batches: Vec::default(),
             plugged_write_states: WriteStates::default(),
+            move_out_shards: HashSet::new(),
             desc_updated: false,
             move_shard_state_updated: false,
             last_applied_term: apply_state.term,
@@ -228,6 +311,7 @@ impl GroupStateMachine {
         let inherited_epoch = std::cmp::max(group_desc.epoch, inherited_epoch);
         group_desc.epoch = inherited_epoch + SHARD_UPDATE_DELTA;
         let msg = if desc.src_group_id == group_desc.id {
+            self.move_out_shards.insert(shard_desc.id);
             group_desc.shards.retain(|r| r.id != shard_desc.id);
             "shard migrated out"
         } else {
@@ -270,6 +354,29 @@ impl GroupStateMachine {
             self.group_engine.move_shard_state().expect("The MoveShardState should exist")
         })
     }
+
+    /// Apply updation to watcher hub.
+    ///
+    /// ATTN: We assume that the moving target is not visible for clients
+    /// until the move shard operation is finished. So that we don't care
+    /// the ingest events for moving shard and don't worry the losing of
+    /// any updation.
+    fn trigger_updation_watchers(&mut self) {
+        self.watch_hub.handle_register_events();
+        for batch in std::mem::take(&mut self.plugged_write_batches) {
+            batch.iterate(self);
+        }
+        // TODO(walter) support shard split/merge.
+        for shard_id in std::mem::take(&mut self.move_out_shards) {
+            // This shard has been moved out, remove the related watchers.
+            if let Some(user_key_set) = self.watch_hub.shard_indexes.remove(&shard_id) {
+                for user_key in user_key_set {
+                    self.watch_hub.watchers.remove(&user_key);
+                    self.watch_hub.watcher_indexes.remove(&user_key);
+                }
+            }
+        }
+    }
 }
 
 impl StateMachine for GroupStateMachine {
@@ -306,21 +413,8 @@ impl StateMachine for GroupStateMachine {
             std::mem::take(&mut self.plugged_write_states),
             false,
         )?;
-
-        struct TriggerIterator {}
-        impl rocksdb::WriteBatchIterator for TriggerIterator {
-            fn put(&mut self, key: Box<[u8]>, value: Box<[u8]>) {}
-
-            fn delete(&mut self, key: Box<[u8]>) {}
-        }
-        let mut trigger_iter = TriggerIterator {};
-        for batch in &self.plugged_write_batches {
-            batch.iterate(&mut trigger_iter);
-        }
-
-        self.plugged_write_batches.clear();
+        self.trigger_updation_watchers();
         self.flush_updated_events(term);
-
         Ok(())
     }
 
