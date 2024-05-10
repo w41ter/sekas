@@ -368,8 +368,8 @@ impl Jobs {
                 continue;
             }
             undo.push(replica.to_owned());
-            create_group.wait_create = wait_create.to_owned();
-            create_group.wait_cleanup = undo.to_owned();
+            create_group.wait_create.clone_from(&wait_create);
+            create_group.wait_cleanup.clone_from(&undo);
             self.save_create_group(job_id, create_group).await?;
         }
         create_group.status = CreateOneGroupStatus::CreateOneGroupFinish as i32;
@@ -395,7 +395,7 @@ impl Jobs {
                     "rollback temp replica of new group fail and retry later: {err:?}. replica={}",
                     r.id
                 );
-                create_group.wait_cleanup = wait_clean.to_owned();
+                create_group.wait_cleanup.clone_from(&wait_clean);
                 self.save_create_group(job_id, create_group).await?;
                 return Err(err);
             }

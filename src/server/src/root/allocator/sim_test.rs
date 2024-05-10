@@ -21,9 +21,8 @@ use std::sync::Mutex;
 use sekas_api::server::v1::*;
 use sekas_runtime::ExecutorOwner;
 
-use crate::constants::REPLICA_PER_GROUP;
-
 use super::*;
+use crate::constants::REPLICA_PER_GROUP;
 
 #[test]
 fn sim_boostrap_join_node_balance() {

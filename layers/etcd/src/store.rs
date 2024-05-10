@@ -166,7 +166,7 @@ impl SekasHandle {
 
             // apply request
             if !request.ignore_value {
-                key_value.value = request.value.clone();
+                key_value.value.clone_from(&request.value);
             }
             if !request.ignore_lease {
                 if key_value.lease != 0 {

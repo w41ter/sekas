@@ -697,6 +697,7 @@ async fn open_group_engine(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn start_raft_group(
     cfg: &NodeConfig,
     raft_mgr: &RaftManager,

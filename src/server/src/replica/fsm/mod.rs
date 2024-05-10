@@ -88,10 +88,7 @@ impl WatchHub {
             if let Some(triggers) = self.watchers.get_mut(&user_key) {
                 triggers.push(trigger);
             } else {
-                self.shard_indexes
-                    .entry(shard_id)
-                    .or_insert_with(HashSet::default)
-                    .insert(user_key.clone());
+                self.shard_indexes.entry(shard_id).or_default().insert(user_key.clone());
                 self.watcher_indexes.insert(user_key.clone(), shard_id);
                 self.watchers.insert(user_key, vec![trigger]);
             }
