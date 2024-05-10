@@ -536,8 +536,12 @@ impl Txn {
     }
 
     async fn get_start_version(&self) -> crate::Result<u64> {
+        trace!("txn get start version");
+        let timeout = self.deadline.map(|d| d.saturating_duration_since(Instant::now()));
         self.start_version
-            .get_or_try_init(|| async { self.db.client.root_client().alloc_txn_id(1, None).await })
+            .get_or_try_init(|| async {
+                self.db.client.root_client().alloc_txn_id(1, timeout).await
+            })
             .await
             .copied()
     }
@@ -615,6 +619,12 @@ impl WriteBatchContext {
         let start_version = self.start_version;
         let txn_table = TxnStateTable::new(self.client.clone(), self.retry_state.timeout());
 
+        trace!(
+            "commit txn, verison: {}, timeout: {:?}",
+            self.start_version,
+            self.retry_state.timeout()
+        );
+
         tokio::select! {
             _ = Self::lease_txn(txn_table, start_version) => {
                 unreachable!()
@@ -637,6 +647,13 @@ impl WriteBatchContext {
     async fn commit_inner(mut self) -> Result<WriteBatchResponse> {
         self.prepare_intents().await?;
         self.commit_version = self.alloc_txn_version().await?;
+
+        trace!(
+            "commit txn, alloc txn version: {}, start version: {}",
+            self.commit_version,
+            self.start_version
+        );
+
         self.commit_txn().await?;
         let version = self.commit_version;
 
@@ -672,6 +689,7 @@ impl WriteBatchContext {
     }
 
     async fn start_txn(&mut self) -> Result<()> {
+        trace!("start txn, version={}", self.start_version);
         TxnStateTable::new(self.client.clone(), self.retry_state.timeout())
             .begin_txn(self.start_version)
             .await
@@ -687,6 +705,7 @@ impl WriteBatchContext {
     }
 
     async fn prepare_intents_inner(&mut self) -> Result<bool> {
+        trace!("txn prepare intents, version: {}", self.start_version);
         let router = self.client.router();
         let mut handles = Vec::with_capacity(self.writes.len());
         for (index, write) in self.writes.iter().enumerate() {
@@ -739,6 +758,11 @@ impl WriteBatchContext {
     }
 
     async fn commit_txn(&mut self) -> Result<()> {
+        trace!(
+            "commit txn update txn table, start version: {}, commit version: {}",
+            self.start_version,
+            self.commit_version
+        );
         TxnStateTable::new(self.client.clone(), self.retry_state.timeout())
             .commit_txn(self.start_version, self.commit_version)
             .await
@@ -753,6 +777,11 @@ impl WriteBatchContext {
 
     fn commit_intents(mut self) {
         tokio::spawn(async move {
+            trace!(
+                "commit txn intents, start version: {}, commit version: {}",
+                self.start_version,
+                self.commit_version
+            );
             self.num_doing_writes = self.writes.len();
             for write in &mut self.writes {
                 write.done = false;

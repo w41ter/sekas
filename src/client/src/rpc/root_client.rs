@@ -183,8 +183,10 @@ impl Client {
         let req = AllocTxnIdRequest { num_required };
         let res = self
             .invoke_with_timeout(timeout, |mut client| {
-                // TODO(walter) add timeout for alloc_txn_id request.
-                let req = req.clone();
+                let mut req = tonic::Request::new(req.clone());
+                if let Some(deadline) = timeout {
+                    req.set_timeout(deadline);
+                }
                 async move { client.alloc_txn_id(req).await }
             })
             .await?;
