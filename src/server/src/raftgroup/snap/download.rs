@@ -120,7 +120,7 @@ impl PartialFile {
             file_meta.crc32
         );
 
-        let file = OpenOptions::new().write(true).create(true).open(path)?;
+        let file = OpenOptions::new().write(true).create(true).truncate(true).open(path)?;
 
         Ok(PartialFile { meta: file_meta, file, size: 0, crc32: crc32fast::Hasher::new() })
     }

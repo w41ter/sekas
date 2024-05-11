@@ -1119,9 +1119,9 @@ impl OngoingStats {
                 inner.rebuild_view();
             }
         }
-        if job_updates.is_some() {
+        if let Some(job_updates) = job_updates.as_ref() {
             let mut inner = self.job_stats.lock().unwrap();
-            inner.node_delta = job_updates.as_ref().unwrap().to_owned();
+            inner.node_delta.clone_from(job_updates);
         }
     }
 

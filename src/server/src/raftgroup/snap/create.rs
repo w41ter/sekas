@@ -97,7 +97,7 @@ pub(super) async fn stable_snapshot_meta(base_dir: &Path, snap_meta: &SnapshotMe
     let content = snap_meta.encode_to_vec();
 
     let tmp = base_dir.join(SNAP_TEMP);
-    let mut file = OpenOptions::new().write(true).create(true).open(&tmp)?;
+    let mut file = OpenOptions::new().write(true).create(true).truncate(true).open(&tmp)?;
     file.write_all(&content)?;
     file.sync_all()?;
     drop(file);

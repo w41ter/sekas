@@ -43,6 +43,7 @@ pub enum ReplicaRoleAction {
 pub enum GroupAction {
     Noop,
     Add(usize),
+    #[allow(dead_code)]
     Remove(Vec<u64>),
 }
 
@@ -66,6 +67,7 @@ pub enum LeaderAction {
 pub struct TransferLeader {
     pub group: u64,
     pub src_node: u64,
+    #[allow(dead_code)]
     pub src_replica: u64,
     pub target_node: u64,
     pub target_replica: u64,

@@ -70,8 +70,7 @@ where
         match self {
             Ok(val) => Ok(val),
             Err(source) => {
-                let location = Location::caller().clone();
-                let context = StackFrame { message, location };
+                let context = StackFrame { message, location: *Location::caller() };
                 Err(ContextError { frames: vec![context], source })
             }
         }
@@ -88,8 +87,7 @@ where
         match self {
             Ok(val) => Ok(val),
             Err(mut ctx) => {
-                let location = Location::caller().clone();
-                ctx.frames.push(StackFrame { message, location });
+                ctx.frames.push(StackFrame { message, location: *Location::caller() });
                 Err(ctx)
             }
         }
@@ -98,9 +96,9 @@ where
 
 impl<E: Error> fmt::Debug for ContextError<E> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}\n", self.source)?;
+        writeln!(f, "{}", self.source)?;
         for (index, ctx) in self.frames.iter().enumerate() {
-            write!(f, "{}: {}, at {}\n", index, ctx.message, ctx.location)?;
+            writeln!(f, "{}: {}, at {}", index, ctx.message, ctx.location)?;
         }
         Ok(())
     }

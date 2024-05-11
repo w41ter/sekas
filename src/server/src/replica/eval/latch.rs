@@ -431,6 +431,7 @@ pub mod remote {
                                 .core
                                 .get_latch_mut(self.shard_key.shard_id, &self.shard_key.user_key);
                             entry.intent_waiters.push_back(sender);
+                            #[allow(clippy::explicit_auto_deref)]
                             self.latch_mgr.transfer_latch_guard(&mut *entry);
                         }
                         debug_assert!(self.hold, "resolve txn should hold the lock");

@@ -129,7 +129,7 @@ fn handle_group_request(
         // TODO(walter) change receiver to async channel.
         while let Some(event) = receiver.next().await {
             let value = Value {
-                content: event.value.map(|v| Vec::from(v)),
+                content: event.value.map(Vec::from),
                 version: event.version,
             };
             let watch_key_resp = WatchKeyResponse {

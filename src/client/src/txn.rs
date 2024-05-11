@@ -524,7 +524,7 @@ impl Txn {
         let _handler = sekas_runtime::spawn(async move {
             let mut ctx = WatchContext { table_id, version, user_key, sender };
             while let Err(err) = watch_key(&mut ctx, &db, retry_state.timeout()).await {
-                if let Err(err) = retry_state.retry(err.into()).await {
+                if let Err(err) = retry_state.retry(err).await {
                     if ctx.sender.send(Err(err.into())).is_err() {
                         break;
                     }
