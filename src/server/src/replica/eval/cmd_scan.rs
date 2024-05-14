@@ -1,3 +1,4 @@
+use log::trace;
 // Copyright 2023-present The Sekas Authors.
 // Copyright 2022 The Engula Authors.
 //
@@ -98,6 +99,8 @@ where
             }));
         }
     }
+
+    trace!("scan shard {}, version: {}", req.shard_id, req.start_version);
 
     let mut req = req.clone();
     let snapshot_mode = match &req.prefix {

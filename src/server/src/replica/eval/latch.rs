@@ -244,7 +244,7 @@ pub mod remote {
             let latch = entry.value_mut();
             if !latch.hold {
                 latch.hold = true;
-                log::debug!("acquire shard {} user key {:?}", shard_id, key);
+                log::debug!("acquire row latch, shard: {} user key: {:?}", shard_id, key);
                 Ok(RemoteLatchGuard {
                     hold: true,
                     shard_key: ShardKey { shard_id, user_key: key.to_owned() },
@@ -252,7 +252,7 @@ pub mod remote {
                 })
             } else {
                 log::debug!(
-                    "acquire shard {} user key {:?}, latch is hold, wait it release",
+                    "acquire row latch, shard: {} user key: {:?}, latch is hold, wait it release",
                     shard_id,
                     key
                 );
@@ -407,6 +407,13 @@ pub mod remote {
                             ))
                         },
                     )?;
+
+                trace!(
+                    "txn record state is {}, start version: {}, commit version: {:?}",
+                    txn_record.state.as_str_name(),
+                    start_version,
+                    txn_record.commit_version
+                );
 
                 let mut delete_intent = false;
                 let (actual_txn_state, commit_version) = if txn_record.state == TxnState::Running {
