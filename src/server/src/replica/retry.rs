@@ -64,9 +64,16 @@ pub async fn execute(
 
     // TODO(walter) detect group request timeout.
     let mut freshed_descriptor = None;
+    let mut retry_count = 0;
     loop {
+        trace!(
+            "group {} try execute request, epoch: {}, retry count: {}",
+            exec_ctx.group_id,
+            exec_ctx.epoch,
+            retry_count
+        );
         exec_ctx.reset();
-        trace!("group {} try execute request with epoch {}", exec_ctx.group_id, exec_ctx.epoch);
+        retry_count += 1;
         match replica.execute(&mut exec_ctx, request).await {
             Ok(resp) => {
                 let resp = if let Some(descriptor) = freshed_descriptor {
@@ -77,11 +84,13 @@ pub async fn execute(
                 return Ok(resp);
             }
             Err(Error::ServiceIsBusy(_)) | Err(Error::GroupNotReady(_)) => {
+                trace!("execute request whith service busy or group not ready");
                 // sleep and retry.
                 NODE_RETRY_TOTAL.inc();
                 sekas_runtime::time::sleep(Duration::from_micros(200)).await;
             }
             Err(Error::EpochNotMatch(desc)) => {
+                trace!("execute request whith epoch not match, target desc: {desc:?}");
                 if is_executable(&desc, request) {
                     debug_assert_ne!(desc.epoch, exec_ctx.epoch);
                     exec_ctx.epoch = desc.epoch;

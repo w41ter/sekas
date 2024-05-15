@@ -24,7 +24,7 @@ use std::sync::{Arc, Mutex};
 use std::task::Poll;
 
 use futures::channel::mpsc;
-use log::{info, warn};
+use log::{info, trace, warn};
 use sekas_api::server::v1::group_request_union::Request;
 use sekas_api::server::v1::group_response_union::Response;
 use sekas_api::server::v1::*;
@@ -439,8 +439,20 @@ impl Replica {
         } else if exec_ctx.forward_shard_id.is_some() {
             Ok(())
         } else if exec_ctx.epoch < lease_state.descriptor.epoch {
+            trace!(
+                "request epoch {} less than local epoch {}, group: {}, replica: {}",
+                exec_ctx.epoch,
+                lease_state.descriptor.epoch,
+                self.info.group_id,
+                self.info.replica_id
+            );
             Err(Error::EpochNotMatch(lease_state.descriptor.clone()))
         } else if lease_state.has_shard_moving() && matches!(req, Request::AcceptShard(_)) {
+            trace!(
+                "the request shard is in moving, group: {}, replica: {}",
+                self.info.group_id,
+                self.info.replica_id
+            );
             // At the same time, there can only be one moving shard task.
             Err(Error::ServiceIsBusy(BusyReason::Moving))
         } else {

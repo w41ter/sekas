@@ -420,6 +420,14 @@ impl Txn {
             start_version,
             user_key: user_key.to_owned(),
         });
+
+        trace!(
+            "get key from shard {}, group: {}, start version: {}",
+            shard.id,
+            group.id,
+            start_version
+        );
+
         let mut group_client = GroupClient::new(group, self.db.client.clone());
         group_client.set_timeout_opt(timeout);
         match group_client.request(&req).await? {

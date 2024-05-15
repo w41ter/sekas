@@ -184,9 +184,10 @@ impl TxnStateTable {
 
     /// Get the corresponding txn record.
     pub async fn get_txn_record(&self, start_version: u64) -> Result<Option<TxnRecord>> {
+        trace!("get txn record, start version: {}", start_version);
         let hash_tag = system::txn::hash_tag(start_version);
         let txn_prefix = keys::txn_prefix(hash_tag, start_version);
-        let scan_resp = self.scan_txn_keys(&txn_prefix).await?;
+        let scan_resp = self.scan_txn_keys(&txn_prefix, start_version).await?;
         parse_txn_record(hash_tag, start_version, scan_resp.data)
     }
 
@@ -242,12 +243,24 @@ impl TxnStateTable {
 }
 
 impl TxnStateTable {
-    async fn scan_txn_keys(&self, txn_prefix: &[u8]) -> Result<ShardScanResponse> {
+    async fn scan_txn_keys(
+        &self,
+        txn_prefix: &[u8],
+        start_version: u64,
+    ) -> Result<ShardScanResponse> {
         let router = self.client.router();
         let mut retry_state = RetryState::new(TXN_TIMEOUT);
         loop {
             let (group_state, shard_desc) = router.find_shard(col::txn_col_id(), txn_prefix)?;
+            trace!(
+                "scan txn keys, group: {} shard {}, version: {}",
+                group_state.id,
+                shard_desc.id,
+                start_version
+            );
+
             let mut group_client = GroupClient::new(group_state, self.client.clone());
+            group_client.set_timeout_opt(retry_state.timeout());
 
             let request = Request::Scan(ShardScanRequest {
                 shard_id: shard_desc.id,
