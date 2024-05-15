@@ -121,11 +121,7 @@ message AllocTxnIdResponse {
 	uint64 num = 2;
 }
 
-message AdminRequest { AdminRequestUnion request = 1; }
-
-message AdminResponse { AdminResponseUnion response = 1; }
-
-message AdminRequestUnion {
+message AdminRequest {
     oneof request {
         GetDatabaseRequest get_database = 1;
         ListDatabasesRequest list_databases = 2;
@@ -140,7 +136,7 @@ message AdminRequestUnion {
     }
 }
 
-message AdminResponseUnion {
+message AdminResponse {
     oneof response {
         GetDatabaseResponse get_database = 1;
         ListDatabasesResponse list_databases = 2;

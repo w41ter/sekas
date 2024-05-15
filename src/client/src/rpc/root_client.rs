@@ -20,8 +20,8 @@ use std::time::{Duration, Instant};
 use derivative::Derivative;
 use log::trace;
 use prost::Message;
-use sekas_api::server::v1::admin_request_union::Request;
-use sekas_api::server::v1::admin_response_union::Response;
+use sekas_api::server::v1::admin_request::Request;
+use sekas_api::server::v1::admin_response::Response;
 use sekas_api::server::v1::root_client::RootClient;
 use sekas_api::server::v1::*;
 use tokio::sync::Mutex;
@@ -36,7 +36,7 @@ use crate::{Error as ClientError, Result};
 macro_rules! extract_admin_response {
     ($resp:expr, $cond:path) => {
         match $resp {
-            Some(AdminResponseUnion { response: Some($cond(resp)) }) => resp,
+            Some($cond(resp)) => resp,
             _ => {
                 return Err(ClientError::Internal(
                     format!("Invalid response, `{}` is required", stringify!($cond)).into(),
@@ -390,75 +390,51 @@ impl ClientCore {
 
 impl AdminRequestBuilder {
     pub fn create_database(name: String) -> AdminRequest {
-        AdminRequest {
-            request: Some(AdminRequestUnion {
-                request: Some(Request::CreateDatabase(CreateDatabaseRequest { name })),
-            }),
-        }
+        AdminRequest { request: Some(Request::CreateDatabase(CreateDatabaseRequest { name })) }
     }
 
     pub fn delete_database(name: String) -> AdminRequest {
-        AdminRequest {
-            request: Some(AdminRequestUnion {
-                request: Some(Request::DeleteDatabase(DeleteDatabaseRequest { name })),
-            }),
-        }
+        AdminRequest { request: Some(Request::DeleteDatabase(DeleteDatabaseRequest { name })) }
     }
 
     pub fn list_database() -> AdminRequest {
-        AdminRequest {
-            request: Some(AdminRequestUnion {
-                request: Some(Request::ListDatabases(ListDatabasesRequest {})),
-            }),
-        }
+        AdminRequest { request: Some(Request::ListDatabases(ListDatabasesRequest {})) }
     }
 
     pub fn get_database(name: String) -> AdminRequest {
-        AdminRequest {
-            request: Some(AdminRequestUnion {
-                request: Some(Request::GetDatabase(GetDatabaseRequest { name })),
-            }),
-        }
+        AdminRequest { request: Some(Request::GetDatabase(GetDatabaseRequest { name })) }
     }
 
     pub fn create_table(database: DatabaseDesc, co_name: String) -> AdminRequest {
         AdminRequest {
-            request: Some(AdminRequestUnion {
-                request: Some(Request::CreateTable(CreateTableRequest {
-                    name: co_name,
-                    database: Some(database),
-                })),
-            }),
+            request: Some(Request::CreateTable(CreateTableRequest {
+                name: co_name,
+                database: Some(database),
+            })),
         }
     }
 
     pub fn delete_table(database: DatabaseDesc, co_name: String) -> AdminRequest {
         AdminRequest {
-            request: Some(AdminRequestUnion {
-                request: Some(Request::DeleteTable(DeleteTableRequest {
-                    name: co_name,
-                    database: Some(database),
-                })),
-            }),
+            request: Some(Request::DeleteTable(DeleteTableRequest {
+                name: co_name,
+                database: Some(database),
+            })),
         }
     }
 
     pub fn list_table(database: DatabaseDesc) -> AdminRequest {
         AdminRequest {
-            request: Some(AdminRequestUnion {
-                request: Some(Request::ListTables(ListTablesRequest { database: Some(database) })),
-            }),
+            request: Some(Request::ListTables(ListTablesRequest { database: Some(database) })),
         }
     }
 
     pub fn get_table(database: DatabaseDesc, co_name: String) -> AdminRequest {
         AdminRequest {
-            request: Some(AdminRequestUnion {
-                request: Some(Request::GetTable(GetTableRequest {
-                    name: co_name,
-                    database: Some(database),
-                })),
-            }),
+            request: Some(Request::GetTable(GetTableRequest {
+                name: co_name,
+                database: Some(database),
+            })),
         }
     }
 }

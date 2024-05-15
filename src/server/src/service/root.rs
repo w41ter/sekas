@@ -95,53 +95,58 @@ impl Server {
     async fn handle_admin(&self, req: AdminRequest) -> Result<AdminResponse> {
         let mut res = AdminResponse::default();
         let req = req.request.ok_or_else(|| Error::InvalidArgument("AdminRequest".into()))?;
-        res.response = Some(self.wrap(self.handle_admin_union(req).await).await?);
+        res.response = Some(self.wrap(self.handle_admin_request(req).await).await?);
         Ok(res)
     }
 
-    async fn handle_admin_union(&self, req: AdminRequestUnion) -> Result<AdminResponseUnion> {
-        let req = req.request.ok_or_else(|| Error::InvalidArgument("AdminRequestUnion".into()))?;
+    async fn handle_admin_request(
+        &self,
+        req: admin_request::Request,
+    ) -> Result<admin_response::Response> {
+        use admin_request::Request;
+        use admin_response::Response;
+
         let res = match req {
-            admin_request_union::Request::CreateDatabase(req) => {
+            Request::CreateDatabase(req) => {
                 let res = self.handle_create_database(req).await?;
-                admin_response_union::Response::CreateDatabase(res)
+                Response::CreateDatabase(res)
             }
-            admin_request_union::Request::UpdateDatabase(_req) => {
+            Request::UpdateDatabase(_req) => {
                 todo!()
             }
-            admin_request_union::Request::DeleteDatabase(req) => {
+            Request::DeleteDatabase(req) => {
                 let res = self.handle_delete_database(req).await?;
-                admin_response_union::Response::DeleteDatabase(res)
+                Response::DeleteDatabase(res)
             }
-            admin_request_union::Request::GetDatabase(req) => {
+            Request::GetDatabase(req) => {
                 let res = self.handle_get_database(req).await?;
-                admin_response_union::Response::GetDatabase(res)
+                Response::GetDatabase(res)
             }
-            admin_request_union::Request::ListDatabases(req) => {
+            Request::ListDatabases(req) => {
                 let res = self.handle_list_database(req).await?;
-                admin_response_union::Response::ListDatabases(res)
+                Response::ListDatabases(res)
             }
-            admin_request_union::Request::CreateTable(req) => {
+            Request::CreateTable(req) => {
                 let res = self.handle_create_table(req).await?;
-                admin_response_union::Response::CreateTable(res)
+                Response::CreateTable(res)
             }
-            admin_request_union::Request::UpdateTable(_req) => {
+            Request::UpdateTable(_req) => {
                 todo!()
             }
-            admin_request_union::Request::DeleteTable(req) => {
+            Request::DeleteTable(req) => {
                 let res = self.handle_delete_table(req).await?;
-                admin_response_union::Response::DeleteTable(res)
+                Response::DeleteTable(res)
             }
-            admin_request_union::Request::GetTable(req) => {
+            Request::GetTable(req) => {
                 let res = self.handle_get_table(req).await?;
-                admin_response_union::Response::GetTable(res)
+                Response::GetTable(res)
             }
-            admin_request_union::Request::ListTables(req) => {
+            Request::ListTables(req) => {
                 let res = self.handle_list_table(req).await?;
-                admin_response_union::Response::ListTables(res)
+                Response::ListTables(res)
             }
         };
-        Ok(AdminResponseUnion { response: Some(res) })
+        Ok(res)
     }
 
     async fn handle_create_database(
