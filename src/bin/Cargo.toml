@@ -12,22 +12,27 @@ default-run = "sekas"
 
 [dependencies]
 sekas-client = { path = "../client", version = "0.5" }
+sekas-parser = { path = "../parser", version = "0.5" }
 sekas-server = { path = "../server", version = "0.5" }
+sekas-rock = { path = "../rock", version = "0.5" }
 sekas-runtime = { path = "../runtime", version = "0.5" }
 
 lazy_static.workspace = true
 log.workspace = true
 num_cpus.workspace = true
+paste.workspace = true
+prometheus.workspace = true
 rand = { workspace = true, features = ["small_rng"] }
 rustyline.workspace = true
 serde.workspace = true
-paste.workspace = true
-prometheus.workspace = true
+serde_json.workspace = true
 tokio.workspace = true
 toml.workspace = true
 tracing.workspace = true
 
+anyhow = "1.0"
+atty = "0.2"
 clap = { version = "3.2", features = ["derive"] }
 config = { version = "0.13", features = ["toml"] }
+tabled = "0.15"
 tracing-subscriber = { version = "0.3", features = ["std", "env-filter"] }
-atty = "0.2"

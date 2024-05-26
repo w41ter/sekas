@@ -1,3 +1,4 @@
+// Copyright 2024-present The Sekas Authors.
 // Copyright 2022 The Engula Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -145,6 +146,10 @@ impl Server {
                 let res = self.handle_list_table(req).await?;
                 Response::ListTables(res)
             }
+            Request::Statement(req) => {
+                let res = self.handle_statement(req).await?;
+                Response::Statement(res)
+            }
         };
         Ok(res)
     }
@@ -208,6 +213,11 @@ impl Server {
         })?;
         let tables = self.root.list_table(&database).await?;
         Ok(ListTablesResponse { tables })
+    }
+
+    async fn handle_statement(&self, req: StatementRequest) -> Result<StatementResponse> {
+        let json_body = self.root.handle_statement(&req.statement).await?;
+        Ok(StatementResponse { json_body })
     }
 
     async fn wrap<T>(&self, result: Result<T>) -> Result<T> {

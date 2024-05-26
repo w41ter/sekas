@@ -219,6 +219,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7ff69b9dd49fd426c69a0db9fc04dd934cdb6645ff000864d98f7e2af8830eaa"
 
 [[package]]
+name = "bytecount"
+version = "0.6.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5ce89b21cab1437276d2650d57e971f9d548a2d9037cc231abdc0562b97498ce"
+
+[[package]]
 name = "byteorder"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1450,6 +1456,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b15813163c1d831bf4a13c3610c05c0d03b39feb07f7e09fa234dac9b15aaf39"
 
 [[package]]
+name = "papergrid"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9ad43c07024ef767f9160710b3a6773976194758c7919b17e63b863db0bdf7fb"
+dependencies = [
+ "bytecount",
+ "fnv",
+ "unicode-width",
+]
+
+[[package]]
 name = "parking_lot"
 version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2264,6 +2281,7 @@ dependencies = [
 name = "sekas"
 version = "0.5.0"
 dependencies = [
+ "anyhow",
  "atty",
  "clap",
  "config",
@@ -2275,9 +2293,13 @@ dependencies = [
  "rand 0.8.5",
  "rustyline",
  "sekas-client",
+ "sekas-parser",
+ "sekas-rock",
  "sekas-runtime",
  "sekas-server",
  "serde",
+ "serde_json",
+ "tabled",
  "tokio",
  "toml",
  "tracing",
@@ -2312,6 +2334,7 @@ dependencies = [
  "prometheus-static-metric",
  "prost 0.11.9",
  "sekas-api",
+ "sekas-parser",
  "sekas-rock",
  "sekas-runtime",
  "sekas-schema",
@@ -2353,6 +2376,17 @@ dependencies = [
  "sekas-rock",
  "sekas-runtime",
  "syn 2.0.58",
+]
+
+[[package]]
+name = "sekas-parser"
+version = "0.5.0"
+dependencies = [
+ "paste",
+ "sekas-rock",
+ "serde",
+ "serde_json",
+ "thiserror",
 ]
 
 [[package]]
@@ -2431,6 +2465,7 @@ dependencies = [
  "log",
  "num_cpus",
  "paste",
+ "pest",
  "pin-project",
  "prometheus",
  "prometheus-static-metric",
@@ -2749,6 +2784,30 @@ checksum = "a75fb188eb626b924683e3b95e3a48e63551fcfb51949de2f06a9d91dbee93c9"
 dependencies = [
  "core-foundation-sys",
  "libc",
+]
+
+[[package]]
+name = "tabled"
+version = "0.15.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4c998b0c8b921495196a48aabaf1901ff28be0760136e31604f7967b0792050e"
+dependencies = [
+ "papergrid",
+ "tabled_derive",
+ "unicode-width",
+]
+
+[[package]]
+name = "tabled_derive"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4c138f99377e5d653a371cdad263615634cfc8467685dfe8e73e2b8e98f44b17"
+dependencies = [
+ "heck",
+ "proc-macro-error",
+ "proc-macro2",
+ "quote",
+ "syn 1.0.109",
 ]
 
 [[package]]

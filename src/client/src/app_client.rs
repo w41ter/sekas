@@ -92,6 +92,12 @@ impl SekasClient {
         }
     }
 
+    /// Issue a statement to root.
+    #[inline]
+    pub async fn handle_statement(&self, statement: &str) -> AppResult<Vec<u8>> {
+        Ok(self.inner.root_client.handle_statement(statement).await?)
+    }
+
     /// Return the options.
     #[inline]
     pub fn options(&self) -> &ClientOptions {

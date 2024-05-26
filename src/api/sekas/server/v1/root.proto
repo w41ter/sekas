@@ -133,6 +133,7 @@ message AdminRequest {
         CreateTableRequest create_table = 8;
         UpdateTableRequest update_table = 9;
         DeleteTableRequest delete_table = 10;
+        StatementRequest statement = 11;
     }
 }
 
@@ -148,6 +149,7 @@ message AdminResponse {
         CreateTableResponse create_table = 8;
         UpdateTableResponse update_table = 9;
         DeleteTableResponse delete_table = 10;
+        StatementResponse statement = 11;
     }
 }
 
@@ -213,3 +215,12 @@ message DeleteTableRequest {
 }
 
 message DeleteTableResponse {}
+
+message StatementRequest {
+    string statement = 1;
+}
+
+message StatementResponse {
+    // Json is enough to express columns and types.
+    bytes json_body = 1;
+}

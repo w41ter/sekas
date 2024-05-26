@@ -35,15 +35,16 @@ tracing.workspace = true
 num_cpus.workspace = true
 rand.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 
 const-str = "0.4"
 dashmap = "5.4"
 http-body = "0.4"
 hyper = "0.14"
 libc = "0.2"
+pest = "2.7"
 pin-project = "1"
 uuid = { version = "1.1", features = ["v4"] }
-serde_json = "1.0"
 sysinfo = "0.26"
 tokio-util = { version = "0.7", features = ["time"] }
 url = "2.3"

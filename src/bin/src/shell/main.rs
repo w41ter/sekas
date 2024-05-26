@@ -13,18 +13,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::collections::HashMap;
 use std::io::Write;
 use std::time::Duration;
 
+use anyhow::{Context, Error};
 use clap::Parser;
-use lazy_static::lazy_static;
+use log::error;
 use rustyline::error::ReadlineError;
 use rustyline::Editor;
-use sekas_client::{AppError, ClientOptions, Database, SekasClient, TableDesc};
+use sekas_client::{ClientOptions, SekasClient};
+use sekas_parser::{ExecuteResult, Statement};
 
-type ParseResult<T = Request> = std::result::Result<T, String>;
-type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
+type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Parser)]
 #[clap(about = "Start sekas shell")]
@@ -40,279 +40,78 @@ pub struct Command {
 
 impl Command {
     pub fn run(self) {
-        if let Some(level) = self.log_level {
-            tracing_subscriber::fmt()
-                .with_max_level(level)
-                .with_ansi(atty::is(atty::Stream::Stderr))
-                .init();
-        } else {
-            tracing_subscriber::fmt()
-                .with_max_level(tracing::Level::ERROR)
-                .with_ansi(atty::is(atty::Stream::Stderr))
-                .init();
-        }
+        tracing_subscriber::fmt()
+            .with_max_level(self.log_level.unwrap_or(tracing::Level::ERROR))
+            .with_ansi(atty::is(atty::Stream::Stderr))
+            .init();
 
-        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("build runtime with current thread");
         runtime.block_on(async move {
             editor_main(self.addrs).await;
         });
     }
 }
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub enum Token {
-    Get,
-    Put,
-    Delete,
-    Help,
-    Config,
-    Db,
-    Coll,
-}
-
-enum Request {
-    None,
-    Usage,
-    Get { key: Vec<u8>, db: String, table: String },
-    Put { key: Vec<u8>, value: Vec<u8>, db: String, table: String },
-    Delete { key: Vec<u8>, db: String, table: String },
-    Config { key: String, value: String },
-}
-
 struct Session {
     client: SekasClient,
-    config: HashMap<String, String>,
-    databases: HashMap<String, Database>,
-    tables: HashMap<String, TableDesc>,
 }
 
-const CONFIG_DB: &str = "database";
-const CONFIG_COLL: &str = "table";
-const CONFIG_CREATE_IF_MISSING: &str = "create-if-missing";
-
 impl Session {
-    async fn parse_and_execute(&mut self, input: &[u8]) -> Result<()> {
-        match self.parse_request(input)? {
-            Request::None => Ok(()),
-            Request::Usage => {
-                usage()?;
-                Ok(())
-            }
-            Request::Config { key, value } => {
-                self.config.insert(key, value);
-                Ok(())
-            }
-            Request::Get { key, db, table } => {
-                let db = self.open_database(&db).await?;
-                let table = self.open_table(&db, &table).await?;
-                if let Some(value) = db.get(table.id, key).await? {
-                    std::io::stdout().write_all(&value)?;
-                }
-                std::io::stdout().write_all(&[b'\n'])?;
-                std::io::stdout().flush()?;
-                Ok(())
-            }
-            Request::Put { key, value, db, table } => {
-                let db = self.open_database(&db).await?;
-                let table = self.open_table(&db, &table).await?;
-                db.put(table.id, key, value).await?;
-                Ok(())
-            }
-            Request::Delete { key, db, table } => {
-                let db = self.open_database(&db).await?;
-                let table = self.open_table(&db, &table).await?;
-                db.delete(table.id, key).await?;
-                Ok(())
-            }
-        }
-    }
-
-    fn parse_request(&self, input: &[u8]) -> ParseResult {
-        let input = skip_space(input);
-        match next_token(input) {
-            Some((input, Token::Get)) => self.parse_get_request(input),
-            Some((input, Token::Put)) => self.parse_put_request(input),
-            Some((input, Token::Delete)) => self.parse_delete_request(input),
-            Some((input, Token::Config)) => self.parse_config_request(input),
-            Some((_, Token::Help)) => Ok(Request::Usage),
-            _ => {
-                if is_eof(input) {
-                    Ok(Request::None)
-                } else if let Ok(input) = String::from_utf8(input.to_owned()) {
-                    Err(format!("unknown sequences: {input}",))
-                } else {
-                    Err(format!("unknown sequences: {input:?}",))
-                }
-            }
-        }
-    }
-
-    fn parse_get_request(&self, input: &[u8]) -> ParseResult {
-        let input = skip_space(input);
-        let Some((input, key)) = read_entry(input) else {
-            return Err("expect key, but nothing are found".to_owned());
+    async fn parse_and_execute(&mut self, input: &str) -> Result<()> {
+        let Some(statement) = sekas_parser::parse(input).context("parse into statement")? else {
+            return Ok(());
         };
-
-        let (input, db) = self.parse_or_get_config(input, Token::Db, CONFIG_DB)?;
-        let (input, table) = self.parse_or_get_config(input, Token::Coll, CONFIG_COLL)?;
-
-        must_eof(input)?;
-
-        Ok(Request::Get { key, db, table })
-    }
-
-    fn parse_put_request(&self, input: &[u8]) -> ParseResult {
-        let input = skip_space(input);
-        let Some((input, key)) = read_entry(input) else {
-            return Err("expect key, but nothing are found".to_owned());
-        };
-
-        let input = skip_space(input);
-        let Some((input, value)) = read_entry(input) else {
-            return Err("expect value, but nothing are found".to_owned());
-        };
-
-        let (input, db) = self.parse_or_get_config(input, Token::Db, CONFIG_DB)?;
-        let (input, table) = self.parse_or_get_config(input, Token::Coll, CONFIG_COLL)?;
-
-        must_eof(input)?;
-
-        Ok(Request::Put { key, value, db, table })
-    }
-
-    fn parse_delete_request(&self, input: &[u8]) -> ParseResult {
-        let input = skip_space(input);
-        let Some((input, key)) = read_entry(input) else {
-            return Err("expect key, but nothing are found".to_owned());
-        };
-
-        let (input, db) = self.parse_or_get_config(input, Token::Db, CONFIG_DB)?;
-        let (input, table) = self.parse_or_get_config(input, Token::Coll, CONFIG_COLL)?;
-
-        must_eof(input)?;
-
-        Ok(Request::Delete { key, db, table })
-    }
-
-    fn parse_config_request(&self, input: &[u8]) -> ParseResult {
-        let input = skip_space(input);
-        let Some((input, key)) = read_entry(input) else {
-            return Err("expect key, but nothing are found".to_owned());
-        };
-        let key =
-            String::from_utf8(key).map_err(|_| "the key is invalid UTF-8 sequence".to_string())?;
-
-        let input = skip_space(input);
-        let Some((input, value)) = read_entry(input) else {
-            return Err("expect value, but nothing are found".to_owned());
-        };
-
-        let value = String::from_utf8(value)
-            .map_err(|_| "the key is invalid UTF-8 sequence".to_string())?;
-        must_eof(input)?;
-
-        Ok(Request::Config { key, value })
-    }
-
-    fn parse_or_get_config<'a>(
-        &self,
-        input: &'a [u8],
-        tok: Token,
-        config: &str,
-    ) -> ParseResult<(&'a [u8], String)> {
-        if let Some((next, item)) = self.parse_config_item(input, tok, config)? {
-            Ok((next, item))
-        } else if let Some(item) = self.config.get(config) {
-            Ok((input, item.to_owned()))
+        let execute_result = if let Some(result) = self.try_handle_local_statement(statement)? {
+            result
         } else {
-            Err(format!("no {config} specified"))
+            let body = self.client.handle_statement(input).await?;
+            serde_json::from_slice(&body).context("deserialize execute result")?
+        };
+
+        self.show_result(execute_result);
+        Ok(())
+    }
+
+    fn try_handle_local_statement(&self, statement: Statement) -> Result<Option<ExecuteResult>> {
+        match statement {
+            Statement::Debug(debug) => Ok(Some(debug.execute())),
+            Statement::Help(help) => Ok(Some(help.execute())),
+            Statement::Echo(echo) => Ok(Some(ExecuteResult::Msg(echo.message))),
+            Statement::CreateDb(_) => todo!(),
+            Statement::CreateTable(_) => todo!(),
+            Statement::Config(_) => Ok(None),
         }
     }
 
-    fn parse_config_item<'a>(
-        &self,
-        input: &'a [u8],
-        tok: Token,
-        name: &str,
-    ) -> ParseResult<Option<(&'a [u8], String)>> {
-        let input = skip_space(input);
-        if let Some(input) = expect_token(input, tok) {
-            let input = skip_space(input);
-            let Some((input, item)) = read_entry(input) else {
-                return Err(format!("expect {name}, but nothing are found"));
-            };
-            let item = String::from_utf8(item)
-                .map_err(|_| format!("the value of {name} is invalid UTF-8 sequence"))?;
-            return Ok(Some((input, item)));
-        }
-        Ok(None)
-    }
+    fn show_result(&self, result: ExecuteResult) {
+        use tabled::builder::Builder;
+        use tabled::settings::Style;
 
-    async fn create_or_open_database(&mut self, database: &str) -> Result<Database> {
-        match self.client.create_database(database.to_owned()).await {
-            Ok(db) => {
-                self.databases.insert(database.to_owned(), db.clone());
-                Ok(db)
+        match result {
+            ExecuteResult::Data(data) => {
+                let total_columns = data.columns.len();
+                let mut builder = Builder::new();
+                builder.push_record(data.columns);
+                for row in data.rows {
+                    if row.values.len() != total_columns {
+                        error!(
+                            "the result row len {} is not equals to columns len {}",
+                            row.values.len(),
+                            total_columns
+                        );
+                    }
+                    builder.push_record(row.values.iter().map(ToString::to_string));
+                }
+
+                let table = builder.build().with(Style::ascii_rounded()).to_string();
+                println!("{}", table);
             }
-            Err(AppError::AlreadyExists(_)) => {
-                Ok(self.client.open_database(database.to_owned()).await?)
+            ExecuteResult::Msg(msg) => {
+                println!("{}", msg);
             }
-            Err(e) => Err(e.into()),
-        }
-    }
-
-    async fn create_or_open_table(&mut self, db: &Database, table: &str) -> Result<TableDesc> {
-        match db.create_table(table.to_owned()).await {
-            Ok(co) => {
-                self.tables.insert(format!("{}-{}", db.name(), table), co.clone());
-                Ok(co)
-            }
-            Err(AppError::AlreadyExists(_)) => Ok(db.open_table(table.to_owned()).await?),
-            Err(e) => Err(e.into()),
-        }
-    }
-
-    async fn open_database(&mut self, name: &str) -> Result<Database> {
-        let create_if_missing =
-            self.config.get(CONFIG_CREATE_IF_MISSING).map(|v| v == "true").unwrap_or_default();
-
-        if let Some(db) = self.databases.get(name) {
-            Ok(db.clone())
-        } else {
-            match self.client.open_database(name.to_owned()).await {
-                Ok(db) => {
-                    self.databases.insert(name.to_owned(), db.clone());
-                    Ok(db)
-                }
-                Err(AppError::NotFound(_)) if create_if_missing => {
-                    Ok(self.create_or_open_database(name).await?)
-                }
-                Err(e) => Err(e.into()),
-            }
-        }
-    }
-
-    async fn open_table(&mut self, db: &Database, table: &str) -> Result<TableDesc> {
-        let create_if_missing =
-            self.config.get(CONFIG_CREATE_IF_MISSING).map(|v| v == "true").unwrap_or_default();
-
-        let name = format!("{}-{}", db.name(), table);
-        if let Some(co) = self.tables.get(&name).cloned() {
-            Ok(co)
-        } else {
-            let co = match db.open_table(table.to_owned()).await {
-                Ok(co) => {
-                    self.tables.insert(table.to_owned(), co.clone());
-                    co
-                }
-                Err(AppError::NotFound(_)) if create_if_missing => {
-                    self.create_or_open_table(db, table).await?
-                }
-                Err(e) => {
-                    return Err(e.into());
-                }
-            };
-            Ok(co)
         }
     }
 }
@@ -330,8 +129,10 @@ async fn editor_main(addrs: Vec<String>) {
         match readline {
             Ok(line) => {
                 let _ = editor.add_history_entry(line.as_str());
-                if let Err(err) = session.parse_and_execute(line.as_bytes()).await {
-                    std::io::stderr().write_fmt(format_args!("{:?}\n", err)).unwrap_or_default();
+                if let Err(err) = session.parse_and_execute(line.trim()).await {
+                    std::io::stderr()
+                        .write_fmt(format_args!("ERROR: {:?}\n", err))
+                        .unwrap_or_default();
                 }
             }
             Err(ReadlineError::Interrupted) => {
@@ -350,131 +151,11 @@ async fn editor_main(addrs: Vec<String>) {
     }
 }
 
-fn o(msg: &str) -> Result<()> {
-    std::io::stderr().write_all(msg.as_bytes())?;
-    Ok(())
-}
-
-fn usage() -> Result<()> {
-    o("usage: cmd [args]\n\n")?;
-    o("commands: \n")?;
-    o("\t help             \t show usage\n")?;
-    o("\t config key value \t global parameters, supported [database, table, create-if-missing]\n")?;
-    o("\t get key [db <db-name>] [table <co-name>]\n")?;
-    o("\t put key value [db <db-name>] [table <co-name>]\n")?;
-    o("\t delete key [db <db-name>] [table <co-name>]\n")?;
-    Ok(())
-}
-
 async fn new_session(addrs: Vec<String>) -> Result<Session> {
     let opts = ClientOptions {
         connect_timeout: Some(Duration::from_millis(200)),
         timeout: Some(Duration::from_millis(500)),
     };
     let client = SekasClient::new(opts, addrs).await?;
-    Ok(Session {
-        client,
-        config: HashMap::default(),
-        databases: HashMap::default(),
-        tables: HashMap::default(),
-    })
-}
-
-fn skip_space(input: &[u8]) -> &[u8] {
-    for i in 0..input.len() {
-        if input[i] != b' ' && input[i] != b'\t' && input[i] != 10 {
-            return &input[i..];
-        }
-    }
-    &input[input.len()..]
-}
-
-fn is_eof(input: &[u8]) -> bool {
-    skip_space(input).is_empty()
-}
-
-fn next_token(input: &[u8]) -> Option<(&[u8], Token)> {
-    read_entry(input)
-        .and_then(|(input, value)| global_token_map().get(&value).map(|tok| (input, *tok)))
-}
-
-fn expect_token(input: &[u8], tok: Token) -> Option<&[u8]> {
-    if let Some((input, value)) = read_entry(input) {
-        match global_token_map().get(&value) {
-            Some(got_tok) if *got_tok == tok => {
-                return Some(input);
-            }
-            _ => {}
-        }
-    }
-    None
-}
-
-fn must_eof(input: &[u8]) -> ParseResult<()> {
-    let input = skip_space(input);
-    if !is_eof(input) {
-        Err(format!(
-            "unexpected sequence: {}",
-            std::str::from_utf8(input).expect("invalid UTF-8 sequences")
-        ))
-    } else {
-        Ok(())
-    }
-}
-
-fn read_entry(input: &[u8]) -> Option<(&[u8], Vec<u8>)> {
-    let mut entry = vec![];
-    let len = input.len();
-    let mut i = 0;
-    while i < len {
-        if input[i] == b'\\' {
-            if i + 1 == len {
-                println!("unexpected escape, found EOF");
-                return None;
-            }
-            match input[i + 1] {
-                b'n' => entry.push(b'\n'),
-                b't' => entry.push(b'\t'),
-                b'r' => entry.push(b'\r'),
-                b' ' => entry.push(b' '),
-                b'\\' => entry.push(b'\\'),
-                _ => {
-                    println!("unknown escape: {:?}", input[i + 1]);
-                    return None;
-                }
-            }
-            i += 2;
-            continue;
-        } else if 33 <= input[i] && input[i] < 127 {
-            // from ! to `
-            entry.push(input[i]);
-            i += 1;
-            continue;
-        } else {
-            return Some((&input[i..], entry));
-        }
-    }
-    if entry.is_empty() {
-        None
-    } else {
-        Some((&input[input.len()..], entry))
-    }
-}
-
-lazy_static! {
-    static ref INSTANCE: HashMap<Vec<u8>, Token> = {
-        let mut m = HashMap::new();
-        m.insert(Vec::from(&b"get"[..]), Token::Get);
-        m.insert(Vec::from(&b"put"[..]), Token::Put);
-        m.insert(Vec::from(&b"delete"[..]), Token::Delete);
-        m.insert(Vec::from(&b"help"[..]), Token::Help);
-        m.insert(Vec::from(&b"config"[..]), Token::Config);
-        m.insert(Vec::from(&b"db"[..]), Token::Db);
-        m.insert(Vec::from(&b"table"[..]), Token::Coll);
-        m
-    };
-}
-
-fn global_token_map() -> &'static HashMap<Vec<u8>, Token> {
-    &INSTANCE
+    Ok(Session { client })
 }

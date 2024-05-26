@@ -1,3 +1,4 @@
+// Copyright 2024-present The Sekas Authors.
 // Copyright 2022 The Engula Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -157,6 +158,18 @@ impl Client {
         let resp = self.admin(AdminRequestBuilder::list_table(db_desc)).await?;
         let resp = extract_admin_response!(resp.response, Response::ListTables);
         Ok(resp.tables)
+    }
+
+    pub async fn handle_statement(&self, statement: &str) -> Result<Vec<u8>> {
+        let resp = self
+            .admin(AdminRequest {
+                request: Some(Request::Statement(StatementRequest {
+                    statement: statement.to_owned(),
+                })),
+            })
+            .await?;
+        let resp = extract_admin_response!(resp.response, Response::Statement);
+        Ok(resp.json_body)
     }
 
     pub async fn get_table(

@@ -21,6 +21,7 @@ mod liveness;
 mod metrics;
 mod schedule;
 mod schema;
+mod stmt_executor;
 mod store;
 mod watch;
 
