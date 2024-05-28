@@ -2482,6 +2482,7 @@ dependencies = [
  "sekas-client",
  "sekas-etcd-proxy",
  "sekas-macro",
+ "sekas-parser",
  "sekas-rock",
  "sekas-runtime",
  "sekas-schema",

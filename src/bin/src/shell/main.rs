@@ -82,7 +82,7 @@ impl Session {
             Statement::Echo(echo) => Ok(Some(ExecuteResult::Msg(echo.message))),
             Statement::CreateDb(_) => todo!(),
             Statement::CreateTable(_) => todo!(),
-            Statement::Config(_) => Ok(None),
+            Statement::Config(_) | Statement::Show(_) => Ok(None),
         }
     }
 
@@ -103,7 +103,10 @@ impl Session {
                             total_columns
                         );
                     }
-                    builder.push_record(row.values.iter().map(ToString::to_string));
+                    builder.push_record(row.values.iter().map(|v| match v {
+                        serde_json::Value::String(str) => str.clone(),
+                        _ => v.to_string(),
+                    }));
                 }
 
                 let table = builder.build().with(Style::ascii_rounded()).to_string();
@@ -112,6 +115,7 @@ impl Session {
             ExecuteResult::Msg(msg) => {
                 println!("{}", msg);
             }
+            ExecuteResult::None => (),
         }
     }
 }

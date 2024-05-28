@@ -61,4 +61,5 @@ pub struct ColumnResult {
 pub enum ExecuteResult {
     Data(ColumnResult),
     Msg(String),
+    None,
 }

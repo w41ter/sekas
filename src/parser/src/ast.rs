@@ -22,6 +22,7 @@ pub enum Statement {
     Debug(DebugStatement),
     Echo(EchoStatement),
     Help(HelpStatement),
+    Show(ShowStatement),
 }
 
 #[derive(Debug)]
@@ -58,6 +59,12 @@ pub struct HelpStatement {
     pub topic: Option<String>,
 }
 
+#[derive(Debug)]
+pub struct ShowStatement {
+    pub property: String,
+    pub from: Option<String>,
+}
+
 impl DebugStatement {
     #[inline]
     pub fn execute(&self) -> ExecuteResult {
@@ -78,6 +85,7 @@ impl HelpStatement {
     fn display_topic(topic: &str) -> String {
         match topic {
             "create" | "CREATE" => Self::display_create_topic(),
+            "show" | "SHOW" => Self::display_show_topic(),
             _ => {
                 format!("unkonwn command `{}`. Try `help`?", topic)
             }
@@ -86,14 +94,27 @@ impl HelpStatement {
 
     fn display_create_topic() -> String {
         r##"
-CREATE DATABASE [IF NOT EXISTS] <name>
+CREATE DATABASE [IF NOT EXISTS] <name:ident>
     Create a new database.
 
-CREATE TABLE [IF NOT EXISTS] [<db>.]<name>
+CREATE TABLE [IF NOT EXISTS] [<db:ident>.]<name:ident>
     Create a new table.
 
 Note:
-    The <name> accepts characters [a-zA-Z0-9_-].
+    The ident accepts characters [a-zA-Z0-9_-].
+"##
+        .to_owned()
+    }
+
+    fn display_show_topic() -> String {
+        r##"
+SHOW <property:ident> [FROM <name:ident>]
+    Show properties. supported properties:
+    - databases
+    - tables FROM <database>
+
+Note:
+    The ident accepts characters [a-zA-Z0-9_-].
 "##
         .to_owned()
     }

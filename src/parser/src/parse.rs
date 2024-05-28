@@ -15,7 +15,7 @@
 use crate::token::{TokenRule, Tokenizer};
 use crate::{
     ConfigStatement, CreateDbStatement, CreateTableStatement, DebugStatement, EchoStatement,
-    HelpStatement, ParseError, ParseResult, Statement, Token,
+    HelpStatement, ParseError, ParseResult, ShowStatement, Statement, Token,
 };
 
 #[derive(Debug)]
@@ -137,9 +137,20 @@ fn parse_set_stmt(parser: &mut Parser) -> ParseResult<Statement> {
     todo!()
 }
 
+// Syntax:
+// SHOW <property:ident> [FROM <name:ident>]
 fn parse_show_stmt(parser: &mut Parser) -> ParseResult<Statement> {
     parser.next::<Token![show]>()?;
-    todo!()
+    let ident = parser.next::<Token![ident]>()?;
+    let from = if parser.peek::<Token![from]>() {
+        parser.next::<Token![from]>()?;
+        let name = parser.next::<Token![ident]>()?;
+        Some(name.value().to_owned())
+    } else {
+        None
+    };
+    parser.next::<Token![;]>()?;
+    Ok(Statement::Show(ShowStatement { property: ident.value().to_owned(), from }))
 }
 
 // Syntax:
