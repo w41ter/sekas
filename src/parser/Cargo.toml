@@ -1,0 +1,16 @@
+[package]
+name = "sekas-parser"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "The Sekas Parser."
+
+[dependencies]
+sekas-rock = { version = "0.5", path = "../rock" }
+
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+paste.workspace = true
