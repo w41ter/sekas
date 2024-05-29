@@ -63,6 +63,7 @@ keyword!(database);
 keyword!(debug);
 keyword!(echo);
 keyword!(exists);
+keyword!(from);
 keyword!(get);
 keyword!(help);
 keyword!(if);
@@ -253,6 +254,7 @@ macro_rules! Token {
     [debug] =>          { $crate::token::Debug };
     [echo] =>           { $crate::token::Echo };
     [exists] =>         { $crate::token::Exists };
+    [from] =>           { $crate::token::From };
     [get] =>            { $crate::token::Get };
     [help] =>           { $crate::token::Help };
     [if] =>             { $crate::token::If };
