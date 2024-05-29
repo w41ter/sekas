@@ -92,7 +92,7 @@ fn parse_config_stmt(parser: &mut Parser) -> ParseResult<Statement> {
 
 // Syntax:
 // CREATE DATABASE [IF NOT EXISTS] <db name:ident>
-// CREATE TABLE [IF NOT EXISTS] [<db name:ident>.] <table name:ident>
+// CREATE TABLE [IF NOT EXISTS] <db name:ident> . <table name:ident>
 fn parse_create_stmt(parser: &mut Parser) -> ParseResult<Statement> {
     parser.next::<Token![create]>()?;
     if parser.peek::<Token![database]>() {
@@ -109,17 +109,13 @@ fn parse_create_stmt(parser: &mut Parser) -> ParseResult<Statement> {
         // create table
         parser.next::<Token![table]>()?;
         let create_if_not_exists = try_parse_if_not_exists(parser)?;
-        let mut db_name: Option<String> = None;
-        let mut table_name = parser.next::<Token![ident]>()?;
-        if parser.peek::<Token![.]>() {
-            parser.next::<Token![.]>()?;
-            db_name = Some(table_name.value().to_owned());
-            table_name = parser.next::<Token![ident]>()?;
-        }
+        let db_name = parser.next::<Token![ident]>()?.value().to_owned();
+        parser.next::<Token![.]>()?;
+        let table_name = parser.next::<Token![ident]>()?.value().to_owned();
         parser.next::<Token![;]>()?;
         Ok(Statement::CreateTable(CreateTableStatement {
             db_name,
-            table_name: table_name.value().to_owned(),
+            table_name,
             create_if_not_exists,
         }))
     } else {

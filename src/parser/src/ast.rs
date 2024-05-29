@@ -38,7 +38,7 @@ pub struct CreateDbStatement {
 
 #[derive(Debug)]
 pub struct CreateTableStatement {
-    pub db_name: Option<String>,
+    pub db_name: String,
     pub table_name: String,
     pub create_if_not_exists: bool,
 }
@@ -124,6 +124,7 @@ Note:
 List of commands:
 
 create      create database, table ...
+show        show properties, such as databases, tables ...
 help        get help about a topic or command
 
 For information on a specific command, type `help <command>'.

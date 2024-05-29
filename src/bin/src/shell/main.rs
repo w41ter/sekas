@@ -21,10 +21,10 @@ use clap::Parser;
 use log::error;
 use rustyline::error::ReadlineError;
 use rustyline::Editor;
-use sekas_client::{ClientOptions, SekasClient};
-use sekas_parser::{ExecuteResult, Statement};
+use sekas_client::{AppError, ClientOptions, SekasClient};
+use sekas_parser::{CreateDbStatement, CreateTableStatement, ExecuteResult, Statement};
 
-type Result<T> = std::result::Result<T, Error>;
+type Result<T, E = Error> = std::result::Result<T, E>;
 
 #[derive(Parser)]
 #[clap(about = "Start sekas shell")]
@@ -33,9 +33,22 @@ pub struct Command {
     #[clap(long, default_value = "0.0.0.0:21805")]
     addrs: Vec<String>,
 
+    /// Sets the connection timeout.
+    #[clap(long, parse(try_from_str = parse_duration))]
+    connection_timeout: Option<Duration>,
+
+    /// Sets the rpc timeout.
+    #[clap(long, parse(try_from_str = parse_duration))]
+    rpc_timeout: Option<Duration>,
+
     /// Sets the log level.
     #[clap(long)]
     log_level: Option<tracing::Level>,
+}
+
+fn parse_duration(arg: &str) -> Result<std::time::Duration, std::num::ParseIntError> {
+    let seconds = arg.parse()?;
+    Ok(std::time::Duration::from_secs(seconds))
 }
 
 impl Command {
@@ -50,24 +63,26 @@ impl Command {
             .build()
             .expect("build runtime with current thread");
         runtime.block_on(async move {
-            editor_main(self.addrs).await;
+            editor_main(self).await;
         });
     }
 }
 
 struct Session {
-    client: SekasClient,
+    sekas_client: SekasClient,
 }
 
 impl Session {
+    /// Parse user input into statements and execute it in local or remote
+    /// server.
     async fn parse_and_execute(&mut self, input: &str) -> Result<()> {
         let Some(statement) = sekas_parser::parse(input).context("parse into statement")? else {
             return Ok(());
         };
-        let execute_result = if let Some(result) = self.try_handle_local_statement(statement)? {
+        let execute_result = if let Some(result) = self.try_execute_in_local(statement).await? {
             result
         } else {
-            let body = self.client.handle_statement(input).await?;
+            let body = self.sekas_client.handle_statement(input).await?;
             serde_json::from_slice(&body).context("deserialize execute result")?
         };
 
@@ -75,17 +90,77 @@ impl Session {
         Ok(())
     }
 
-    fn try_handle_local_statement(&self, statement: Statement) -> Result<Option<ExecuteResult>> {
-        match statement {
-            Statement::Debug(debug) => Ok(Some(debug.execute())),
-            Statement::Help(help) => Ok(Some(help.execute())),
-            Statement::Echo(echo) => Ok(Some(ExecuteResult::Msg(echo.message))),
-            Statement::CreateDb(_) => todo!(),
-            Statement::CreateTable(_) => todo!(),
-            Statement::Config(_) | Statement::Show(_) => Ok(None),
-        }
+    /// Execute statement in local as possible. `None` is returned if the
+    /// statement could not be executed in local.
+    async fn try_execute_in_local(&self, statement: Statement) -> Result<Option<ExecuteResult>> {
+        let result = match statement {
+            Statement::Debug(debug) => debug.execute(),
+            Statement::Help(help) => help.execute(),
+            Statement::Echo(echo) => ExecuteResult::Msg(echo.message),
+            Statement::CreateDb(create_db) => self.create_database(create_db).await?,
+            Statement::CreateTable(create_table) => self.create_table(create_table).await?,
+            Statement::Config(_) | Statement::Show(_) => return Ok(None),
+        };
+        Ok(Some(result))
     }
 
+    /// Execute create db statement.
+    async fn create_database(&self, create_db_stmt: CreateDbStatement) -> Result<ExecuteResult> {
+        if create_db_stmt.create_if_not_exists {
+            match self.sekas_client.open_database(create_db_stmt.db_name.clone()).await {
+                Ok(_) => {
+                    return Ok(ExecuteResult::Msg(format!(
+                        "db {} already exists",
+                        create_db_stmt.db_name
+                    )))
+                }
+                Err(AppError::NotFound(_)) => {
+                    // no such db exsists, create it.
+                }
+                Err(err) => return Err(err).context("failed to open database"),
+            };
+        }
+
+        self.sekas_client
+            .create_database(create_db_stmt.db_name.clone())
+            .await
+            .context("failed to create database")?;
+
+        Ok(ExecuteResult::Msg("Ok".to_owned()))
+    }
+
+    /// Execute create table statement.
+    async fn create_table(&self, create_table_stmt: CreateTableStatement) -> Result<ExecuteResult> {
+        let database = self
+            .sekas_client
+            .open_database(create_table_stmt.db_name.clone())
+            .await
+            .context("failed to open database")?;
+
+        if create_table_stmt.create_if_not_exists {
+            match database.open_table(create_table_stmt.table_name.clone()).await {
+                Ok(_) => {
+                    return Ok(ExecuteResult::Msg(format!(
+                        "table {} already exists",
+                        create_table_stmt.table_name.clone()
+                    )));
+                }
+                Err(AppError::NotFound(_)) => {
+                    // no such table exists, create it.
+                }
+                Err(err) => return Err(err).context("failed to open table"),
+            }
+        }
+
+        database
+            .create_table(create_table_stmt.table_name)
+            .await
+            .context("failed to create table")?;
+
+        Ok(ExecuteResult::Msg("Ok".to_owned()))
+    }
+
+    /// Show the execute result.
     fn show_result(&self, result: ExecuteResult) {
         use tabled::builder::Builder;
         use tabled::settings::Style;
@@ -120,11 +195,11 @@ impl Session {
     }
 }
 
-async fn editor_main(addrs: Vec<String>) {
+async fn editor_main(cmd: Command) {
     use rustyline::history::MemHistory;
     use rustyline::Config;
 
-    let mut session = new_session(addrs).await.expect("new session");
+    let mut session = new_session(cmd).await.expect("new session");
     let cfg = Config::builder().build();
     let history = MemHistory::new();
     let mut editor = Editor::<(), _>::with_history(cfg, history).expect("Editor::new");
@@ -155,11 +230,8 @@ async fn editor_main(addrs: Vec<String>) {
     }
 }
 
-async fn new_session(addrs: Vec<String>) -> Result<Session> {
-    let opts = ClientOptions {
-        connect_timeout: Some(Duration::from_millis(200)),
-        timeout: Some(Duration::from_millis(500)),
-    };
-    let client = SekasClient::new(opts, addrs).await?;
-    Ok(Session { client })
+async fn new_session(cmd: Command) -> Result<Session> {
+    let opts = ClientOptions { connect_timeout: cmd.connection_timeout, timeout: cmd.rpc_timeout };
+    let sekas_client = SekasClient::new(opts, cmd.addrs).await?;
+    Ok(Session { sekas_client })
 }
