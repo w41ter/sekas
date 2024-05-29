@@ -661,6 +661,7 @@ impl Root {
             .prepare_create_table(TableDesc {
                 name: name.to_owned(),
                 db: db.id,
+                properties: sekas_schema::system::table::default_user_properties(),
                 ..Default::default()
             })
             .await?;

@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use log::warn;
+use sekas_api::server::v1::TableDesc;
 use sekas_parser::{ColumnResult, ConfigStatement, ExecuteResult, Row, ShowStatement};
 
 use super::Root;
@@ -80,11 +81,35 @@ impl Root {
 
                 let tables = self.list_table(&db_desc).await?;
                 let columns =
-                    ["id", "name"].into_iter().map(ToString::to_string).collect::<Vec<_>>();
-                let rows = tables
-                    .into_iter()
-                    .map(|table| Row { values: vec![table.id.into(), table.name.into()] })
-                    .collect::<Vec<_>>();
+                    ["id", "name", "type", "replication", "replicas_per_group", "properties"]
+                        .into_iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>();
+                let table_to_row = |table: TableDesc| -> Row {
+                    use sekas_schema::property::*;
+                    let mut properties = vec![];
+                    for (key, value) in &table.properties {
+                        if !matches!(key.as_str(), REPLICATION | REPLICAS_PER_GROUP | TABLE_TYPE) {
+                            properties.push(format!("{key}:{value}"));
+                        }
+                    }
+                    properties.sort_unstable();
+                    let values: Vec<serde_json::Value> = vec![
+                        table.id.into(),
+                        table.name.into(),
+                        table.properties.get(TABLE_TYPE).cloned().unwrap_or_default().into(),
+                        table.properties.get(REPLICATION).cloned().unwrap_or_default().into(),
+                        table
+                            .properties
+                            .get(REPLICAS_PER_GROUP)
+                            .cloned()
+                            .unwrap_or_default()
+                            .into(),
+                        properties.join(", ").into(),
+                    ];
+                    Row { values }
+                };
+                let rows = tables.into_iter().map(table_to_row).collect::<Vec<_>>();
                 Ok(ExecuteResult::Data(ColumnResult { columns, rows }))
             }
             others => Ok(ExecuteResult::Msg(format!("unknown property: {others}"))),

@@ -1,4 +1,4 @@
-// Copyright 2023-present The Sekas Authors.
+// Copyright 2024-present The Sekas Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,21 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-syntax = "proto3";
+pub const REPLICAS_PER_GROUP: &str = "replicas_per_group";
 
-package sekas.server.v1;
+/// The replication mode property.
+pub const REPLICATION: &str = "replication";
+pub const REPLICATION_MAJORITY: &str = "majority";
+pub const REPLICATION_ASYNC: &str = "async";
 
-// The database.
-message DatabaseDesc {
-    uint64 id = 1;
-    string name = 2;
-}
-
-// The table.
-message TableDesc {
-    uint64 id = 1;
-    uint64 db = 2;
-    string name = 3;
-
-    map<string, string> properties = 4;
-}
+/// The table type property.
+pub const TABLE_TYPE: &str = "table_type";
+pub const TABLE_TYPE_SYSTEM: &str = "system";
+pub const TABLE_TYPE_USER: &str = "user";

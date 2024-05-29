@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 // Copyright 2023 The Sekas Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -28,6 +30,7 @@ macro_rules! decl_unity_range_table {
                     id: $table_id,
                     name: stringify!($name).to_owned(),
                     db: crate::system::db::ID,
+                    properties: default_system_properties(),
                 }
             }
 
@@ -76,4 +79,28 @@ pub fn shard_id(table_id: u64) -> u64 {
 #[inline]
 pub fn txn_table_id() -> u64 {
     TXN_ID
+}
+
+/// Get the default properties of system table.
+fn default_system_properties() -> HashMap<String, String> {
+    use crate::property::*;
+
+    [
+        (REPLICAS_PER_GROUP, "1"),
+        (REPLICATION, REPLICATION_MAJORITY),
+        (TABLE_TYPE, TABLE_TYPE_SYSTEM),
+    ]
+    .into_iter()
+    .map(|(k, v)| (k.to_owned(), v.to_owned()))
+    .collect::<HashMap<_, _>>()
+}
+
+/// Get the default properties of the user table.
+pub fn default_user_properties() -> HashMap<String, String> {
+    use crate::property::*;
+
+    [(REPLICAS_PER_GROUP, "1"), (REPLICATION, REPLICATION_MAJORITY), (TABLE_TYPE, TABLE_TYPE_USER)]
+        .into_iter()
+        .map(|(k, v)| (k.to_owned(), v.to_owned()))
+        .collect::<HashMap<_, _>>()
 }
