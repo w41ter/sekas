@@ -20,7 +20,7 @@ use sekas_api::server::v1::*;
 use sekas_rock::num::decode_u64;
 use sekas_rock::time::timestamp_millis;
 use sekas_schema::system::keys::{self, txn_lower_key};
-use sekas_schema::system::{self, col};
+use sekas_schema::system::{self, table};
 
 use crate::{Error, GroupClient, Result, RetryState, SekasClient, WriteBuilder};
 
@@ -251,7 +251,7 @@ impl TxnStateTable {
         let router = self.client.router();
         let mut retry_state = RetryState::new(TXN_TIMEOUT);
         loop {
-            let (group_state, shard_desc) = router.find_shard(col::txn_col_id(), txn_prefix)?;
+            let (group_state, shard_desc) = router.find_shard(table::txn_table_id(), txn_prefix)?;
             trace!(
                 "scan txn keys, group: {} shard {}, version: {}",
                 group_state.id,
@@ -298,7 +298,7 @@ impl TxnStateTable {
     ) -> Result<ShardWriteResponse> {
         let router = self.client.router();
         let key = txn_lower_key(write.hash_tag);
-        let (group_state, shard_desc) = router.find_shard(col::txn_col_id(), &key)?;
+        let (group_state, shard_desc) = router.find_shard(table::txn_table_id(), &key)?;
 
         let mut group_client = GroupClient::new(group_state, self.client.clone());
         if let Some(duration) = timeout {

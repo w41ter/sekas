@@ -24,7 +24,7 @@ use prost::Message;
 use sekas_api::server::v1::watch_response::{delete_event, update_event, DeleteEvent, UpdateEvent};
 use sekas_api::server::v1::*;
 use sekas_rock::time::timestamp_nanos;
-use sekas_schema::system::col;
+use sekas_schema::system::table;
 
 use super::store::RootStore;
 use crate::constants::*;
@@ -84,7 +84,7 @@ impl Schema {
     }
 
     pub async fn get_database(&self, name: &str) -> Result<Option<DatabaseDesc>> {
-        let val = self.get(col::DATABASE_ID, name.as_bytes()).await?;
+        let val = self.get(table::DATABASE_ID, name.as_bytes()).await?;
         if val.is_none() {
             return Ok(None);
         }
@@ -98,12 +98,12 @@ impl Schema {
     }
 
     pub async fn delete_database(&self, db: &DatabaseDesc) -> Result<u64> {
-        self.delete(col::DATABASE_ID, db.name.as_bytes()).await?;
+        self.delete(table::DATABASE_ID, db.name.as_bytes()).await?;
         Ok(db.id)
     }
 
     pub async fn list_database(&self) -> Result<Vec<DatabaseDesc>> {
-        let values = self.list(col::DATABASE_ID).await?;
+        let values = self.list(table::DATABASE_ID).await?;
         let mut databases = Vec::new();
         for val in values {
             databases.push(
@@ -125,12 +125,12 @@ impl Schema {
 
     pub async fn create_table(&self, desc: TableDesc) -> Result<TableDesc> {
         assert!(self.get_table(desc.db, &desc.name).await?.is_none());
-        self.put_col(desc.clone()).await?;
+        self.put_table(desc.clone()).await?;
         Ok(desc)
     }
 
     pub async fn get_table(&self, database: u64, table: &str) -> Result<Option<TableDesc>> {
-        let val = self.get(col::TABLE_ID, &table_key(database, table)).await?;
+        let val = self.get(table::TABLE_ID, &table_key(database, table)).await?;
         if val.is_none() {
             return Ok(None);
         }
@@ -155,11 +155,11 @@ impl Schema {
     }
 
     pub async fn delete_table(&self, table: TableDesc) -> Result<()> {
-        self.delete(col::TABLE_ID, &table_key(table.db, &table.name)).await
+        self.delete(table::TABLE_ID, &table_key(table.db, &table.name)).await
     }
 
     pub async fn list_table(&self) -> Result<Vec<TableDesc>> {
-        let values = self.list(col::TABLE_ID).await?;
+        let values = self.list(table::TABLE_ID).await?;
         let mut tables = Vec::new();
         for val in values {
             let c =
@@ -182,7 +182,7 @@ impl Schema {
     }
 
     pub async fn get_node(&self, id: u64) -> Result<Option<NodeDesc>> {
-        let val = self.get(col::NODE_ID, &id.to_le_bytes()).await?;
+        let val = self.get(table::NODE_ID, &id.to_le_bytes()).await?;
         if val.is_none() {
             return Ok(None);
         }
@@ -192,7 +192,7 @@ impl Schema {
     }
 
     pub async fn delete_node(&self, id: u64) -> Result<()> {
-        self.delete(col::NODE_ID, &id.to_le_bytes()).await
+        self.delete(table::NODE_ID, &id.to_le_bytes()).await
     }
 
     pub async fn update_node(&self, desc: NodeDesc) -> Result<()> {
@@ -201,7 +201,7 @@ impl Schema {
     }
 
     pub async fn list_node(&self) -> Result<Vec<NodeDesc>> {
-        let values = self.list(col::NODE_ID).await?;
+        let values = self.list(table::NODE_ID).await?;
         let mut nodes = Vec::new();
         for val in values {
             nodes
@@ -211,7 +211,7 @@ impl Schema {
     }
 
     pub(crate) async fn list_node_raw(engine: GroupEngine) -> Result<Vec<NodeDesc>> {
-        let shard_id = col::shard_id(col::NODE_ID);
+        let shard_id = table::shard_id(table::NODE_ID);
         let mut snapshot = match engine.snapshot(shard_id, SnapshotMode::Prefix { key: &[] }) {
             Ok(snapshot) => snapshot,
             Err(Error::ShardNotFound(_)) => {
@@ -255,11 +255,11 @@ impl Schema {
 
     pub async fn remove_replica_state(&self, group_id: u64, replica_id: u64) -> Result<()> {
         let key = replica_key(group_id, replica_id);
-        self.delete(col::REPLICA_STATE_ID, &key).await
+        self.delete(table::REPLICA_STATE_ID, &key).await
     }
 
     pub async fn get_group(&self, id: u64) -> Result<Option<GroupDesc>> {
-        let val = self.get(col::GROUP_ID, &id.to_le_bytes()).await?;
+        let val = self.get(table::GROUP_ID, &id.to_le_bytes()).await?;
         if val.is_none() {
             return Ok(None);
         }
@@ -270,11 +270,11 @@ impl Schema {
 
     pub async fn delete_group(&self, id: u64) -> Result<()> {
         // TODO: prefix delete replica_state
-        self.delete(col::GROUP_ID, &id.to_le_bytes()).await
+        self.delete(table::GROUP_ID, &id.to_le_bytes()).await
     }
 
     pub async fn list_group(&self) -> Result<Vec<GroupDesc>> {
-        let values = self.list(col::GROUP_ID).await?;
+        let values = self.list(table::GROUP_ID).await?;
         let mut groups = Vec::new();
         for val in values {
             groups.push(
@@ -290,7 +290,7 @@ impl Schema {
         replica_id: u64,
     ) -> Result<Option<ReplicaState>> {
         let key = replica_key(group_id, replica_id);
-        let val = self.get(col::REPLICA_STATE_ID, &key).await?;
+        let val = self.get(table::REPLICA_STATE_ID, &key).await?;
         if val.is_none() {
             return Ok(None);
         }
@@ -304,7 +304,7 @@ impl Schema {
     }
 
     pub async fn list_replica_state(&self) -> Result<Vec<ReplicaState>> {
-        let values = self.list(col::REPLICA_STATE_ID).await?;
+        let values = self.list(table::REPLICA_STATE_ID).await?;
         let mut states = Vec::with_capacity(values.len());
         for val in values {
             let state = ReplicaState::decode(&*val)
@@ -316,7 +316,7 @@ impl Schema {
 
     pub async fn group_replica_states(&self, group_id: u64) -> Result<Vec<ReplicaState>> {
         let values =
-            self.list_prefix(col::REPLICA_STATE_ID, group_id.to_le_bytes().as_slice()).await?;
+            self.list_prefix(table::REPLICA_STATE_ID, group_id.to_le_bytes().as_slice()).await?;
         let mut states = Vec::with_capacity(values.len());
         for val in values {
             let state = ReplicaState::decode(&*val)
@@ -481,12 +481,12 @@ impl Schema {
     pub async fn remove_job(&self, job: &BackgroundJob) -> Result<()> {
         // FIXME(walter) not atomic!!!
         self.put_job_history(job.to_owned()).await?;
-        self.delete(col::JOB_ID, &job.id.to_le_bytes()).await?;
+        self.delete(table::JOB_ID, &job.id.to_le_bytes()).await?;
         Ok(())
     }
 
     pub async fn update_job(&self, desc: BackgroundJob) -> Result<bool> {
-        if self.get(col::JOB_ID, &desc.id.to_be_bytes()).await?.is_none() {
+        if self.get(table::JOB_ID, &desc.id.to_be_bytes()).await?.is_none() {
             // TODO: replace this with storage put_condition operation.
             return Ok(false);
         }
@@ -495,7 +495,7 @@ impl Schema {
     }
 
     pub async fn list_job(&self) -> Result<Vec<BackgroundJob>> {
-        let values = self.list(col::JOB_ID).await?;
+        let values = self.list(table::JOB_ID).await?;
         let mut jobs = Vec::with_capacity(values.len());
         for val in values {
             let job = BackgroundJob::decode(&*val)
@@ -506,7 +506,7 @@ impl Schema {
     }
 
     pub async fn list_history_job(&self) -> Result<Vec<BackgroundJob>> {
-        let values = self.list(col::JOB_HISTORY_ID).await?;
+        let values = self.list(table::JOB_HISTORY_ID).await?;
         let mut jobs = Vec::with_capacity(values.len());
         for val in values {
             let job = BackgroundJob::decode(&*val)
@@ -517,7 +517,7 @@ impl Schema {
     }
 
     pub async fn get_job_history(&self, id: &u64) -> Result<Option<BackgroundJob>> {
-        let val = self.get(col::JOB_HISTORY_ID, &id.to_le_bytes()).await?;
+        let val = self.get(table::JOB_HISTORY_ID, &id.to_le_bytes()).await?;
         if val.is_none() {
             return Ok(None);
         }
@@ -630,11 +630,11 @@ impl Schema {
         self.put_replica_state(replica_state).await?;
 
         let mut batch =
-            ShardWriteRequest { shard_id: col::shard_id(col::TABLE_ID), ..Default::default() };
-        for col in sekas_schema::system::tables() {
+            ShardWriteRequest { shard_id: table::shard_id(table::TABLE_ID), ..Default::default() };
+        for table in sekas_schema::system::tables() {
             batch.puts.push(PutRequest {
-                key: table_key(col.db, &col.name),
-                value: col.encode_to_vec(),
+                key: table_key(table.db, &table.name),
+                value: table.encode_to_vec(),
                 ..Default::default()
             });
         }
@@ -663,7 +663,7 @@ impl Schema {
 
     async fn init_meta_table(&self, cluster_id: Vec<u8>) -> Result<()> {
         let mut batch =
-            ShardWriteRequest { shard_id: col::shard_id(col::META_ID), ..Default::default() };
+            ShardWriteRequest { shard_id: table::shard_id(table::META_ID), ..Default::default() };
         let mut put_meta =
             |key, value| batch.puts.push(PutRequest { key, value, ..Default::default() });
         put_meta(META_CLUSTER_ID_KEY.into(), cluster_id);
@@ -692,7 +692,7 @@ impl Schema {
 // internal methods.
 impl Schema {
     async fn get_meta(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
-        self.get(col::META_ID, key).await
+        self.get(table::META_ID, key).await
     }
 
     async fn batch_write(&self, batch: ShardWriteRequest) -> Result<()> {
@@ -701,19 +701,19 @@ impl Schema {
 
     #[inline]
     async fn get(&self, table_id: u64, key: &[u8]) -> Result<Option<Vec<u8>>> {
-        let rs = self.store.get(col::shard_id(table_id), key).await;
+        let rs = self.store.get(table::shard_id(table_id), key).await;
         sekas_runtime::yield_now().await;
         rs
     }
 
     #[inline]
     async fn delete(&self, table_id: u64, key: &[u8]) -> Result<()> {
-        self.store.delete(col::shard_id(table_id), key).await
+        self.store.delete(table::shard_id(table_id), key).await
     }
 
     #[inline]
     async fn put(&self, table_id: u64, key: &[u8], value: Vec<u8>) -> Result<()> {
-        self.store.put(col::shard_id(table_id), key.to_owned(), value).await
+        self.store.put(table::shard_id(table_id), key.to_owned(), value).await
     }
 
     async fn list(&self, table_id: u64) -> Result<Vec<Vec<u8>>> {
@@ -723,7 +723,7 @@ impl Schema {
     }
 
     async fn list_prefix(&self, table_id: u64, prefix: &[u8]) -> Result<Vec<Vec<u8>>> {
-        self.store.list(col::shard_id(table_id), prefix).await
+        self.store.list(table::shard_id(table_id), prefix).await
     }
 
     async fn next_id(&self, id_type: &str) -> Result<u64> {
@@ -744,18 +744,18 @@ impl Schema {
 impl Schema {
     #[inline]
     async fn put_database(&self, desc: DatabaseDesc) -> Result<()> {
-        self.put(col::DATABASE_ID, desc.name.as_bytes(), desc.encode_to_vec()).await
+        self.put(table::DATABASE_ID, desc.name.as_bytes(), desc.encode_to_vec()).await
     }
 
     #[inline]
     async fn put_group(&self, desc: GroupDesc) -> Result<()> {
-        self.put(col::GROUP_ID, &desc.id.to_le_bytes(), desc.encode_to_vec()).await
+        self.put(table::GROUP_ID, &desc.id.to_le_bytes(), desc.encode_to_vec()).await
     }
 
     #[inline]
     async fn put_replica_state(&self, state: ReplicaState) -> Result<()> {
         self.put(
-            col::REPLICA_STATE_ID,
+            table::REPLICA_STATE_ID,
             &replica_key(state.group_id, state.replica_id),
             state.encode_to_vec(),
         )
@@ -764,27 +764,27 @@ impl Schema {
 
     #[inline]
     async fn put_meta(&self, key: &[u8], value: Vec<u8>) -> Result<()> {
-        self.put(col::META_ID, key, value).await
+        self.put(table::META_ID, key, value).await
     }
 
     #[inline]
     async fn put_node(&self, desc: NodeDesc) -> Result<()> {
-        self.put(col::NODE_ID, &desc.id.to_le_bytes(), desc.encode_to_vec()).await
+        self.put(table::NODE_ID, &desc.id.to_le_bytes(), desc.encode_to_vec()).await
     }
 
     #[inline]
     async fn put_job(&self, desc: BackgroundJob) -> Result<()> {
-        self.put(col::JOB_ID, &desc.id.to_le_bytes(), desc.encode_to_vec()).await
+        self.put(table::JOB_ID, &desc.id.to_le_bytes(), desc.encode_to_vec()).await
     }
 
     #[inline]
     async fn put_job_history(&self, desc: BackgroundJob) -> Result<()> {
-        self.put(col::JOB_HISTORY_ID, &desc.id.to_le_bytes(), desc.encode_to_vec()).await
+        self.put(table::JOB_HISTORY_ID, &desc.id.to_le_bytes(), desc.encode_to_vec()).await
     }
 
     #[inline]
-    async fn put_col(&self, col: TableDesc) -> Result<()> {
-        self.put(col::TABLE_ID, &table_key(col.db, &col.name), col.encode_to_vec()).await
+    async fn put_table(&self, table: TableDesc) -> Result<()> {
+        self.put(table::TABLE_ID, &table_key(table.db, &table.name), table.encode_to_vec()).await
     }
 }
 
@@ -799,7 +799,7 @@ impl RemoteStore {
     }
 
     pub async fn list_replica_state(&self, group_id: u64) -> Result<Vec<ReplicaState>> {
-        let shard_id = col::shard_id(col::REPLICA_STATE_ID);
+        let shard_id = table::shard_id(table::REPLICA_STATE_ID);
         let prefix = group_key(group_id);
 
         let client = self.transport_manager.build_shard_client(ROOT_GROUP_ID, shard_id);
@@ -814,7 +814,7 @@ impl RemoteStore {
     }
 
     pub async fn clear_replica_state(&self, group_id: u64, replica_id: u64) -> Result<()> {
-        let shard_id = col::shard_id(col::REPLICA_STATE_ID);
+        let shard_id = table::shard_id(table::REPLICA_STATE_ID);
         let key = replica_key(group_id, replica_id);
         let client = self.transport_manager.build_shard_client(ROOT_GROUP_ID, shard_id);
         client.delete(&key).await?;

@@ -11,40 +11,40 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-pub mod col;
 pub mod db;
 pub mod keys;
+pub mod table;
 pub mod txn;
 
 use sekas_api::server::v1::*;
 
 /// Return the shards of the system unity tables.
-pub fn unity_col_shards() -> Vec<ShardDesc> {
+pub fn unity_table_shards() -> Vec<ShardDesc> {
     vec![
-        col::database_shard_desc(),
-        col::table_shard_desc(),
-        col::meta_shard_desc(),
-        col::node_shard_desc(),
-        col::group_shard_desc(),
-        col::replica_state_shard_desc(),
-        col::job_shard_desc(),
-        col::job_history_shard_desc(),
-        col::txn_shard_desc(),
+        table::database_shard_desc(),
+        table::table_shard_desc(),
+        table::meta_shard_desc(),
+        table::node_shard_desc(),
+        table::group_shard_desc(),
+        table::replica_state_shard_desc(),
+        table::job_shard_desc(),
+        table::job_history_shard_desc(),
+        table::txn_shard_desc(),
     ]
 }
 
 /// Return the tables of the system database.
 pub fn tables() -> Vec<TableDesc> {
     vec![
-        col::database_desc(),
-        col::table_desc(),
-        col::meta_desc(),
-        col::node_desc(),
-        col::group_desc(),
-        col::replica_state_desc(),
-        col::job_desc(),
-        col::job_history_desc(),
-        col::txn_desc(),
+        table::database_desc(),
+        table::table_desc(),
+        table::meta_desc(),
+        table::node_desc(),
+        table::group_desc(),
+        table::replica_state_desc(),
+        table::job_desc(),
+        table::job_history_desc(),
+        table::txn_desc(),
     ]
 }
 
@@ -53,7 +53,7 @@ pub fn root_group() -> GroupDesc {
     GroupDesc {
         id: crate::ROOT_GROUP_ID,
         epoch: crate::INITIAL_EPOCH,
-        shards: unity_col_shards(),
+        shards: unity_table_shards(),
         replicas: vec![ReplicaDesc {
             id: crate::FIRST_REPLICA_ID,
             node_id: crate::FIRST_NODE_ID,

@@ -371,12 +371,12 @@ impl ClusterClient {
     }
 
     pub async fn assert_system_table_ready(&self, required_voters: usize) {
-        let co_desc = sekas_schema::system::col::txn_desc();
+        let table_desc = sekas_schema::system::table::txn_desc();
         let mut ready_group: HashSet<u64> = HashSet::default();
         for i in 0..256u64 {
             for _ in 0..1000 {
                 let key = i.to_be_bytes().to_vec();
-                let state = match self.find_router_group_state_by_key(co_desc.id, &key).await {
+                let state = match self.find_router_group_state_by_key(table_desc.id, &key).await {
                     Some(state) => state,
                     None => {
                         tokio::time::sleep(Duration::from_millis(10)).await;

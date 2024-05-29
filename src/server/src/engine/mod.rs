@@ -205,7 +205,7 @@ pub async fn create_group_engine(
 
     use crate::EngineConfig;
 
-    const COL_ID: u64 = 1;
+    const TABLE_ID: u64 = 1;
     let db = Arc::new(open_raw_db(&DbConfig::default(), dir).unwrap());
 
     let group_engine =
@@ -216,7 +216,7 @@ pub async fn create_group_engine(
     let states = WriteStates {
         descriptor: Some(GroupDesc {
             id: group_id,
-            shards: vec![ShardDesc::whole(shard_id, COL_ID)],
+            shards: vec![ShardDesc::whole(shard_id, TABLE_ID)],
             ..Default::default()
         }),
         ..Default::default()

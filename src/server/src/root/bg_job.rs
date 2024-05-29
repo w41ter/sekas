@@ -103,7 +103,7 @@ impl Jobs {
                 self.handle_purge_database(job, purge_database).await
             }
         };
-        info!("backgroud job: {job:?}, handle result: {r:?}");
+        info!("background job: {job:?}, handle result: {r:?}");
         r
     }
 }
@@ -144,15 +144,10 @@ impl Jobs {
         job_id: u64,
         create_table: &mut CreateTableJob,
     ) -> Result<()> {
-        loop {
-            let shard = create_table.wait_create.pop();
-            if shard.is_none() {
-                break;
-            }
-            let shard = shard.unwrap();
+        while let Some(shard) = create_table.wait_create.pop() {
             let groups = self.core.alloc.place_group_for_shard(1).await?;
             if groups.is_empty() {
-                return Err(crate::Error::ResourceExhausted("no engouth groups".into()));
+                return Err(crate::Error::ResourceExhausted("no enough groups".into()));
             }
             let group = groups.first().unwrap();
             info!("try create shard at group {}, shards: {}", group.id, group.shards.len());
@@ -180,6 +175,8 @@ impl Jobs {
         job_id: u64,
         create_table: &mut CreateTableJob,
     ) -> Result<()> {
+        // FIXME(walter) what happen if create_table success but save_create_table
+        // failed?
         let schema = self.core.root_shared.schema()?;
         schema.create_table(create_table.desc.as_ref().unwrap().to_owned()).await?;
         create_table.status = CreateTableJobStatus::CreateTableFinish as i32;

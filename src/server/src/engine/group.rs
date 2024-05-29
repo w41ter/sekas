@@ -1362,8 +1362,8 @@ mod tests {
         // The the user payloads.
         for payload in &payloads {
             let (k, _) = iter.next().unwrap().unwrap();
-            let col_id = group_engine.shard_desc(1).unwrap().table_id;
-            let expect_key = keys::mvcc_key(col_id, payload.key, payload.version);
+            let table_id = group_engine.shard_desc(1).unwrap().table_id;
+            let expect_key = keys::mvcc_key(table_id, payload.key, payload.version);
             assert!(
                 k[..] == expect_key,
                 "expect {expect_key:?}, but got {k:?}, payload {payload:?}",
