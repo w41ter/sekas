@@ -160,12 +160,11 @@ async fn cluster_rw_with_leader_transfer() {
     }
 }
 
-// FIXME(walter) for now, we place txn table, user table in one group, that
-// means that read txn table might meets deadlock.
 #[ignore]
 #[sekas_macro::test]
 async fn cluster_rw_with_shard_moving() {
     let mut ctx = TestContext::new(fn_name!());
+    ctx.set_num_cpus(3); // Add another group to accept shards.
     ctx.disable_all_balance();
     let nodes = ctx.bootstrap_servers(3).await;
     let c = ClusterClient::new(nodes).await;
@@ -177,7 +176,7 @@ async fn cluster_rw_with_shard_moving() {
 
     let source_state = c.find_router_group_state_by_key(co.id, &[0]).await.unwrap();
     let prev_group_id = source_state.id;
-    let target_group_id = 0;
+    let target_group_id = 3;
 
     for i in 0..100 {
         let k = format!("key-{i}").as_bytes().to_vec();

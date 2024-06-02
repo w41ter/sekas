@@ -28,6 +28,7 @@ use crate::helper::socket::next_avail_port;
 #[allow(dead_code)]
 pub struct TestContext {
     name: String,
+    num_cpus: usize,
     root_dir: TempDir,
     root_cfg: RootConfig,
     replica_knobs: ReplicaTestingKnobs,
@@ -47,6 +48,7 @@ impl TestContext {
         let mut ctx = TestContext {
             name: prefix.to_owned(),
             root_dir,
+            num_cpus: 2,
             disable_group_promoting: false,
             replica_knobs: ReplicaTestingKnobs::default(),
             raft_knobs: RaftTestingKnobs::default(),
@@ -58,6 +60,13 @@ impl TestContext {
         // Disable all balance by default.
         ctx.disable_all_balance();
         ctx
+    }
+
+    /// Change the number of num cpus per server.
+    ///
+    /// The num of cpus could effect the group allocation.
+    pub fn set_num_cpus(&mut self, num_cpus: usize) {
+        self.num_cpus = num_cpus;
     }
 
     pub fn shutdown(&mut self) {
@@ -115,7 +124,7 @@ impl TestContext {
 
     #[allow(dead_code)]
     pub fn spawn_server(&mut self, idx: usize, addr: &str, init: bool, join_list: Vec<String>) {
-        self.spawn_server_with_cfg(idx, addr, 2, init, join_list, self.root_cfg.clone());
+        self.spawn_server_with_cfg(idx, addr, init, join_list, self.root_cfg.clone());
     }
 
     #[allow(dead_code)]
@@ -123,7 +132,6 @@ impl TestContext {
         &mut self,
         idx: usize,
         addr: &str,
-        cpu_nums: u32,
         init: bool,
         join_list: Vec<String>,
         root: RootConfig,
@@ -131,6 +139,7 @@ impl TestContext {
         let addr = addr.to_owned();
         let name = idx.to_string();
         let root_dir = self.root_dir.path().join(name);
+        let cpu_nums = self.num_cpus as u32;
         let cfg = Config {
             root_dir,
             addr,
