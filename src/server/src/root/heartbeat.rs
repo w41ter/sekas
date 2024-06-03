@@ -38,8 +38,6 @@ impl Root {
             .filter(|n| tasks.iter().any(|t| t.node_id == n.id))
             .collect::<Vec<_>>();
 
-        info!("sending heartbeat to {:?}", &nodes);
-
         let mut piggybacks = Vec::new();
 
         // TODO: no need piggyback root info everytime.
@@ -78,10 +76,15 @@ impl Root {
             let _timer = metrics::HEARTBEAT_NODES_RPC_DURATION_SECONDS.start_timer();
             metrics::HEARTBEAT_NODES_BATCH_SIZE.set(nodes.len() as i64);
             let mut handles = Vec::new();
-            for n in &nodes {
-                trace!("attempt send heartbeat. node={}, target={}", n.id, n.addr);
+            for node in &nodes {
+                trace!(
+                    "send heartbeat to node {}, addr: {}, status: {}",
+                    node.id,
+                    node.addr,
+                    node.status
+                );
                 let piggybacks = piggybacks.to_owned();
-                let client = self.shared.transport_manager.get_node_client(n.addr.to_owned())?;
+                let client = self.shared.transport_manager.get_node_client(node.addr.to_owned())?;
                 let handle = sekas_runtime::spawn(async move {
                     client
                         .root_heartbeat(HeartbeatRequest {
