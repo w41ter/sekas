@@ -13,6 +13,8 @@
 // limitations under the License.
 
 mod group;
+mod options;
+mod properties;
 mod state;
 
 use std::path::{Path, PathBuf};
@@ -154,7 +156,7 @@ pub(crate) fn open_raw_db<P: AsRef<Path>>(cfg: &DbConfig, path: P) -> Result<Raw
     use rocksdb::DB;
 
     std::fs::create_dir_all(&path)?;
-    let options = cfg.to_options();
+    let options = options::to_rocksdb_options(cfg);
 
     // List column families and open database with column families.
     match DB::list_cf(&options, &path) {
