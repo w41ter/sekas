@@ -960,6 +960,16 @@ impl Root {
             }
         }
     }
+
+    /// List the descripton of groups.
+    pub async fn list_groups(&self) -> Result<Vec<GroupDesc>> {
+        self.schema()?.list_group().await
+    }
+
+    /// Get the description of the specified group.
+    pub async fn get_group(&self, group_id: u64) -> Result<Option<GroupDesc>> {
+        self.schema()?.get_group(group_id).await
+    }
 }
 
 pub async fn fetch_root_replica(replica_table: &ReplicaRouteTable) -> Arc<Replica> {

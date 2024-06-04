@@ -112,6 +112,9 @@ SHOW <property:ident> [FROM <name:ident>]
     Show properties. supported properties:
     - databases
     - tables FROM <database>
+    - groups
+    - replicas FROM <group-id>
+    - shards FROM <group-id>
 
 Note:
     The ident accepts characters [a-zA-Z0-9_-].
