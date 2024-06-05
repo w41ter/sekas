@@ -155,28 +155,20 @@ impl Root {
             Ok(group_id) => group_id,
             Err(_) => {
                 return Ok(ExecuteResult::Msg(
-                    "The value of FROM clause is not a valid u64 numeric".to_owned()
+                    "The value of FROM clause is not a valid u64 numeric".to_owned(),
                 ));
             }
         };
 
         let Some(group) = self.get_group(group_id).await? else {
-            return Ok(ExecuteResult::Msg(
-                "No such group exists".to_owned()
-            ));
+            return Ok(ExecuteResult::Msg("No such group exists".to_owned()));
         };
 
-        let columns = ["id", "node_id", "role"]
-            .into_iter()
-            .map(ToString::to_string)
-            .collect::<Vec<_>>();
+        let columns =
+            ["id", "node_id", "role"].into_iter().map(ToString::to_string).collect::<Vec<_>>();
 
         let replica_to_row = |replica: ReplicaDesc| -> Row {
-            Row { values: vec![
-                replica.id.into(),
-                replica.node_id.into(),
-                replica.role.into(),
-            ] }
+            Row { values: vec![replica.id.into(), replica.node_id.into(), replica.role.into()] }
         };
         let rows = group.replicas.into_iter().map(replica_to_row).collect::<Vec<_>>();
         Ok(ExecuteResult::Data(ColumnResult { columns, rows }))
@@ -193,15 +185,13 @@ impl Root {
             Ok(group_id) => group_id,
             Err(_) => {
                 return Ok(ExecuteResult::Msg(
-                    "The value of FROM clause is not a valid u64 numeric".to_owned()
+                    "The value of FROM clause is not a valid u64 numeric".to_owned(),
                 ));
             }
         };
 
         let Some(group) = self.get_group(group_id).await? else {
-            return Ok(ExecuteResult::Msg(
-                "No such group exists".to_owned()
-            ));
+            return Ok(ExecuteResult::Msg("No such group exists".to_owned()));
         };
 
         let columns = ["id", "table_id", "start", "end"]
@@ -214,12 +204,7 @@ impl Root {
                 Some(range) => (range.start, range.end),
                 None => (vec![], vec![]),
             };
-            Row { values: vec![
-                shard.id.into(),
-                shard.table_id.into(),
-                start.into(),
-                end.into(),
-            ] }
+            Row { values: vec![shard.id.into(), shard.table_id.into(), start.into(), end.into()] }
         };
         let rows = group.shards.into_iter().map(shard_to_row).collect::<Vec<_>>();
         Ok(ExecuteResult::Data(ColumnResult { columns, rows }))
