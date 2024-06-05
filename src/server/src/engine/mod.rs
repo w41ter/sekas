@@ -17,6 +17,7 @@ mod options;
 mod properties;
 mod state;
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -35,7 +36,7 @@ const LAYOUT_DATA: &str = "db";
 const LAYOUT_LOG: &str = "log";
 const LAYOUT_SNAP: &str = "snap";
 
-type DbResult<T> = Result<T, rocksdb::Error>;
+type DbResult<T, E = rocksdb::Error> = Result<T, E>;
 
 pub(crate) struct RawDb {
     pub options: rocksdb::Options,
@@ -109,6 +110,39 @@ impl RawDb {
         paths: Vec<P>,
     ) -> DbResult<()> {
         self.db.ingest_external_file_cf_opts(cf, opts, paths)
+    }
+
+    /// Estimate the split keys in the target range.
+    #[inline]
+    pub fn estimate_split_keys_in_range(
+        &self,
+        cf: &impl rocksdb::AsColumnFamilyRef,
+        start: &[u8],
+        end: &[u8],
+    ) -> DbResult<Vec<Vec<u8>>, crate::Error> {
+        use properties::{EstimatedSplitKeys, PROPERTY_SPLIT_KEYS};
+        use prost::Message;
+
+        let collection = if end.is_empty() {
+            self.db.get_properties_of_all_range(cf)?
+        } else {
+            self.db.get_properties_of_tables_in_range(cf, &[(start, end)])?
+        };
+        let mut split_keys = BTreeSet::default();
+        for table in collection.tables {
+            let properties = table.user_collected_properties();
+            if let Some(value) = properties.get(PROPERTY_SPLIT_KEYS) {
+                let table_split_keys = EstimatedSplitKeys::decode(&**value).map_err(|err| {
+                    crate::Error::InvalidData(format!("deserialize EstimatedSplitKeys: {err}"))
+                })?;
+                for key in table_split_keys.keys {
+                    if start < key.as_slice() && (key.as_slice() < end || end.is_empty()) {
+                        split_keys.insert(key);
+                    }
+                }
+            }
+        }
+        Ok(split_keys.into_iter().collect::<Vec<_>>())
     }
 }
 
@@ -255,6 +289,47 @@ mod tests {
             assert!(db.cf_handle("cf2").is_some());
             assert!(db.cf_handle("cf3").is_none());
         }
+    }
+
+    #[test]
+    fn estimate_split_keys() {
+        let dir = TempDir::new(fn_name!()).unwrap();
+        let db = open_raw_db(&DbConfig::default(), dir.path()).unwrap();
+        db.create_cf("cf1").unwrap();
+        let cf_handle = db.cf_handle("cf1").unwrap();
+        let mut wb = rocksdb::WriteBatch::default();
+        let n = 5000;
+        for i in 0..n {
+            wb.put_cf(
+                &cf_handle,
+                format!("key-{i:03}").as_bytes(),
+                format!("value-{i}").as_bytes(),
+            );
+        }
+        let mut opt = rocksdb::WriteOptions::default();
+        opt.set_sync(false);
+        db.write_opt(wb, &opt).unwrap();
+        db.flush_cf(&cf_handle).unwrap();
+
+        // A sub range.
+        let split_keys = db
+            .estimate_split_keys_in_range(
+                &cf_handle,
+                format!("key-{:03}", 0).as_bytes(),
+                format!("key-{:03}", n - 100).as_bytes(),
+            )
+            .unwrap();
+        assert!(!split_keys.is_empty());
+
+        // A inf range
+        let split_keys = db.estimate_split_keys_in_range(&cf_handle, &[], &[]).unwrap();
+        assert!(!split_keys.is_empty());
+
+        // An empty range
+        let split_keys = db
+            .estimate_split_keys_in_range(&cf_handle, "key".as_bytes(), "key-0000".as_bytes())
+            .unwrap();
+        assert!(split_keys.is_empty());
     }
 
     #[test]

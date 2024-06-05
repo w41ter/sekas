@@ -19,7 +19,7 @@ use prost::Message;
 use rocksdb::table_properties::*;
 use serde::{Deserialize, Serialize};
 
-const PROPERTY_SPLIT_KEYS: &[u8] = b"sekas-split-keys";
+pub const PROPERTY_SPLIT_KEYS: &[u8] = b"sekas-split-keys";
 const ESTIMATE_KEYS_INTERVALS: usize = 1024;
 const ESTIMATE_SIZE_INTERVALS: usize = 16 << 20; // 16MB
 
@@ -75,9 +75,10 @@ impl TablePropertiesCollector for SplitKeyCollector {
 
         self.num_keys += 1;
         self.total_size += key.len() + value.len();
-        if self.last_estimate_keys + ESTIMATE_KEYS_INTERVALS >= self.num_keys
-            || self.last_estimate_size + ESTIMATE_SIZE_INTERVALS >= self.total_size
+        if self.last_estimate_keys + ESTIMATE_KEYS_INTERVALS <= self.num_keys
+            || self.last_estimate_size + ESTIMATE_SIZE_INTERVALS <= self.total_size
         {
+            println!("collect key {key:?}");
             self.last_estimate_keys = self.num_keys;
             self.last_estimate_size = self.total_size;
             self.keys.push(key.to_owned());
@@ -97,5 +98,5 @@ impl TablePropertiesCollector for SplitKeyCollector {
 #[derive(Serialize, Deserialize, prost::Message)]
 pub(crate) struct EstimatedSplitKeys {
     #[prost(bytes = "vec", repeated, tag = "1")]
-    keys: Vec<Vec<u8>>,
+    pub keys: Vec<Vec<u8>>,
 }

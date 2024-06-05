@@ -22,6 +22,7 @@ use std::time::{Duration, Instant};
 use log::{info, warn};
 use prost::Message;
 use sekas_api::server::v1::*;
+use sekas_rock::lexical;
 use sekas_schema::shard;
 
 use super::RawDb;
@@ -435,6 +436,30 @@ impl GroupEngine {
         }
     }
 
+    /// Estimate the split keys of the target shard.
+    pub fn estimate_split_key(&self, shard_id: u64) -> Result<Option<Vec<u8>>> {
+        let shard_desc = self.shard_desc(shard_id)?;
+        let RangePartition { start, end } = shard_desc.range.ok_or_else(|| {
+            Error::InvalidData(format!("the range field of shard {shard_id} is not set"))
+        })?;
+        let start = keys::raw(shard_desc.table_id, &start);
+        let end = if end.is_empty() {
+            lexical::lexical_next_boundary(&keys::raw(shard_desc.table_id, &end))
+        } else {
+            keys::raw(shard_desc.table_id, &end)
+        };
+
+        let estimated_split_keys =
+            self.raw_db.estimate_split_keys_in_range(&self.cf_handle(), &start, &end)?;
+        if estimated_split_keys.is_empty() {
+            return Ok(None);
+        }
+        let num_split_keys = estimated_split_keys.len();
+        let split_point = num_split_keys / 2;
+        Ok(Some(estimated_split_keys[split_point].clone()))
+    }
+
+    /// return the desc of the specified shard.
     #[inline]
     pub fn shard_desc(&self, shard_id: u64) -> Result<ShardDesc> {
         self.core
@@ -1505,5 +1530,70 @@ mod tests {
             let value_set = engine.get_all_versions(1, key.as_bytes()).await.unwrap();
             assert_eq!(value_set.values, case, "idx = {idx}");
         }
+    }
+
+    #[sekas_macro::test]
+    async fn estimate_split_key_of_all_range() {
+        let dir = TempDir::new(fn_name!()).unwrap();
+        let (group_id, shard_id) = (1, 1);
+        let engine = create_engine(group_id, shard_id, dir.path().join("1").as_path()).await;
+
+        let split_key = engine.estimate_split_key(shard_id).unwrap();
+        assert!(split_key.is_none());
+
+        let mut wb = WriteBatch::default();
+        let n = 5000;
+        for i in 0..n {
+            engine
+                .put(
+                    &mut wb,
+                    shard_id,
+                    format!("key-{i:03}").as_bytes(),
+                    format!("value-{i}").as_bytes(),
+                    i,
+                )
+                .unwrap();
+        }
+        engine.commit(wb, WriteStates::default(), false).unwrap();
+        engine.raw_db.flush_cf(&engine.cf_handle()).unwrap();
+
+        let split_key = engine.estimate_split_key(shard_id).unwrap();
+        assert!(split_key.is_some());
+    }
+
+    #[sekas_macro::test]
+    async fn estimate_split_key_in_range() {
+        let dir = TempDir::new(fn_name!()).unwrap();
+        let (group_id, shard_id) = (1, 1);
+        let engine = create_engine_with_range(
+            group_id,
+            shard_id,
+            b"a".to_vec(),
+            b"b".to_vec(),
+            dir.path().join("1").as_path(),
+        )
+        .await;
+
+        let split_key = engine.estimate_split_key(shard_id).unwrap();
+        assert!(split_key.is_none());
+
+        let mut wb = WriteBatch::default();
+        let n = 5000;
+        for i in 0..n {
+            engine
+                .put(
+                    &mut wb,
+                    shard_id,
+                    format!("a-key-{i:03}").as_bytes(),
+                    format!("value-{i}").as_bytes(),
+                    i,
+                )
+                .unwrap();
+        }
+        engine.commit(wb, WriteStates::default(), false).unwrap();
+        engine.raw_db.flush_cf(&engine.cf_handle()).unwrap();
+
+        let split_key = engine.estimate_split_key(shard_id).unwrap();
+        assert!(split_key.is_some());
     }
 }
