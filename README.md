@@ -1,6 +1,6 @@
 # Sekas
 
-Sekas is a distributed key-value store, used as a cache, database, and storage engine.
+Sekas is a fault-tolerant, scalable, distributed transactional key-value store, used as a cache, database, and storage engine for other distributed systems.
 
 ## Architecture
 
@@ -19,10 +19,10 @@ See [design doc][design-doc] for more details.
 make build
 ```
 
-2. Deploy a cluster
+2. Deploy a single node cluster
 
 ```sh
-bash scripts/bootstrap.sh setup
+cargo run -- start --init
 ```
 
 3. Verify
