@@ -408,8 +408,16 @@ impl Replica {
                     .expect("The watch_event_sender must exists for WatchKeyRequest");
                 self.watcher_sender
                     .send(((shard_id, user_key), watcher))
-                    .expect("The FSM must be existance");
+                    .expect("The FSM must be existence");
                 return Ok(Response::WatchKey(WatchKeyResponse::default()));
+            }
+            Request::SplitShard(req) => {
+                let eval_result = eval::split_shard(&self.group_engine, req)?;
+                (Some(eval_result), Response::SplitShard(SplitShardResponse {}))
+            }
+            Request::MergeShard(req) => {
+                let eval_result = eval::merge_shard(&self.group_engine, req)?;
+                (Some(eval_result), Response::MergeShard(MergeShardResponse {}))
             }
         };
 
@@ -552,7 +560,9 @@ fn is_change_meta_request(request: &Request) -> bool {
         | Request::CreateShard(_)
         | Request::AcceptShard(_)
         | Request::MoveReplicas(_)
-        | Request::Transfer(_) => true,
+        | Request::Transfer(_)
+        | Request::SplitShard(_)
+        | Request::MergeShard(_) => true,
         Request::Get(_)
         | Request::Write(_)
         | Request::Scan(_)

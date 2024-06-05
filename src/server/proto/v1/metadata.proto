@@ -133,6 +133,10 @@ message SyncOp {
     PurgeOrphanReplica purge_replica = 2;
     // An event of moving shard.
     MoveShard move_shard = 3;
+    // Split shard.
+    SplitShard split_shard = 4;
+    // Merge shard.
+    MergeShard merge_shard = 5;
 
     // A trick, force prost box the `SyncOp`, because `SyncOp` message is too
     // large.
@@ -163,4 +167,17 @@ message MoveShard {
     // The latest ingested key, used for fault tolerance, locate the cursor that
     // has been replicated.
     bytes last_ingested_key = 3;
+}
+
+// The split shard request.
+message SplitShard {
+    uint64 old_shard_id = 1;
+    uint64 new_shard_id = 2;
+    bytes split_key = 3;
+}
+
+// The merge shard request.
+message MergeShard {
+    uint64 left_shard_id = 1;
+    uint64 right_shard_id = 2;
 }

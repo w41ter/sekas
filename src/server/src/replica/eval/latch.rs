@@ -129,7 +129,9 @@ where
         | Request::AcceptShard(_)
         | Request::Transfer(_)
         | Request::MoveReplicas(_)
-        | Request::WatchKey(_) => return Ok(None),
+        | Request::WatchKey(_)
+        | Request::SplitShard(_)
+        | Request::MergeShard(_) => return Ok(None),
     };
 
     if keys.is_empty() {

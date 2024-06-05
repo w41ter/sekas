@@ -541,6 +541,50 @@ impl GroupClient {
             InvokeOpt { accurate_epoch: true, ignore_transport_error: true, ..Default::default() };
         self.invoke_with_opt(op, opt).await
     }
+
+    pub async fn split_shard(
+        &mut self,
+        old_shard_id: u64,
+        new_shard_id: u64,
+        split_key: Option<Vec<u8>>,
+    ) -> Result<()> {
+        let op = |ctx: InvokeContext, client: NodeClient| {
+            let req = GroupRequest::split_shard(
+                ctx.group_id,
+                ctx.epoch,
+                old_shard_id,
+                new_shard_id,
+                split_key.clone(),
+            );
+            async move {
+                let resp = client.unary_group_request(req).await.and_then(Self::group_response)?;
+                match resp {
+                    Response::SplitShard(_) => Ok(()),
+                    _ => Err(Status::internal("invalid response type, SplitShard is required")),
+                }
+            }
+        };
+        let opt =
+            InvokeOpt { accurate_epoch: true, ignore_transport_error: true, ..Default::default() };
+        self.invoke_with_opt(op, opt).await
+    }
+
+    pub async fn merge_shard(&mut self, left_shard_id: u64, right_shard_id: u64) -> Result<()> {
+        let op = |ctx: InvokeContext, client: NodeClient| {
+            let req =
+                GroupRequest::merge_shard(ctx.group_id, ctx.epoch, left_shard_id, right_shard_id);
+            async move {
+                let resp = client.unary_group_request(req).await.and_then(Self::group_response)?;
+                match resp {
+                    Response::MergeShard(_) => Ok(()),
+                    _ => Err(Status::internal("invalid response type, MergeShard is required")),
+                }
+            }
+        };
+        let opt =
+            InvokeOpt { accurate_epoch: true, ignore_transport_error: true, ..Default::default() };
+        self.invoke_with_opt(op, opt).await
+    }
 }
 
 // Moving shard related functions, which will be retried at:

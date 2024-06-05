@@ -29,7 +29,6 @@ service Node {
     rpc Admin(NodeAdminRequest) returns (NodeAdminResponse) {}
     // A set methods about shard moving.
     rpc MoveShard(MoveShardRequest) returns (MoveShardResponse) {}
-    // rpc Watch(WatchKeyRequest) returns (stream WatchKeyResponse) {}
 }
 
 message GroupRequest {
@@ -76,6 +75,11 @@ message GroupRequestUnion {
 
         // Watch a key's updation.
         WatchKeyRequest watch_key = 12;
+
+        // Split a shard.
+        SplitShardRequest split_shard = 13;
+        // Merge two shards.
+        MergeShardRequest merge_shard = 14;
     }
 }
 
@@ -94,6 +98,8 @@ message GroupResponseUnion {
         TransferResponse transfer = 10;
         MoveReplicasResponse move_replicas = 11;
         WatchKeyResponse watch_key = 12;
+        SplitShardResponse split_shard = 13;
+        MergeShardResponse merge_shard = 14;
     }
 }
 
@@ -441,3 +447,27 @@ message WatchKeyResponse {
     WatchResult result = 1;
     optional Value value = 2;
 }
+
+// The split shard request.
+message SplitShardRequest {
+    // The id of the shard to split.
+    uint64 old_shard_id = 1;
+    // The id of the new shard.
+    uint64 new_shard_id = 2;
+    // The recommend split key, if not specified, read split keys from table properties.
+    optional bytes split_key = 3;
+}
+
+// The split shard response.
+message SplitShardResponse {}
+
+// The merge shard request.
+message MergeShardRequest {
+    // The id of the left shard.
+    uint64 left_shard_id = 1;
+    // The id of the right shard.
+    uint64 right_shard_id = 2;
+}
+
+// The merge shard response.
+message MergeShardResponse {}

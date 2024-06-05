@@ -27,6 +27,8 @@ make_static_metric! {
             commit_intent,
             clear_intent,
             transfer,
+            split_shard,
+            merge_shard,
             accept_shard,
             create_shard,
             move_replicas,
@@ -43,6 +45,8 @@ make_static_metric! {
             commit_intent,
             clear_intent,
             transfer,
+            split_shard,
+            merge_shard,
             accept_shard,
             create_shard,
             move_replicas,
@@ -124,6 +128,14 @@ pub fn take_group_request_metrics(request: &GroupRequest) -> Option<&'static His
         Some(Request::WatchKey(_)) => {
             NODE_SERVICE_GROUP_REQUEST_TOTAL.watch_key.inc();
             None
+        }
+        Some(Request::SplitShard(_)) => {
+            NODE_SERVICE_GROUP_REQUEST_TOTAL.split_shard.inc();
+            Some(&NODE_SERVICE_GROUP_REQUEST_DURATION_SECONDS.split_shard)
+        }
+        Some(Request::MergeShard(_)) => {
+            NODE_SERVICE_GROUP_REQUEST_TOTAL.merge_shard.inc();
+            Some(&NODE_SERVICE_GROUP_REQUEST_DURATION_SECONDS.merge_shard)
         }
         None => None,
     }

@@ -126,4 +126,39 @@ impl GroupRequest {
             }),
         }
     }
+
+    /// build split shard request
+    pub fn split_shard(
+        group_id: u64,
+        epoch: u64,
+        old_shard_id: u64,
+        new_shard_id: u64,
+        split_key: Option<Vec<u8>>,
+    ) -> Self {
+        GroupRequest {
+            group_id,
+            epoch,
+            request: Some(GroupRequestUnion {
+                request: Some(group_request_union::Request::SplitShard(SplitShardRequest {
+                    old_shard_id,
+                    new_shard_id,
+                    split_key,
+                })),
+            }),
+        }
+    }
+
+    /// build merge shard request
+    pub fn merge_shard(group_id: u64, epoch: u64, left_shard_id: u64, right_shard_id: u64) -> Self {
+        GroupRequest {
+            group_id,
+            epoch,
+            request: Some(GroupRequestUnion {
+                request: Some(group_request_union::Request::MergeShard(MergeShardRequest {
+                    left_shard_id,
+                    right_shard_id,
+                })),
+            }),
+        }
+    }
 }

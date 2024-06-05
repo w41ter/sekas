@@ -20,16 +20,13 @@ use std::path::Path;
 use std::sync::{mpsc, Arc};
 
 use log::{info, trace, warn};
-use sekas_api::server::v1::{
-    ChangeReplica, ChangeReplicaType, ChangeReplicas, GroupDesc, MoveShardDesc, ReplicaDesc,
-    ReplicaRole,
-};
+use sekas_api::server::v1::*;
 
 use super::ReplicaInfo;
 use crate::engine::{GroupEngine, MvccEntry, WriteBatch, WriteStates};
 use crate::raftgroup::{ApplyEntry, SnapshotBuilder, StateMachine};
 use crate::serverpb::v1::*;
-use crate::{ReplicaConfig, Result};
+use crate::{Error, ReplicaConfig, Result};
 
 const SHARD_UPDATE_DELTA: u64 = 1 << 32;
 const CONFIG_CHANGE_DELTA: u64 = 1;
@@ -218,6 +215,12 @@ impl GroupStateMachine {
             if let Some(m) = op.move_shard {
                 self.apply_move_shard_event(m, &mut desc);
             }
+            if let Some(split_shard) = op.split_shard {
+                self.apply_split_shard(split_shard, &mut desc)?;
+            }
+            if let Some(merge_shard) = op.merge_shard {
+                self.apply_merge_shard(merge_shard, &mut desc)?;
+            }
 
             // Any sync_op will update group desc.
             self.plugged_write_states.descriptor = Some(desc);
@@ -321,6 +324,94 @@ impl GroupStateMachine {
             self.info.replica_id, self.info.group_id, group_desc.epoch, shard_desc.id
         );
         self.desc_updated = true;
+    }
+
+    fn apply_split_shard(
+        &mut self,
+        split_shard: SplitShard,
+        group_desc: &mut GroupDesc,
+    ) -> Result<()> {
+        let old_shard_id = split_shard.old_shard_id;
+        let new_shard_id = split_shard.new_shard_id;
+        apply_split_shard(group_desc, split_shard)?;
+        self.desc_updated = true;
+
+        info!(
+            "apply split shard, old {}, new {}, group={}, replica={}, epoch={}",
+            old_shard_id, new_shard_id, self.info.group_id, self.info.replica_id, group_desc.epoch
+        );
+        Ok(())
+    }
+
+    fn apply_merge_shard(
+        &mut self,
+        merge_shard: MergeShard,
+        group_desc: &mut GroupDesc,
+    ) -> Result<()> {
+        let left_shard = group_desc
+            .shards
+            .iter()
+            .find(|shard| shard.id == merge_shard.left_shard_id)
+            .ok_or_else(|| {
+                Error::InvalidData(format!(
+                    "apply merge shard but left shard {} is not exists",
+                    merge_shard.left_shard_id
+                ))
+            })?;
+        let right_shard = group_desc
+            .shards
+            .iter()
+            .find(|shard| shard.id == merge_shard.right_shard_id)
+            .ok_or_else(|| {
+                Error::InvalidData(format!(
+                    "apply merge shard but right shard {} is not exists",
+                    merge_shard.right_shard_id
+                ))
+            })?;
+        if left_shard.table_id != right_shard.table_id {
+            return Err(Error::InvalidData(
+                format!("apply merge shard but two shard from different table, left {} table {}, right {} table {}",
+                left_shard.id, left_shard.table_id,
+                right_shard.id, right_shard.table_id)
+            ));
+        }
+        let Some(RangePartition { start: left_start, end: left_end }) = &left_shard.range else {
+            return Err(Error::InvalidData(format!(
+                "apply merge shard but left shard {} range is missing",
+                merge_shard.left_shard_id
+            )));
+        };
+        let Some(RangePartition { start: right_start, end: right_end }) = &right_shard.range else {
+            return Err(Error::InvalidData(format!(
+                "apply merge shard but right shard {} range is missing",
+                merge_shard.right_shard_id
+            )));
+        };
+        if left_end != right_start {
+            return Err(Error::InvalidData(format!(
+                "the left shard {} is not mergeable with right shard {}",
+                left_shard.id, right_shard.id
+            )));
+        }
+        let new_range = RangePartition { start: left_start.clone(), end: right_end.clone() };
+        let new_shard =
+            ShardDesc { id: left_shard.id, table_id: left_shard.table_id, range: Some(new_range) };
+        group_desc.shards.retain(|shard| {
+            shard.id != merge_shard.left_shard_id && shard.id != merge_shard.right_shard_id
+        });
+        group_desc.shards.push(new_shard);
+        group_desc.epoch += SHARD_UPDATE_DELTA;
+        self.desc_updated = true;
+
+        info!(
+            "apply merge shard, left {}, right {}, group={}, replica={}, epoch={}",
+            merge_shard.left_shard_id,
+            merge_shard.right_shard_id,
+            self.info.group_id,
+            self.info.replica_id,
+            group_desc.epoch
+        );
+        Ok(())
     }
 
     fn flush_updated_events(&mut self, term: u64) {
@@ -604,6 +695,44 @@ fn check_not_in_joint_state(exist: &Option<&mut ReplicaDesc>) {
     ) {
         panic!("execute conf change but still in joint state");
     }
+}
+
+fn apply_split_shard(group_desc: &mut GroupDesc, split_shard: SplitShard) -> Result<()> {
+    let old_shard = group_desc
+        .shards
+        .iter_mut()
+        .find(|shard| shard.id == split_shard.old_shard_id)
+        .ok_or_else(|| {
+            Error::InvalidData(format!(
+                "apply split shard but old shard {} is not exists",
+                split_shard.old_shard_id
+            ))
+        })?;
+    let Some(RangePartition { start, end }) = &old_shard.range else {
+        return Err(Error::InvalidData(format!(
+            "shard desc {} range fields is missing",
+            split_shard.old_shard_id
+        )));
+    };
+    if !sekas_schema::shard::belong_to(old_shard, &split_shard.split_key) {
+        return Err(Error::InvalidData(format!(
+            "the split shard key is not belong to the old shard {} range",
+            split_shard.old_shard_id
+        )));
+    }
+
+    let new_range = RangePartition { start: split_shard.split_key.clone(), end: end.clone() };
+    let new_shard = ShardDesc {
+        id: split_shard.new_shard_id,
+        table_id: old_shard.table_id,
+        range: Some(new_range),
+    };
+    let old_range = RangePartition { start: start.clone(), end: split_shard.split_key };
+    old_shard.range = Some(old_range);
+
+    group_desc.shards.push(new_shard);
+    group_desc.epoch += SHARD_UPDATE_DELTA;
+    Ok(())
 }
 
 #[cfg(test)]
