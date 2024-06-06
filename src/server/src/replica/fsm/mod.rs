@@ -348,65 +348,15 @@ impl GroupStateMachine {
         merge_shard: MergeShard,
         group_desc: &mut GroupDesc,
     ) -> Result<()> {
-        let left_shard = group_desc
-            .shards
-            .iter()
-            .find(|shard| shard.id == merge_shard.left_shard_id)
-            .ok_or_else(|| {
-                Error::InvalidData(format!(
-                    "apply merge shard but left shard {} is not exists",
-                    merge_shard.left_shard_id
-                ))
-            })?;
-        let right_shard = group_desc
-            .shards
-            .iter()
-            .find(|shard| shard.id == merge_shard.right_shard_id)
-            .ok_or_else(|| {
-                Error::InvalidData(format!(
-                    "apply merge shard but right shard {} is not exists",
-                    merge_shard.right_shard_id
-                ))
-            })?;
-        if left_shard.table_id != right_shard.table_id {
-            return Err(Error::InvalidData(
-                format!("apply merge shard but two shard from different table, left {} table {}, right {} table {}",
-                left_shard.id, left_shard.table_id,
-                right_shard.id, right_shard.table_id)
-            ));
-        }
-        let Some(RangePartition { start: left_start, end: left_end }) = &left_shard.range else {
-            return Err(Error::InvalidData(format!(
-                "apply merge shard but left shard {} range is missing",
-                merge_shard.left_shard_id
-            )));
-        };
-        let Some(RangePartition { start: right_start, end: right_end }) = &right_shard.range else {
-            return Err(Error::InvalidData(format!(
-                "apply merge shard but right shard {} range is missing",
-                merge_shard.right_shard_id
-            )));
-        };
-        if left_end != right_start {
-            return Err(Error::InvalidData(format!(
-                "the left shard {} is not mergeable with right shard {}",
-                left_shard.id, right_shard.id
-            )));
-        }
-        let new_range = RangePartition { start: left_start.clone(), end: right_end.clone() };
-        let new_shard =
-            ShardDesc { id: left_shard.id, table_id: left_shard.table_id, range: Some(new_range) };
-        group_desc.shards.retain(|shard| {
-            shard.id != merge_shard.left_shard_id && shard.id != merge_shard.right_shard_id
-        });
-        group_desc.shards.push(new_shard);
-        group_desc.epoch += SHARD_UPDATE_DELTA;
+        let left_shard_id = merge_shard.left_shard_id;
+        let right_shard_id = merge_shard.right_shard_id;
+        apply_merge_shard(group_desc, merge_shard)?;
         self.desc_updated = true;
 
         info!(
             "apply merge shard, left {}, right {}, group={}, replica={}, epoch={}",
-            merge_shard.left_shard_id,
-            merge_shard.right_shard_id,
+            left_shard_id,
+            right_shard_id,
             self.info.group_id,
             self.info.replica_id,
             group_desc.epoch
@@ -735,6 +685,61 @@ fn apply_split_shard(group_desc: &mut GroupDesc, split_shard: SplitShard) -> Res
     Ok(())
 }
 
+fn apply_merge_shard(group_desc: &mut GroupDesc, merge_shard: MergeShard) -> Result<()> {
+    let left_shard =
+        group_desc.shards.iter().find(|shard| shard.id == merge_shard.left_shard_id).ok_or_else(
+            || {
+                Error::InvalidData(format!(
+                    "apply merge shard but left shard {} is not exists",
+                    merge_shard.left_shard_id
+                ))
+            },
+        )?;
+    let right_shard =
+        group_desc.shards.iter().find(|shard| shard.id == merge_shard.right_shard_id).ok_or_else(
+            || {
+                Error::InvalidData(format!(
+                    "apply merge shard but right shard {} is not exists",
+                    merge_shard.right_shard_id
+                ))
+            },
+        )?;
+    if left_shard.table_id != right_shard.table_id {
+        return Err(Error::InvalidData(
+                format!("apply merge shard but two shard from different table, left {} table {}, right {} table {}",
+                left_shard.id, left_shard.table_id,
+                right_shard.id, right_shard.table_id)
+            ));
+    }
+    let Some(RangePartition { start: left_start, end: left_end }) = &left_shard.range else {
+        return Err(Error::InvalidData(format!(
+            "apply merge shard but left shard {} range is missing",
+            merge_shard.left_shard_id
+        )));
+    };
+    let Some(RangePartition { start: right_start, end: right_end }) = &right_shard.range else {
+        return Err(Error::InvalidData(format!(
+            "apply merge shard but right shard {} range is missing",
+            merge_shard.right_shard_id
+        )));
+    };
+    if left_end != right_start {
+        return Err(Error::InvalidData(format!(
+            "the left shard {} is not mergeable with right shard {}",
+            left_shard.id, right_shard.id
+        )));
+    }
+    let new_range = RangePartition { start: left_start.clone(), end: right_end.clone() };
+    let new_shard =
+        ShardDesc { id: left_shard.id, table_id: left_shard.table_id, range: Some(new_range) };
+    group_desc.shards.retain(|shard| {
+        shard.id != merge_shard.left_shard_id && shard.id != merge_shard.right_shard_id
+    });
+    group_desc.shards.push(new_shard);
+    group_desc.epoch += SHARD_UPDATE_DELTA;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -932,6 +937,163 @@ mod tests {
             apply_leave_joint(0, &mut descriptor);
             let replicas = group_replicas(&descriptor);
             assert_eq!(replicas, expects, "{tips}");
+        }
+    }
+
+    #[test]
+    fn test_apply_split_shard() {
+        struct Test {
+            origin_shards: Vec<ShardDesc>,
+            split_shard: SplitShard,
+            expect_shards: Option<Vec<ShardDesc>>,
+        }
+
+        let table_id = 1;
+        let tests = vec![
+            // No such left shard exists.
+            Test {
+                origin_shards: vec![],
+                split_shard: SplitShard { old_shard_id: 0, new_shard_id: 1, split_key: vec![] },
+                expect_shards: None,
+            },
+            // split key out of range.
+            Test {
+                origin_shards: vec![ShardDesc::with_range(0, table_id, vec![b'a'], vec![b'b'])],
+                split_shard: SplitShard { old_shard_id: 0, new_shard_id: 1, split_key: vec![b'c'] },
+                expect_shards: None,
+            },
+            Test {
+                origin_shards: vec![ShardDesc::with_range(0, table_id, vec![b'a'], vec![b'b'])],
+                split_shard: SplitShard { old_shard_id: 0, new_shard_id: 1, split_key: vec![b'b'] },
+                expect_shards: None,
+            },
+            // Split into two shards
+            Test {
+                origin_shards: vec![ShardDesc::with_range(0, table_id, vec![b'a'], vec![b'c'])],
+                split_shard: SplitShard { old_shard_id: 0, new_shard_id: 1, split_key: vec![b'b'] },
+                expect_shards: Some(vec![
+                    ShardDesc::with_range(0, table_id, vec![b'a'], vec![b'b']),
+                    ShardDesc::with_range(1, table_id, vec![b'b'], vec![b'c']),
+                ]),
+            },
+            Test {
+                origin_shards: vec![
+                    ShardDesc::with_range(0, table_id, vec![b'a'], vec![b'c']),
+                    ShardDesc::with_range(2, table_id, vec![b'c'], vec![b'd']),
+                ],
+                split_shard: SplitShard { old_shard_id: 0, new_shard_id: 1, split_key: vec![b'b'] },
+                expect_shards: Some(vec![
+                    ShardDesc::with_range(0, table_id, vec![b'a'], vec![b'b']),
+                    ShardDesc::with_range(1, table_id, vec![b'b'], vec![b'c']),
+                    ShardDesc::with_range(2, table_id, vec![b'c'], vec![b'd']),
+                ]),
+            },
+        ];
+        for test in tests {
+            let mut desc =
+                GroupDesc { id: 0, epoch: 0, shards: test.origin_shards, replicas: vec![] };
+            if let Some(expect_shards) = test.expect_shards {
+                apply_split_shard(&mut desc, test.split_shard).unwrap();
+                assert_eq!(desc.epoch, SHARD_UPDATE_DELTA);
+                for expect_shard in expect_shards {
+                    let got_shard = desc
+                        .shards
+                        .iter()
+                        .find(|shard| shard.id == expect_shard.id)
+                        .expect("The expect shard not exists");
+                    assert_eq!(*got_shard, expect_shard);
+                }
+            } else {
+                assert!(apply_split_shard(&mut desc, test.split_shard).is_err());
+                assert_eq!(desc.epoch, 0);
+            }
+        }
+    }
+
+    #[test]
+    fn test_apply_merge_shard() {
+        struct Test {
+            origin_shards: Vec<ShardDesc>,
+            merge_shard: MergeShard,
+            expect_shards: Option<Vec<ShardDesc>>,
+        }
+
+        let table_id = 1;
+        let tests = vec![
+            // Shard not found.
+            Test {
+                origin_shards: vec![ShardDesc::with_range(0, table_id, vec![], vec![])],
+                merge_shard: MergeShard { left_shard_id: 0, right_shard_id: 1 },
+                expect_shards: None,
+            },
+            Test {
+                origin_shards: vec![ShardDesc::with_range(1, table_id, vec![], vec![])],
+                merge_shard: MergeShard { left_shard_id: 0, right_shard_id: 1 },
+                expect_shards: None,
+            },
+            // Table is not equals.
+            Test {
+                origin_shards: vec![
+                    ShardDesc::with_range(0, table_id, vec![], vec![]),
+                    ShardDesc::with_range(1, table_id + 1, vec![], vec![]),
+                ],
+                merge_shard: MergeShard { left_shard_id: 0, right_shard_id: 1 },
+                expect_shards: None,
+            },
+            // Range is not close to.
+            Test {
+                origin_shards: vec![
+                    ShardDesc::with_range(0, table_id, vec![b'a'], vec![b'b']),
+                    ShardDesc::with_range(1, table_id, vec![b'c'], vec![b'd']),
+                ],
+                merge_shard: MergeShard { left_shard_id: 0, right_shard_id: 1 },
+                expect_shards: None,
+            },
+            // Merge two shards.
+            Test {
+                origin_shards: vec![
+                    ShardDesc::with_range(0, table_id, vec![b'a'], vec![b'b']),
+                    ShardDesc::with_range(1, table_id, vec![b'b'], vec![b'c']),
+                ],
+                merge_shard: MergeShard { left_shard_id: 0, right_shard_id: 1 },
+                expect_shards: Some(vec![ShardDesc::with_range(
+                    0,
+                    table_id,
+                    vec![b'a'],
+                    vec![b'c'],
+                )]),
+            },
+            Test {
+                origin_shards: vec![
+                    ShardDesc::with_range(0, table_id, vec![b'a'], vec![b'b']),
+                    ShardDesc::with_range(1, table_id, vec![b'b'], vec![b'c']),
+                    ShardDesc::with_range(2, table_id, vec![b'c'], vec![b'd']),
+                ],
+                merge_shard: MergeShard { left_shard_id: 0, right_shard_id: 1 },
+                expect_shards: Some(vec![
+                    ShardDesc::with_range(0, table_id, vec![b'a'], vec![b'c']),
+                    ShardDesc::with_range(2, table_id, vec![b'c'], vec![b'd']),
+                ]),
+            },
+        ];
+        for test in tests {
+            let mut desc =
+                GroupDesc { id: 0, epoch: 0, shards: test.origin_shards, replicas: vec![] };
+            if let Some(expect_shards) = test.expect_shards {
+                apply_merge_shard(&mut desc, test.merge_shard).unwrap();
+                assert_eq!(desc.epoch, SHARD_UPDATE_DELTA);
+                for expect_shard in expect_shards {
+                    let got_shard = desc
+                        .shards
+                        .iter()
+                        .find(|shard| shard.id == expect_shard.id)
+                        .expect("The expect shard not exists");
+                    assert_eq!(*got_shard, expect_shard);
+                }
+            } else {
+                assert!(apply_merge_shard(&mut desc, test.merge_shard).is_err());
+                assert_eq!(desc.epoch, 0);
+            }
         }
     }
 }
