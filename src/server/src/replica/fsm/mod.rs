@@ -648,16 +648,12 @@ fn check_not_in_joint_state(exist: &Option<&mut ReplicaDesc>) {
 }
 
 fn apply_split_shard(group_desc: &mut GroupDesc, split_shard: SplitShard) -> Result<()> {
-    let old_shard = group_desc
-        .shards
-        .iter_mut()
-        .find(|shard| shard.id == split_shard.old_shard_id)
-        .ok_or_else(|| {
-            Error::InvalidData(format!(
-                "apply split shard but old shard {} is not exists",
-                split_shard.old_shard_id
-            ))
-        })?;
+    let old_shard = group_desc.shard_mut(split_shard.old_shard_id).ok_or_else(|| {
+        Error::InvalidData(format!(
+            "apply split shard but old shard {} is not exists",
+            split_shard.old_shard_id
+        ))
+    })?;
     let Some(RangePartition { start, end }) = &old_shard.range else {
         return Err(Error::InvalidData(format!(
             "shard desc {} range fields is missing",
@@ -671,12 +667,12 @@ fn apply_split_shard(group_desc: &mut GroupDesc, split_shard: SplitShard) -> Res
         )));
     }
 
-    let new_range = RangePartition { start: split_shard.split_key.clone(), end: end.clone() };
-    let new_shard = ShardDesc {
-        id: split_shard.new_shard_id,
-        table_id: old_shard.table_id,
-        range: Some(new_range),
-    };
+    let new_shard = ShardDesc::with_range(
+        split_shard.new_shard_id,
+        old_shard.table_id,
+        split_shard.split_key.clone(),
+        end.clone(),
+    );
     let old_range = RangePartition { start: start.clone(), end: split_shard.split_key };
     old_shard.range = Some(old_range);
 
@@ -686,24 +682,18 @@ fn apply_split_shard(group_desc: &mut GroupDesc, split_shard: SplitShard) -> Res
 }
 
 fn apply_merge_shard(group_desc: &mut GroupDesc, merge_shard: MergeShard) -> Result<()> {
-    let left_shard =
-        group_desc.shards.iter().find(|shard| shard.id == merge_shard.left_shard_id).ok_or_else(
-            || {
-                Error::InvalidData(format!(
-                    "apply merge shard but left shard {} is not exists",
-                    merge_shard.left_shard_id
-                ))
-            },
-        )?;
-    let right_shard =
-        group_desc.shards.iter().find(|shard| shard.id == merge_shard.right_shard_id).ok_or_else(
-            || {
-                Error::InvalidData(format!(
-                    "apply merge shard but right shard {} is not exists",
-                    merge_shard.right_shard_id
-                ))
-            },
-        )?;
+    let left_shard = group_desc.shard(merge_shard.left_shard_id).ok_or_else(|| {
+        Error::InvalidData(format!(
+            "apply merge shard but left shard {} is not exists",
+            merge_shard.left_shard_id
+        ))
+    })?;
+    let right_shard = group_desc.shard(merge_shard.right_shard_id).ok_or_else(|| {
+        Error::InvalidData(format!(
+            "apply merge shard but right shard {} is not exists",
+            merge_shard.right_shard_id
+        ))
+    })?;
     if left_shard.table_id != right_shard.table_id {
         return Err(Error::InvalidData(
                 format!("apply merge shard but two shard from different table, left {} table {}, right {} table {}",
@@ -729,12 +719,14 @@ fn apply_merge_shard(group_desc: &mut GroupDesc, merge_shard: MergeShard) -> Res
             left_shard.id, right_shard.id
         )));
     }
-    let new_range = RangePartition { start: left_start.clone(), end: right_end.clone() };
-    let new_shard =
-        ShardDesc { id: left_shard.id, table_id: left_shard.table_id, range: Some(new_range) };
-    group_desc.shards.retain(|shard| {
-        shard.id != merge_shard.left_shard_id && shard.id != merge_shard.right_shard_id
-    });
+    let new_shard = ShardDesc::with_range(
+        left_shard.id,
+        left_shard.table_id,
+        left_start.clone(),
+        right_end.clone(),
+    );
+    group_desc.drop_shard(merge_shard.left_shard_id);
+    group_desc.drop_shard(merge_shard.right_shard_id);
     group_desc.shards.push(new_shard);
     group_desc.epoch += SHARD_UPDATE_DELTA;
     Ok(())
