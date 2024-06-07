@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use log::debug;
 use sekas_api::server::v1::*;
 
 use crate::replica::{EvalResult, GroupEngine, SplitShard, SyncOp};
@@ -21,6 +22,14 @@ use crate::{Error, Result};
 pub(crate) fn split_shard(engine: &GroupEngine, req: &SplitShardRequest) -> Result<EvalResult> {
     let old_shard_id = req.old_shard_id;
     let new_shard_id = req.new_shard_id;
+
+    debug!(
+        "execute split shard from {} to {}, has split key: {}",
+        old_shard_id,
+        new_shard_id,
+        req.split_key.is_some()
+    );
+
     let shard_desc = engine.shard_desc(old_shard_id)?;
     let split_key = match req.split_key.as_ref().cloned() {
         Some(split_key) => {

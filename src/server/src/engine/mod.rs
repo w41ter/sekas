@@ -219,6 +219,7 @@ pub(crate) fn open_raft_engine(log_path: &Path) -> Result<raft_engine::Engine> {
     use raft_engine::{Config, Engine};
     let engine_dir = log_path.join("engine");
     let snap_dir = log_path.join("snap");
+    info!("open raft engine {}", engine_dir.display());
     create_dir_all_if_not_exists(&engine_dir)?;
     create_dir_all_if_not_exists(&snap_dir)?;
     let engine_cfg = Config {
@@ -339,7 +340,7 @@ mod tests {
         {
             let engine = open_raft_engine(dir.path()).unwrap();
             let mut batch = LogBatch::default();
-            batch.put(1, vec![1, 2, 3], vec![4, 5, 6]);
+            batch.put(1, vec![1, 2, 3], vec![4, 5, 6]).unwrap();
             engine.write(&mut batch, true).unwrap();
         }
 

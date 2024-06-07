@@ -988,11 +988,8 @@ mod tests {
                 apply_split_shard(&mut desc, test.split_shard).unwrap();
                 assert_eq!(desc.epoch, SHARD_UPDATE_DELTA);
                 for expect_shard in expect_shards {
-                    let got_shard = desc
-                        .shards
-                        .iter()
-                        .find(|shard| shard.id == expect_shard.id)
-                        .expect("The expect shard not exists");
+                    let got_shard =
+                        desc.shard(expect_shard.id).expect("The expect shard not exists");
                     assert_eq!(*got_shard, expect_shard);
                 }
             } else {
@@ -1075,11 +1072,8 @@ mod tests {
                 apply_merge_shard(&mut desc, test.merge_shard).unwrap();
                 assert_eq!(desc.epoch, SHARD_UPDATE_DELTA);
                 for expect_shard in expect_shards {
-                    let got_shard = desc
-                        .shards
-                        .iter()
-                        .find(|shard| shard.id == expect_shard.id)
-                        .expect("The expect shard not exists");
+                    let got_shard =
+                        desc.shard(expect_shard.id).expect("The expect shard not exists");
                     assert_eq!(*got_shard, expect_shard);
                 }
             } else {

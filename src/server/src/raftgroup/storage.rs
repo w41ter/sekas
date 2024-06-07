@@ -570,10 +570,11 @@ mod tests {
 
     use log::info;
     use raft_engine::Config;
-    use sekas_runtime::*;
+    use sekas_rock::fn_name;
     use tempdir::TempDir;
 
     use super::*;
+    use crate::serverpb::v1::{AddShard, SyncOp};
 
     fn mocked_entries(select_term: Option<u64>) -> Vec<(u64, u64)> {
         let entries = vec![
@@ -852,94 +853,85 @@ mod tests {
         );
     }
 
-    #[test]
-    fn raft_storage_basic() {
-        let owner = ExecutorOwner::new(1);
-        owner.executor().block_on(async move {
-            raft_storage_inner().await;
-        });
+    #[sekas_macro::test]
+    async fn raft_storage_basic() {
+        raft_storage_inner().await;
     }
 
-    #[test]
-    fn raft_storage_snapshot() {
-        let owner = ExecutorOwner::new(1);
-        owner.executor().block_on(async move {
-            raft_storage_apply_snapshot().await;
-            open_empty_raft_storage_after_applying_snapshot().await;
-        });
+    #[sekas_macro::test]
+    async fn raft_storage_snapshot() {
+        raft_storage_apply_snapshot().await;
+        open_empty_raft_storage_after_applying_snapshot().await;
     }
 
-    #[test]
-    fn fetch_entries_from_both_engine_and_cache_should_be_continuously() {
-        let owner = ExecutorOwner::new(1);
-        owner.executor().block_on(async move {
-            let dir = TempDir::new("raft-storage").unwrap();
+    #[sekas_macro::test]
+    async fn fetch_entries_from_both_engine_and_cache_should_be_continuously() {
+        let dir = TempDir::new(fn_name!()).unwrap();
 
-            let cfg = Config {
-                dir: dir.path().join("db").to_str().unwrap().to_owned(),
-                ..Default::default()
-            };
-            let engine = Arc::new(Engine::open(cfg).unwrap());
+        let cfg = Config {
+            dir: dir.path().join("db").to_str().unwrap().to_owned(),
+            ..Default::default()
+        };
+        let engine = Arc::new(Engine::open(cfg).unwrap());
 
-            write_initial_state(&RaftConfig::default(), engine.as_ref(), 1, vec![], vec![])
-                .await
-                .unwrap();
-
-            let snap_mgr = SnapManager::new(dir.path().join("snap"));
-            let mut storage = Storage::open(
-                &RaftConfig::default(),
-                1,
-                0,
-                ConfState::default(),
-                engine.clone(),
-                snap_mgr,
-            )
+        write_initial_state(&RaftConfig::default(), engine.as_ref(), 1, vec![], vec![])
             .await
             .unwrap();
-            insert_entries(engine.clone(), &mut storage, mocked_entries(None)).await;
-            validate_term(&storage, mocked_entries(None));
-            validate_entries(&storage, mocked_entries(None));
-            let first_index = mocked_entries(None).first().unwrap().0;
-            let last_index = mocked_entries(None).last().unwrap().0;
-            validate_range(&storage, first_index, last_index);
 
-            // 1. apply all entries in term 2.
-            storage.post_apply(mocked_entries(Some(2)).last().unwrap().0);
-            validate_term(&storage, mocked_entries(None));
-            validate_entries(&storage, mocked_entries(None));
-            validate_range(&storage, first_index, last_index);
+        let snap_mgr = SnapManager::new(dir.path().join("snap"));
+        let mut storage = Storage::open(
+            &RaftConfig::default(),
+            1,
+            0,
+            ConfState::default(),
+            engine.clone(),
+            snap_mgr,
+        )
+        .await
+        .unwrap();
+        insert_entries(engine.clone(), &mut storage, mocked_entries(None)).await;
+        validate_term(&storage, mocked_entries(None));
+        validate_entries(&storage, mocked_entries(None));
+        let first_index = mocked_entries(None).first().unwrap().0;
+        let last_index = mocked_entries(None).last().unwrap().0;
+        validate_range(&storage, first_index, last_index);
 
-            pub fn assert_no_missing_entries(entries: &[Entry]) {
-                let first_index = entries.first().map(|v| v.index);
-                let last_index = entries.last().map(|v| v.index);
-                if let (Some(first_index), Some(last_index)) = (first_index, last_index) {
-                    let size = (last_index - first_index) as usize;
-                    if entries.len() <= size {
-                        panic!("some entries are missing");
-                    }
+        // 1. apply all entries in term 2.
+        storage.post_apply(mocked_entries(Some(2)).last().unwrap().0);
+        validate_term(&storage, mocked_entries(None));
+        validate_entries(&storage, mocked_entries(None));
+        validate_range(&storage, first_index, last_index);
+
+        pub fn assert_no_missing_entries(entries: &[Entry]) {
+            let first_index = entries.first().map(|v| v.index);
+            let last_index = entries.last().map(|v| v.index);
+            if let (Some(first_index), Some(last_index)) = (first_index, last_index) {
+                let size = (last_index - first_index) as usize;
+                if entries.len() <= size {
+                    panic!("some entries are missing");
                 }
             }
+        }
 
-            let entries = <Storage as raft::Storage>::entries(
-                &storage,
-                first_index,
-                last_index,
-                Some(1024 * 2),
-                GetEntriesContext::empty(false),
-            )
-            .unwrap();
-            assert_no_missing_entries(&entries);
+        let entries = <Storage as raft::Storage>::entries(
+            &storage,
+            first_index,
+            last_index,
+            Some(1024 * 2),
+            GetEntriesContext::empty(false),
+        )
+        .unwrap();
+        assert_no_missing_entries(&entries);
 
-            let entries = <Storage as raft::Storage>::entries(
-                &storage,
-                first_index,
-                last_index,
-                Some(1024 * 6),
-                GetEntriesContext::empty(false),
-            )
-            .unwrap();
-            assert_no_missing_entries(&entries);
-        });
+        let entries = <Storage as raft::Storage>::entries(
+            &storage,
+            first_index,
+            last_index,
+            Some(1024 * 6),
+            GetEntriesContext::empty(false),
+        )
+        .unwrap();
+        assert_no_missing_entries(&entries);
     }
 
     fn make_entries(entries: Vec<(u64, u64)>) -> Vec<Entry> {
@@ -1013,5 +1005,102 @@ mod tests {
         let mut entries = Vec::new();
         cache.fetch_entries_to(1, 2, 10, &mut entries);
         assert_eq!(entries, vec![e]);
+    }
+
+    #[sekas_macro::test]
+    async fn raft_storage_must_be_unique_instance() {
+        {
+            let dir = TempDir::new(fn_name!()).unwrap();
+
+            let cfg = Config {
+                dir: dir.path().join("db").to_str().unwrap().to_owned(),
+                ..Default::default()
+            };
+            let engine = Arc::new(Engine::open(cfg).unwrap());
+
+            let eval_results = vec![EvalResult {
+                op: Some(Box::new(SyncOp {
+                    add_shard: Some(AddShard {
+                        shard: Some(ShardDesc::with_range(1, 1, vec![b'a'], vec![b'b'])),
+                    }),
+                    ..Default::default()
+                })),
+                ..Default::default()
+            }];
+
+            write_initial_state(&RaftConfig::default(), engine.as_ref(), 1, vec![], eval_results)
+                .await
+                .unwrap();
+
+            let snap_mgr = SnapManager::new(dir.path().join("snap"));
+            let _storage = Storage::open(
+                &RaftConfig::default(),
+                1,
+                0,
+                ConfState::default(),
+                engine.clone(),
+                snap_mgr,
+            )
+            .await
+            .unwrap();
+        }
+
+        {
+            let dir = TempDir::new(fn_name!()).unwrap();
+
+            let cfg = Config {
+                dir: dir.path().join("db").to_str().unwrap().to_owned(),
+                ..Default::default()
+            };
+            let engine = Arc::new(Engine::open(cfg).unwrap());
+
+            let eval_results = vec![EvalResult {
+                op: Some(Box::new(SyncOp {
+                    add_shard: Some(AddShard {
+                        shard: Some(ShardDesc::with_range(1, 1, vec![b'a'], vec![b'c'])),
+                    }),
+                    ..Default::default()
+                })),
+                ..Default::default()
+            }];
+
+            write_initial_state(
+                &RaftConfig::default(),
+                engine.as_ref(),
+                1,
+                vec![],
+                eval_results.clone(),
+            )
+            .await
+            .unwrap();
+
+            let snap_mgr = SnapManager::new(dir.path().join("snap"));
+            let storage = Storage::open(
+                &RaftConfig::default(),
+                1,
+                0,
+                ConfState::default(),
+                engine.clone(),
+                snap_mgr,
+            )
+            .await
+            .unwrap();
+            let std::ops::Range { start, end } = storage.range();
+            let entries = <Storage as raft::Storage>::entries(
+                &storage,
+                start,
+                end,
+                Some(1024 * 2),
+                GetEntriesContext::empty(false),
+            )
+            .unwrap();
+            let entry = &entries[0];
+            let expect_bytes = eval_results[0].encode_to_vec();
+            assert_eq!(
+                expect_bytes, entry.data,
+                "expect bytes: {expect_bytes:?}, entry data: {:?}",
+                entry.data
+            );
+        }
     }
 }

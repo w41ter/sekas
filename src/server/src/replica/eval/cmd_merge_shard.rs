@@ -11,6 +11,8 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+
+use log::debug;
 use sekas_api::server::v1::*;
 
 use crate::replica::{EvalResult, GroupEngine, MergeShard, SyncOp};
@@ -20,6 +22,9 @@ use crate::{Error, Result};
 pub(crate) fn merge_shard(engine: &GroupEngine, req: &MergeShardRequest) -> Result<EvalResult> {
     let left_shard_id = req.left_shard_id;
     let right_shard_id = req.right_shard_id;
+
+    debug!("execute merge shard {right_shard_id} into {left_shard_id}",);
+
     let left_shard = engine.shard_desc(left_shard_id)?;
     let right_shard = engine.shard_desc(right_shard_id)?;
     let Some(RangePartition { start: _, end: left_end }) = &left_shard.range else {
