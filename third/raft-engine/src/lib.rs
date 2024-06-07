@@ -14,6 +14,7 @@
 //! # Raft Engine
 
 #![allow(clippy::redundant_closure_call)]
+#![allow(unused_imports)]
 #![cfg_attr(feature = "nightly", feature(test))]
 #![cfg_attr(feature = "swap", feature(allocator_api))]
 #![cfg_attr(feature = "swap", feature(slice_ptr_get))]

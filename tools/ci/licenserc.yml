@@ -22,3 +22,4 @@ header:
     - '**/*.proto'
   paths-ignore:
     - 'src/server/proto/include/*.proto'
+    - 'third/'

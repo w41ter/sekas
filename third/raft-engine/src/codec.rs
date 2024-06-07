@@ -358,7 +358,6 @@ pub fn read_u8(data: &mut BytesSlice<'_>) -> Result<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use protobuf::CodedOutputStream;
     use std::io::ErrorKind;
     use std::{f32, f64, i16, i32, i64, u16, u32, u64};
 
@@ -615,15 +614,8 @@ mod tests {
     fn test_var_u64_codec() {
         for &v in U64_TESTS {
             let mut buf = vec![];
-            let mut p_buf = vec![];
-            {
-                let mut writer = CodedOutputStream::new(&mut p_buf);
-                writer.write_uint64_no_tag(v).unwrap();
-                writer.flush().unwrap();
-            }
             buf.encode_var_u64(v).unwrap();
             assert!(buf.len() <= MAX_VAR_I64_LEN);
-            assert_eq!(buf, p_buf);
             let decoded = decode_var_u64(&mut buf.as_slice()).unwrap();
             assert_eq!(v, decoded);
         }

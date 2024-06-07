@@ -8,10 +8,7 @@ use std::thread::{Builder as ThreadBuilder, JoinHandle};
 use std::time::{Duration, Instant};
 
 use log::{error, info};
-#[cfg(feature = "prost")]
 use prost::Message;
-#[cfg(not(feature = "prost"))]
-use protobuf::{parse_from_bytes, Message};
 
 use crate::config::{Config, RecoveryMode};
 use crate::consistency::ConsistencyChecker;
@@ -259,9 +256,6 @@ where
         let _t = StopWatch::new(&*ENGINE_READ_MESSAGE_DURATION_HISTOGRAM);
         if let Some(memtable) = self.memtables.get(region_id) {
             if let Some(value) = memtable.read().get(key) {
-                #[cfg(not(feature = "prost"))]
-                return Ok(Some(parse_from_bytes(&value)?));
-                #[cfg(feature = "prost")]
                 return Ok(Some(Message::decode(&*value)?));
             }
         }
@@ -291,14 +285,6 @@ where
         C: FnMut(&[u8], S) -> bool,
     {
         self.scan_raw_messages(region_id, start_key, end_key, reverse, move |k, raw_v| {
-            #[cfg(not(feature = "prost"))]
-            if let Ok(v) = parse_from_bytes(raw_v) {
-                callback(k, v)
-            } else {
-                true
-            }
-
-            #[cfg(feature = "prost")]
             if let Ok(v) = Message::decode(raw_v) {
                 callback(k, v)
             } else {
@@ -632,13 +618,7 @@ where
                 )?,
             );
         }
-        #[cfg(feature = "prost")]
         let e = Message::decode(
-            &cache.block.borrow()
-                [idx.entry_offset as usize..(idx.entry_offset + idx.entry_len) as usize],
-        )?;
-        #[cfg(not(feature = "prost"))]
-        let e = parse_from_bytes(
             &cache.block.borrow()
                 [idx.entry_offset as usize..(idx.entry_offset + idx.entry_len) as usize],
         )?;
@@ -675,22 +655,27 @@ where
 }
 
 #[cfg(test)]
-#[cfg(not(feature = "prost"))]
 pub(crate) mod tests {
     use std::collections::{BTreeSet, HashSet};
     use std::fs::OpenOptions;
     use std::path::PathBuf;
 
-    use kvproto::raft_serverpb::RaftLocalState;
     use raft::eraftpb::Entry;
 
     use super::*;
     use crate::env::{ObfuscatedFileSystem, Permission};
     use crate::file_pipe_log::{parse_reserved_file_name, FileNameExt};
+    use crate::internals::FileId;
     use crate::log_batch::AtomicGroupBuilder;
     use crate::pipe_log::Version;
     use crate::test_util::{generate_entries, PanicGuard};
     use crate::util::ReadableSize;
+
+    #[derive(Clone, PartialEq, ::prost::Message)]
+    struct RaftLocalState {
+        #[prost(uint64, tag = "1")]
+        last_index: u64,
+    }
 
     pub(crate) type RaftLogEngine<F = DefaultFileSystem> = Engine<F>;
     impl<F: FileSystem> RaftLogEngine<F> {
@@ -1424,7 +1409,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    #[cfg(not(feature = "prost"))]
     fn test_empty_protobuf_message() {
         let dir = tempfile::Builder::new()
             .prefix("test_empty_protobuf_message")
@@ -1439,14 +1423,14 @@ pub(crate) mod tests {
                 .unwrap();
 
         let mut log_batch = LogBatch::default();
-        let empty_entry = Entry::new();
-        assert_eq!(empty_entry.compute_size(), 0);
+        let empty_entry = Entry::default();
+        assert_eq!(empty_entry.encoded_len(), 0);
         log_batch
             .add_entries::<Entry>(0, &[empty_entry.clone()])
             .unwrap();
         engine.write(&mut log_batch, false).unwrap();
-        let empty_state = RaftLocalState::new();
-        assert_eq!(empty_state.compute_size(), 0);
+        let empty_state = RaftLocalState::default();
+        assert_eq!(empty_state.encoded_len(), 0);
         log_batch
             .put_message(1, b"key".to_vec(), &empty_state)
             .unwrap();

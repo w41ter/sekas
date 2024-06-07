@@ -7,7 +7,6 @@ use thiserror::Error;
 
 use crate::codec::Error as CodecError;
 
-#[cfg(feature = "prost")]
 #[derive(Debug, Error)]
 pub enum ProstError {
     #[error("Encode Error: {0}")]
@@ -16,9 +15,6 @@ pub enum ProstError {
     Decode(#[from] prost::DecodeError),
 }
 
-#[cfg(not(feature = "prost"))]
-type ProtobufError = protobuf::ProtobufError;
-#[cfg(feature = "prost")]
 type ProtobufError = ProstError;
 
 #[derive(Debug, Error)]
@@ -54,14 +50,12 @@ pub(crate) fn is_no_space_err(e: &IoError) -> bool {
     format!("{e}").contains("nospace")
 }
 
-#[cfg(feature = "prost")]
 impl From<prost::EncodeError> for Error {
     fn from(error: prost::EncodeError) -> Self {
         ProstError::Encode(error).into()
     }
 }
 
-#[cfg(feature = "prost")]
 impl From<prost::DecodeError> for Error {
     fn from(error: prost::DecodeError) -> Self {
         ProstError::Decode(error).into()

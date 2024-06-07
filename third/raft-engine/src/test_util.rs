@@ -10,7 +10,7 @@ use crate::{
 };
 
 pub fn generate_entries(begin_index: u64, end_index: u64, data: Option<&[u8]>) -> Vec<Entry> {
-    let mut v = vec![Entry::new(); (end_index - begin_index) as usize];
+    let mut v = vec![Entry::default(); (end_index - begin_index) as usize];
     let mut index = begin_index;
     for e in v.iter_mut() {
         e.set_index(index);
