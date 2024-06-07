@@ -10,7 +10,12 @@ members = [
     "src/runtime",
     "src/schema",
     "src/server",
+
+    # layers
     "layers/etcd",
+
+    # third
+    "third/raft-engine",
 ]
 resolver = "2"
 

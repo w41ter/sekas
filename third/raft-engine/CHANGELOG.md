@@ -1,0 +1,91 @@
+# Raft Engine Change Log
+
+## [Unreleased]
+
+### New Features
+
+* Add a new Prometheus metric `raft_engine_write_compression_ratio` to track compression ratio of write #358
+
+## [0.4.2] - 2024-04-16
+
+### Behavior Changes
+
+* Periodically flush unsynced bytes when rewriting to avoid I/O jitters if flushing too many bytes impede the foreground writes. (#347)
+* Errors will be returned if rewriting fails, instread of `panic` directly. (#343)
+
+## [0.4.1] - 2023-09-14
+
+### Behavior Changes
+
+* When log recycling is enabled, Raft Engine will now retain 50% more log files to reduce the chance of running out.
+* Reduce the scope of keys reserved for internal use.
+
+## [0.4.0] - 2023-09-01
+
+### Behavior Changes
+
+* `LogBatch::put` returns a `Result<()>` instead of `()`. It errs when the key is reserved for internal use.
+* Possible to specify a permission in `FileSystem::open`.
+* Prometheus counter `raft_engine_log_file_count` no longer includes retired log files that are stashed for recycling. Those files are now tracked by a new counter `raft_engine_recycled_file_count`.
+
+### Bug Fixes
+
+* Fix data loss caused by aborted rewrite operation. Downgrading to an earlier version without the fix may produce phantom Raft Groups or keys, i.e. never written but appear in queries.
+* Fix a potential bug that an un-persisted log batch is mistakenly recovered and causes checksum mismatch error when being read later.
+
+### New Features
+
+* Support preparing prefilled logs to enable log recycling when start-up. The amount of logs to prepare is controlled by `Config::prefill_limit`.
+* Add a new configuration `spill-dir` to allow automatic placement of logs into an auxiliary directory when `dir` is full.
+* Add a new method `Engine::fork` to duplicate an `Engine` to a new place, with a few disk file copies.
+* Support configuring lz4 acceleration factor with `compression-level`.
+
+## [0.3.0] - 2022-09-14
+
+### Bug Fixes
+
+* Unconditionally tolerate `fallocate` failures as a fix to its portability issue. Errors other than `EOPNOTSUPP` will still emit a warning.
+* Avoid leaving fractured write after failure by reseeking the file writer. Panic if the reseek fails as well.
+* Fix a parallel recovery panic bug.
+* Fix panic when an empty batch is written to engine and then reused.
+
+### New Features
+
+* Add `PerfContext` which records detailed time breakdown of the write process to thread-local storage.
+* Support recycling obsolete log files to reduce the cost of `fallocate`-ing new ones.
+
+### Public API Changes
+
+* Add `is_empty` to `Engine` API.
+* Add metadata deletion capability to `FileSystem` trait. Users can implement `exists_metadata` and `delete_metadata` to clean up obsolete metadata from older versions of Raft Engine.
+* Add `Engine::scan_messages` and `Engine::scan_raw_messages` for iterating over written key-values. 
+* Add `Engine::get` for getting raw value.
+* Move `sync` from `env::WriteExt` to `env::Handle`.
+* Deprecate `bytes_per_sync`.
+* Add `env::Handle::sync_range` for sync in asynchornous.
+
+### Behavior Changes
+
+* Change format version to 2 from 1 by default.
+* Enable log recycling by default.
+
+## [0.2.0] - 2022-05-25
+
+### Bug Fixes
+
+* Fix a false negative case of `LogBatch::is_empty()` #212
+* Fix fsync ordering when rotating log file #219
+
+### New Features
+
+* Support limiting the memory usage of Raft Engine under new feature `swap` #211 
+* Add a new Prometheus counter `raft_engine_memory_usage` to track memory usage #207
+
+### Improvements
+
+* Reduce memory usage by 25% #206
+
+### Public API Changes
+
+* Introduce a new error type `Full` #206
+* `LogBatch::merge` returns a `Result<()>` instead of `()` #206

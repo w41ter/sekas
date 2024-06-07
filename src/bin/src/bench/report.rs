@@ -135,20 +135,20 @@ fn histogram_diff(
             .get_sample_count()
             .saturating_sub(earlier.get_histogram().get_sample_count()),
     );
-    h.mut_bucket().extend(
-        current
-            .get_histogram()
-            .get_bucket()
-            .iter()
-            .zip(earlier.get_histogram().get_bucket().iter())
-            .map(|(b1, b2)| {
-                let cumulative_count = b1.get_cumulative_count() - b2.get_cumulative_count();
-                let mut b = prometheus::proto::Bucket::default();
-                b.set_cumulative_count(cumulative_count);
-                b.set_upper_bound(b1.get_upper_bound());
-                b
-            }),
-    );
+
+    current
+        .get_histogram()
+        .get_bucket()
+        .iter()
+        .zip(earlier.get_histogram().get_bucket().iter())
+        .map(|(b1, b2)| {
+            let cumulative_count = b1.get_cumulative_count() - b2.get_cumulative_count();
+            let mut b = prometheus::proto::Bucket::default();
+            b.set_cumulative_count(cumulative_count);
+            b.set_upper_bound(b1.get_upper_bound());
+            b
+        })
+        .for_each(|v| h.mut_bucket().push(v));
 
     m.set_histogram(h);
     m
