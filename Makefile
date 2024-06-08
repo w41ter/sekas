@@ -20,7 +20,10 @@ etcd:
 .PHONY: lint
 ## lint : Lint codespace
 lint:
-	$(V)cargo clippy --workspace --exclude raft-engine --tests --all-features -- -D warnings
+	$(V)cargo clippy --workspace --exclude raft-engine \
+		--exclude raft \
+		--exclude raft-proto \
+		--tests --all-features -- -D warnings
 
 .PHONY: fmt
 ## fmt : Format all code
