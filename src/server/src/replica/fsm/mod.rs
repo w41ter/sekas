@@ -21,15 +21,13 @@ use std::sync::{mpsc, Arc};
 
 use log::{info, trace, warn};
 use sekas_api::server::v1::*;
+use sekas_api::{apply_config_delta, apply_shard_delta, Epoch};
 
 use super::ReplicaInfo;
 use crate::engine::{GroupEngine, MvccEntry, WriteBatch, WriteStates};
 use crate::raftgroup::{ApplyEntry, SnapshotBuilder, StateMachine};
 use crate::serverpb::v1::*;
 use crate::{Error, ReplicaConfig, Result};
-
-const SHARD_UPDATE_DELTA: u64 = 1 << 32;
-const CONFIG_CHANGE_DELTA: u64 = 1;
 
 #[derive(Debug)]
 enum ChangeReplicaKind {
@@ -184,7 +182,7 @@ impl GroupStateMachine {
                 apply_simple_change(local_id, &mut desc, &change_replicas.changes[0])
             }
         }
-        desc.epoch += CONFIG_CHANGE_DELTA;
+        desc.epoch = apply_config_delta(desc.epoch);
         self.desc_updated = true;
         self.plugged_write_states.descriptor = Some(desc);
 
@@ -206,10 +204,12 @@ impl GroupStateMachine {
                 }
                 info!(
                     "group {} add shard {} at epoch {}",
-                    self.info.group_id, shard.id, desc.epoch
+                    self.info.group_id,
+                    shard.id,
+                    Epoch(desc.epoch)
                 );
                 self.desc_updated = true;
-                desc.epoch += SHARD_UPDATE_DELTA;
+                desc.epoch = apply_shard_delta(desc.epoch);
                 desc.shards.push(shard);
             }
             if let Some(m) = op.move_shard {
@@ -309,7 +309,7 @@ impl GroupStateMachine {
 
         let inherited_epoch = std::cmp::max(desc.src_group_epoch, desc.dest_group_epoch);
         let inherited_epoch = std::cmp::max(group_desc.epoch, inherited_epoch);
-        group_desc.epoch = inherited_epoch + SHARD_UPDATE_DELTA;
+        group_desc.epoch = apply_shard_delta(inherited_epoch);
         let msg = if desc.src_group_id == group_desc.id {
             self.move_out_shards.insert(shard_desc.id);
             group_desc.shards.retain(|r| r.id != shard_desc.id);
@@ -321,7 +321,10 @@ impl GroupStateMachine {
         };
         info!(
             "apply moving shard: {msg}. replica={}, group={}, epoch={}, shard={}",
-            self.info.replica_id, self.info.group_id, group_desc.epoch, shard_desc.id
+            self.info.replica_id,
+            self.info.group_id,
+            Epoch(group_desc.epoch),
+            shard_desc.id
         );
         self.desc_updated = true;
     }
@@ -338,7 +341,11 @@ impl GroupStateMachine {
 
         info!(
             "apply split shard, old {}, new {}, group={}, replica={}, epoch={}",
-            old_shard_id, new_shard_id, self.info.group_id, self.info.replica_id, group_desc.epoch
+            old_shard_id,
+            new_shard_id,
+            self.info.group_id,
+            self.info.replica_id,
+            Epoch(group_desc.epoch)
         );
         Ok(())
     }
@@ -359,7 +366,7 @@ impl GroupStateMachine {
             right_shard_id,
             self.info.group_id,
             self.info.replica_id,
-            group_desc.epoch
+            Epoch(group_desc.epoch)
         );
         Ok(())
     }
@@ -677,7 +684,7 @@ fn apply_split_shard(group_desc: &mut GroupDesc, split_shard: SplitShard) -> Res
     old_shard.range = Some(old_range);
 
     group_desc.shards.push(new_shard);
-    group_desc.epoch += SHARD_UPDATE_DELTA;
+    group_desc.epoch = apply_shard_delta(group_desc.epoch);
     Ok(())
 }
 
@@ -728,7 +735,7 @@ fn apply_merge_shard(group_desc: &mut GroupDesc, merge_shard: MergeShard) -> Res
     group_desc.drop_shard(merge_shard.left_shard_id);
     group_desc.drop_shard(merge_shard.right_shard_id);
     group_desc.shards.push(new_shard);
-    group_desc.epoch += SHARD_UPDATE_DELTA;
+    group_desc.epoch = apply_shard_delta(group_desc.epoch);
     Ok(())
 }
 
@@ -986,7 +993,7 @@ mod tests {
                 GroupDesc { id: 0, epoch: 0, shards: test.origin_shards, replicas: vec![] };
             if let Some(expect_shards) = test.expect_shards {
                 apply_split_shard(&mut desc, test.split_shard).unwrap();
-                assert_eq!(desc.epoch, SHARD_UPDATE_DELTA);
+                assert_eq!(desc.epoch, apply_shard_delta(0));
                 for expect_shard in expect_shards {
                     let got_shard =
                         desc.shard(expect_shard.id).expect("The expect shard not exists");
@@ -1070,7 +1077,7 @@ mod tests {
                 GroupDesc { id: 0, epoch: 0, shards: test.origin_shards, replicas: vec![] };
             if let Some(expect_shards) = test.expect_shards {
                 apply_merge_shard(&mut desc, test.merge_shard).unwrap();
-                assert_eq!(desc.epoch, SHARD_UPDATE_DELTA);
+                assert_eq!(desc.epoch, apply_shard_delta(0));
                 for expect_shard in expect_shards {
                     let got_shard =
                         desc.shard(expect_shard.id).expect("The expect shard not exists");

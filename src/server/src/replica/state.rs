@@ -19,9 +19,8 @@ use std::task::Waker;
 
 use futures::channel::mpsc;
 use log::info;
-use sekas_api::server::v1::{
-    GroupDesc, MoveShardDesc, RaftRole, ReplicaDesc, ReplicaState, ScheduleState,
-};
+use sekas_api::server::v1::*;
+use sekas_api::Epoch;
 
 use super::fsm::StateMachineObserver;
 use super::ReplicaInfo;
@@ -150,15 +149,21 @@ impl LeaseStateObserver {
         lease_state.replica_state = replica_state.clone();
         let desc = if role == RaftRole::Leader {
             info!(
-                "replica {} node {} become leader of group {} at term {term} epoch {epoch}",
-                self.info.replica_id, self.info.node_id, self.info.group_id
+                "replica {} node {} become leader of group {} at term {term} epoch {}",
+                self.info.replica_id,
+                self.info.node_id,
+                self.info.group_id,
+                Epoch(epoch)
             );
             Some(lease_state.descriptor.clone())
         } else {
             if prev_role == RaftRole::Leader as i32 {
                 info!(
-                    "replica {} node {} resign as leader of group {} at term {term} epoch {epoch}",
-                    self.info.replica_id, self.info.node_id, self.info.group_id
+                    "replica {} node {} resign as leader of group {} at term {term} epoch {}",
+                    self.info.replica_id,
+                    self.info.node_id,
+                    self.info.group_id,
+                    Epoch(epoch)
                 );
             }
             None

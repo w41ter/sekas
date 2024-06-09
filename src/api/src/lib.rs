@@ -30,3 +30,48 @@ pub mod server {
         pub type WriteRequest = write_intent_request::Write;
     }
 }
+
+const SHARD_UPDATE_DELTA: u64 = 1 << 32;
+const CONFIG_CHANGE_DELTA: u64 = 1;
+
+/// A type to present epoch.
+pub struct Epoch(pub u64);
+
+impl Epoch {
+    #[inline]
+    pub fn shard_epoch(&self) -> u32 {
+        (self.0 >> 32) as u32
+    }
+
+    #[inline]
+    pub fn config_epoch(&self) -> u32 {
+        self.0 as u32
+    }
+
+    #[inline]
+    pub fn apply_shard_delta(&self) -> Self {
+        Epoch(self.0 + SHARD_UPDATE_DELTA)
+    }
+
+    #[inline]
+    pub fn apply_config_delta(&self) -> Self {
+        Epoch(self.0 + CONFIG_CHANGE_DELTA)
+    }
+}
+
+impl std::fmt::Display for Epoch {
+    #[inline]
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}:{}", self.shard_epoch(), self.config_epoch())
+    }
+}
+
+#[inline]
+pub fn apply_config_delta(epoch: u64) -> u64 {
+    Epoch(epoch).apply_config_delta().0
+}
+
+#[inline]
+pub fn apply_shard_delta(epoch: u64) -> u64 {
+    Epoch(epoch).apply_shard_delta().0
+}
