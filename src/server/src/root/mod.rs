@@ -962,13 +962,18 @@ impl Root {
     }
 
     /// List the descripton of groups.
-    pub async fn list_groups(&self) -> Result<Vec<GroupDesc>> {
+    pub async fn list_group(&self) -> Result<Vec<GroupDesc>> {
         self.schema()?.list_group().await
     }
 
     /// Get the description of the specified group.
     pub async fn get_group(&self, group_id: u64) -> Result<Option<GroupDesc>> {
         self.schema()?.get_group(group_id).await
+    }
+
+    /// List nodes.
+    pub async fn list_node(&self) -> Result<Vec<NodeDesc>> {
+        self.schema()?.list_node().await
     }
 }
 

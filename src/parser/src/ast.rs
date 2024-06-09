@@ -115,6 +115,7 @@ SHOW <property:ident> [FROM <name:ident>]
     - groups
     - replicas FROM <group-id>
     - shards FROM <group-id>
+    - nodes
 
 Note:
     The ident accepts characters [a-zA-Z0-9_-].

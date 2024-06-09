@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use log::warn;
-use sekas_api::server::v1::{GroupDesc, ReplicaDesc, ShardDesc, TableDesc};
+use sekas_api::server::v1::*;
 use sekas_parser::{ColumnResult, ConfigStatement, ExecuteResult, Row, ShowStatement};
 
 use super::Root;
@@ -59,6 +59,7 @@ impl Root {
             "groups" => self.handle_show_groups(show_stmt).await,
             "replicas" => self.handle_show_replicas(show_stmt).await,
             "shards" => self.handle_show_shards(show_stmt).await,
+            "nodes" => self.handle_show_nodes(show_stmt).await,
             others => Ok(ExecuteResult::Msg(format!("unknown property: {others}"))),
         }
     }
@@ -122,7 +123,7 @@ impl Root {
                 "FROM clause is not required by 'groups' property".to_owned(),
             ));
         }
-        let groups = self.list_groups().await?;
+        let groups = self.list_group().await?;
 
         let columns = ["id", "shard_epoch", "config_epoch", "num_replicas", "num_shards"]
             .into_iter()
@@ -168,7 +169,9 @@ impl Root {
             ["id", "node_id", "role"].into_iter().map(ToString::to_string).collect::<Vec<_>>();
 
         let replica_to_row = |replica: ReplicaDesc| -> Row {
-            Row { values: vec![replica.id.into(), replica.node_id.into(), replica.role.into()] }
+            let role =
+                ReplicaRole::from_i32(replica.role).unwrap_or_default().as_str_name().to_owned();
+            Row { values: vec![replica.id.into(), replica.node_id.into(), role.into()] }
         };
         let rows = group.replicas.into_iter().map(replica_to_row).collect::<Vec<_>>();
         Ok(ExecuteResult::Data(ColumnResult { columns, rows }))
@@ -207,6 +210,38 @@ impl Root {
             Row { values: vec![shard.id.into(), shard.table_id.into(), start.into(), end.into()] }
         };
         let rows = group.shards.into_iter().map(shard_to_row).collect::<Vec<_>>();
+        Ok(ExecuteResult::Data(ColumnResult { columns, rows }))
+    }
+
+    async fn handle_show_nodes(&self, show_stmt: ShowStatement) -> Result<ExecuteResult> {
+        if show_stmt.from.is_some() {
+            return Ok(ExecuteResult::Msg(
+                "FROM clause is not required by 'nodes' property".to_owned(),
+            ));
+        }
+
+        let nodes = self.list_node().await?;
+
+        let columns = ["id", "status", "addr", "cpu_nums", "leader_count", "replica_count"]
+            .into_iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
+
+        let node_to_row = |node: NodeDesc| -> Row {
+            let capacity = node.capacity.unwrap_or_default();
+            let status = NodeStatus::from_i32(node.status).unwrap_or_default();
+            Row {
+                values: vec![
+                    node.id.into(),
+                    status.as_str_name().to_owned().into(),
+                    node.addr.into(),
+                    (capacity.cpu_nums as u32).into(),
+                    capacity.leader_count.into(),
+                    capacity.replica_count.into(),
+                ],
+            }
+        };
+        let rows = nodes.into_iter().map(node_to_row).collect::<Vec<_>>();
         Ok(ExecuteResult::Data(ColumnResult { columns, rows }))
     }
 }
