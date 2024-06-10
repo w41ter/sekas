@@ -520,10 +520,7 @@ impl Node {
         for group_id in group_id_list {
             if let Some(replica) = self.replica_route_table.find(group_id) {
                 let info = replica.replica_info();
-                if info.is_terminated() {
-                    continue;
-                }
-                if info.group_id == ROOT_GROUP_ID {
+                if info.is_terminated() || info.group_id == ROOT_GROUP_ID {
                     continue;
                 }
                 let descriptor = replica.descriptor();
@@ -537,13 +534,7 @@ impl Node {
                 let replica_state = replica.replica_state();
                 if replica_state.role == RaftRole::Leader as i32 {
                     ns.leader_count += 1;
-                    let gs = GroupStats {
-                        group_id: info.group_id,
-                        shard_count: descriptor.shards.len() as u64,
-                        read_qps: 0.,
-                        write_qps: 0.,
-                    };
-                    group_stats.push(gs);
+                    group_stats.push(replica.collect_group_stats());
                 }
                 let rs = ReplicaStats {
                     replica_id: info.replica_id,

@@ -436,19 +436,15 @@ impl GroupEngine {
         }
     }
 
+    /// Get the approximates size of the target shard.
+    pub fn get_approximate_size(&self, shard_id: u64) -> Result<u64> {
+        let (start, end) = self.shard_raw_boundary(shard_id)?;
+        self.raw_db.get_approximate_size(&self.cf_handle(), &start, &end)
+    }
+
     /// Estimate the split keys of the target shard.
     pub fn estimate_split_key(&self, shard_id: u64) -> Result<Option<Vec<u8>>> {
-        let shard_desc = self.shard_desc(shard_id)?;
-        let RangePartition { start, end } = shard_desc.range.ok_or_else(|| {
-            Error::InvalidData(format!("the range field of shard {shard_id} is not set"))
-        })?;
-        let start = keys::raw(shard_desc.table_id, &start);
-        let end = if end.is_empty() {
-            lexical::lexical_next_boundary(&keys::raw(shard_desc.table_id, &end))
-        } else {
-            keys::raw(shard_desc.table_id, &end)
-        };
-
+        let (start, end) = self.shard_raw_boundary(shard_id)?;
         let estimated_split_keys =
             self.raw_db.estimate_split_keys_in_range(&self.cf_handle(), &start, &end)?;
         if estimated_split_keys.is_empty() {
@@ -481,6 +477,21 @@ impl GroupEngine {
         // Using the replica id avoids the problem of creating a new replica immediately
         // after deleting the replica.
         format!("{group_id}-{replica_id}")
+    }
+
+    /// Get the raw db boundary of the target shard.
+    fn shard_raw_boundary(&self, shard_id: u64) -> Result<(Vec<u8>, Vec<u8>)> {
+        let shard_desc = self.shard_desc(shard_id)?;
+        let RangePartition { start, end } = shard_desc.range.ok_or_else(|| {
+            Error::InvalidData(format!("the range field of shard {shard_id} is not set"))
+        })?;
+        let start = keys::raw(shard_desc.table_id, &start);
+        let end = if end.is_empty() {
+            lexical::lexical_next_boundary(&keys::raw(shard_desc.table_id, &end))
+        } else {
+            keys::raw(shard_desc.table_id, &end)
+        };
+        Ok((start, end))
     }
 }
 

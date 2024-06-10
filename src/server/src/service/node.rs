@@ -266,34 +266,29 @@ impl Server {
     }
 
     async fn root_heartbeat(&self, request: HeartbeatRequest) -> Result<HeartbeatResponse, Status> {
+        use piggyback_request::Info as Request;
+        use piggyback_response::Info as Response;
         record_latency!(take_root_heartbeat_request_metrics());
         let mut piggybacks_resps = Vec::with_capacity(request.piggybacks.len());
 
-        for req in request.piggybacks {
-            let info = match req.info.unwrap() {
-                piggyback_request::Info::SyncRoot(req) => {
-                    piggyback_response::Info::SyncRoot(self.update_root(req).await?)
+        for piggyback in request.piggybacks {
+            let Some(info) = piggyback.info else { continue };
+            let resp = match info {
+                Request::SyncRoot(req) => Response::SyncRoot(self.update_root(req).await?),
+                Request::CollectStats(req) => {
+                    Response::CollectStats(self.node.collect_stats(&req).await)
                 }
-                piggyback_request::Info::CollectStats(req) => {
-                    piggyback_response::Info::CollectStats(self.node.collect_stats(&req).await)
+                Request::CollectGroupDetail(req) => {
+                    Response::CollectGroupDetail(self.node.collect_group_detail(&req).await)
                 }
-                piggyback_request::Info::CollectGroupDetail(req) => {
-                    piggyback_response::Info::CollectGroupDetail(
-                        self.node.collect_group_detail(&req).await,
-                    )
-                }
-                piggyback_request::Info::CollectMovingShardState(req) => {
-                    piggyback_response::Info::CollectMovingShardState(
-                        self.node.collect_moving_shard_state(&req).await,
-                    )
-                }
-                piggyback_request::Info::CollectScheduleState(req) => {
-                    piggyback_response::Info::CollectScheduleState(
-                        self.node.collect_schedule_state(&req).await,
-                    )
+                Request::CollectMovingShardState(req) => Response::CollectMovingShardState(
+                    self.node.collect_moving_shard_state(&req).await,
+                ),
+                Request::CollectScheduleState(req) => {
+                    Response::CollectScheduleState(self.node.collect_schedule_state(&req).await)
                 }
             };
-            piggybacks_resps.push(PiggybackResponse { info: Some(info) });
+            piggybacks_resps.push(PiggybackResponse { info: Some(resp) });
         }
 
         let root = self.node.get_root().await;

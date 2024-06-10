@@ -269,6 +269,30 @@ impl Replica {
         let raft = self.raft_group.monitor().await?;
         Ok(ReplicaPerfContext { take_acl_guard, propose, raft })
     }
+
+    /// Collect the group stats of the leader replica.
+    pub fn collect_group_stats(&self) -> GroupStats {
+        let descriptor = self.descriptor();
+        let shard_count = descriptor.shards.len();
+        let mut shard_stats = Vec::with_capacity(shard_count);
+        for shard in descriptor.shards {
+            let size = match self.group_engine.get_approximate_size(shard.id) {
+                Ok(size) => size,
+                Err(err) => {
+                    warn!("get approximate size of shard {}: {}", shard.id, err);
+                    continue;
+                }
+            };
+            shard_stats.push(ShardStats { shard_id: shard.id, shard_size: size });
+        }
+        GroupStats {
+            group_id: self.info.group_id,
+            shard_count: shard_count as u64,
+            read_qps: 0.,
+            write_qps: 0.,
+            shard_stats,
+        }
+    }
 }
 
 impl Replica {

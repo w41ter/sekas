@@ -78,7 +78,6 @@ impl TablePropertiesCollector for SplitKeyCollector {
         if self.last_estimate_keys + ESTIMATE_KEYS_INTERVALS <= self.num_keys
             || self.last_estimate_size + ESTIMATE_SIZE_INTERVALS <= self.total_size
         {
-            println!("collect key {key:?}");
             self.last_estimate_keys = self.num_keys;
             self.last_estimate_size = self.total_size;
             self.keys.push(key.to_owned());

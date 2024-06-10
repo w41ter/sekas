@@ -144,6 +144,18 @@ impl RawDb {
         }
         Ok(split_keys.into_iter().collect::<Vec<_>>())
     }
+
+    /// Get the approximate size of the target range.
+    pub fn get_approximate_size(
+        &self,
+        cf: &impl rocksdb::AsColumnFamilyRef,
+        start: &[u8],
+        end: &[u8],
+    ) -> Result<u64> {
+        let sizes = self.db.get_approximate_sizes(cf, &[(start, end)])?;
+        debug_assert_eq!(sizes.len(), 1);
+        Ok(sizes[0])
+    }
 }
 
 #[derive(Clone)]
@@ -331,6 +343,36 @@ mod tests {
             .estimate_split_keys_in_range(&cf_handle, "key".as_bytes(), "key-0000".as_bytes())
             .unwrap();
         assert!(split_keys.is_empty());
+    }
+
+    #[test]
+    fn get_approximate_size() {
+        let dir = TempDir::new(fn_name!()).unwrap();
+        let db = open_raw_db(&DbConfig::default(), dir.path()).unwrap();
+        db.create_cf("cf1").unwrap();
+        let cf_handle = db.cf_handle("cf1").unwrap();
+        let mut wb = rocksdb::WriteBatch::default();
+        let n = 5000;
+        for i in 0..n {
+            wb.put_cf(
+                &cf_handle,
+                format!("key-{i:03}").as_bytes(),
+                format!("value-{i}").as_bytes(),
+            );
+        }
+        let mut opt = rocksdb::WriteOptions::default();
+        opt.set_sync(false);
+        db.write_opt(wb, &opt).unwrap();
+        db.flush_cf(&cf_handle).unwrap();
+
+        let size = db
+            .get_approximate_size(
+                &cf_handle,
+                format!("key-{:03}", 0).as_bytes(),
+                format!("key-{:03}", n - 100).as_bytes(),
+            )
+            .unwrap();
+        assert!(size > 0, "approximate_size: {}", size);
     }
 
     #[test]

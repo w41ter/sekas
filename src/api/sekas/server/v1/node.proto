@@ -330,11 +330,19 @@ message NodeStats {
     float write_qps = 6;
 }
 
+// The stats of an shard.
+message ShardStats {
+    uint64 shard_id = 1;
+    // The size of the shards
+    uint64 shard_size = 2;
+}
+
 message GroupStats {
     uint64 group_id = 1;
     uint64 shard_count = 2;
     float read_qps = 3;
     float write_qps = 4;
+    repeated ShardStats shard_stats = 5;
 }
 
 message ReplicaStats {
