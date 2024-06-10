@@ -70,11 +70,7 @@ jobs:
       uses: actions-rs/cargo@v1
       with:
         command: clippy
-        args: |
-            --workspace --exclude raft-engine \
-            --exclude raft \
-            --exclude raft-proto \
-            --tests --all-features -- -D warnings
+        args: --workspace --exclude raft-engine --exclude raft --exclude raft-proto --tests --all-features -- -D warnings
     - name: Check format
       uses: actions-rs/cargo@v1
       with:
