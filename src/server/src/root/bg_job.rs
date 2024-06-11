@@ -21,16 +21,16 @@ use std::time::Duration;
 use futures::future::poll_fn;
 use log::{error, info, warn};
 use prometheus::HistogramTimer;
-use sekas_api::server::v1::{GroupDesc, ReplicaDesc, ReplicaRole, RootDesc, ShardDesc};
+use sekas_api::server::v1::*;
 use sekas_client::RetryState;
 use tokio::time::Instant;
 
 use super::allocator::*;
+use super::schedule::background_job::Job;
+use super::schedule::*;
 use super::{HeartbeatQueue, HeartbeatTask, RootShared, Schema};
 use crate::constants::INITIAL_EPOCH;
 use crate::root::metrics;
-use crate::serverpb::v1::background_job::Job;
-use crate::serverpb::v1::*;
 use crate::Result;
 
 pub struct Jobs {
@@ -106,6 +106,70 @@ impl Jobs {
         info!("background job: {job:?}, handle result: {r:?}");
         r
     }
+
+    /// Submit purge database job.
+    pub async fn submit_purge_database_job(
+        &self,
+        database_id: u64,
+        database_name: String,
+    ) -> Result<()> {
+        self.submit(
+            BackgroundJob {
+                job: Some(Job::PurgeDatabase(PurgeDatabaseJob {
+                    database_id,
+                    database_name,
+                    created_time: format!("{:?}", Instant::now()),
+                })),
+                ..Default::default()
+            },
+            false,
+        )
+        .await
+    }
+
+    /// Submit create table job.
+    pub async fn submit_create_table_job(
+        &self,
+        table: TableDesc,
+        wait_create: Vec<ShardDesc>,
+    ) -> Result<()> {
+        self.submit(
+            BackgroundJob {
+                job: Some(Job::CreateTable(CreateTableJob {
+                    database: table.db,
+                    table_name: table.name.to_owned(),
+                    wait_create,
+                    status: CreateTableJobStatus::Creating as i32,
+                    desc: Some(table.to_owned()),
+                    ..Default::default()
+                })),
+                ..Default::default()
+            },
+            true,
+        )
+        .await
+    }
+
+    /// Submit pruge table job.
+    pub async fn submit_purge_table_job(&self, db: &DatabaseDesc, table: &TableDesc) -> Result<()> {
+        let table_id = table.id;
+        let database_name = db.name.to_owned();
+        let table_name = table.name.to_owned();
+        self.submit(
+            BackgroundJob {
+                job: Some(Job::PurgeTable(PurgeTableJob {
+                    database_id: db.id,
+                    table_id,
+                    database_name,
+                    table_name,
+                    created_time: format!("{:?}", Instant::now()),
+                })),
+                ..Default::default()
+            },
+            false,
+        )
+        .await
+    }
 }
 
 impl Jobs {
@@ -120,17 +184,16 @@ impl Jobs {
             let status = CreateTableJobStatus::from_i32(create_table.status).unwrap();
             let _timer = Self::record_create_table_step(&status);
             match status {
-                CreateTableJobStatus::CreateTableCreating => {
+                CreateTableJobStatus::Creating => {
                     self.handle_wait_create_shard(job.id, &mut create_table).await?;
                 }
-                CreateTableJobStatus::CreateTableRollbacking => {
+                CreateTableJobStatus::Rollbacking => {
                     self.handle_wait_cleanup_shard(job.id, &mut create_table).await?;
                 }
-                CreateTableJobStatus::CreateTableWriteDesc => {
+                CreateTableJobStatus::WriteDesc => {
                     self.handle_write_desc(job.id, &mut create_table).await?;
                 }
-                CreateTableJobStatus::CreateTableFinish
-                | CreateTableJobStatus::CreateTableAbort => {
+                CreateTableJobStatus::Finish | CreateTableJobStatus::Abort => {
                     self.handle_finish_create_table(job, create_table).await?;
                     break;
                 }
@@ -158,14 +221,14 @@ impl Jobs {
                 );
                 create_table.remark = format!("{err:?}");
                 create_table.wait_cleanup.push(shard);
-                create_table.status = CreateTableJobStatus::CreateTableRollbacking as i32;
+                create_table.status = CreateTableJobStatus::Rollbacking as i32;
                 self.save_create_table(job_id, create_table).await?;
                 return Ok(());
             }
             create_table.wait_cleanup.push(shard);
             self.save_create_table(job_id, create_table).await?;
         }
-        create_table.status = CreateTableJobStatus::CreateTableWriteDesc as i32;
+        create_table.status = CreateTableJobStatus::WriteDesc as i32;
         self.save_create_table(job_id, create_table).await?;
         Ok(())
     }
@@ -179,7 +242,7 @@ impl Jobs {
         // failed?
         let schema = self.core.root_shared.schema()?;
         schema.create_table(create_table.desc.as_ref().unwrap().to_owned()).await?;
-        create_table.status = CreateTableJobStatus::CreateTableFinish as i32;
+        create_table.status = CreateTableJobStatus::Finish as i32;
         self.save_create_table(job_id, create_table).await?;
         Ok(())
     }
@@ -197,7 +260,7 @@ impl Jobs {
             let _ = shard; // TODO: delete shard.
             self.save_create_table(job_id, create_table).await?;
         }
-        create_table.status = CreateTableJobStatus::CreateTableAbort as i32;
+        create_table.status = CreateTableJobStatus::Abort as i32;
         self.save_create_table(job_id, create_table).await?;
         Ok(())
     }
@@ -225,16 +288,16 @@ impl Jobs {
 
     fn record_create_table_step(step: &CreateTableJobStatus) -> Option<HistogramTimer> {
         match step {
-            CreateTableJobStatus::CreateTableCreating => {
+            CreateTableJobStatus::Creating => {
                 Some(metrics::RECONCILE_CREATE_TABLE_STEP_DURATION_SECONDS.create.start_timer())
             }
-            CreateTableJobStatus::CreateTableRollbacking => {
+            CreateTableJobStatus::Rollbacking => {
                 Some(metrics::RECONCILE_CREATE_TABLE_STEP_DURATION_SECONDS.rollback.start_timer())
             }
-            CreateTableJobStatus::CreateTableWriteDesc => {
+            CreateTableJobStatus::WriteDesc => {
                 Some(metrics::RECONCILE_CREATE_TABLE_STEP_DURATION_SECONDS.write_desc.start_timer())
             }
-            CreateTableJobStatus::CreateTableFinish | CreateTableJobStatus::CreateTableAbort => {
+            CreateTableJobStatus::Finish | CreateTableJobStatus::Abort => {
                 Some(metrics::RECONCILE_CREATE_TABLE_STEP_DURATION_SECONDS.finish.start_timer())
             }
         }
@@ -253,18 +316,17 @@ impl Jobs {
             let status = CreateOneGroupStatus::from_i32(create_group.status).unwrap();
             let _timer = Self::record_create_group_step(&status);
             match status {
-                CreateOneGroupStatus::CreateOneGroupInit => {
+                CreateOneGroupStatus::Init => {
                     self.handle_init_create_group_replicas(job.id, &mut create_group).await?
                 }
-                CreateOneGroupStatus::CreateOneGroupCreating => {
+                CreateOneGroupStatus::Creating => {
                     self.handle_wait_create_group_replicas(job.id, &mut create_group).await?
                 }
-                CreateOneGroupStatus::CreateOneGroupRollbacking => {
+                CreateOneGroupStatus::Rollbacking => {
                     self.handle_rollback_group_replicas(job.id, &mut create_group).await?
                 }
 
-                CreateOneGroupStatus::CreateOneGroupFinish
-                | CreateOneGroupStatus::CreateOneGroupAbort => {
+                CreateOneGroupStatus::Finish | CreateOneGroupStatus::Abort => {
                     return self.handle_finish_create_group(job, create_group).await
                 }
             }
@@ -289,7 +351,7 @@ impl Jobs {
             "cluster group count already meet requirement, so abort group creation. group={}",
             create_group.group_desc.as_ref().unwrap().id,
         );
-        create_group.status = CreateOneGroupStatus::CreateOneGroupRollbacking as i32;
+        create_group.status = CreateOneGroupStatus::Rollbacking as i32;
         self.save_create_group(job_id, create_group).await?;
         Ok(true)
     }
@@ -321,7 +383,7 @@ impl Jobs {
         let group_desc = GroupDesc { id: group_id, epoch: INITIAL_EPOCH, shards: vec![], replicas };
         create_group.group_desc = Some(group_desc);
         create_group.wait_create = nodes;
-        create_group.status = CreateOneGroupStatus::CreateOneGroupCreating as i32;
+        create_group.status = CreateOneGroupStatus::Creating as i32;
         self.save_create_group(job_id, create_group).await
     }
 
@@ -359,7 +421,7 @@ impl Jobs {
                     warn!(
                         "create replica for new group error, start rollback: {err:?}. node={}, replica={}, group={}", 
                         n.id, replica.id, group_desc.id);
-                    create_group.status = CreateOneGroupStatus::CreateOneGroupRollbacking as i32;
+                    create_group.status = CreateOneGroupStatus::Rollbacking as i32;
                 };
                 self.save_create_group(job_id, create_group).await?;
                 continue;
@@ -369,7 +431,7 @@ impl Jobs {
             create_group.wait_cleanup.clone_from(&undo);
             self.save_create_group(job_id, create_group).await?;
         }
-        create_group.status = CreateOneGroupStatus::CreateOneGroupFinish as i32;
+        create_group.status = CreateOneGroupStatus::Finish as i32;
         self.save_create_group(job_id, create_group).await?;
         Ok(())
     }
@@ -397,7 +459,7 @@ impl Jobs {
                 return Err(err);
             }
         }
-        create_group.status = CreateOneGroupStatus::CreateOneGroupAbort as i32;
+        create_group.status = CreateOneGroupStatus::Abort as i32;
         self.save_create_group(job_id, create_group).await
     }
 
@@ -418,7 +480,7 @@ impl Jobs {
     ) -> Result<()> {
         if matches!(
             CreateOneGroupStatus::from_i32(create_group.status).unwrap(),
-            CreateOneGroupStatus::CreateOneGroupFinish
+            CreateOneGroupStatus::Finish
         ) {
             self.core
                 .heartbeat_queue
@@ -441,17 +503,16 @@ impl Jobs {
 
     fn record_create_group_step(step: &CreateOneGroupStatus) -> Option<HistogramTimer> {
         match step {
-            CreateOneGroupStatus::CreateOneGroupInit => {
+            CreateOneGroupStatus::Init => {
                 Some(metrics::RECONCILE_CREATE_GROUP_STEP_DURATION_SECONDS.init.start_timer())
             }
-            CreateOneGroupStatus::CreateOneGroupCreating => {
+            CreateOneGroupStatus::Creating => {
                 Some(metrics::RECONCILE_CREATE_GROUP_STEP_DURATION_SECONDS.create.start_timer())
             }
-            CreateOneGroupStatus::CreateOneGroupRollbacking => {
+            CreateOneGroupStatus::Rollbacking => {
                 Some(metrics::RECONCILE_CREATE_GROUP_STEP_DURATION_SECONDS.rollback.start_timer())
             }
-            CreateOneGroupStatus::CreateOneGroupFinish
-            | CreateOneGroupStatus::CreateOneGroupAbort => {
+            CreateOneGroupStatus::Finish | CreateOneGroupStatus::Abort => {
                 Some(metrics::RECONCILE_CREATE_GROUP_STEP_DURATION_SECONDS.finish.start_timer())
             }
         }
@@ -715,17 +776,18 @@ impl JobCore {
         match job.unwrap().job.as_ref().unwrap() {
             background_job::Job::CreateTable(job) => {
                 match CreateTableJobStatus::from_i32(job.status).unwrap() {
-                    CreateTableJobStatus::CreateTableFinish => Ok(()),
-                    CreateTableJobStatus::CreateTableAbort => Err(crate::Error::InvalidArgument(
-                        format!("create table fail {}", job.remark),
-                    )),
+                    CreateTableJobStatus::Finish => Ok(()),
+                    CreateTableJobStatus::Abort => Err(crate::Error::InvalidArgument(format!(
+                        "create table fail {}",
+                        job.remark
+                    ))),
                     _ => unreachable!(),
                 }
             }
             background_job::Job::CreateOneGroup(job) => {
                 match CreateOneGroupStatus::from_i32(job.status).unwrap() {
-                    CreateOneGroupStatus::CreateOneGroupFinish => Ok(()),
-                    CreateOneGroupStatus::CreateOneGroupAbort => {
+                    CreateOneGroupStatus::Finish => Ok(()),
+                    CreateOneGroupStatus::Abort => {
                         Err(crate::Error::InvalidArgument("create group fail".into()))
                     }
                     _ => unreachable!(),

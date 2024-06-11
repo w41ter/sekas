@@ -26,10 +26,10 @@ use sekas_api::server::v1::*;
 use sekas_rock::time::timestamp_nanos;
 use sekas_schema::system::table;
 
+use super::schedule::BackgroundJob;
 use super::store::RootStore;
 use crate::constants::*;
 use crate::engine::{GroupEngine, SnapshotMode};
-use crate::serverpb::v1::BackgroundJob;
 use crate::transport::TransportManager;
 use crate::{Error, Result};
 

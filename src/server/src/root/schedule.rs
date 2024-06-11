@@ -13,15 +13,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+mod task;
+
 use log::{error, info, warn};
 use prometheus::HistogramTimer;
 use sekas_api::server::v1::*;
 use tokio::sync::Mutex;
 
+use self::task::background_job::Job;
+use self::task::reconcile_task::Task;
+pub use self::task::*;
 use super::allocator::*;
 use super::*;
-use crate::serverpb::v1::reconcile_task::Task;
-use crate::serverpb::v1::*;
 
 pub struct ReconcileScheduler {
     ctx: ScheduleContext,
@@ -64,6 +67,20 @@ impl ReconcileScheduler {
     async fn is_empty(&self) -> bool {
         self.tasks.lock().await.is_empty()
     }
+
+    pub async fn sched_root_leader(&self, node_id: u64) {
+        self.setup_task(ReconcileTask {
+            task: Some(reconcile_task::Task::ShedRoot(ShedRootLeaderTask { node_id })),
+        })
+        .await;
+    }
+
+    pub async fn sched_leader(&self, node_id: u64) {
+        self.setup_task(ReconcileTask {
+            task: Some(reconcile_task::Task::ShedLeader(ShedLeaderTask { node_id })),
+        })
+        .await;
+    }
 }
 
 impl ReconcileScheduler {
@@ -97,7 +114,7 @@ impl ReconcileScheduler {
                         BackgroundJob {
                             job: Some(Job::CreateOneGroup(CreateOneGroupJob {
                                 request_replica_cnt: self.ctx.alloc.replicas_per_group() as u64,
-                                status: CreateOneGroupStatus::CreateOneGroupInit as i32,
+                                status: CreateOneGroupStatus::Init as i32,
                                 ..Default::default()
                             })),
                             ..Default::default()

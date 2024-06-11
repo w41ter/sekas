@@ -21,6 +21,7 @@ mod liveness;
 mod metrics;
 mod schedule;
 mod schema;
+mod stats;
 mod stmt_executor;
 mod store;
 mod watch;
@@ -32,6 +33,7 @@ use std::task::Poll;
 use std::time::Duration;
 
 use log::{error, info, trace, warn};
+use schedule::BackgroundJob;
 use sekas_api::server::v1::report_request::GroupUpdates;
 use sekas_api::server::v1::watch_response::*;
 use sekas_api::server::v1::*;
@@ -47,11 +49,11 @@ pub use self::collector::RootCollector;
 use self::diagnosis::Metadata;
 use self::schedule::ReconcileScheduler;
 pub(crate) use self::schema::*;
+use self::stats::ClusterStats;
 use self::store::RootStore;
 pub use self::watch::{WatchHub, Watcher};
 use crate::constants::ROOT_GROUP_ID;
 use crate::node::{Node, Replica, ReplicaRouteTable};
-use crate::serverpb::v1::background_job::Job;
 use crate::serverpb::v1::*;
 use crate::transport::TransportManager;
 use crate::{Config, Error, Result, RootConfig};
@@ -76,6 +78,7 @@ pub struct RootShared {
     cfg_cpu_nums: u32,
     core: Mutex<Option<RootCore>>,
     watcher_hub: Arc<WatchHub>,
+    cluster_stats: ClusterStats,
 }
 
 impl RootShared {
@@ -129,6 +132,7 @@ impl Root {
             core: Mutex::new(None),
             node_ident: node_ident.to_owned(),
             watcher_hub: Default::default(),
+            cluster_stats: Default::default(),
         });
         let liveness =
             Arc::new(liveness::Liveness::new(Duration::from_secs(cfg.root.liveness_threshold_sec)));
@@ -402,11 +406,7 @@ impl Root {
 
         if self.current_node_id() == node_id {
             info!("try to drain root leader and move root leadership out first");
-            self.scheduler
-                .setup_task(ReconcileTask {
-                    task: Some(reconcile_task::Task::ShedRoot(ShedRootLeaderTask { node_id })),
-                })
-                .await;
+            self.scheduler.sched_root_leader(node_id).await;
             return Err(crate::Error::InvalidArgument(
                 "node is root leader, try again later".into(),
             ));
@@ -427,11 +427,7 @@ impl Root {
         node_desc.status = NodeStatus::Draining as i32;
         schema.update_node(node_desc).await?; // TODO: cas
 
-        self.scheduler
-            .setup_task(ReconcileTask {
-                task: Some(reconcile_task::Task::ShedLeader(ShedLeaderTask { node_id })),
-            })
-            .await;
+        self.scheduler.sched_leader(node_id).await;
 
         Ok(())
     }
@@ -459,58 +455,12 @@ impl Root {
 
     pub async fn job_state(&self) -> Result<String> {
         use serde_json::json;
-        fn to_json(j: &BackgroundJob) -> serde_json::Value {
-            match j.job.as_ref().unwrap() {
-                Job::CreateTable(c) => {
-                    let state = format!("{:?}", CreateTableJobStatus::from_i32(c.status).unwrap());
-                    let wait_create = c.wait_create.len();
-                    let wait_cleanup = c.wait_cleanup.len();
-                    json!({
-                        "type": "create table",
-                        "name": c.table_name,
-                        "status": state,
-                        "wait_create": wait_create,
-                        "wait_cleanup": wait_cleanup,
-                    })
-                }
-                Job::CreateOneGroup(c) => {
-                    let status = format!("{:?}", CreateOneGroupStatus::from_i32(c.status).unwrap());
-                    let wait_create = c.wait_create.len();
-                    let wait_cleanup = c.wait_cleanup.len();
-                    let retired = c.create_retry;
-                    let group_id = c.group_desc.as_ref().map(|g| g.id).unwrap_or_default();
-                    json!({
-                        "type": "create group",
-                        "status": status,
-                        "replica_count": c.request_replica_cnt,
-                        "wait_create": wait_create,
-                        "wait_cleanup": wait_cleanup,
-                        "retry_count": retired,
-                        "group_id": group_id,
-                    })
-                }
-                Job::PurgeTable(p) => {
-                    json!({
-                        "type": "purge table",
-                        "database": p.database_id,
-                        "table": p.table_id,
-                        "name": p.table_name,
-                    })
-                }
-                Job::PurgeDatabase(p) => {
-                    json!({
-                        "type": "purge database",
-                        "database": p.database_id,
-                    })
-                }
-            }
-        }
 
         let schema = self.schema()?;
         let ongoing_jobs = schema.list_job().await?;
         let history_jobs = schema.list_history_job().await?;
-        let ongoing = ongoing_jobs.iter().map(to_json).collect::<Vec<_>>();
-        let history = history_jobs.iter().map(to_json).collect::<Vec<_>>();
+        let ongoing = ongoing_jobs.iter().map(BackgroundJob::to_json).collect::<Vec<_>>();
+        let history = history_jobs.iter().map(BackgroundJob::to_json).collect::<Vec<_>>();
         Ok(json!({"ongoing": ongoing, "history": history}).to_string())
     }
 
@@ -628,19 +578,7 @@ impl Root {
         if db.id == sekas_schema::system::db::ID {
             return Err(Error::InvalidArgument("not support delete system database".into()));
         }
-        self.jobs
-            .submit(
-                BackgroundJob {
-                    job: Some(Job::PurgeDatabase(PurgeDatabaseJob {
-                        database_id: db.id,
-                        database_name: db.name.to_owned(),
-                        created_time: format!("{:?}", Instant::now()),
-                    })),
-                    ..Default::default()
-                },
-                false,
-            )
-            .await?;
+        self.jobs.submit_purge_database_job(db.id, db.name.to_owned()).await?;
         let schema = self.schema()?;
         let id = schema.delete_database(&db).await?;
         self.watcher_hub()
@@ -685,24 +623,7 @@ impl Root {
             vec![ShardDesc { id, table_id: table.id.to_owned(), range: Some(range) }]
         };
 
-        self.jobs
-            .submit(
-                BackgroundJob {
-                    job: Some(Job::CreateTable(CreateTableJob {
-                        database: table.db,
-                        table_name: table.name.to_owned(),
-                        wait_create,
-                        status: CreateTableJobStatus::CreateTableCreating as i32,
-                        desc: Some(table.to_owned()),
-                        ..Default::default()
-                    })),
-                    ..Default::default()
-                },
-                true,
-            )
-            .await?;
-
-        Ok(())
+        self.jobs.submit_create_table_job(table, wait_create).await
     }
 
     pub async fn delete_table(&self, name: &str, database: &DatabaseDesc) -> Result<()> {
@@ -713,27 +634,11 @@ impl Root {
             .ok_or_else(|| Error::DatabaseNotFound(database.name.clone()))?;
         let table = schema.get_table(db.id, name).await?;
         if let Some(table) = table {
-            if table.id < sekas_schema::FIRST_USER_TABLE_ID {
+            let table_id = table.id;
+            if table_id < sekas_schema::FIRST_USER_TABLE_ID {
                 return Err(Error::InvalidArgument("unsupported delete system table".into()));
             }
-            let table_id = table.id;
-            let database_name = db.name.to_owned();
-            let table_name = table.name.to_owned();
-            self.jobs
-                .submit(
-                    BackgroundJob {
-                        job: Some(Job::PurgeTable(PurgeTableJob {
-                            database_id: db.id,
-                            table_id,
-                            database_name,
-                            table_name,
-                            created_time: format!("{:?}", Instant::now()),
-                        })),
-                        ..Default::default()
-                    },
-                    false,
-                )
-                .await?;
+            self.jobs.submit_purge_table_job(&db, &table).await?;
             schema.delete_table(table).await?;
             self.watcher_hub()
                 .notify_deletes(vec![DeleteEvent {
