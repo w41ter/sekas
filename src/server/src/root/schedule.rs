@@ -20,7 +20,6 @@ use prometheus::HistogramTimer;
 use sekas_api::server::v1::*;
 use tokio::sync::Mutex;
 
-use self::task::background_job::Job;
 use self::task::reconcile_task::Task;
 pub use self::task::*;
 use super::allocator::*;
@@ -68,6 +67,7 @@ impl ReconcileScheduler {
         self.tasks.lock().await.is_empty()
     }
 
+    /// Schedule moving root leader task.
     pub async fn sched_root_leader(&self, node_id: u64) {
         self.setup_task(ReconcileTask {
             task: Some(reconcile_task::Task::ShedRoot(ShedRootLeaderTask { node_id })),
@@ -75,9 +75,49 @@ impl ReconcileScheduler {
         .await;
     }
 
+    /// Schedule moving leader task.
     pub async fn sched_leader(&self, node_id: u64) {
         self.setup_task(ReconcileTask {
             task: Some(reconcile_task::Task::ShedLeader(ShedLeaderTask { node_id })),
+        })
+        .await;
+    }
+
+    /// Schedule transfering leader task.
+    pub async fn sched_transfer_leader_task(&self, transfer_leader: TransferLeader) {
+        self.setup_task(ReconcileTask {
+            task: Some(reconcile_task::Task::TransferGroupLeader(TransferGroupLeaderTask {
+                group: transfer_leader.group,
+                target_replica: transfer_leader.target_replica,
+                src_node: transfer_leader.src_node,
+                dest_node: transfer_leader.target_node,
+            })),
+        })
+        .await;
+    }
+
+    /// Schedule migrate replica task.
+    pub async fn sched_migrate_replica_task(&self, action: ReallocateReplica) {
+        self.setup_task(ReconcileTask {
+            task: Some(reconcile_task::Task::ReallocateReplica(ReallocateReplicaTask {
+                group: action.group,
+                src_node: action.source_node,
+                src_replica: action.source_replica,
+                dest_node: Some(action.target_node),
+                dest_replica: None,
+            })),
+        })
+        .await;
+    }
+
+    /// Schedule migrate shard task.
+    pub async fn sched_migrate_shard_task(&self, action: ReallocateShard) {
+        self.setup_task(ReconcileTask {
+            task: Some(reconcile_task::Task::MigrateShard(MigrateShardTask {
+                shard: action.shard,
+                src_group: action.source_group,
+                dest_group: action.target_group,
+            })),
         })
         .await;
     }
@@ -108,20 +148,7 @@ impl ReconcileScheduler {
         if let GroupAction::Add(cnt) = group_action {
             metrics::RECONCILE_ALREADY_BALANCED_INFO.cluster_groups.set(0);
             for _ in 0..cnt {
-                self.ctx
-                    .jobs
-                    .submit(
-                        BackgroundJob {
-                            job: Some(Job::CreateOneGroup(CreateOneGroupJob {
-                                request_replica_cnt: self.ctx.alloc.replicas_per_group() as u64,
-                                status: CreateOneGroupStatus::Init as i32,
-                                ..Default::default()
-                            })),
-                            ..Default::default()
-                        },
-                        true,
-                    )
-                    .await?;
+                self.ctx.jobs.submit_create_group_job().await?;
             }
             return Ok(true);
         }
@@ -136,46 +163,19 @@ impl ReconcileScheduler {
         for action in ractions {
             match action {
                 ReplicaRoleAction::Replica(ReplicaAction::Migrate(action)) => {
-                    self.setup_task(ReconcileTask {
-                        task: Some(reconcile_task::Task::ReallocateReplica(
-                            ReallocateReplicaTask {
-                                group: action.group,
-                                src_node: action.source_node,
-                                src_replica: action.source_replica,
-                                dest_node: Some(action.target_node),
-                                dest_replica: None,
-                            },
-                        )),
-                    })
-                    .await;
+                    self.sched_migrate_replica_task(action).await
                 }
                 ReplicaRoleAction::Leader(LeaderAction::Shed(action)) => {
-                    self.setup_task(ReconcileTask {
-                        task: Some(reconcile_task::Task::TransferGroupLeader(
-                            TransferGroupLeaderTask {
-                                group: action.group,
-                                target_replica: action.target_replica,
-                                src_node: action.src_node,
-                                dest_node: action.target_node,
-                            },
-                        )),
-                    })
-                    .await;
+                    self.sched_transfer_leader_task(action).await
                 }
                 _ => {}
             }
         }
 
         for action in sactions {
-            let ShardAction::Migrate(action) = action;
-            self.setup_task(ReconcileTask {
-                task: Some(reconcile_task::Task::MigrateShard(MigrateShardTask {
-                    shard: action.shard,
-                    src_group: action.source_group,
-                    dest_group: action.target_group,
-                })),
-            })
-            .await;
+            match action {
+                ShardAction::Migrate(action) => self.sched_migrate_shard_task(action).await,
+            }
         }
 
         Ok(!self.is_empty().await)

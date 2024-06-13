@@ -170,6 +170,24 @@ impl Jobs {
         )
         .await
     }
+
+    /// Submit create group job.
+    pub async fn submit_create_group_job(&self) -> Result<()> {
+        let status = CreateOneGroupStatus::Init as i32;
+        let request_replica_cnt = self.core.alloc.replicas_per_group() as u64;
+        self.submit(
+            BackgroundJob {
+                job: Some(Job::CreateOneGroup(CreateOneGroupJob {
+                    request_replica_cnt,
+                    status,
+                    ..Default::default()
+                })),
+                ..Default::default()
+            },
+            true,
+        )
+        .await
+    }
 }
 
 impl Jobs {
