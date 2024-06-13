@@ -22,17 +22,17 @@ use super::source::NodeFilter;
 use super::{AllocSource, ReallocateReplica, ReplicaAction};
 use crate::constants::{REPLICA_PER_GROUP, ROOT_GROUP_ID};
 use crate::root::allocator::BalanceStatus;
-use crate::root::OngoingStats;
+use crate::root::ClusterStats;
 use crate::Result;
 
 pub struct ReplicaCountPolicy<T: AllocSource> {
     alloc_source: Arc<T>,
-    ongoing_stats: Arc<OngoingStats>,
+    cluster_stats: Arc<ClusterStats>,
 }
 
 impl<T: AllocSource> ReplicaCountPolicy<T> {
-    pub fn with(alloc_source: Arc<T>, ongoing_stats: Arc<OngoingStats>) -> Self {
-        Self { alloc_source, ongoing_stats }
+    pub fn with(alloc_source: Arc<T>, cluster_stats: Arc<ClusterStats>) -> Self {
+        Self { alloc_source, cluster_stats }
     }
 
     pub fn allocate_group_replica(
@@ -192,7 +192,7 @@ impl<T: AllocSource> ReplicaCountPolicy<T> {
 
     fn node_replica_count(&self, n: &NodeDesc) -> u64 {
         let mut cnt = n.capacity.as_ref().unwrap().replica_count as i64;
-        let delta = self.ongoing_stats.get_node_delta(n.id);
+        let delta = self.cluster_stats.get_node_delta(n.id);
         cnt += delta.replica_count;
         if cnt < 0 {
             cnt = 0;

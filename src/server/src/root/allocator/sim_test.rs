@@ -30,7 +30,7 @@ fn sim_boostrap_join_node_balance() {
     let executor = executor_owner.executor();
     executor.block_on(async {
         let p = Arc::new(MockInfoProvider::new());
-        let d = Arc::new(OngoingStats::default());
+        let d = Arc::new(ClusterStats::default());
         let a = Allocator::new(p.clone(), d.clone(), RootConfig::default());
 
         println!("1. boostrap and no need rebalance");

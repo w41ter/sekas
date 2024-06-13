@@ -32,6 +32,8 @@ pub mod reconcile_task {
         ShedLeader(super::ShedLeaderTask),
         #[prost(message, tag = "5")]
         ShedRoot(super::ShedRootLeaderTask),
+        #[prost(message, tag = "6")]
+        SplitShard(super::SplitShardTask),
     }
 }
 
@@ -81,6 +83,14 @@ pub struct ShedLeaderTask {
 pub struct ShedRootLeaderTask {
     #[prost(uint64, tag = "1")]
     pub node_id: u64,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct SplitShardTask {
+    #[prost(uint64, tag = "1")]
+    pub shard_id: u64,
+    #[prost(uint64, tag = "2")]
+    pub group_id: u64,
 }
 
 #[derive(Clone, PartialEq, ::prost::Message)]

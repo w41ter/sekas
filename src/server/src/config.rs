@@ -198,12 +198,41 @@ pub struct RaftConfig {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct RootConfig {
     pub replicas_per_group: usize,
+    /// Enable balance groups to match desired groups.
+    ///
+    /// Default: true
     pub enable_group_balance: bool,
+    /// Enable balance replicas.
+    ///
+    /// Default: true
     pub enable_replica_balance: bool,
+    /// Enable balance shards between groups.
+    ///
+    /// Default: true
     pub enable_shard_balance: bool,
+    /// Enable balance leaders between nodes.
+    ///
+    /// Default: true
     pub enable_leader_balance: bool,
+    /// Enable split shards by dynamic size in auto.
+    ///
+    /// Default: true
+    pub enable_auto_shard_split: bool,
+    /// Enable merge shards by dynamic size in auto.
+    ///
+    /// Default: true
+    pub enable_auto_shard_merge: bool,
+    /// Set the interval to determine whether a node is still alive, in seconds.
+    ///
+    /// Default: 30s
     pub liveness_threshold_sec: u64,
+    /// Set the heartbeat scheduing intervals, in seconds.
+    ///
+    /// Default: 4s
     pub heartbeat_timeout_sec: u64,
+    /// Set the task scheduling invervals, in seconds.
+    ///
+    /// Default: 3s.
     pub schedule_interval_sec: u64,
     pub max_create_group_retry_before_rollback: u64,
 }
@@ -325,6 +354,8 @@ impl Default for RootConfig {
             enable_replica_balance: true,
             enable_shard_balance: true,
             enable_leader_balance: true,
+            enable_auto_shard_split: true,
+            enable_auto_shard_merge: true,
             liveness_threshold_sec: 30,
             heartbeat_timeout_sec: 4,
             schedule_interval_sec: 3,

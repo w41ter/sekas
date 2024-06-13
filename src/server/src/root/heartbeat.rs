@@ -172,6 +172,9 @@ impl Root {
                 schema.update_node(node).await?;
             }
         }
+        for gs in &resp.group_stats {
+            self.shared.cluster_stats.handle_group_stats(gs.clone());
+        }
         Ok(())
     }
 
@@ -240,7 +243,7 @@ impl Root {
     }
 
     async fn handle_schedule_state(&self, resp: &CollectScheduleStateResponse) -> Result<()> {
-        self.ongoing_stats.handle_update(&resp.schedule_states, None);
+        self.cluster_stats.handle_schedule_update(&resp.schedule_states, None);
         Ok(())
     }
 }

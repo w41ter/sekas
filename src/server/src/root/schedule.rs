@@ -34,8 +34,8 @@ pub struct ScheduleContext {
     shared: Arc<RootShared>,
     alloc: Arc<Allocator<SysAllocSource>>,
     heartbeat_queue: Arc<HeartbeatQueue>,
-    ongoing_stats: Arc<OngoingStats>,
-    jobs: Arc<Jobs>,
+    cluster_stats: Arc<ClusterStats>,
+    bg_jobs: Arc<Jobs>,
     cfg: RootConfig,
 }
 
@@ -44,11 +44,11 @@ impl ReconcileScheduler {
         Self { ctx, tasks: Default::default() }
     }
 
-    pub async fn step_one(&self) -> Duration {
-        let cr = self.check().await; // TODO: take care self.tasks then can give more > 1 value here.
-        if cr.is_ok() && cr.unwrap() {
+    pub async fn poll_and_schedule(&self) -> Duration {
+        let cr = self.generate_schedule_task().await; // TODO: take care self.tasks then can give more > 1 value here.
+        if matches!(cr, Ok(true)) {
             let _step_timer = metrics::RECONCILE_STEP_DURATION_SECONDS.start_timer();
-            self.advance_tasks().await;
+            while self.advance_tasks().await {}
         }
         Duration::from_secs(self.ctx.cfg.schedule_interval_sec)
     }
@@ -121,6 +121,15 @@ impl ReconcileScheduler {
         })
         .await;
     }
+
+    /// Schedule split shard task.
+    pub async fn sched_split_shard_task(&self, group_id: u64, shard_id: u64) {
+        self.setup_task(ReconcileTask {
+            task: Some(reconcile_task::Task::SplitShard(SplitShardTask { group_id, shard_id })),
+        })
+        .await;
+        self.ctx.cluster_stats.handle_split_shard(shard_id);
+    }
 }
 
 impl ReconcileScheduler {
@@ -142,13 +151,13 @@ impl ReconcileScheduler {
         Ok(false)
     }
 
-    pub async fn check(&self) -> Result<bool> {
+    pub async fn generate_schedule_task(&self) -> Result<bool> {
         let _timer = super::metrics::RECONCILE_CHECK_DURATION_SECONDS.start_timer();
         let group_action = self.ctx.alloc.compute_group_action().await?;
         if let GroupAction::Add(cnt) = group_action {
             metrics::RECONCILE_ALREADY_BALANCED_INFO.cluster_groups.set(0);
             for _ in 0..cnt {
-                self.ctx.jobs.submit_create_group_job().await?;
+                self.ctx.bg_jobs.submit_create_group_job().await?;
             }
             return Ok(true);
         }
@@ -176,6 +185,10 @@ impl ReconcileScheduler {
             match action {
                 ShardAction::Migrate(action) => self.sched_migrate_shard_task(action).await,
             }
+        }
+
+        for (group_id, shard_id) in self.ctx.cluster_stats.get_large_shards(5) {
+            self.sched_split_shard_task(group_id, shard_id).await;
         }
 
         Ok(!self.is_empty().await)
@@ -253,6 +266,10 @@ impl ReconcileScheduler {
                 metrics::RECONCILE_HANDLE_TASK_TOTAL.shed_root_leader.inc();
                 metrics::RECONCILE_HANDLE_TASK_DURATION_SECONDS.shed_root_leader.start_timer()
             }
+            Task::SplitShard(_) => {
+                metrics::RECONCILE_HANDLE_TASK_TOTAL.split_shard.inc();
+                metrics::RECONCILE_HANDLE_TASK_DURATION_SECONDS.split_shard.start_timer()
+            }
         }
     }
 
@@ -267,6 +284,7 @@ impl ReconcileScheduler {
             }
             Task::ShedLeader(_) => metrics::RECONCILE_RETRY_TASK_TOTAL.shed_group_leaders.inc(),
             Task::ShedRoot(_) => metrics::RECONCILE_RETRY_TASK_TOTAL.shed_root_leader.inc(),
+            Task::SplitShard(_) => metrics::RECONCILE_RETRY_TASK_TOTAL.split_shard.inc(),
         }
     }
 }
@@ -276,11 +294,11 @@ impl ScheduleContext {
         shared: Arc<RootShared>,
         alloc: Arc<Allocator<SysAllocSource>>,
         heartbeat_queue: Arc<HeartbeatQueue>,
-        ongoing_stats: Arc<OngoingStats>,
-        jobs: Arc<Jobs>,
+        cluster_stats: Arc<ClusterStats>,
+        bg_jobs: Arc<Jobs>,
         cfg: RootConfig,
     ) -> Self {
-        Self { shared, alloc, heartbeat_queue, ongoing_stats, jobs, cfg }
+        ScheduleContext { shared, alloc, heartbeat_queue, cluster_stats, bg_jobs, cfg }
     }
 
     pub async fn handle_task(
@@ -301,6 +319,7 @@ impl ScheduleContext {
             }
             Task::ShedLeader(shed_leader) => self.handle_shed_leader(shed_leader).await,
             Task::ShedRoot(shed_root) => self.handle_shed_root(shed_root).await,
+            Task::SplitShard(split_shard) => self.handle_split_shard(split_shard).await,
         }
     }
 
@@ -368,7 +387,7 @@ impl ScheduleContext {
             .await
         {
             Ok(schedule_state) => {
-                self.ongoing_stats.handle_update(&[schedule_state], None);
+                self.cluster_stats.handle_schedule_update(&[schedule_state], None);
                 Ok((true, false))
             }
             Err(crate::Error::AlreadyExists(_)) | Err(crate::Error::EpochNotMatch(_)) => {
@@ -556,6 +575,55 @@ impl ScheduleContext {
         }
         Ok((true, false))
     }
+
+    /// Handle the spliting shard stask and update the sched stats.
+    async fn handle_split_shard(
+        &self,
+        task: &mut SplitShardTask,
+    ) -> Result<(
+        bool, // ack current
+        bool, // immediately step next tick
+    )> {
+        let result = self.handle_split_shard_inner(task).await?;
+        if result.0 {
+            self.cluster_stats.finish_split_shard(task.shard_id);
+        }
+        Ok(result)
+    }
+
+    /// Handle the spliting shard stask.
+    async fn handle_split_shard_inner(
+        &self,
+        task: &mut SplitShardTask,
+    ) -> Result<(
+        bool, // ack current
+        bool, // immediately step next tick
+    )> {
+        let schema = self.shared.schema()?;
+        if schema.get_group(task.group_id).await?.is_none() {
+            warn!("split shard {} but group {} is not exists", task.shard_id, task.group_id);
+            return Ok((true, true));
+        };
+
+        let old_shard_id = task.shard_id;
+        let new_shard_id = schema.next_shard_id().await?;
+        match self.try_split_shard(task.group_id, old_shard_id, new_shard_id).await {
+            Ok(_) => Ok((true, true)),
+            Err(crate::Error::EpochNotMatch(_)) => {
+                warn!(
+                    "split shard meet epoch not match, abort split shard task. group={}, shard={}, new_shard={}",
+                        task.group_id, old_shard_id, new_shard_id);
+                Ok((true, true))
+            }
+            Err(err) => {
+                error!(
+                    "split shard: {err:?}. group={}, shard={}, new_shard={}",
+                    task.group_id, old_shard_id, new_shard_id
+                );
+                Err(err)
+            }
+        }
+    }
 }
 
 impl ScheduleContext {
@@ -645,6 +713,18 @@ impl ScheduleContext {
             src_group.id, src_node, target_node,
         );
         // TODO: handle src_group epoch not match?
+        Ok(())
+    }
+
+    /// Split shard request.
+    async fn try_split_shard(
+        &self,
+        group_id: u64,
+        old_shard_id: u64,
+        new_shard_id: u64,
+    ) -> Result<()> {
+        let mut group_client = self.shared.transport_manager.lazy_group_client(group_id);
+        group_client.split_shard(old_shard_id, new_shard_id, None).await?;
         Ok(())
     }
 

@@ -20,7 +20,7 @@ use self::policy_leader_cnt::LeaderCountPolicy;
 use self::policy_replica_cnt::ReplicaCountPolicy;
 use self::policy_shard_cnt::ShardCountPolicy;
 use self::source::NodeFilter;
-use super::{metrics, OngoingStats, RootShared};
+use super::{metrics, ClusterStats, RootShared};
 use crate::{Result, RootConfig};
 
 #[cfg(test)]
@@ -98,13 +98,13 @@ enum BalanceStatus {
 #[derive(Clone)]
 pub struct Allocator<T: AllocSource> {
     alloc_source: Arc<T>,
-    ongoing_stats: Arc<OngoingStats>,
+    cluster_stats: Arc<ClusterStats>,
     config: RootConfig,
 }
 
 impl<T: AllocSource> Allocator<T> {
-    pub fn new(alloc_source: Arc<T>, ongoing_stats: Arc<OngoingStats>, config: RootConfig) -> Self {
-        Self { alloc_source, config, ongoing_stats }
+    pub fn new(alloc_source: Arc<T>, cluster_stats: Arc<ClusterStats>, config: RootConfig) -> Self {
+        Self { alloc_source, config, cluster_stats }
     }
 
     pub fn replicas_per_group(&self) -> usize {
@@ -160,7 +160,7 @@ impl<T: AllocSource> Allocator<T> {
 
         // try replica-count rebalance.
         let actions =
-            ReplicaCountPolicy::with(self.alloc_source.to_owned(), self.ongoing_stats.to_owned())
+            ReplicaCountPolicy::with(self.alloc_source.to_owned(), self.cluster_stats.to_owned())
                 .compute_balance()?;
         if !actions.is_empty() {
             return Ok(actions);
@@ -196,7 +196,7 @@ impl<T: AllocSource> Allocator<T> {
     ) -> Result<Vec<NodeDesc>> {
         self.alloc_source.refresh_all().await?;
 
-        ReplicaCountPolicy::with(self.alloc_source.to_owned(), self.ongoing_stats.to_owned())
+        ReplicaCountPolicy::with(self.alloc_source.to_owned(), self.cluster_stats.to_owned())
             .allocate_group_replica(existing_replica_nodes, wanted_count)
     }
 

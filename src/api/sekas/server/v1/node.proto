@@ -332,9 +332,12 @@ message NodeStats {
 
 // The stats of an shard.
 message ShardStats {
+    // The id of the shard
     uint64 shard_id = 1;
-    // The size of the shards
-    uint64 shard_size = 2;
+    // The table id of the shard
+    uint64 table_id = 2;
+    // The size of the shard
+    uint64 shard_size = 3;
 }
 
 message GroupStats {
