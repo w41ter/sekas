@@ -205,7 +205,7 @@ pub(crate) fn sync_file_range(fd: RawFd, offset: usize, nbytes: usize, wait: boo
     }
     #[cfg(not(target_os = "linux"))]
     {
-        let _ = (offset, nbytes);
+        let _ = (fd, offset, nbytes, wait);
     }
     Ok(())
 }
