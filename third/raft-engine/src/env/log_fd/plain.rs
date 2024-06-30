@@ -27,6 +27,7 @@ impl LogFd {
     pub fn create<P: AsRef<Path>>(path: P) -> Result<Self> {
         OpenOptions::new()
             .create(true)
+            .truncate(true)
             .read(true)
             .write(true)
             .open(path)
