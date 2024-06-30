@@ -81,4 +81,10 @@ impl Handle for LogFd {
         let file = self.0.write();
         file.sync_all()
     }
+
+    fn sync_range(&self, offset: usize, nbytes: usize) -> Result<()> {
+        let _ = offset;
+        let _ = nbytes;
+        Ok(())
+    }
 }

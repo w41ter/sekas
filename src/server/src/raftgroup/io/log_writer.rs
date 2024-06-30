@@ -1,3 +1,4 @@
+// Copyright 2024-present The Sekas Authors.
 // Copyright 2022 The Engula Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -18,6 +19,7 @@ use std::thread::{Builder, JoinHandle};
 use futures::channel::{mpsc, oneshot};
 use futures::stream::FusedStream;
 use futures::StreamExt;
+use log::error;
 
 use crate::Result;
 
@@ -125,6 +127,7 @@ async fn log_writer_main(
             Err(err) => {
                 // Since `raft_engine::Error` is not `Clone`, converts err to string for message
                 // passing.
+                error!("write log batch to raft engine: {err:?}");
                 let msg = err.to_string();
                 for sender in senders {
                     sender.send(Err(msg.clone())).unwrap_or_default();
