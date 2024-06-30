@@ -280,8 +280,8 @@ fn display_size(size: u64) -> String {
     const GB: u64 = 1024 * MB;
     match size {
         0..KB => format!("{size}"),
-        KB..MB => format!("{}", size / KB),
-        MB..GB => format!("{}", size / MB),
-        _ => format!("{}", size / GB),
+        KB..MB => format!("{}KB", size / KB),
+        MB..GB => format!("{}MB", size / MB),
+        _ => format!("{}GB", size / GB),
     }
 }

@@ -78,7 +78,6 @@ pub struct RootShared {
     cfg_cpu_nums: u32,
     core: Mutex<Option<RootCore>>,
     watcher_hub: Arc<WatchHub>,
-    cluster_stats: ClusterStats,
 }
 
 impl RootShared {
@@ -132,7 +131,6 @@ impl Root {
             core: Mutex::new(None),
             node_ident: node_ident.to_owned(),
             watcher_hub: Default::default(),
-            cluster_stats: Default::default(),
         });
         let liveness =
             Arc::new(liveness::Liveness::new(Duration::from_secs(cfg.root.liveness_threshold_sec)));

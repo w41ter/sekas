@@ -173,7 +173,7 @@ impl Root {
             }
         }
         for gs in &resp.group_stats {
-            self.shared.cluster_stats.handle_group_stats(gs.clone());
+            self.cluster_stats.handle_group_stats(gs.clone());
         }
         Ok(())
     }
