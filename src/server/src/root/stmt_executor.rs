@@ -126,20 +126,32 @@ impl Root {
         }
         let groups = self.list_group().await?;
 
-        let columns = ["id", "shard_epoch", "config_epoch", "num_replicas", "num_shards"]
-            .into_iter()
-            .map(ToString::to_string)
-            .collect::<Vec<_>>();
+        let columns =
+            ["id", "shard_epoch", "config_epoch", "num_replicas", "num_shards", "qps(w/r)", "size"]
+                .into_iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>();
 
+        let cluster_stats = self.get_cluster_stats();
         let group_to_row = |group: GroupDesc| -> Row {
             let (shard_epoch, config_epoch) = (group.epoch >> 32, group.epoch & ((1 << 32) - 1));
-            let values: Vec<serde_json::Value> = vec![
+            let mut values: Vec<serde_json::Value> = vec![
                 group.id.into(),
                 shard_epoch.into(),
                 config_epoch.into(),
                 group.replicas.len().into(),
                 group.shards.len().into(),
             ];
+            if let Some(group_stats) = cluster_stats.get_group_stats(group.id) {
+                let read_qps = group_stats.read_qps as u64;
+                let write_qps = group_stats.write_qps as u64;
+                let group_size = group_stats.shard_stats.iter().map(|s| s.shard_size).sum();
+                values.push(format!("{read_qps}/{write_qps}").into());
+                values.push(display_size(group_size).into())
+            } else {
+                values.push("-/-".to_owned().into());
+                values.push("-".to_owned().into());
+            }
             Row { values }
         };
         let rows = groups.into_iter().map(group_to_row).collect::<Vec<_>>();
@@ -198,17 +210,31 @@ impl Root {
             return Ok(ExecuteResult::Msg("No such group exists".to_owned()));
         };
 
-        let columns = ["id", "table_id", "start", "end"]
+        let columns = ["id", "table_id", "start", "end", "size"]
             .into_iter()
             .map(ToString::to_string)
             .collect::<Vec<_>>();
 
+        let cluster_stats = self.get_cluster_stats();
         let shard_to_row = |shard: ShardDesc| -> Row {
             let (start, end) = match shard.range {
                 Some(range) => (range.start, range.end),
                 None => (vec![], vec![]),
             };
-            Row { values: vec![shard.id.into(), shard.table_id.into(), start.into(), end.into()] }
+            let size = if let Some(shard_stats) = cluster_stats.get_shard_stats(shard.id) {
+                display_size(shard_stats.shard_size)
+            } else {
+                "-".to_owned()
+            };
+            Row {
+                values: vec![
+                    shard.id.into(),
+                    shard.table_id.into(),
+                    start.into(),
+                    end.into(),
+                    size.into(),
+                ],
+            }
         };
         let rows = group.shards.into_iter().map(shard_to_row).collect::<Vec<_>>();
         Ok(ExecuteResult::Data(ColumnResult { columns, rows }))
@@ -244,5 +270,18 @@ impl Root {
         };
         let rows = nodes.into_iter().map(node_to_row).collect::<Vec<_>>();
         Ok(ExecuteResult::Data(ColumnResult { columns, rows }))
+    }
+}
+
+/// Convert bytes size into readable unit.
+fn display_size(size: u64) -> String {
+    const KB: u64 = 1024;
+    const MB: u64 = 1024 * KB;
+    const GB: u64 = 1024 * MB;
+    match size {
+        0..KB => format!("{size}"),
+        KB..MB => format!("{}", size / KB),
+        MB..GB => format!("{}", size / MB),
+        _ => format!("{}", size / GB),
     }
 }

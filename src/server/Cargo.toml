@@ -58,7 +58,7 @@ default-features = false
 [dependencies.raft-engine]
 path = "../../third/raft-engine"
 default-features = false
-features = ["prost"]
+features = ["prost", "std_fs"]
 
 [dependencies.rocksdb]
 git = "https://github.com/w41ter/rust-rocksdb.git"

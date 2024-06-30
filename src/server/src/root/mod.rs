@@ -880,6 +880,12 @@ impl Root {
     pub async fn list_node(&self) -> Result<Vec<NodeDesc>> {
         self.schema()?.list_node().await
     }
+
+    /// Get the cluster stats.
+    #[inline]
+    pub fn get_cluster_stats(&self) -> &ClusterStats {
+        &self.cluster_stats
+    }
 }
 
 pub async fn fetch_root_replica(replica_table: &ReplicaRouteTable) -> Arc<Replica> {

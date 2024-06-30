@@ -1,3 +1,4 @@
+// Copyright 2024-present The Sekas Authors.
 // Copyright 2022 The Engula Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -12,10 +13,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#![feature(cursor_remaining)]
-#![feature(linked_list_cursors)]
-#![feature(fs_try_exists)]
 #![feature(const_type_name)]
+#![feature(cursor_remaining)]
+#![feature(exclusive_range_pattern)]
+#![feature(fs_try_exists)]
+#![feature(linked_list_cursors)]
 
 mod bootstrap;
 mod config;

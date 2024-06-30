@@ -34,6 +34,7 @@ pub struct ClusterStats {
     sched_stats: Arc<Mutex<SchedStats>>,
     job_stats: Arc<Mutex<JobStats>>,
     table_set_stats: Arc<Mutex<TableSetStats>>,
+    group_set_stats: Arc<Mutex<HashMap<u64, GroupStats>>>,
 }
 
 #[derive(Default)]
@@ -61,12 +62,18 @@ pub struct TableStats {
 
 impl ClusterStats {
     pub fn handle_group_stats(&self, group_stats: GroupStats) {
-        let mut table_set = self.table_set_stats.lock().expect("poisoned");
-        for shard in group_stats.shard_stats {
-            let shard_id = shard.shard_id;
-            let table_stats = table_set.tables.entry(shard.table_id).or_default();
-            table_stats.shards.insert(shard_id, shard);
-            table_stats.shard_indexes.insert(shard_id, group_stats.group_id);
+        {
+            let mut table_set = self.table_set_stats.lock().expect("poisoned");
+            for shard in &group_stats.shard_stats {
+                let shard_id = shard.shard_id;
+                let table_stats = table_set.tables.entry(shard.table_id).or_default();
+                table_stats.shards.insert(shard_id, shard.clone());
+                table_stats.shard_indexes.insert(shard_id, group_stats.group_id);
+            }
+        }
+        {
+            let mut group_set = self.group_set_stats.lock().expect("poisoned");
+            group_set.insert(group_stats.group_id, group_stats);
         }
     }
 
@@ -138,6 +145,18 @@ impl ClusterStats {
             }
         }
         target_shards
+    }
+
+    /// Get the stats of a shard.
+    pub fn get_shard_stats(&self, shard_id: u64) -> Option<ShardStats> {
+        let table_set = self.table_set_stats.lock().expect("poisoned");
+        table_set.tables.values().filter_map(|v| v.shards.get(&shard_id)).next().cloned()
+    }
+
+    /// Get the stats of a group.
+    pub fn get_group_stats(&self, group_id: u64) -> Option<GroupStats> {
+        let group_set = self.group_set_stats.lock().expect("poisoned");
+        group_set.get(&group_id).cloned()
     }
 
     pub fn reset(&self) {
