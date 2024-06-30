@@ -12,11 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::ast::*;
 use crate::token::{TokenRule, Tokenizer};
-use crate::{
-    ConfigStatement, CreateDbStatement, CreateTableStatement, DebugStatement, EchoStatement,
-    HelpStatement, ParseError, ParseResult, ShowStatement, Statement, Token,
-};
+use crate::{ParseError, ParseResult, Token};
 
 #[derive(Debug)]
 struct Parser<'a> {
@@ -47,8 +45,10 @@ impl<'a> Parser<'a> {
             parse_create_stmt(self)?
         } else if self.peek::<Token![get]>() {
             parse_get_stmt(self)?
-        } else if self.peek::<Token![set]>() {
-            parse_set_stmt(self)?
+        } else if self.peek::<Token![put]>() {
+            parse_put_stmt(self)?
+        } else if self.peek::<Token![delete]>() {
+            parse_delete_stmt(self)?
         } else if self.peek::<Token![show]>() {
             parse_show_stmt(self)?
         } else if self.peek::<Token![help]>() {
@@ -123,14 +123,41 @@ fn parse_create_stmt(parser: &mut Parser) -> ParseResult<Statement> {
     }
 }
 
+// Syntax:
+// GET <key:literal> FROM <db_name:ident>.<table_name:ident>
 fn parse_get_stmt(parser: &mut Parser) -> ParseResult<Statement> {
     parser.next::<Token![get]>()?;
-    todo!()
+    let key = parser.next::<Token![literal]>()?.value().to_owned();
+    parser.next::<Token![from]>()?;
+    let db_name = parser.next::<Token![ident]>()?.value().to_owned();
+    parser.next::<Token![.]>()?;
+    let table_name = parser.next::<Token![ident]>()?.value().to_owned();
+    Ok(Statement::Get(GetStatement { key, db_name, table_name }))
 }
 
-fn parse_set_stmt(parser: &mut Parser) -> ParseResult<Statement> {
-    parser.next::<Token![set]>()?;
-    todo!()
+// Syntax:
+// PUT <key:literal> <value:literal> INTO <db_name:ident>.<table_name:ident>
+fn parse_put_stmt(parser: &mut Parser) -> ParseResult<Statement> {
+    parser.next::<Token![put]>()?;
+    let key = parser.next::<Token![literal]>()?.value().to_owned();
+    let value = parser.next::<Token![literal]>()?.value().to_owned();
+    parser.next::<Token![into]>()?;
+    let db_name = parser.next::<Token![ident]>()?.value().to_owned();
+    parser.next::<Token![.]>()?;
+    let table_name = parser.next::<Token![ident]>()?.value().to_owned();
+    Ok(Statement::Put(PutStatement { key, value, db_name, table_name }))
+}
+
+// Syntax:
+// DELETE <key:literal> FROM <db_name:ident>.<table_name:ident>
+fn parse_delete_stmt(parser: &mut Parser) -> ParseResult<Statement> {
+    parser.next::<Token![delete]>()?;
+    let key = parser.next::<Token![literal]>()?.value().to_owned();
+    parser.next::<Token![from]>()?;
+    let db_name = parser.next::<Token![ident]>()?.value().to_owned();
+    parser.next::<Token![.]>()?;
+    let table_name = parser.next::<Token![ident]>()?.value().to_owned();
+    Ok(Statement::Delete(DeleteStatement { key, db_name, table_name }))
 }
 
 // Syntax:

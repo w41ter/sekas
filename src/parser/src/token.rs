@@ -61,14 +61,16 @@ keyword!(config);
 keyword!(create);
 keyword!(database);
 keyword!(debug);
+keyword!(delete);
 keyword!(echo);
 keyword!(exists);
 keyword!(from);
 keyword!(get);
 keyword!(help);
 keyword!(if);
+keyword!(into);
 keyword!(not);
-keyword!(set);
+keyword!(put);
 keyword!(show);
 keyword!(table);
 
@@ -252,14 +254,16 @@ macro_rules! Token {
     [create] =>         { $crate::token::Create };
     [database] =>       { $crate::token::Database };
     [debug] =>          { $crate::token::Debug };
+    [delete] =>         { $crate::token::Delete };
     [echo] =>           { $crate::token::Echo };
     [exists] =>         { $crate::token::Exists };
     [from] =>           { $crate::token::From };
     [get] =>            { $crate::token::Get };
     [help] =>           { $crate::token::Help };
     [if] =>             { $crate::token::If };
+    [into] =>           { $crate::token::Into };
     [not] =>            { $crate::token::Not };
-    [set] =>            { $crate::token::Set };
+    [put] =>            { $crate::token::Put };
     [table] =>          { $crate::token::Table };
     [show] =>           { $crate::token::Show };
 

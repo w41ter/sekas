@@ -41,7 +41,8 @@ impl Root {
         match stmt {
             Config(config) => self.handle_config_stmt(config).await,
             Show(show) => self.handle_show_stmt(show).await,
-            CreateDb(_) | CreateTable(_) | Debug(_) | Echo(_) | Help(_) => {
+            CreateDb(_) | CreateTable(_) | Debug(_) | Echo(_) | Help(_) | Get(_) | Put(_)
+            | Delete(_) => {
                 Err(Error::InvalidArgument(", local stmt is sent to root server".to_owned()))
             }
         }

@@ -23,6 +23,9 @@ pub enum Statement {
     Echo(EchoStatement),
     Help(HelpStatement),
     Show(ShowStatement),
+    Put(PutStatement),
+    Delete(DeleteStatement),
+    Get(GetStatement),
 }
 
 #[derive(Debug)]
@@ -65,6 +68,28 @@ pub struct ShowStatement {
     pub from: Option<String>,
 }
 
+#[derive(Debug)]
+pub struct PutStatement {
+    pub key: Vec<u8>,
+    pub value: Vec<u8>,
+    pub db_name: String,
+    pub table_name: String,
+}
+
+#[derive(Debug)]
+pub struct DeleteStatement {
+    pub key: Vec<u8>,
+    pub db_name: String,
+    pub table_name: String,
+}
+
+#[derive(Debug)]
+pub struct GetStatement {
+    pub key: Vec<u8>,
+    pub db_name: String,
+    pub table_name: String,
+}
+
 impl DebugStatement {
     #[inline]
     pub fn execute(&self) -> ExecuteResult {
@@ -86,6 +111,9 @@ impl HelpStatement {
         match topic {
             "create" | "CREATE" => Self::display_create_topic(),
             "show" | "SHOW" => Self::display_show_topic(),
+            "pub" | "PUT" => Self::display_put_topic(),
+            "delete" | "DELETE" => Self::display_delete_topic(),
+            "get" | "GET" => Self::display_get_topic(),
             _ => {
                 format!("unkonwn command `{}`. Try `help`?", topic)
             }
@@ -123,12 +151,48 @@ Note:
         .to_owned()
     }
 
+    fn display_put_topic() -> String {
+        r##"
+PUT <key:literal> <value:literal> INTO <db_name:ident>.<table_name:ident>
+    Put key value into a table.
+
+Note:
+    The ident accepts characters [a-zA-Z0-9_-].
+"##
+        .to_owned()
+    }
+
+    fn display_get_topic() -> String {
+        r##"
+GET <key:literal> FROM <db_name:ident>.<table_name:ident>
+    Get value from a table
+
+Note:
+    The ident accepts characters [a-zA-Z0-9_-].
+"##
+        .to_owned()
+    }
+
+    fn display_delete_topic() -> String {
+        r##"
+DELETE <key:literal> FROM <db_name:ident>.<table_name:ident>
+    Delete value from a table
+
+Note:
+    The ident accepts characters [a-zA-Z0-9_-].
+"##
+        .to_owned()
+    }
+
     fn display() -> String {
         r##"
 List of commands:
 
 create      create database, table ...
 show        show properties, such as databases, tables ...
+pub         put value into a table
+delete      delete key from a table
+get         get the value of the key from a table
 help        get help about a topic or command
 
 For information on a specific command, type `help <command>'.
