@@ -205,6 +205,7 @@ impl<T: Message> IntoRequest<T> for RpcTimeout<T> {
 }
 
 #[cfg(test)]
+#[cfg(target_os = "linux")]
 mod timeout_error_tests {
     use std::net::SocketAddr;
 
@@ -258,6 +259,7 @@ mod timeout_error_tests {
 }
 
 #[cfg(test)]
+#[cfg(target_os = "linux")]
 mod transport_error_tests {
     use std::error::Error;
     use std::io::ErrorKind;

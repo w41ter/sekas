@@ -27,7 +27,7 @@ pub fn next_n_avail_port(n: usize) -> Vec<u16> {
         .map(|_| {
             let socket = Socket::new(Domain::IPV4, Type::STREAM, None).unwrap();
             socket.set_reuse_address(true).unwrap();
-            #[cfg(not(any(target_os = "solaris", target_os = "illumos")))]
+            #[cfg(not(any(target_os = "solaris", target_os = "illumos", target_os = "windows")))]
             socket.set_reuse_port(true).unwrap();
             socket.bind(&"127.0.0.1:0".parse::<SocketAddr>().unwrap().into()).unwrap();
             socket

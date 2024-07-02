@@ -1,3 +1,4 @@
+// Copyright 2024-present The Sekas Authors.
 // Copyright 2022 The Engula Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -11,7 +12,6 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-use std::mem::MaybeUninit;
 
 use serde::Serialize;
 
@@ -54,13 +54,18 @@ pub(crate) fn record_perf_point(hold: &mut u64) {
 
 #[inline]
 pub(crate) fn perf_point_micros() -> u64 {
-    if cfg!(target_os = "linux") {
+    #[cfg(target_os = "linux")]
+    {
+        use std::mem::MaybeUninit;
         let mut t = MaybeUninit::uninit();
         unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, t.as_mut_ptr()) };
         let now: libc::timespec = unsafe { t.assume_init() };
         let micros = now.tv_nsec / 1000;
         (now.tv_sec * 1000 * 1000 + micros) as u64
-    } else {
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
         0
     }
 }
