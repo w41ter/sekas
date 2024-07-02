@@ -14,15 +14,20 @@
 
 #[inline]
 pub fn timestamp_nanos() -> u64 {
-    use std::mem::MaybeUninit;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    #[cfg(target_os = "linux")]
+    {
+        use std::mem::MaybeUninit;
 
-    if cfg!(target_os = "linux") {
         let mut t = MaybeUninit::uninit();
         unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, t.as_mut_ptr()) };
         let now: libc::timespec = unsafe { t.assume_init() };
         (now.tv_sec * 1000 * 1000 * 1000 + now.tv_nsec) as u64
-    } else {
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
         SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos() as u64
     }
 }
