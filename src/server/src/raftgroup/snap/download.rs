@@ -14,7 +14,6 @@
 
 use std::ffi::OsString;
 use std::fs::File;
-use std::os::unix::ffi::OsStringExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -43,7 +42,7 @@ struct SnapshotBuilder {
     replica_id: u64,
     base_dir: PathBuf,
     meta: SnapshotMeta,
-    file_name: Vec<u8>,
+    file_name: String,
     file: Option<PartialFile>,
 }
 
@@ -53,7 +52,7 @@ impl SnapshotBuilder {
             replica_id,
             base_dir: base_dir.to_owned(),
             meta: SnapshotMeta::default(),
-            file_name: vec![],
+            file_name: String::default(),
             file: None,
         }
     }
@@ -81,7 +80,7 @@ impl SnapshotBuilder {
         self.finish_partial_file().await?;
 
         let name = file_meta.name.clone();
-        let str = OsString::from_vec(name.clone());
+        let str = OsString::from(name.clone());
         let path = self.base_dir.join(str);
         if let Some(parent) = path.parent() {
             if !std::fs::try_exists(parent)? {

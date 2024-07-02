@@ -184,6 +184,8 @@ impl<F: FileSystem> SinglePipe<F> {
         std::fs::File::open(PathBuf::from(&self.paths[path_id]))
             .and_then(|d| d.sync_all())
             .unwrap();
+        #[cfg(windows)]
+        let _ = path_id;
         Ok(())
     }
 

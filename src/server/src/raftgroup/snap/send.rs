@@ -1,3 +1,4 @@
+// Copyright 2024-present The Sekas Authors.
 // Copyright 2022 The Engula Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -11,10 +12,10 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-use std::ffi::OsStr;
+
+use std::ffi::OsString;
 use std::fs::File;
 use std::io::Read;
-use std::os::unix::ffi::OsStrExt;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
@@ -87,7 +88,7 @@ impl SnapshotChunkStream {
             // Open new file and send file meta.
             None if self.file_index < self.info.meta.files.len() => {
                 let file_meta = &self.info.meta.files[self.file_index];
-                let path = self.info.base_dir.join(OsStr::from_bytes(&file_meta.name)); // Eg: `DATA/1.sst`.
+                let path = self.info.base_dir.join(OsString::from(file_meta.name.clone())); // Eg: `DATA/1.sst`.
                 debug!(
                     "send file {} to remote, crc32 {}, size {}",
                     path.display(),

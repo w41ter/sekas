@@ -110,10 +110,10 @@ impl<T: AllocSource> ShardCountPolicy<T> {
     fn rebalance_target(
         &self,
         source_group: &GroupDesc,
-        ranked_candicates: &[(GroupDesc, BalanceStatus)],
+        ranked_candidates: &[(GroupDesc, BalanceStatus)],
     ) -> Option<ShardAction> {
         let mean = self.mean_shard_count();
-        for (target, state) in ranked_candicates.iter().rev() {
+        for (target, state) in ranked_candidates.iter().rev() {
             if *state != BalanceStatus::Underfull {
                 break;
             }

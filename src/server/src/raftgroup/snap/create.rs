@@ -27,7 +27,7 @@ use crate::raftgroup::snap::{SNAP_META, SNAP_TEMP};
 use crate::raftgroup::worker::Request;
 use crate::raftgroup::StateMachine;
 use crate::serverpb::v1::{SnapshotFile, SnapshotMeta};
-use crate::{record_latency, Result};
+use crate::{record_latency, Error, Result};
 
 pub fn dispatch_creating_snap_task(
     replica_id: u64,
@@ -72,7 +72,7 @@ pub(super) async fn create_snapshot(
             let entry = entry?;
             let path = entry.path();
             if path.is_dir() {
-                panic!("Not supported");
+                panic!("Snapshot with hierarchical directories is not supported yet");
             }
             files.push(read_file_meta(&path).await?);
         }
@@ -137,13 +137,19 @@ async fn read_file_meta(filename: &Path) -> Result<SnapshotFile> {
             sekas_runtime::yield_now().await;
         }
     }
+    let crc32 = hasher.finalize();
 
     let name = if filename.file_name().unwrap() == SNAP_DATA {
         Path::new(SNAP_DATA).to_path_buf()
     } else {
         Path::new(SNAP_DATA).join(filename.file_name().unwrap())
     };
-    let crc32 = hasher.finalize();
 
-    Ok(SnapshotFile { name: name.to_str().unwrap().as_bytes().to_owned(), crc32, size })
+    let Some(name) = name.to_str() else {
+        return Err(Error::Io(std::io::Error::new(
+            ErrorKind::InvalidInput,
+            format!("{} is not a valid UTF-8 encoding, the name of snapshot data requires UTF-8 encoding", name.display()),
+        )));
+    };
+    Ok(SnapshotFile { name: name.to_owned(), crc32, size })
 }
