@@ -12,10 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-pub mod ascii;
-pub mod error;
-pub mod fs;
-pub mod lang;
-pub mod lexical;
-pub mod num;
-pub mod time;
+//! A mod to extend the ascii standard library.
+
+/// Escapes bytes that are not printable ASCII characters.
+#[inline]
+pub fn escape_bytes(bytes: &[u8]) -> String {
+    String::from_utf8(bytes.iter().flat_map(|&b| std::ascii::escape_default(b)).collect::<Vec<_>>())
+        .expect("all bytes are escaped")
+}

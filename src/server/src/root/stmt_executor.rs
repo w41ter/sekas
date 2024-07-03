@@ -15,6 +15,7 @@
 use log::warn;
 use sekas_api::server::v1::*;
 use sekas_parser::{ColumnResult, ConfigStatement, ExecuteResult, Row, ShowStatement};
+use sekas_rock::ascii::escape_bytes;
 
 use super::Root;
 use crate::{Error, Result};
@@ -221,6 +222,7 @@ impl Root {
                 Some(range) => (range.start, range.end),
                 None => (vec![], vec![]),
             };
+            let (start, end) = (escape_bytes(&start), escape_bytes(&end));
             let size = if let Some(shard_stats) = cluster_stats.get_shard_stats(shard.id) {
                 display_size(shard_stats.shard_size)
             } else {
