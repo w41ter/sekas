@@ -361,7 +361,10 @@ impl GroupEngine {
         let opts = ReadOptions::default();
         let key = match &mode {
             SnapshotMode::Start { start_key: Some(start_key) } => {
-                debug_assert!(shard::belong_to(&desc, start_key));
+                debug_assert!(
+                    shard::belong_to(&desc, start_key),
+                    "shard desc {desc:?} start key {start_key:?}"
+                );
                 keys::raw(table_id, start_key)
             }
             SnapshotMode::Start { start_key: None } => {
@@ -369,11 +372,11 @@ impl GroupEngine {
                 keys::raw(table_id, &shard::start_key(&desc))
             }
             SnapshotMode::Key { key } => {
-                debug_assert!(shard::belong_to(&desc, key));
+                debug_assert!(shard::belong_to(&desc, key), "shard desc {desc:?} key {key:?}");
                 keys::raw(table_id, key)
             }
             SnapshotMode::Prefix { key } => {
-                debug_assert!(shard::belong_to(&desc, key));
+                debug_assert!(shard::belong_to(&desc, key), "shard desc {desc:?} key {key:?}");
                 keys::raw(table_id, key)
             }
         };
@@ -442,7 +445,7 @@ impl GroupEngine {
         self.raw_db.get_approximate_size(&self.cf_handle(), &start, &end)
     }
 
-    /// Estimate the split keys of the target shard.
+    /// Estimate the split keys (in user key) of the target shard.
     pub fn estimate_split_key(&self, shard_id: u64) -> Result<Option<Vec<u8>>> {
         let (start, end) = self.shard_raw_boundary(shard_id)?;
         let estimated_split_keys =
@@ -452,7 +455,8 @@ impl GroupEngine {
         }
         let num_split_keys = estimated_split_keys.len();
         let split_point = num_split_keys / 2;
-        Ok(Some(estimated_split_keys[split_point].clone()))
+        let split_key = &estimated_split_keys[split_point];
+        Ok(keys::may_revert_mvcc_key(&split_key))
     }
 
     /// return the desc of the specified shard.
@@ -743,6 +747,17 @@ mod keys {
         buf
     }
 
+    /// Extracts user key from the mvcc key.
+    pub fn may_revert_mvcc_key(key: &[u8]) -> Option<Vec<u8>> {
+        const L: usize = core::mem::size_of::<u64>();
+        let len = key.len();
+        if len <= 2 * L {
+            return None;
+        }
+        Some(revert_mvcc_key(key))
+    }
+
+    /// Extracts user key from the mvcc key.
     pub fn revert_mvcc_key(key: &[u8]) -> Vec<u8> {
         use std::io::{Cursor, Read};
 
