@@ -15,7 +15,7 @@
 
 mod task;
 
-use log::{error, info, warn};
+use log::{debug, error, info, warn};
 use prometheus::HistogramTimer;
 use sekas_api::server::v1::*;
 use tokio::sync::Mutex;
@@ -124,6 +124,7 @@ impl ReconcileScheduler {
 
     /// Schedule split shard task.
     pub async fn sched_split_shard_task(&self, group_id: u64, shard_id: u64) {
+        debug!("sched split shard task, group_id {group_id}, shard_id {shard_id}");
         self.setup_task(ReconcileTask {
             task: Some(reconcile_task::Task::SplitShard(SplitShardTask { group_id, shard_id })),
         })
@@ -165,10 +166,6 @@ impl ReconcileScheduler {
 
         let ractions = self.comput_replica_role_action().await?;
         let sactions = self.ctx.alloc.compute_shard_action().await?;
-        if ractions.is_empty() && sactions.is_empty() {
-            return Ok(!self.is_empty().await);
-        }
-
         for action in ractions {
             match action {
                 ReplicaRoleAction::Replica(ReplicaAction::Migrate(action)) => {
