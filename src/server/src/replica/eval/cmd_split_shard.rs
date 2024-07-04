@@ -24,7 +24,7 @@ pub(crate) fn split_shard(engine: &GroupEngine, req: &SplitShardRequest) -> Resu
     let new_shard_id = req.new_shard_id;
 
     debug!(
-        "execute split shard from {} to {}, has split key: {}",
+        "execute split shard {}, new shard id {}, has split key {}",
         old_shard_id,
         new_shard_id,
         req.split_key.is_some()
@@ -47,6 +47,12 @@ pub(crate) fn split_shard(engine: &GroupEngine, req: &SplitShardRequest) -> Resu
             ))
         })?,
     };
+
+    debug!("execute split shard {}, split key {:?}", old_shard_id, split_key);
+    debug_assert!(
+        sekas_schema::shard::belong_to(&shard_desc, &split_key),
+        "estimated split key {split_key:?} is not belongs to shard {shard_desc:?}"
+    );
 
     let split_shard = SplitShard { old_shard_id, new_shard_id, split_key };
     let sync_op = Box::new(SyncOp { split_shard: Some(split_shard), ..Default::default() });

@@ -721,6 +721,13 @@ impl WriteBatchContext {
                 continue;
             }
             let (group_state, shard_desc) = router.find_shard(write.table_id, write.user_key())?;
+            debug_assert!(
+                sekas_schema::shard::belong_to(&shard_desc, write.user_key()),
+                "shard desc {:?}, user key {:?}",
+                shard_desc,
+                write.user_key()
+            );
+
             let mut client = GroupClient::new(group_state, self.client.clone());
             let req = Request::WriteIntent(WriteIntentRequest {
                 start_version: self.start_version,

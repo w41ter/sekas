@@ -456,7 +456,7 @@ impl GroupEngine {
         let num_split_keys = estimated_split_keys.len();
         let split_point = num_split_keys / 2;
         let split_key = &estimated_split_keys[split_point];
-        Ok(keys::may_revert_mvcc_key(&split_key))
+        Ok(keys::may_revert_mvcc_key(split_key))
     }
 
     /// return the desc of the specified shard.

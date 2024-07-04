@@ -28,6 +28,7 @@ use log::{info, trace, warn};
 use sekas_api::server::v1::group_request_union::Request;
 use sekas_api::server::v1::group_response_union::Response;
 use sekas_api::server::v1::*;
+use sekas_api::Epoch;
 use serde::Serialize;
 
 use self::eval::acquire_row_latches;
@@ -479,8 +480,8 @@ impl Replica {
         } else if exec_ctx.epoch < lease_state.descriptor.epoch {
             trace!(
                 "request epoch {} less than local epoch {}, group: {}, replica: {}",
-                exec_ctx.epoch,
-                lease_state.descriptor.epoch,
+                Epoch(exec_ctx.epoch),
+                Epoch(lease_state.descriptor.epoch),
                 self.info.group_id,
                 self.info.replica_id
             );
@@ -497,7 +498,13 @@ impl Replica {
             // If the current replica is the leader and has applied data in the current
             // term, it is expected that the input epoch should not be larger
             // than the leaders.
-            debug_assert_eq!(exec_ctx.epoch, lease_state.descriptor.epoch);
+            debug_assert_eq!(
+                exec_ctx.epoch,
+                lease_state.descriptor.epoch,
+                "input epoch {}, lease descriptor epoch {}",
+                Epoch(exec_ctx.epoch),
+                Epoch(lease_state.descriptor.epoch)
+            );
             let moving_digest =
                 lease_state.move_shard_state.as_ref().and_then(|m| m.move_shard.clone());
             exec_ctx.move_shard_desc = moving_digest;

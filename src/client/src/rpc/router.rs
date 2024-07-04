@@ -21,6 +21,7 @@ use log::{info, trace, warn};
 use sekas_api::server::v1::watch_response::delete_event::Event as DeleteEvent;
 use sekas_api::server::v1::watch_response::update_event::Event as UpdateEvent;
 use sekas_api::server::v1::*;
+use sekas_api::Epoch;
 use tokio::task::JoinHandle;
 use tonic::Streaming;
 
@@ -72,29 +73,22 @@ impl Router {
     pub fn find_shard(
         &self,
         table_id: u64,
-        key: &[u8],
+        user_key: &[u8],
     ) -> Result<(RouterGroupState, ShardDesc), crate::Error> {
         let state = self.core.state.lock().unwrap();
         let shards = state
             .co_shards_lookup
             .get(&table_id)
-            .ok_or_else(|| crate::Error::NotFound(format!("shard (key={:?})", key)))?;
+            .ok_or_else(|| crate::Error::NotFound(format!("shard (key={:?})", user_key)))?;
         for shard in shards {
-            if let Some(RangePartition { start, end }) = shard.range.clone() {
-                if start.as_slice() > key {
-                    continue;
-                }
-
-                // end = vec![] means MAX
-                if (end.as_slice() < key) || (end.is_empty()) {
-                    let group_state = state.find_group_by_shard(shard.id).ok_or_else(|| {
-                        crate::Error::NotFound(format!("shard (key={key:?}) group"))
-                    })?;
-                    return Ok((group_state, shard.clone()));
-                }
+            if sekas_schema::shard::belong_to(shard, user_key) {
+                let group_state = state.find_group_by_shard(shard.id).ok_or_else(|| {
+                    crate::Error::NotFound(format!("shard (key={user_key:?}) group"))
+                })?;
+                return Ok((group_state, shard.clone()));
             }
         }
-        Err(crate::Error::NotFound(format!("shard (key={:?})", key)))
+        Err(crate::Error::NotFound(format!("shard (key={:?})", user_key)))
     }
 
     pub fn find_group_by_shard(&self, shard: u64) -> Result<RouterGroupState, crate::Error> {
@@ -195,6 +189,13 @@ impl State {
         self.group_id_lookup.insert(id, group_state);
 
         for shard in shards {
+            trace!(
+                "apply group desc, update shard {} to {:?}, group {}, epoch {}",
+                shard.id,
+                shard,
+                id,
+                Epoch(epoch)
+            );
             match self.shard_group_lookup.get_mut(&shard.id) {
                 None => {
                     self.shard_group_lookup.insert(shard.id, (id, epoch));

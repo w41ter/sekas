@@ -18,6 +18,7 @@ use std::time::Duration;
 use log::trace;
 use sekas_api::server::v1::group_request_union::Request;
 use sekas_api::server::v1::*;
+use sekas_api::Epoch;
 use sekas_schema::shard;
 
 use super::{ExecCtx, Replica};
@@ -55,6 +56,8 @@ pub async fn execute(
 ) -> Result<GroupResponse> {
     let mut exec_ctx = exec_ctx.clone();
     exec_ctx.epoch = request.epoch;
+    exec_ctx.group_id = replica.replica_info().group_id;
+    exec_ctx.replica_id = replica.replica_info().replica_id;
 
     let request = request
         .request
@@ -67,9 +70,9 @@ pub async fn execute(
     let mut retry_count = 0;
     loop {
         trace!(
-            "group {} try execute request, epoch: {}, retry count: {}",
+            "group {} try execute request, epoch {}, retry count {}",
             exec_ctx.group_id,
-            exec_ctx.epoch,
+            Epoch(exec_ctx.epoch),
             retry_count
         );
         exec_ctx.reset();
