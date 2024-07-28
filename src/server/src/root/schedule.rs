@@ -18,6 +18,7 @@ mod task;
 use log::{debug, error, info, warn};
 use prometheus::HistogramTimer;
 use sekas_api::server::v1::*;
+use sekas_rock::time::timestamp_millis;
 use tokio::sync::Mutex;
 
 use self::task::reconcile_task::Task;
@@ -71,6 +72,8 @@ impl ReconcileScheduler {
     pub async fn sched_root_leader(&self, node_id: u64) {
         self.setup_task(ReconcileTask {
             task: Some(reconcile_task::Task::ShedRoot(ShedRootLeaderTask { node_id })),
+            created_at: timestamp_millis(),
+            fire_at: 0,
         })
         .await;
     }
@@ -79,6 +82,8 @@ impl ReconcileScheduler {
     pub async fn sched_leader(&self, node_id: u64) {
         self.setup_task(ReconcileTask {
             task: Some(reconcile_task::Task::ShedLeader(ShedLeaderTask { node_id })),
+            created_at: timestamp_millis(),
+            fire_at: 0,
         })
         .await;
     }
@@ -92,6 +97,8 @@ impl ReconcileScheduler {
                 src_node: transfer_leader.src_node,
                 dest_node: transfer_leader.target_node,
             })),
+            created_at: timestamp_millis(),
+            fire_at: 0,
         })
         .await;
     }
@@ -106,6 +113,8 @@ impl ReconcileScheduler {
                 dest_node: Some(action.target_node),
                 dest_replica: None,
             })),
+            created_at: timestamp_millis(),
+            fire_at: 0,
         })
         .await;
     }
@@ -118,6 +127,8 @@ impl ReconcileScheduler {
                 src_group: action.source_group,
                 dest_group: action.target_group,
             })),
+            created_at: timestamp_millis(),
+            fire_at: 0,
         })
         .await;
     }
@@ -127,6 +138,8 @@ impl ReconcileScheduler {
         debug!("sched split shard task, group_id {group_id}, shard_id {shard_id}");
         self.setup_task(ReconcileTask {
             task: Some(reconcile_task::Task::SplitShard(SplitShardTask { group_id, shard_id })),
+            created_at: timestamp_millis(),
+            fire_at: 0,
         })
         .await;
         self.ctx.cluster_stats.handle_split_shard(shard_id);
@@ -220,22 +233,36 @@ impl ReconcileScheduler {
         let mut task = self.tasks.lock().await;
         let mut nowait_next = !task.is_empty();
         metrics::RECONCILE_SCHEDULER_TASK_QUEUE_SIZE.set(task.len() as i64);
+
+        let start_at = timestamp_millis();
         let mut cursor = task.cursor_front_mut();
         while let Some(task) = cursor.current() {
+            if start_at < task.fire_at {
+                cursor.move_next();
+                continue;
+            }
+
             let _timer = Self::record_exec(task);
-            let rs = self.ctx.handle_task(task).await;
-            match rs {
-                Ok((true /* ack */, immediately_next)) => {
-                    cursor.remove_current();
-                    if !immediately_next {
-                        nowait_next = false
-                    }
+            let Ok(sched_result) = self.ctx.handle_task(task).await else {
+                Self::record_retry(task);
+                // ack == false or meet error, skip current task and retry later.
+                cursor.move_next();
+                continue;
+            };
+
+            if sched_result.ack {
+                cursor.remove_current();
+                if !sched_result.immediately_next {
+                    nowait_next = false
                 }
-                _ => {
-                    Self::record_retry(task);
-                    // ack == false or meet error, skip current task and retry later.
-                    cursor.move_next();
-                }
+            } else if let Some(delay) = sched_result.delay {
+                Self::record_retry(task);
+                task.fire_at = start_at + delay.as_millis() as u64;
+                cursor.move_next();
+            } else {
+                Self::record_retry(task);
+                // ack == false or meet error, skip current task and retry later.
+                cursor.move_next();
             }
         }
         nowait_next
@@ -286,6 +313,33 @@ impl ReconcileScheduler {
     }
 }
 
+#[derive(Debug, Default)]
+struct SchedResult {
+    /// Ack current task.
+    ack: bool,
+    /// immediately step next tick.
+    immediately_next: bool,
+    /// Delay task by duration.
+    delay: Option<Duration>,
+}
+
+impl SchedResult {
+    /// Ack but not step next immediately
+    fn ack() -> Self {
+        SchedResult { ack: true, ..Default::default() }
+    }
+
+    /// Ack and immediately step next
+    fn next() -> Self {
+        SchedResult { ack: true, immediately_next: true, ..Default::default() }
+    }
+
+    /// Immediately step next and save the delay intervals.
+    fn delay(duration: Duration) -> Self {
+        SchedResult { ack: true, immediately_next: true, delay: Some(duration) }
+    }
+}
+
 impl ScheduleContext {
     pub(crate) fn new(
         shared: Arc<RootShared>,
@@ -298,13 +352,7 @@ impl ScheduleContext {
         ScheduleContext { shared, alloc, heartbeat_queue, cluster_stats, bg_jobs, cfg }
     }
 
-    pub async fn handle_task(
-        &self,
-        task: &mut ReconcileTask,
-    ) -> Result<(
-        bool, // ack current
-        bool, // immediately step next tick
-    )> {
+    async fn handle_task(&self, task: &mut ReconcileTask) -> Result<SchedResult> {
         info!("handle reconcile task. task={task:?}");
         match task.task.as_mut().unwrap() {
             Task::ReallocateReplica(reallocate_replica) => {
@@ -323,10 +371,7 @@ impl ScheduleContext {
     async fn handle_reallocate_replica(
         &self,
         task: &mut ReallocateReplicaTask,
-    ) -> Result<(
-        bool, // ack current
-        bool, // immediately step next tick
-    )> {
+    ) -> Result<SchedResult> {
         let schema = self.shared.schema()?;
 
         let group = task.group;
@@ -334,11 +379,11 @@ impl ScheduleContext {
         let r = self.try_shed_leader_before_remove(group, replica).await;
         match r {
             Ok(_) => {}
-            Err(crate::Error::AbortScheduleTask(_)) => return Ok((true, false)),
+            Err(crate::Error::AbortScheduleTask(_)) => return Ok(SchedResult::next()),
             Err(crate::Error::EpochNotMatch(new_group)) => {
                 warn!(
   "shed leader meet epoch not match, abort task and retry allocator. group={group}, replica={replica}, new_group={new_group:?}");
-                return Ok((true, false));
+                return Ok(SchedResult::ack());
             }
             Err(err) => {
                 warn!("shed leader in source replica fail, retry in next tick: {err:?}. group={group}, replica={replica}",
@@ -351,7 +396,7 @@ impl ScheduleContext {
         let group_desc = schema.get_group(group).await?;
         if group_desc.is_none() {
             warn!("group not found abort reallocate replica task. group={group}");
-            return Ok((true, false));
+            return Ok(SchedResult::ack());
         }
 
         let src_replica =
@@ -362,7 +407,7 @@ impl ScheduleContext {
                 "source replica not found abort reallocate replica task. group={group}, replica={}",
                 task.src_replica
             );
-            return Ok((true, false));
+            return Ok(SchedResult::ack());
         }
 
         info!(
@@ -385,7 +430,7 @@ impl ScheduleContext {
         {
             Ok(schedule_state) => {
                 self.cluster_stats.handle_schedule_update(&[schedule_state], None);
-                Ok((true, false))
+                Ok(SchedResult::ack())
             }
             Err(crate::Error::AlreadyExists(_)) | Err(crate::Error::EpochNotMatch(_)) => {
                 warn!(
@@ -393,7 +438,7 @@ impl ScheduleContext {
             task.src_node,
             task.dest_node.as_ref().unwrap().id
         );
-                Ok((true, false))
+                Ok(SchedResult::ack())
             }
             Err(err) => {
                 warn!(
@@ -407,26 +452,20 @@ impl ScheduleContext {
         }
     }
 
-    async fn handle_migrate_shard(
-        &self,
-        task: &mut MigrateShardTask,
-    ) -> Result<(
-        bool, // ack current
-        bool, // immediately step next tick
-    )> {
+    async fn handle_migrate_shard(&self, task: &mut MigrateShardTask) -> Result<SchedResult> {
         info!(
             "start migrate shard. shard={}, src={}, dest={}",
             task.shard, task.src_group, task.dest_group
         );
         let r = self.try_migrate_shard(task.src_group, task.dest_group, task.shard).await;
         match r {
-            Ok(_) => Ok((true, false)),
+            Ok(_) => Ok(SchedResult::ack()),
             Err(crate::Error::AbortScheduleTask(reason)) => {
                 warn!(
                     "abort migrate shard. shard={}, src={}, dest={}, reason={reason}",
                     task.shard, task.src_group, task.dest_group
                 );
-                Ok((true, false))
+                Ok(SchedResult::ack())
             }
             Err(err) => {
                 warn!(
@@ -441,17 +480,14 @@ impl ScheduleContext {
     async fn handle_transfer_leader(
         &self,
         task: &mut TransferGroupLeaderTask,
-    ) -> Result<(
-        bool, // ack current
-        bool, // immediately step next tick
-    )> {
+    ) -> Result<SchedResult> {
         match self.try_transfer_leader(task.group, task.target_replica).await {
             Ok(_) => {}
             Err(crate::Error::EpochNotMatch(new_group)) => {
                 warn!(
                     "transfer target meet epoch not match, abort transfer task. group={}, dest={}, new_group={:?}",
                         task.group, task.target_replica, new_group);
-                return Ok((true, false));
+                return Ok(SchedResult::ack());
             }
             Err(err) => {
                 error!(
@@ -470,16 +506,10 @@ impl ScheduleContext {
                 Instant::now(),
             )
             .await;
-        Ok((true, true))
+        Ok(SchedResult::next())
     }
 
-    async fn handle_shed_leader(
-        &self,
-        shed: &mut ShedLeaderTask,
-    ) -> Result<(
-        bool, // ack current
-        bool, // immediately step next tick
-    )> {
+    async fn handle_shed_leader(&self, shed: &mut ShedLeaderTask) -> Result<SchedResult> {
         let node = shed.node_id;
         loop {
             let schema = self.shared.schema()?;
@@ -540,16 +570,10 @@ impl ScheduleContext {
             }
         }
 
-        Ok((true, true))
+        Ok(SchedResult::next())
     }
 
-    async fn handle_shed_root(
-        &self,
-        task: &mut ShedRootLeaderTask,
-    ) -> Result<(
-        bool, // ack current
-        bool, // immediately step next tick
-    )> {
+    async fn handle_shed_root(&self, task: &mut ShedRootLeaderTask) -> Result<SchedResult> {
         let node = task.node_id;
         let schema = self.shared.schema()?;
         let root_group = schema.get_group(ROOT_GROUP_ID).await?.unwrap();
@@ -570,47 +594,40 @@ impl ScheduleContext {
         if let Some(r) = target {
             self.try_transfer_leader(root_group.id, r.id).await?
         }
-        Ok((true, false))
+        Ok(SchedResult::ack())
     }
 
     /// Handle the spliting shard stask and update the sched stats.
-    async fn handle_split_shard(
-        &self,
-        task: &mut SplitShardTask,
-    ) -> Result<(
-        bool, // ack current
-        bool, // immediately step next tick
-    )> {
+    async fn handle_split_shard(&self, task: &mut SplitShardTask) -> Result<SchedResult> {
         let result = self.handle_split_shard_inner(task).await?;
-        if result.0 {
+        if result.ack {
             self.cluster_stats.finish_split_shard(task.shard_id);
         }
         Ok(result)
     }
 
     /// Handle the spliting shard stask.
-    async fn handle_split_shard_inner(
-        &self,
-        task: &mut SplitShardTask,
-    ) -> Result<(
-        bool, // ack current
-        bool, // immediately step next tick
-    )> {
+    async fn handle_split_shard_inner(&self, task: &mut SplitShardTask) -> Result<SchedResult> {
         let schema = self.shared.schema()?;
         if schema.get_group(task.group_id).await?.is_none() {
             warn!("split shard {} but group {} is not exists", task.shard_id, task.group_id);
-            return Ok((true, true));
+            return Ok(SchedResult::next());
         };
 
         let old_shard_id = task.shard_id;
         let new_shard_id = schema.next_shard_id().await?;
         match self.try_split_shard(task.group_id, old_shard_id, new_shard_id).await {
-            Ok(_) => Ok((true, true)),
+            Ok(_) => Ok(SchedResult::next()),
             Err(crate::Error::EpochNotMatch(_)) => {
                 warn!(
                     "split shard meet epoch not match, abort split shard task. group={}, shard={}, new_shard={}",
                         task.group_id, old_shard_id, new_shard_id);
-                Ok((true, true))
+                Ok(SchedResult::next())
+            }
+            Err(crate::Error::InvalidArgument(msg))
+                if msg.contains("shard estimated split keys is empty") =>
+            {
+                Ok(SchedResult::delay(Duration::from_secs(30)))
             }
             Err(err) => {
                 error!(

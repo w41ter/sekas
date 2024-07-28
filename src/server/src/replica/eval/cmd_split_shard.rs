@@ -41,8 +41,9 @@ pub(crate) fn split_shard(engine: &GroupEngine, req: &SplitShardRequest) -> Resu
             split_key
         }
         None => engine.estimate_split_key(old_shard_id)?.ok_or_else(|| {
+            // ATTN: below error msg is used in `sekas_server::root::schedule.rs`.
             Error::InvalidArgument(format!(
-                "estimated split keys of shard {} is empty",
+                "shard estimated split keys is empty, shard id {}",
                 old_shard_id
             ))
         })?,

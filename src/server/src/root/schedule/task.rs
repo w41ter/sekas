@@ -14,6 +14,10 @@
 
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ReconcileTask {
+    #[prost(uint64, tag = "128")]
+    pub created_at: u64,
+    #[prost(uint64, tag = "129")]
+    pub fire_at: u64,
     #[prost(oneof = "reconcile_task::Task", tags = "1, 2, 3, 4, 5")]
     pub task: ::core::option::Option<reconcile_task::Task>,
 }
