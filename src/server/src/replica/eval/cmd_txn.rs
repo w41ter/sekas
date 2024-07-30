@@ -147,8 +147,25 @@ pub(crate) async fn commit_intent<T: LatchGuard>(
     let mut wb = WriteBatch::default();
     group_engine.delete(&mut wb, req.shard_id, &req.user_key, TXN_INTENT_VERSION)?;
     if intent.is_delete {
+        trace!(
+            "group {} commit txn {} intents, shard id {}, version {}, delete kv {}",
+            exec_ctx.group_id,
+            req.start_version,
+            req.shard_id,
+            req.commit_version,
+            sekas_rock::ascii::escape_bytes(&req.user_key),
+        );
         group_engine.tombstone(&mut wb, req.shard_id, &req.user_key, req.commit_version)?;
     } else if let Some(value) = intent.value {
+        trace!(
+            "group {} commit txn {} intents, shard id {}, version {}, put kv {} => {}",
+            exec_ctx.group_id,
+            req.start_version,
+            req.shard_id,
+            req.commit_version,
+            sekas_rock::ascii::escape_bytes(&req.user_key),
+            sekas_rock::ascii::escape_bytes(&value),
+        );
         group_engine.put(&mut wb, req.shard_id, &req.user_key, &value, req.commit_version)?;
     }
 

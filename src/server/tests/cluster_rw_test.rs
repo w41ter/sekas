@@ -478,7 +478,6 @@ async fn cluster_rw_range_with_many_shard() {
     assert_eq!(index, 100);
 }
 
-#[ignore]
 #[sekas_macro::test]
 async fn cluster_rw_watch_key() {
     let mut ctx = TestContext::new(fn_name!());
@@ -490,13 +489,24 @@ async fn cluster_rw_watch_key() {
     let co = db.create_table("co".to_string()).await.unwrap();
     c.assert_table_ready(co.id).await;
 
-    const KEY: &str = "key";
+    const KEY: &str = "KEY";
     let db_clone = db.clone();
     let table_id = co.id;
-    spawn(async move {
+    let handle = spawn(async move {
         // watch the key.
         let mut receiver = db_clone.watch(table_id, KEY.as_bytes()).await.unwrap();
-        for i in 1..101 {
+
+        // The first value already exists.
+        let value = receiver.next().await.unwrap().unwrap();
+        let content = value.content.unwrap();
+        info!("first value is {}", sekas_rock::ascii::escape_bytes(&content));
+        assert_eq!(content.len(), core::mem::size_of::<i64>());
+        let mut buf = [0u8; 8];
+        buf[..].copy_from_slice(&content);
+        let count = i64::from_be_bytes(buf);
+        info!("start count is {}", count);
+
+        for i in (count + 1)..101 {
             let value = receiver.next().await.unwrap().unwrap();
             let content = value.content.unwrap();
             assert_eq!(content.len(), core::mem::size_of::<i64>());
@@ -504,6 +514,7 @@ async fn cluster_rw_watch_key() {
             buf[..].copy_from_slice(&content);
             let count = i64::from_be_bytes(buf);
             assert_eq!(count, i);
+            info!("receive update for count {i}");
         }
     });
 
@@ -513,6 +524,8 @@ async fn cluster_rw_watch_key() {
         txn.put(co.id, WriteBuilder::new(KEY.as_bytes().to_vec()).ensure_add(1));
         txn.commit().await.unwrap();
     }
+
+    handle.await.unwrap();
 }
 
 #[ignore]

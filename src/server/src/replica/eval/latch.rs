@@ -225,13 +225,17 @@ pub mod remote {
 
         pub fn release(&self, shard_id: u64, user_key: &[u8]) {
             let shard_key = ShardKey { shard_id, user_key: user_key.to_owned() };
-            log::debug!("release shard {} user key {:?}", shard_id, user_key);
+            log::debug!(
+                "release shard {} user key {}",
+                shard_id,
+                sekas_rock::ascii::escape_bytes(user_key)
+            );
 
             self.core.latches.remove_if_mut(&shard_key, |shard_key, latch_block| {
                 log::debug!(
-                    "transfer latch guard, shard {} user key {:?}",
+                    "transfer latch guard, shard {} user key {}",
                     shard_key.shard_id,
-                    shard_key.user_key
+                    sekas_rock::ascii::escape_bytes(&shard_key.user_key)
                 );
                 self.transfer_latch_guard(latch_block)
             });
@@ -245,8 +249,12 @@ pub mod remote {
             let mut entry = self.core.get_latch_mut(shard_id, key);
             let latch = entry.value_mut();
             if !latch.hold {
+                log::debug!(
+                    "acquire row latch, shard: {} user key: {}",
+                    shard_id,
+                    sekas_rock::ascii::escape_bytes(key)
+                );
                 latch.hold = true;
-                log::debug!("acquire row latch, shard: {} user key: {:?}", shard_id, key);
                 Ok(RemoteLatchGuard {
                     hold: true,
                     shard_key: ShardKey { shard_id, user_key: key.to_owned() },
@@ -254,9 +262,9 @@ pub mod remote {
                 })
             } else {
                 log::debug!(
-                    "acquire row latch, shard: {} user key: {:?}, latch is hold, wait it release",
+                    "acquire row latch, shard: {} user key: {}, latch is hold, wait it release",
                     shard_id,
-                    key
+                    sekas_rock::ascii::escape_bytes(key)
                 );
                 let (tx, rx) = oneshot::channel();
                 latch.latch_waiters.push_back(tx);
@@ -272,18 +280,18 @@ pub mod remote {
             };
             while let Some(sender) = latch_block.latch_waiters.pop_front() {
                 log::debug!(
-                    "find a waiter, try wake up it, shard {} user key {:?}",
+                    "find a waiter, try wake up it, shard {} user key {}",
                     latch_block.shard_key.shard_id,
-                    latch_block.shard_key.user_key
+                    sekas_rock::ascii::escape_bytes(&latch_block.shard_key.user_key)
                 );
                 guard = match sender.send(guard) {
                     Ok(()) => {
                         // The guard will wakes up the remaining waiters even the receiver is
                         // canceled.
                         log::debug!(
-                            "acquire shard {} user key {:?}",
+                            "acquire shard {} user key {}",
                             latch_block.shard_key.shard_id,
-                            latch_block.shard_key.user_key
+                            sekas_rock::ascii::escape_bytes(&latch_block.shard_key.user_key)
                         );
                         latch_block.hold = true;
                         return false;
@@ -292,9 +300,9 @@ pub mod remote {
                 };
             }
             log::debug!(
-                "no waiters, shard {} user key {:?}",
+                "no waiters, shard {} user key {}",
                 latch_block.shard_key.shard_id,
-                latch_block.shard_key.user_key
+                sekas_rock::ascii::escape_bytes(&latch_block.shard_key.user_key)
             );
 
             guard.hold = false;

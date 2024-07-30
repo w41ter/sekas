@@ -95,10 +95,18 @@ impl rocksdb::WriteBatchIterator for GroupStateMachine {
     fn put(&mut self, key: Box<[u8]>, value: Box<[u8]>) {
         let entry = MvccEntry::new(key, value);
         let user_key = entry.user_key();
+        let version = entry.version();
         if let Some(senders) = self.watch_hub.watchers.get_mut(user_key) {
+            trace!(
+                "group {} replica {} watch hub fires key {} version {}",
+                self.info.group_id,
+                self.info.replica_id,
+                sekas_rock::ascii::escape_bytes(user_key),
+                version
+            );
             senders.retain_mut(|sender| {
                 let event = WatchEvent {
-                    version: entry.version(),
+                    version,
                     key: user_key.into(),
                     value: entry.value().map(Into::into),
                 };

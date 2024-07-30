@@ -23,6 +23,7 @@ use sekas_api::server::v1::group_request_union::Request as ShardRequest;
 use sekas_api::server::v1::group_response_union::Response as ShardResponse;
 use sekas_api::server::v1::watch_key_response::WatchResult;
 use sekas_api::server::v1::*;
+use sekas_schema::system::txn::TXN_INTENT_VERSION;
 use tonic::{Request, Response, Status};
 
 use super::metrics::*;
@@ -110,24 +111,34 @@ fn handle_group_request(
         if scan_resp.has_more {
             panic!("We should ensure that this scan request will returns the entire value set of an key");
         }
-        if scan_resp.data.len() != 1 {
-            panic!("The scan request issues one key but got {} value set", scan_resp.data.len());
-        }
-        let value_set = &mut scan_resp.data[0];
-        for value in std::mem::take(&mut value_set.values) {
-            let watch_key_resp = WatchKeyResponse {
-                result: WatchResult::ValueUpdated as i32,
-                value: Some(value),
-            };
-            yield GroupResponse {
-                response: Some(GroupResponseUnion {
-                    response: Some(ShardResponse::WatchKey(watch_key_resp)),
-                }),
-                ..Default::default()
-            };
+
+        // Whether the old value exists.
+        if !scan_resp.data.is_empty() {
+            if scan_resp.data.len() != 1 {
+                panic!("The scan request issues one key but got {} value set, request {:?}, response {:?}",
+                    scan_resp.data.len(), group_scan_req, scan_resp);
+            }
+
+            let value_set = &mut scan_resp.data[0];
+            for value in std::mem::take(&mut value_set.values) {
+                let watch_key_resp = WatchKeyResponse {
+                    result: WatchResult::ValueUpdated as i32,
+                    value: Some(value),
+                };
+                yield GroupResponse {
+                    response: Some(GroupResponseUnion {
+                        response: Some(ShardResponse::WatchKey(watch_key_resp)),
+                    }),
+                    ..Default::default()
+                };
+            }
         }
         // TODO(walter) change receiver to async channel.
         while let Some(event) = receiver.next().await {
+            // FIXME(walter) skip the version already returned.
+            if event.version == TXN_INTENT_VERSION {
+                continue;
+            }
             let value = Value {
                 content: event.value.map(Vec::from),
                 version: event.version,

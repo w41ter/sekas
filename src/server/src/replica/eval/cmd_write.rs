@@ -13,6 +13,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use log::trace;
 use sekas_api::server::v1::{PutType, ShardWriteRequest, ShardWriteResponse, WriteResponse};
 use sekas_rock::time::timestamp_nanos;
 
@@ -78,6 +79,13 @@ pub(crate) async fn batch_write(
             prev_value: if put.take_prev_value { prev_value } else { None },
         });
         let version = std::cmp::max(prev_version + 1, next_version());
+        trace!(
+            "batch write, shard id {}, version {}, kv {} => {}",
+            req.shard_id,
+            version,
+            sekas_rock::ascii::escape_bytes(&put.key),
+            sekas_rock::ascii::escape_bytes(&put.value),
+        );
         group_engine.put(&mut wb, req.shard_id, &put.key, &put.value, version)?;
     }
     Ok((Some(EvalResult::with_batch(wb.data().to_owned())), resp))
