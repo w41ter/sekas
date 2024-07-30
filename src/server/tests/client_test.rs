@@ -33,7 +33,6 @@ fn init() {
 #[sekas_macro::test]
 async fn client_to_unreachable_peers() {
     let mut ctx = TestContext::new(fn_name!());
-    ctx.disable_all_balance();
     let nodes = ctx.bootstrap_servers(3).await;
     let c = ClusterClient::new(nodes).await;
     let opts = ClientOptions {
@@ -78,7 +77,6 @@ async fn client_to_unreachable_peers() {
 #[sekas_macro::test]
 async fn client_create_duplicated_database_or_table() {
     let mut ctx = TestContext::new(fn_name!());
-    ctx.disable_all_balance();
     let nodes = ctx.bootstrap_servers(3).await;
     let c = ClusterClient::new(nodes).await;
     let client = c.app_client().await;
@@ -105,7 +103,6 @@ async fn client_create_duplicated_database_or_table() {
 #[sekas_macro::test]
 async fn client_access_not_exists_database_or_table() {
     let mut ctx = TestContext::new(fn_name!());
-    ctx.disable_all_balance();
     let nodes = ctx.bootstrap_servers(3).await;
     let c = ClusterClient::new(nodes).await;
     let client = c.app_client().await;
@@ -129,7 +126,6 @@ async fn client_access_not_exists_database_or_table() {
 #[sekas_macro::test]
 async fn client_request_to_offline_leader() {
     let mut ctx = TestContext::new(fn_name!());
-    ctx.disable_all_balance();
     let nodes = ctx.bootstrap_servers(3).await;
     let c = ClusterClient::new(nodes).await;
     let client = c.app_client().await;

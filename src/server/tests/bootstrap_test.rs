@@ -56,7 +56,6 @@ async fn bootstrap_cluster_join_node() {
 #[sekas_macro::test]
 async fn bootstrap_restart_cluster() {
     let mut ctx = TestContext::new(fn_name!());
-    ctx.disable_all_balance();
     let nodes = ctx.bootstrap_servers(3).await;
 
     // Shutdown and restart servers.

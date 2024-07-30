@@ -72,7 +72,6 @@ async fn insert(c: &ClusterClient, group_id: u64, shard_id: u64, range: std::ops
 #[sekas_macro::test]
 async fn snapshot_send() {
     let mut ctx = TestContext::new(fn_name!());
-    ctx.disable_all_balance();
     ctx.mut_raft_testing_knobs().force_new_peer_receiving_snapshot = true;
     let nodes = ctx.bootstrap_servers(4).await;
     let c = ClusterClient::new(nodes.clone()).await;

@@ -57,7 +57,6 @@ async fn cluster_rw_with_single_node() {
 #[sekas_macro::test]
 async fn cluster_rw_put_and_get() {
     let mut ctx = TestContext::new(fn_name!());
-    ctx.disable_all_balance();
     let nodes = ctx.bootstrap_servers(3).await;
     let c = ClusterClient::new(nodes).await;
     let app = c.app_client().await;
@@ -77,7 +76,6 @@ async fn cluster_rw_put_and_get() {
 #[sekas_macro::test]
 async fn cluster_rw_put_many_keys() {
     let mut ctx = TestContext::new(fn_name!());
-    ctx.disable_all_balance();
     let nodes = ctx.bootstrap_servers(3).await;
     let c = ClusterClient::new(nodes).await;
     let app = c.app_client().await;
@@ -99,7 +97,6 @@ async fn cluster_rw_put_many_keys() {
 #[sekas_macro::test]
 async fn cluster_rw_with_config_change() {
     let mut ctx = TestContext::new(fn_name!());
-    ctx.disable_all_balance();
     let nodes = ctx.bootstrap_servers(3).await;
     let root_addr = nodes.get(&0).unwrap().clone();
     let c = ClusterClient::new(nodes).await;
@@ -128,7 +125,6 @@ async fn cluster_rw_with_config_change() {
 #[sekas_macro::test]
 async fn cluster_rw_with_leader_transfer() {
     let mut ctx = TestContext::new(fn_name!());
-    ctx.disable_all_balance();
     let nodes = ctx.bootstrap_servers(3).await;
     let c = ClusterClient::new(nodes).await;
     let app = c.app_client().await;
@@ -220,7 +216,6 @@ fn cluster_rw_single_server_large_read_write() {
 
     block_on_current(async move {
         let mut ctx = TestContext::new("rw_test__single_server_large_read_write");
-        ctx.disable_all_balance();
         let nodes = ctx.bootstrap_servers(1).await;
         let c = ClusterClient::new(nodes).await;
         let app = c.app_client().await;
@@ -246,7 +241,6 @@ fn cluster_rw_single_server_large_read_write() {
 #[sekas_macro::test]
 async fn cluster_rw_put_with_condition() {
     let mut ctx = TestContext::new(fn_name!());
-    ctx.disable_all_balance();
     let nodes = ctx.bootstrap_servers(3).await;
     let c = ClusterClient::new(nodes).await;
     let app = c.app_client().await;
@@ -309,7 +303,6 @@ async fn cluster_rw_put_with_condition() {
 #[sekas_macro::test]
 async fn cluster_rw_concurrent_inc() {
     let mut ctx = TestContext::new(fn_name!());
-    ctx.disable_all_balance();
     let nodes = ctx.bootstrap_servers(3).await;
     let c = ClusterClient::new(nodes).await;
     let app = c.app_client().await;
@@ -353,7 +346,6 @@ async fn cluster_rw_concurrent_inc() {
 #[sekas_macro::test]
 async fn cluster_rw_write_two_table_in_batch() {
     let mut ctx = TestContext::new(fn_name!());
-    ctx.disable_all_balance();
     let nodes = ctx.bootstrap_servers(3).await;
     let c = ClusterClient::new(nodes).await;
     let app = c.app_client().await;
@@ -386,7 +378,6 @@ async fn cluster_rw_write_two_table_in_batch() {
 #[sekas_macro::test]
 async fn cluster_rw_entire_range() {
     let mut ctx = TestContext::new(fn_name!());
-    ctx.disable_all_balance();
     let nodes = ctx.bootstrap_servers(3).await;
     let c = ClusterClient::new(nodes).await;
     let app = c.app_client().await;
@@ -439,7 +430,6 @@ async fn cluster_rw_entire_range() {
 async fn cluster_rw_range_with_many_shard() {
     // FIXME(walter) feature split shard is required.
     let mut ctx = TestContext::new(fn_name!());
-    ctx.disable_all_balance();
     let nodes = ctx.bootstrap_servers(3).await;
     let c = ClusterClient::new(nodes).await;
     let app = c.app_client().await;
@@ -492,7 +482,6 @@ async fn cluster_rw_range_with_many_shard() {
 #[sekas_macro::test]
 async fn cluster_rw_watch_key() {
     let mut ctx = TestContext::new(fn_name!());
-    ctx.disable_all_balance();
     let nodes = ctx.bootstrap_servers(3).await;
     let c = ClusterClient::new(nodes).await;
     let app = c.app_client().await;
@@ -530,7 +519,6 @@ async fn cluster_rw_watch_key() {
 #[sekas_macro::test]
 async fn cluster_rw_watch_key_with_version() {
     let mut ctx = TestContext::new(fn_name!());
-    ctx.disable_all_balance();
     let nodes = ctx.bootstrap_servers(3).await;
     let c = ClusterClient::new(nodes).await;
     let app = c.app_client().await;

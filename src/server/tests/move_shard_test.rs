@@ -147,7 +147,6 @@ async fn insert(c: &ClusterClient, group_id: u64, shard_id: u64, range: std::ops
 #[sekas_macro::test]
 async fn move_shard_single_replica_empty_shard() {
     let mut ctx = TestContext::new(fn_name!());
-    ctx.disable_all_balance();
     ctx.disable_all_node_scheduler();
     let nodes = ctx.bootstrap_servers(2).await;
     let c = ClusterClient::new(nodes).await;
@@ -198,7 +197,6 @@ async fn move_shard_single_replica_empty_shard() {
 #[sekas_macro::test]
 async fn move_shard_single_replica() {
     let mut ctx = TestContext::new(fn_name!());
-    ctx.disable_all_balance();
     ctx.disable_all_node_scheduler();
     let nodes = ctx.bootstrap_servers(2).await;
     let c = ClusterClient::new(nodes).await;
@@ -293,7 +291,6 @@ async fn create_two_groups(
 #[sekas_macro::test]
 async fn move_shard_basic() {
     let mut ctx = TestContext::new(fn_name!());
-    ctx.disable_all_balance();
     let nodes = ctx.bootstrap_servers(3).await;
     let node_ids = nodes.keys().cloned().collect::<Vec<_>>();
     let c = ClusterClient::new(nodes).await;
@@ -308,7 +305,6 @@ async fn move_shard_basic() {
 #[sekas_macro::test]
 async fn move_shard_abort() {
     let mut ctx = TestContext::new(fn_name!());
-    ctx.disable_all_balance();
     let nodes = ctx.bootstrap_servers(3).await;
     let node_ids = nodes.keys().cloned().collect::<Vec<_>>();
     let c = ClusterClient::new(nodes).await;
@@ -336,7 +332,6 @@ async fn move_shard_abort() {
 #[sekas_macro::test]
 async fn move_shard_with_offline_peers() {
     let mut ctx = TestContext::new(fn_name!());
-    ctx.disable_all_balance();
     ctx.disable_all_node_scheduler();
     let nodes = ctx.bootstrap_servers(3).await;
     let mut node_ids = nodes.keys().cloned().collect::<Vec<_>>();
@@ -357,7 +352,6 @@ async fn move_shard_with_offline_peers() {
 #[sekas_macro::test]
 async fn move_shard_source_group_receive_duplicate_accepting_shard_request() {
     let mut ctx = TestContext::new(fn_name!());
-    ctx.disable_all_balance();
     let nodes = ctx.bootstrap_servers(3).await;
     let node_ids = nodes.keys().cloned().collect::<Vec<_>>();
     let c = ClusterClient::new(nodes).await;
@@ -393,7 +387,6 @@ async fn move_shard_source_group_receive_duplicate_accepting_shard_request() {
 #[sekas_macro::test]
 async fn move_shard_source_group_receive_many_accepting_shard_request() {
     let mut ctx = TestContext::new(fn_name!());
-    ctx.disable_all_balance();
     let nodes = ctx.bootstrap_servers(3).await;
     let node_ids = nodes.keys().cloned().collect::<Vec<_>>();
     let c = ClusterClient::new(nodes).await;
@@ -437,7 +430,6 @@ async fn move_shard_source_group_receive_many_accepting_shard_request() {
 #[sekas_macro::test]
 async fn move_shard_receive_forward_request_after_shard_migrated() {
     let mut ctx = TestContext::new(fn_name!());
-    ctx.disable_all_balance();
     ctx.disable_all_node_scheduler();
     let nodes = ctx.bootstrap_servers(2).await;
     let c = ClusterClient::new(nodes).await;

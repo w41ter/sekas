@@ -32,10 +32,9 @@ fn init() {
 }
 
 #[sekas_macro::test]
-async fn balance_init_cluster() {
+async fn admin_balance_init_cluster() {
     let node_count = 4;
     let mut ctx = TestContext::new(fn_name!());
-    ctx.disable_all_balance();
     let start = tokio::time::Instant::now();
     let nodes = ctx.bootstrap_servers(node_count).await;
     let addrs = nodes.values().cloned().collect::<Vec<_>>();
@@ -67,7 +66,6 @@ async fn balance_init_cluster() {
 async fn admin_delete() {
     let mut ctx = TestContext::new(fn_name!());
     ctx.mut_replica_testing_knobs().disable_scheduler_orphan_replica_detecting_intervals = true;
-    ctx.disable_all_balance();
     let nodes = ctx.bootstrap_servers(1).await;
     let addrs = nodes.values().cloned().collect::<Vec<_>>();
     let c = SekasClient::new(ClientOptions::default(), addrs.to_owned()).await.unwrap();
@@ -98,7 +96,6 @@ async fn admin_delete() {
 async fn admin_basic() {
     let node_count = 4;
     let mut ctx = TestContext::new(fn_name!());
-    ctx.disable_all_balance();
     let nodes = ctx.bootstrap_servers(node_count).await;
     let addrs = nodes.values().cloned().collect::<Vec<_>>();
 

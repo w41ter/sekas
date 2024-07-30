@@ -63,7 +63,6 @@ async fn node_schedule_remove_orphan_replicas() {
     let mut ctx = TestContext::new(fn_name!());
     ctx.mut_replica_testing_knobs().disable_scheduler_orphan_replica_detecting_intervals = true;
     ctx.mut_replica_testing_knobs().disable_scheduler_durable_task = true;
-    ctx.disable_all_balance();
     let nodes = ctx.bootstrap_servers(4).await;
     let c = ClusterClient::new(nodes).await;
 
@@ -110,7 +109,6 @@ async fn node_schedule_remove_orphan_replicas() {
 #[sekas_macro::test]
 async fn node_schedule_remove_offline_learners() {
     let mut ctx = TestContext::new(fn_name!());
-    ctx.disable_all_balance();
     let nodes = ctx.bootstrap_servers(3).await;
     let c = ClusterClient::new(nodes.clone()).await;
 
@@ -138,7 +136,6 @@ async fn node_schedule_remove_offline_learners() {
 async fn node_schedule_remove_exceeds_offline_voters() {
     let mut ctx = TestContext::new(fn_name!());
     ctx.mut_replica_testing_knobs().disable_scheduler_orphan_replica_detecting_intervals = true;
-    ctx.disable_all_balance();
     let nodes = ctx.bootstrap_servers(3).await;
     let c = ClusterClient::new(nodes.clone()).await;
 
@@ -165,7 +162,6 @@ async fn node_schedule_remove_exceeds_offline_voters() {
 #[sekas_macro::test]
 async fn node_schedule_remove_exceeds_online_voters() {
     let mut ctx = TestContext::new(fn_name!());
-    ctx.disable_all_balance();
     let nodes = ctx.bootstrap_servers(4).await;
     let c = ClusterClient::new(nodes.clone()).await;
 
@@ -186,7 +182,6 @@ async fn node_schedule_remove_exceeds_online_voters() {
 #[sekas_macro::test]
 async fn node_schedule_replace_offline_voters_by_existing_learners() {
     let mut ctx = TestContext::new(fn_name!());
-    ctx.disable_all_balance();
     let nodes = ctx.bootstrap_servers(3).await;
     let c = ClusterClient::new(nodes.clone()).await;
 
@@ -217,7 +212,6 @@ async fn node_schedule_replace_offline_voters_by_existing_learners() {
 #[sekas_macro::test]
 async fn node_schedule_supply_replicas_by_promoting_learners() {
     let mut ctx = TestContext::new(fn_name!());
-    ctx.disable_all_balance();
     let nodes = ctx.bootstrap_servers(3).await;
     let c = ClusterClient::new(nodes.clone()).await;
 
@@ -239,7 +233,6 @@ async fn node_schedule_supply_replicas_by_promoting_learners() {
 #[sekas_macro::test]
 async fn node_schedule_cure_group() {
     let mut ctx = TestContext::new(fn_name!());
-    ctx.disable_all_balance();
     let nodes = ctx.bootstrap_servers(4).await;
     let c = ClusterClient::new(nodes.clone()).await;
 

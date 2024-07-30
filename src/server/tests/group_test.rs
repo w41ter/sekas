@@ -51,7 +51,6 @@ async fn create_group(c: &ClusterClient, group_id: u64, nodes: Vec<u64>) {
 #[sekas_macro::test]
 async fn group_add_replica() {
     let mut ctx = TestContext::new(fn_name!());
-    ctx.disable_all_balance();
     ctx.disable_all_node_scheduler();
     let nodes = ctx.bootstrap_servers(2).await;
     let c = ClusterClient::new(nodes).await;
@@ -83,7 +82,6 @@ async fn group_add_replica() {
 #[sekas_macro::test]
 async fn group_create_with_multi_replicas() {
     let mut ctx = TestContext::new(fn_name!());
-    ctx.disable_all_balance();
     ctx.disable_all_node_scheduler();
     let nodes = ctx.bootstrap_servers(4).await;
     let c = ClusterClient::new(nodes).await;
@@ -125,7 +123,6 @@ async fn group_create_with_multi_replicas() {
 #[sekas_macro::test]
 async fn group_promote_to_cluster_from_single_node() {
     let mut ctx = TestContext::new(fn_name!());
-    ctx.disable_all_balance();
     let nodes = ctx.bootstrap_servers(3).await;
     let c = ClusterClient::new(nodes).await;
 
@@ -144,7 +141,6 @@ async fn group_promote_to_cluster_from_single_node() {
 #[sekas_macro::test]
 async fn group_cure_automatic() {
     let mut ctx = TestContext::new(fn_name!());
-    ctx.disable_all_balance();
     let nodes = ctx.bootstrap_servers(4).await;
     let c = ClusterClient::new(nodes).await;
 
@@ -179,7 +175,6 @@ async fn group_cure_automatic() {
 #[sekas_macro::test]
 async fn group_move_replica() {
     let mut ctx = TestContext::new(fn_name!());
-    ctx.disable_all_balance();
     let nodes = ctx.bootstrap_servers(4).await;
     let c = ClusterClient::new(nodes.clone()).await;
     let group_id = 10;
