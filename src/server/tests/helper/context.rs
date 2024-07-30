@@ -110,6 +110,11 @@ impl TestContext {
         self.root_cfg.enable_group_balance = false;
     }
 
+    /// Enable balance groups to match desired groups.
+    pub fn enable_group_balance(&mut self) {
+        self.root_cfg.enable_group_balance = true;
+    }
+
     pub fn disable_all_balance(&mut self) {
         self.disable_replica_balance();
         self.disable_leader_balance();

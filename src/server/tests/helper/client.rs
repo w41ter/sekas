@@ -105,6 +105,7 @@ impl ClusterClient {
         panic!("group {group_id} does not have expected replicas {replicas:?}");
     }
 
+    /// Loop until the exists expected size of voters in the target group.
     pub async fn assert_num_group_voters(&self, group_id: u64, size: usize) {
         for _ in 0..10000 {
             let members = self.group_members(group_id).await;
