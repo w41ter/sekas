@@ -528,7 +528,6 @@ async fn cluster_rw_watch_key() {
     handle.await.unwrap();
 }
 
-#[ignore]
 #[sekas_macro::test]
 async fn cluster_rw_watch_key_with_version() {
     let mut ctx = TestContext::new(fn_name!());
@@ -540,18 +539,18 @@ async fn cluster_rw_watch_key_with_version() {
     let co = db.create_table("co".to_string()).await.unwrap();
     c.assert_table_ready(co.id).await;
 
-    const KEY: &str = "key";
+    const KEY: &str = "KEY";
     let mut txn = db.begin_txn();
     txn.put(co.id, WriteBuilder::new(KEY.as_bytes().to_vec()).ensure_add(1));
     txn.commit().await.unwrap();
     let version = db.get_raw_value(co.id, KEY.as_bytes().to_vec()).await.unwrap().unwrap().version;
 
-    let db_clone = db.clone();
-    let table_id = co.id;
-    spawn(async move {
+    let watch_version = version + 1;
+    info!("watch with version {}", watch_version);
+    let mut receiver = db.watch_with_version(co.id, KEY.as_bytes(), watch_version).await.unwrap();
+
+    let handle = spawn(async move {
         // watch the key.
-        let mut receiver =
-            db_clone.watch_with_version(table_id, KEY.as_bytes(), version).await.unwrap();
         for i in 1..101 {
             let value = receiver.next().await.unwrap().unwrap();
             let content = value.content.unwrap();
@@ -569,4 +568,5 @@ async fn cluster_rw_watch_key_with_version() {
         txn.put(co.id, WriteBuilder::new(KEY.as_bytes().to_vec()).ensure_add(1));
         txn.commit().await.unwrap();
     }
+    handle.await.unwrap();
 }

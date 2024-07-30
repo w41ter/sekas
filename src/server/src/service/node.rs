@@ -23,7 +23,7 @@ use sekas_api::server::v1::group_request_union::Request as ShardRequest;
 use sekas_api::server::v1::group_response_union::Response as ShardResponse;
 use sekas_api::server::v1::watch_key_response::WatchResult;
 use sekas_api::server::v1::*;
-use sekas_schema::system::txn::TXN_INTENT_VERSION;
+use sekas_schema::system::txn::{TXN_INTENT_VERSION, TXN_MAX_VERSION};
 use tonic::{Request, Response, Status};
 
 use super::metrics::*;
@@ -77,7 +77,7 @@ fn handle_group_request(
         // scan the key to obtain an version.
         let scan_req = ShardScanRequest {
             shard_id: watch_key_req.shard_id,
-            start_version: watch_key_req.version,
+            start_version: TXN_MAX_VERSION,
             limit: 0,
             limit_bytes: 0,
             end_key: None,
@@ -121,6 +121,9 @@ fn handle_group_request(
 
             let value_set = &mut scan_resp.data[0];
             for value in std::mem::take(&mut value_set.values) {
+                if value.version < watch_key_req.version {
+                    continue;
+                }
                 let watch_key_resp = WatchKeyResponse {
                     result: WatchResult::ValueUpdated as i32,
                     value: Some(value),
@@ -136,7 +139,7 @@ fn handle_group_request(
         // TODO(walter) change receiver to async channel.
         while let Some(event) = receiver.next().await {
             // FIXME(walter) skip the version already returned.
-            if event.version == TXN_INTENT_VERSION {
+            if event.version == TXN_INTENT_VERSION || event.version < watch_key_req.version {
                 continue;
             }
             let value = Value {

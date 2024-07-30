@@ -518,6 +518,8 @@ impl Txn {
     }
 
     /// Watch an key with version.
+    ///
+    /// The values below this version are ignored.
     pub async fn watch_with_version(
         &self,
         table_id: u64,

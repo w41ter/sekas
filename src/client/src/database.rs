@@ -117,6 +117,9 @@ impl Database {
         Txn::new(self.clone()).watch(table_id, key).await
     }
 
+    /// Watch an key with version.
+    ///
+    /// The values below this version are ignored.
     pub async fn watch_with_version(
         &self,
         table_id: u64,
