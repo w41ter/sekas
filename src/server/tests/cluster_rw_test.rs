@@ -478,6 +478,7 @@ async fn cluster_rw_range_with_many_shard() {
     assert_eq!(index, 100);
 }
 
+// Watch the updation of a key
 #[sekas_macro::test]
 async fn cluster_rw_watch_key() {
     let mut ctx = TestContext::new(fn_name!());
@@ -490,23 +491,11 @@ async fn cluster_rw_watch_key() {
     c.assert_table_ready(co.id).await;
 
     const KEY: &str = "KEY";
-    let db_clone = db.clone();
-    let table_id = co.id;
+
+    // watch the key.
+    let mut receiver = db.watch(co.id, KEY.as_bytes()).await.unwrap();
     let handle = spawn(async move {
-        // watch the key.
-        let mut receiver = db_clone.watch(table_id, KEY.as_bytes()).await.unwrap();
-
-        // The first value already exists.
-        let value = receiver.next().await.unwrap().unwrap();
-        let content = value.content.unwrap();
-        info!("first value is {}", sekas_rock::ascii::escape_bytes(&content));
-        assert_eq!(content.len(), core::mem::size_of::<i64>());
-        let mut buf = [0u8; 8];
-        buf[..].copy_from_slice(&content);
-        let count = i64::from_be_bytes(buf);
-        info!("start count is {}", count);
-
-        for i in (count + 1)..101 {
+        for i in 1..101 {
             let value = receiver.next().await.unwrap().unwrap();
             let content = value.content.unwrap();
             assert_eq!(content.len(), core::mem::size_of::<i64>());
@@ -528,6 +517,7 @@ async fn cluster_rw_watch_key() {
     handle.await.unwrap();
 }
 
+/// Watch a key but ignore the versions lower than the target version.
 #[sekas_macro::test]
 async fn cluster_rw_watch_key_with_version() {
     let mut ctx = TestContext::new(fn_name!());
@@ -568,5 +558,351 @@ async fn cluster_rw_watch_key_with_version() {
         txn.put(co.id, WriteBuilder::new(KEY.as_bytes().to_vec()).ensure_add(1));
         txn.commit().await.unwrap();
     }
+    handle.await.unwrap();
+}
+
+/// Watch a key without ignore any existed version
+#[sekas_macro::test]
+async fn cluster_rw_watch_key_without_ignore_version() {
+    let mut ctx = TestContext::new(fn_name!());
+    let nodes = ctx.bootstrap_servers(3).await;
+    let c = ClusterClient::new(nodes).await;
+    let app = c.app_client().await;
+
+    let db = app.create_database("db".to_string()).await.unwrap();
+    let co = db.create_table("co".to_string()).await.unwrap();
+    c.assert_table_ready(co.id).await;
+
+    const KEY: &str = "KEY";
+    let mut txn = db.begin_txn();
+    txn.put(co.id, WriteBuilder::new(KEY.as_bytes().to_vec()).ensure_add(1));
+    txn.commit().await.unwrap();
+
+    let mut receiver = db.watch(co.id, KEY.as_bytes()).await.unwrap();
+
+    let handle = spawn(async move {
+        // watch the key.
+        for i in 1..101 {
+            let value = receiver.next().await.unwrap().unwrap();
+            let content = value.content.unwrap();
+            assert_eq!(content.len(), core::mem::size_of::<i64>());
+            let mut buf = [0u8; 8];
+            buf[..].copy_from_slice(&content);
+            let count = i64::from_be_bytes(buf);
+            info!("receive count {count}");
+            assert_eq!(count, i);
+        }
+    });
+
+    // update
+    for _ in 0..100 {
+        let mut txn = db.begin_txn();
+        txn.put(co.id, WriteBuilder::new(KEY.as_bytes().to_vec()).ensure_add(1));
+        txn.commit().await.unwrap();
+    }
+
+    handle.await.unwrap();
+}
+
+/// Watch a key history
+#[sekas_macro::test]
+async fn cluster_rw_watch_key_history() {
+    let mut ctx = TestContext::new(fn_name!());
+    let nodes = ctx.bootstrap_servers(3).await;
+    let c = ClusterClient::new(nodes).await;
+    let app = c.app_client().await;
+
+    let db = app.create_database("db".to_string()).await.unwrap();
+    let co = db.create_table("co".to_string()).await.unwrap();
+    c.assert_table_ready(co.id).await;
+
+    const KEY: &str = "KEY";
+
+    // update
+    for _ in 0..10 {
+        let mut txn = db.begin_txn();
+        txn.put(co.id, WriteBuilder::new(KEY.as_bytes().to_vec()).ensure_add(1));
+        txn.commit().await.unwrap();
+    }
+
+    let mut receiver = db.watch(co.id, KEY.as_bytes()).await.unwrap();
+    for i in 1..11 {
+        let value = receiver.next().await.unwrap().unwrap();
+        let content = value.content.unwrap();
+        assert_eq!(content.len(), core::mem::size_of::<i64>());
+        let mut buf = [0u8; 8];
+        buf[..].copy_from_slice(&content);
+        let count = i64::from_be_bytes(buf);
+        info!("receive count {count}");
+        assert_eq!(count, i);
+    }
+}
+
+/// Watch a key but shard moved.
+#[sekas_macro::test]
+async fn cluster_rw_watch_key_with_moving_shard() {
+    let mut ctx = TestContext::new(fn_name!());
+    ctx.set_num_cpus(3);
+    ctx.enable_group_balance();
+    let nodes = ctx.bootstrap_servers(3).await;
+    let c = ClusterClient::new(nodes).await;
+    let app = c.app_client().await;
+
+    let db = app.create_database("db".to_string()).await.unwrap();
+    let co = db.create_table("co".to_string()).await.unwrap();
+
+    let target_group_id = 2;
+    c.assert_table_ready(co.id).await;
+    c.assert_num_group_voters(target_group_id, 3).await;
+
+    const KEY: &str = "KEY";
+
+    let mut receiver = db.watch(co.id, KEY.as_bytes()).await.unwrap();
+    let handle = spawn(async move {
+        // watch the key.
+        for i in 1..101 {
+            let value = receiver.next().await.unwrap().unwrap();
+            let content = value.content.unwrap();
+            assert_eq!(content.len(), core::mem::size_of::<i64>());
+            let mut buf = [0u8; 8];
+            buf[..].copy_from_slice(&content);
+            let count = i64::from_be_bytes(buf);
+            assert_eq!(count, i);
+            info!("watch receive count {count}");
+        }
+    });
+
+    // update
+    for i in 0..100 {
+        let mut txn = db.begin_txn();
+        txn.put(co.id, WriteBuilder::new(KEY.as_bytes().to_vec()).ensure_add(1));
+        txn.commit().await.unwrap();
+
+        // Move the shard to the target group.
+        if i % 10 == 0 {
+            let source_state = c.find_router_group_state_by_key(co.id, &[0]).await.unwrap();
+            if source_state.id == target_group_id {
+                continue;
+            }
+            let shard_desc = c.get_shard_desc(co.id, &[0]).await.unwrap();
+            let mut client = c.group(target_group_id);
+            spawn(async move {
+                client
+                    .accept_shard(source_state.id, source_state.epoch, &shard_desc)
+                    .await
+                    .unwrap();
+            });
+        }
+    }
+
+    handle.await.unwrap();
+}
+
+/// Watch a key during shard spliting
+#[sekas_macro::test]
+async fn cluster_rw_watch_key_with_spliting_shard_left() {
+    let mut ctx = TestContext::new(fn_name!());
+    let nodes = ctx.bootstrap_servers(3).await;
+    let c = ClusterClient::new(nodes).await;
+    let app = c.app_client().await;
+
+    let db = app.create_database("db".to_string()).await.unwrap();
+    let co = db.create_table("co".to_string()).await.unwrap();
+    c.assert_table_ready(co.id).await;
+
+    const KEY: &str = "KEY";
+    let mut receiver = db.watch(co.id, KEY.as_bytes()).await.unwrap();
+
+    let handle = spawn(async move {
+        // watch the key.
+        for i in 1..101 {
+            let value = receiver.next().await.unwrap().unwrap();
+            let content = value.content.unwrap();
+            assert_eq!(content.len(), core::mem::size_of::<i64>());
+            let mut buf = [0u8; 8];
+            buf[..].copy_from_slice(&content);
+            let count = i64::from_be_bytes(buf);
+            info!("receive count {count}");
+            assert_eq!(count, i);
+        }
+    });
+
+    // update
+    let old_shard_id = sekas_schema::FIRST_USER_SHARD_ID;
+    let new_shard_id = old_shard_id + 1024;
+    for i in 0..100 {
+        let mut txn = db.begin_txn();
+        txn.put(co.id, WriteBuilder::new(KEY.as_bytes().to_vec()).ensure_add(1));
+        txn.commit().await.unwrap();
+        if i == 50 {
+            let group_state = c.find_router_group_state_by_key(co.id, &[0]).await.unwrap();
+            let mut group_client = c.group(group_state.id);
+            let split_key = sekas_rock::lexical::lexical_next(KEY.as_bytes());
+            info!(
+                "split from {} to {} at {}",
+                old_shard_id,
+                new_shard_id,
+                sekas_rock::ascii::escape_bytes(&split_key)
+            );
+            group_client.split_shard(old_shard_id, new_shard_id, Some(split_key)).await.unwrap();
+        }
+    }
+
+    handle.await.unwrap();
+}
+
+/// Watch a key during shard spliting
+#[sekas_macro::test]
+async fn cluster_rw_watch_key_with_spliting_shard_right() {
+    let mut ctx = TestContext::new(fn_name!());
+    let nodes = ctx.bootstrap_servers(3).await;
+    let c = ClusterClient::new(nodes).await;
+    let app = c.app_client().await;
+
+    let db = app.create_database("db".to_string()).await.unwrap();
+    let co = db.create_table("co".to_string()).await.unwrap();
+    c.assert_table_ready(co.id).await;
+
+    const KEY: &str = "KEY";
+    let mut receiver = db.watch(co.id, KEY.as_bytes()).await.unwrap();
+
+    let handle = spawn(async move {
+        // watch the key.
+        for i in 1..101 {
+            let value = receiver.next().await.unwrap().unwrap();
+            let content = value.content.unwrap();
+            assert_eq!(content.len(), core::mem::size_of::<i64>());
+            let mut buf = [0u8; 8];
+            buf[..].copy_from_slice(&content);
+            let count = i64::from_be_bytes(buf);
+            info!("receive count {count}");
+            assert_eq!(count, i);
+        }
+    });
+
+    // update
+    let old_shard_id = sekas_schema::FIRST_USER_SHARD_ID;
+    let new_shard_id = old_shard_id + 1024;
+    for i in 0..100 {
+        let mut txn = db.begin_txn();
+        txn.put(co.id, WriteBuilder::new(KEY.as_bytes().to_vec()).ensure_add(1));
+        txn.commit().await.unwrap();
+        if i == 50 {
+            let group_state = c.find_router_group_state_by_key(co.id, &[0]).await.unwrap();
+            let mut group_client = c.group(group_state.id);
+            let split_key = "KEA".as_bytes().to_vec();
+            info!(
+                "split from {} to {} at {}",
+                old_shard_id,
+                new_shard_id,
+                sekas_rock::ascii::escape_bytes(&split_key)
+            );
+            group_client.split_shard(old_shard_id, new_shard_id, Some(split_key)).await.unwrap();
+        }
+    }
+
+    handle.await.unwrap();
+}
+
+/// Watch a key during shard merge
+#[sekas_macro::test]
+async fn cluster_rw_watch_key_with_merge_shard() {
+    let mut ctx = TestContext::new(fn_name!());
+    let nodes = ctx.bootstrap_servers(3).await;
+    let c = ClusterClient::new(nodes).await;
+    let app = c.app_client().await;
+
+    let db = app.create_database("db".to_string()).await.unwrap();
+    let co = db.create_table("co".to_string()).await.unwrap();
+    c.assert_table_ready(co.id).await;
+
+    const KEY: &str = "KEY";
+    let group_state = c.find_router_group_state_by_key(co.id, &[0]).await.unwrap();
+    let mut group_client = c.group(group_state.id);
+    let left_shard_id = sekas_schema::FIRST_USER_SHARD_ID;
+    let right_shard_id = left_shard_id + 1024;
+    group_client
+        .split_shard(left_shard_id, right_shard_id, Some(KEY.as_bytes().to_owned()))
+        .await
+        .unwrap();
+    info!(
+        "split from {} to {} at {}",
+        left_shard_id,
+        right_shard_id,
+        sekas_rock::ascii::escape_bytes(KEY.as_bytes())
+    );
+
+    let mut receiver = db.watch(co.id, KEY.as_bytes()).await.unwrap();
+
+    let handle = spawn(async move {
+        // watch the key.
+        for i in 1..101 {
+            let value = receiver.next().await.unwrap().unwrap();
+            let content = value.content.unwrap();
+            assert_eq!(content.len(), core::mem::size_of::<i64>());
+            let mut buf = [0u8; 8];
+            buf[..].copy_from_slice(&content);
+            let count = i64::from_be_bytes(buf);
+            info!("receive count {count}");
+            assert_eq!(count, i);
+        }
+    });
+
+    // update
+    for i in 0..100 {
+        let mut txn = db.begin_txn();
+        txn.put(co.id, WriteBuilder::new(KEY.as_bytes().to_vec()).ensure_add(1));
+        txn.commit().await.unwrap();
+        if i == 50 {
+            let group_state = c.find_router_group_state_by_key(co.id, &[0]).await.unwrap();
+            let mut group_client = c.group(group_state.id);
+            info!("merge shard [{}, {})", left_shard_id, right_shard_id);
+            group_client.merge_shard(left_shard_id, right_shard_id).await.unwrap();
+        }
+    }
+
+    handle.await.unwrap();
+}
+
+/// Watch a key with leader transfering
+#[sekas_macro::test]
+async fn cluster_rw_watch_key_with_leader_transfering() {
+    let mut ctx = TestContext::new(fn_name!());
+    let nodes = ctx.bootstrap_servers(3).await;
+    let c = ClusterClient::new(nodes).await;
+    let app = c.app_client().await;
+
+    let db = app.create_database("db".to_string()).await.unwrap();
+    let co = db.create_table("co".to_string()).await.unwrap();
+    c.assert_table_ready(co.id).await;
+
+    const KEY: &str = "KEY";
+    let mut receiver = db.watch(co.id, KEY.as_bytes()).await.unwrap();
+
+    let handle = spawn(async move {
+        // watch the key.
+        for i in 1..101 {
+            let value = receiver.next().await.unwrap().unwrap();
+            let content = value.content.unwrap();
+            assert_eq!(content.len(), core::mem::size_of::<i64>());
+            let mut buf = [0u8; 8];
+            buf[..].copy_from_slice(&content);
+            let count = i64::from_be_bytes(buf);
+            info!("receive count ${count}");
+            assert_eq!(count, i);
+        }
+    });
+
+    // update
+    for i in 0..100 {
+        let mut txn = db.begin_txn();
+        txn.put(co.id, WriteBuilder::new(KEY.as_bytes().to_vec()).ensure_add(1));
+        txn.commit().await.unwrap();
+        if i % 10 == 0 {
+            let group_state = c.find_router_group_state_by_key(co.id, &[0]).await.unwrap();
+            c.transfer_group_leader_randomly(group_state.id).await.unwrap();
+        }
+    }
+
     handle.await.unwrap();
 }

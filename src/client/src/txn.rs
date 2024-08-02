@@ -513,8 +513,7 @@ impl Txn {
 
     /// Watch an key.
     pub async fn watch(&self, table_id: u64, key: &[u8]) -> AppResult<WatchKeyStream> {
-        let version = self.get_start_version().await?;
-        self.watch_with_version(table_id, key, version).await
+        self.watch_with_version(table_id, key, 0).await
     }
 
     /// Watch an key with version.
@@ -838,10 +837,11 @@ impl WriteBatchContext {
             let mut client = GroupClient::new(group_state, self.client.clone());
             let handle = tokio::spawn(async move {
                 match client.request(&Request::CommitIntent(req)).await {
-                    Ok(Response::CommitIntent(CommitIntentResponse {})) => Ok(index),
-                    _ => Err(Error::Internal(
-                        "invalid response, `CommitIntent` is required".to_string().into(),
+                    Ok(Response::CommitIntent(_)) => Ok(index),
+                    Ok(other) => Err(Error::Internal(
+                        format!("invalid response {other:?}, `CommitIntent` is required").into(),
                     )),
+                    Err(err) => Err(Error::Internal(format!("commit intent: {err:?}").into())),
                 }
             });
             handles.push(handle);
@@ -895,21 +895,37 @@ struct WatchContext {
 }
 
 async fn watch_key(ctx: &mut WatchContext, db: &Database, timeout: Option<Duration>) -> Result<()> {
+    use watch_key_response::WatchResult;
+
     let router = db.client.router();
-    let (group_state, shard_desc) = router.find_shard(ctx.table_id, &ctx.user_key)?;
-    let mut group_client = GroupClient::new(group_state, db.client.clone());
-    group_client.set_timeout_opt(timeout);
-    let mut stream = group_client.watch_key(shard_desc.id, &ctx.user_key, ctx.version).await?;
-    while let Some(resp) = stream.next().await {
-        let resp = resp?;
-        // TODO(walter) handle shard moved.
-        let value = resp.value.ok_or_else(|| {
-            Error::Internal("The value field in WatchKeyResponse is required".into())
-        })?;
-        if ctx.sender.send(Ok(value)).is_err() {
-            // This stream has been closed.
-            break;
+    loop {
+        let (group_state, shard_desc) = router.find_shard(ctx.table_id, &ctx.user_key)?;
+        let mut group_client = GroupClient::new(group_state, db.client.clone());
+        group_client.set_timeout_opt(timeout);
+        let mut stream = group_client.watch_key(shard_desc.id, &ctx.user_key, ctx.version).await?;
+
+        while let Some(resp) = stream.next().await {
+            let resp = resp?;
+            match WatchResult::from_i32(resp.result) {
+                Some(WatchResult::ShardMoved) => {
+                    // The stream will be closed immediately.
+                }
+                Some(WatchResult::ValueUpdated) => {
+                    let value = resp.value.ok_or_else(|| {
+                        Error::Internal("The value field in WatchKeyResponse is required".into())
+                    })?;
+                    ctx.version = value.version + 1;
+                    if ctx.sender.send(Ok(value)).is_err() {
+                        // This stream has been closed.
+                        return Ok(());
+                    }
+                }
+                None => {
+                    return Err(Error::Internal(
+                        format!("Unknown WatchResult value {}", resp.result).into(),
+                    ));
+                }
+            }
         }
     }
-    Ok(())
 }

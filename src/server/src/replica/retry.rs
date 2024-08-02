@@ -126,6 +126,8 @@ pub async fn execute(
 }
 
 // TODO(walter) move retryable logic to sekas client.
+/// For non-meta change request, we might execute this request even the epoch is
+/// not matched, by comparing the request shard range.
 fn is_executable(descriptor: &GroupDesc, request: &Request) -> bool {
     if !super::is_change_meta_request(request) {
         return match request {
@@ -159,7 +161,14 @@ fn is_executable(descriptor: &GroupDesc, request: &Request) -> bool {
             Request::ClearIntent(req) => {
                 is_target_shard_exists(descriptor, req.shard_id, &req.user_key)
             }
-            _ => unreachable!(),
+            Request::WatchKey(req) => is_target_shard_exists(descriptor, req.shard_id, &req.key),
+            Request::AcceptShard(_)
+            | Request::CreateShard(_)
+            | Request::ChangeReplicas(_)
+            | Request::Transfer(_)
+            | Request::MoveReplicas(_)
+            | Request::SplitShard(_)
+            | Request::MergeShard(_) => unreachable!(),
         };
     }
 

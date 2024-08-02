@@ -70,6 +70,7 @@ impl Router {
         Router { core: Arc::new(RouterCore { handle, state }) }
     }
 
+    // FIXME(walter) txn/get should retry if it meets shard not found.
     pub fn find_shard(
         &self,
         table_id: u64,
@@ -82,10 +83,10 @@ impl Router {
             .ok_or_else(|| crate::Error::NotFound(format!("shard (key={:?})", user_key)))?;
         for shard in shards {
             if sekas_schema::shard::belong_to(shard, user_key) {
-                let group_state = state.find_group_by_shard(shard.id).ok_or_else(|| {
-                    crate::Error::NotFound(format!("shard (key={user_key:?}) group"))
-                })?;
-                return Ok((group_state, shard.clone()));
+                // FIXME(walter) there exist some shards, such merged shard, need to recycle.
+                if let Some(group_state) = state.find_group_by_shard(shard.id) {
+                    return Ok((group_state, shard.clone()));
+                }
             }
         }
         Err(crate::Error::NotFound(format!("shard (key={:?})", user_key)))
@@ -127,6 +128,13 @@ impl State {
         let group_state = self.group_id_lookup.get(&group_id).cloned()?;
         if group_state.epoch > epoch {
             // This shard doesn't belongs to this group anymore.
+            trace!(
+                "shard {} doesn't belongs to group {}, group epoch {}, shard cached epoch {}",
+                shard_id,
+                group_id,
+                Epoch(group_state.epoch),
+                Epoch(epoch)
+            );
             None
         } else {
             Some(group_state)

@@ -48,6 +48,7 @@ pub trait StateMachineObserver: Send + Sync {
     fn on_move_shard_state_updated(&mut self, state: Option<MoveShardState>);
 }
 
+#[derive(Debug)]
 pub struct WatchEvent {
     /// The version of this watch updation.
     pub version: u64,
@@ -63,28 +64,23 @@ type WatchTarget = (u64, Box<[u8]>);
 pub struct WatchHub {
     receivers: mpsc::Receiver<(WatchTarget, WatchTrigger)>,
     watchers: HashMap<Box<[u8]>, Vec<WatchTrigger>>,
-    watcher_indexes: HashMap<Box<[u8]>, u64>,
-    shard_indexes: HashMap<u64, HashSet<Box<[u8]>>>,
 }
 
 impl WatchHub {
     pub fn new(receivers: mpsc::Receiver<(WatchTarget, WatchTrigger)>) -> Self {
-        WatchHub {
-            receivers,
-            watchers: HashMap::default(),
-            watcher_indexes: HashMap::default(),
-            shard_indexes: HashMap::default(),
-        }
+        WatchHub { receivers, watchers: HashMap::default() }
     }
 
-    fn handle_register_events(&mut self) {
+    fn handle_register_events(&mut self, desc: &GroupDesc) {
         while let Ok((target, trigger)) = self.receivers.try_recv() {
             let (shard_id, user_key) = target;
+            let Some(shard) = desc.shard(shard_id) else { continue };
+            if !sekas_schema::shard::belong_to(shard, &user_key) {
+                continue;
+            }
             if let Some(triggers) = self.watchers.get_mut(&user_key) {
                 triggers.push(trigger);
             } else {
-                self.shard_indexes.entry(shard_id).or_default().insert(user_key.clone());
-                self.watcher_indexes.insert(user_key.clone(), shard_id);
                 self.watchers.insert(user_key, vec![trigger]);
             }
         }
@@ -115,14 +111,6 @@ impl rocksdb::WriteBatchIterator for GroupStateMachine {
             if senders.is_empty() {
                 // All watchers are closed.
                 self.watch_hub.watchers.remove(user_key);
-                if let Some(shard_id) = self.watch_hub.watcher_indexes.remove(user_key) {
-                    if let Some(keys) = self.watch_hub.shard_indexes.get_mut(&shard_id) {
-                        keys.remove(user_key);
-                        if keys.is_empty() {
-                            self.watch_hub.shard_indexes.remove(&shard_id);
-                        }
-                    }
-                }
             }
         }
     }
@@ -144,7 +132,7 @@ where
 
     plugged_write_batches: Vec<WriteBatch>,
     plugged_write_states: WriteStates,
-    move_out_shards: HashSet<u64>, // May a option value is enough?
+    move_out_shards: HashMap<u64, ShardDesc>,
 
     /// Whether `GroupDesc` changes during apply.
     desc_updated: bool,
@@ -169,7 +157,7 @@ impl GroupStateMachine {
             watch_hub,
             plugged_write_batches: Vec::default(),
             plugged_write_states: WriteStates::default(),
-            move_out_shards: HashSet::new(),
+            move_out_shards: HashMap::new(),
             desc_updated: false,
             move_shard_state_updated: false,
             last_applied_term: apply_state.term,
@@ -319,7 +307,7 @@ impl GroupStateMachine {
         let inherited_epoch = std::cmp::max(group_desc.epoch, inherited_epoch);
         group_desc.epoch = apply_shard_delta(inherited_epoch);
         let msg = if desc.src_group_id == group_desc.id {
-            self.move_out_shards.insert(shard_desc.id);
+            self.move_out_shards.insert(shard_desc.id, shard_desc.clone());
             group_desc.shards.retain(|r| r.id != shard_desc.id);
             "shard migrated out"
         } else {
@@ -415,19 +403,21 @@ impl GroupStateMachine {
     /// the ingest events for moving shard and don't worry the losing of
     /// any updation.
     fn trigger_updation_watchers(&mut self) {
-        self.watch_hub.handle_register_events();
+        let desc = self.group_engine.descriptor();
+        self.watch_hub.handle_register_events(&desc);
         for batch in std::mem::take(&mut self.plugged_write_batches) {
             batch.iterate(self);
         }
-        // TODO(walter) support shard split/merge.
-        for shard_id in std::mem::take(&mut self.move_out_shards) {
+        for (shard_id, shard_desc) in std::mem::take(&mut self.move_out_shards) {
+            trace!(
+                "shard {} is moved out from group {}, release all related watchers",
+                self.info.group_id,
+                shard_id
+            );
             // This shard has been moved out, remove the related watchers.
-            if let Some(user_key_set) = self.watch_hub.shard_indexes.remove(&shard_id) {
-                for user_key in user_key_set {
-                    self.watch_hub.watchers.remove(&user_key);
-                    self.watch_hub.watcher_indexes.remove(&user_key);
-                }
-            }
+            self.watch_hub
+                .watchers
+                .retain(|user_key, _| !sekas_schema::shard::belong_to(&shard_desc, user_key));
         }
     }
 }

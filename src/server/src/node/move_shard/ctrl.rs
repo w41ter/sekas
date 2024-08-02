@@ -17,10 +17,11 @@ use std::sync::Arc;
 
 use futures::channel::mpsc;
 use futures::StreamExt;
-use log::{debug, error, info, warn};
+use log::{debug, error, info, trace, warn};
 use sekas_api::server::v1::group_request_union::Request;
 use sekas_api::server::v1::group_response_union::Response;
 use sekas_api::server::v1::*;
+use sekas_api::Epoch;
 use sekas_client::MoveShardClient;
 use sekas_runtime::JoinHandle;
 
@@ -176,7 +177,7 @@ impl MoveShardCoordinator {
                 // Since the epoch is not matched, this moving shard should be rollback.
                 warn!(
                     "abort moving shard since epoch not match, new epoch is {}. replica={}, group={}, desc={}",
-                        group_desc.epoch, self.replica_id, self.group_id, self.desc);
+                        Epoch(group_desc.epoch), self.replica_id, self.group_id, self.desc);
                 self.abort_moving_shard().await;
             }
             Err(err) => {
@@ -308,9 +309,9 @@ pub async fn pull_shard(
     let mut finished = false;
     let mut last_key = last_migrated_key;
     while !finished {
-        info!("pull shard chunk with last key {last_key:?}");
+        trace!("pull shard {shard_id} chunk, last key {last_key:?}");
         let shard_chunk = client.pull_shard_chunk(shard_id, last_key.clone()).await?;
-        info!("pull shard chunk with {} data", shard_chunk.len());
+        trace!("pull shard {shard_id} chunk, receive {} value sets", shard_chunk.len());
         if let Some(value_set) = shard_chunk.last() {
             last_key = Some(value_set.user_key.clone());
         } else {

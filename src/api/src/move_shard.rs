@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use super::server::v1::*;
+use crate::Epoch;
 
 impl MoveShardDesc {
     #[inline]
@@ -34,9 +35,9 @@ impl std::fmt::Display for MoveShardDesc {
             "shard {}, src group {} epoch {}, dest group {} epoch {}",
             shard_id,
             self.src_group_id,
-            self.src_group_epoch,
+            Epoch(self.src_group_epoch),
             self.dest_group_id,
-            self.dest_group_epoch
+            Epoch(self.dest_group_epoch)
         )
     }
 }

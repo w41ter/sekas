@@ -19,6 +19,7 @@ use std::task::{Context, Poll};
 use async_stream::try_stream;
 use futures::channel::mpsc;
 use futures::StreamExt;
+use log::trace;
 use sekas_api::server::v1::group_request_union::Request as ShardRequest;
 use sekas_api::server::v1::group_response_union::Response as ShardResponse;
 use sekas_api::server::v1::watch_key_response::WatchResult;
@@ -67,12 +68,21 @@ fn handle_group_request(
         }
 
         let ShardRequest::WatchKey(watch_key_req) = inner_request else { panic!("unreachable") };
+        trace!("receive watch key request, shard {} key {} version {}",
+            watch_key_req.shard_id,
+            sekas_rock::ascii::escape_bytes(&watch_key_req.key),
+            watch_key_req.version
+        );
+
         let (sender, mut receiver) = mpsc::unbounded();
         exec_ctx.watch_event_sender = Some(sender);
         if let Err(err) = server.node.execute_request(&exec_ctx, &request).await {
             yield error_to_response(err);
             return;
         }
+
+        // Clear the ownership of sender.
+        exec_ctx.watch_event_sender = None;
 
         // scan the key to obtain an version.
         let scan_req = ShardScanRequest {
@@ -120,7 +130,7 @@ fn handle_group_request(
             }
 
             let value_set = &mut scan_resp.data[0];
-            for value in std::mem::take(&mut value_set.values) {
+            for value in std::mem::take(&mut value_set.values).into_iter().rev() {
                 if value.version < watch_key_req.version {
                     continue;
                 }
@@ -138,7 +148,6 @@ fn handle_group_request(
         }
         // TODO(walter) change receiver to async channel.
         while let Some(event) = receiver.next().await {
-            // FIXME(walter) skip the version already returned.
             if event.version == TXN_INTENT_VERSION || event.version < watch_key_req.version {
                 continue;
             }
@@ -157,7 +166,17 @@ fn handle_group_request(
                 ..Default::default()
             };
         }
-        // TODO(walter) send retry instruction to client.
+
+        let watch_key_resp = WatchKeyResponse {
+            result: WatchResult::ShardMoved as i32,
+            ..Default::default()
+        };
+        yield GroupResponse {
+            response: Some(GroupResponseUnion {
+                response: Some(ShardResponse::WatchKey(watch_key_resp))
+            }),
+            ..Default::default()
+        };
     }
 }
 

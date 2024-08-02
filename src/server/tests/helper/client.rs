@@ -17,7 +17,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
-use log::info;
+use log::{error, info};
 use sekas_api::server::v1::*;
 use sekas_client::{
     ClientOptions, ConnManager, GroupClient, NodeClient, RootClient, Router, RouterGroupState,
@@ -173,13 +173,21 @@ impl ClusterClient {
     }
 
     pub async fn get_group_any_follower(&self, group_id: u64) -> Option<ReplicaDesc> {
+        use rand::{thread_rng, Rng};
+
         if let Some(leader_id) = self.get_group_leader(group_id).await {
             if let Ok(state) = self.router.find_group(group_id) {
-                for (_, replica) in state.replicas {
-                    if replica.id != leader_id {
-                        return Some(replica);
-                    }
+                let replicas = state
+                    .replicas
+                    .into_iter()
+                    .filter(|(_, replica)| replica.id != leader_id)
+                    .map(|(_, replica)| replica)
+                    .collect::<Vec<_>>();
+                if replicas.is_empty() {
+                    return None;
                 }
+                let index = thread_rng().gen_range(0..replicas.len());
+                return Some(replicas[index].clone());
             }
         }
         None
@@ -397,5 +405,21 @@ impl ClusterClient {
     /// continue because root group is lost.
     pub async fn assert_root_group_has_promoted(&self) {
         self.assert_num_group_voters(0, 3).await;
+    }
+
+    /// Transfer the leadership of the group to an random dest replica.
+    pub async fn transfer_group_leader_randomly(&self, group_id: u64) -> Result<()> {
+        let follower_desc = self.must_group_any_follower(group_id).await;
+        let mut group_client = self.group(group_id);
+        match group_client.transfer_leader(follower_desc.id).await {
+            Ok(()) => {
+                info!("transfer leader of group {} to {} success", group_id, follower_desc.id);
+                Ok(())
+            }
+            Err(err) => {
+                error!("transfer leader of group {} to {}: {}", group_id, follower_desc.id, err);
+                Err(err.into())
+            }
+        }
     }
 }
