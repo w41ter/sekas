@@ -60,6 +60,13 @@ pub(crate) async fn write_intent<T: LatchGuard>(
     )
     .await?;
 
+    if let Some(value) = prev_value.as_ref() {
+        if value.version > req.start_version {
+            trace!("txn {} are conflict with committed value {}", req.start_version, value.version);
+            return Err(Error::TxnConflict);
+        }
+    }
+
     let mut wb = WriteBatch::default();
     let prev_value = match write {
         WriteRequest::Delete(del) => {

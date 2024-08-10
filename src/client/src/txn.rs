@@ -377,8 +377,8 @@ impl Txn {
 
     /// Get key value with in an transaction.
     ///
-    /// NOTE: This request will be sent to node servers, and the put/delete requests
-    /// already buffered in this TXN will be ignored.
+    /// NOTE: This request will be sent to node servers, and the put/delete
+    /// requests already buffered in this TXN will be ignored.
     pub async fn get(&self, table_id: u64, key: Vec<u8>) -> AppResult<Option<Vec<u8>>> {
         let value = self.get_raw_value(table_id, key).await?;
         Ok(value.and_then(|v| v.content))
@@ -386,8 +386,8 @@ impl Txn {
 
     /// Get a raw key value from this transaction.
     ///
-    /// NOTE: This request will be sent to node servers, and the put/delete requests
-    /// already buffered in this TXN will be ignored.
+    /// NOTE: This request will be sent to node servers, and the put/delete
+    /// requests already buffered in this TXN will be ignored.
     pub async fn get_raw_value(&self, table_id: u64, key: Vec<u8>) -> AppResult<Option<Value>> {
         CLIENT_DATABASE_BYTES_TOTAL.rx.inc_by(key.len() as u64);
         CLIENT_DATABASE_REQUEST_TOTAL.get.inc();
@@ -479,8 +479,8 @@ impl Txn {
 
     /// To scan a shard.
     ///
-    /// NOTE: This request will be sent to node servers, and the put/delete requests
-    /// already buffered in this TXN will be ignored.
+    /// NOTE: This request will be sent to node servers, and the put/delete
+    /// requests already buffered in this TXN will be ignored.
     pub async fn scan(&self, mut request: ShardScanRequest) -> AppResult<ShardScanResponse> {
         let mut retry_state = RetryState::with_deadline_opt(self.deadline);
         loop {
@@ -514,8 +514,8 @@ impl Txn {
 
     /// Scan an range.
     ///
-    /// NOTE: This request will be sent to node servers, and the put/delete requests
-    /// already buffered in this TXN will be ignored.
+    /// NOTE: This request will be sent to node servers, and the put/delete
+    /// requests already buffered in this TXN will be ignored.
     pub async fn range(&self, mut request: RangeRequest) -> AppResult<RangeStream> {
         if request.version.is_none() {
             request.version = Some(self.get_read_version().await?);
@@ -525,8 +525,8 @@ impl Txn {
 
     /// Watch an key.
     ///
-    /// NOTE: This request will be sent to node servers, and the put/delete requests
-    /// already buffered in this TXN will be ignored.
+    /// NOTE: This request will be sent to node servers, and the put/delete
+    /// requests already buffered in this TXN will be ignored.
     pub async fn watch(&self, table_id: u64, key: &[u8]) -> AppResult<WatchKeyStream> {
         self.watch_with_version(table_id, key, 0).await
     }
@@ -535,8 +535,8 @@ impl Txn {
     ///
     /// The values below this version are ignored.
     ///
-    /// NOTE: This request will be sent to node servers, and the put/delete requests
-    /// already buffered in this TXN will be ignored.
+    /// NOTE: This request will be sent to node servers, and the put/delete
+    /// requests already buffered in this TXN will be ignored.
     pub async fn watch_with_version(
         &self,
         table_id: u64,

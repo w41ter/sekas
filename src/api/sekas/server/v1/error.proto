@@ -39,11 +39,11 @@ message Error {
 }
 
 message ErrorDetail {
-  string message = 1;
+    string message = 1;
 
     ErrorDetailUnion detail = 2;
 }
-  
+
 message ErrorDetailUnion {
     oneof value {
         int32 status_code = 1;
@@ -53,6 +53,7 @@ message ErrorDetailUnion {
         GroupNotFound group_not_found = 5;
         NotRoot not_root = 6;
         CasFailed cas_failed = 7;
+        TxnConflict txn_conflict = 8;
     }
 }
 
@@ -101,3 +102,6 @@ message CasFailed {
     // The prev value of the cas touched key, if take_prev_value is set.
     optional Value prev_value = 3;
 }
+
+// The txn is conflict with others.
+message TxnConflict {}

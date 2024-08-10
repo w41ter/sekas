@@ -99,6 +99,9 @@ pub enum Error {
 
     #[error("abort schedule task, {0}")]
     AbortScheduleTask(&'static str),
+
+    #[error("the txn is conflict with others")]
+    TxnConflict,
 }
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;
@@ -175,6 +178,11 @@ impl From<Error> for tonic::Status {
                 "epoch not match",
                 v1::Error::not_match(desc).encode_to_vec().into(),
             ),
+            Error::TxnConflict => Status::with_details(
+                Code::Unknown,
+                "the txn is conflict",
+                v1::Error::txn_conflict().encode_to_vec().into(),
+            ),
 
             Error::Forward(_) => panic!("Forward only used inside node"),
             Error::ServiceIsBusy(_) => panic!("ServiceIsBusy only used inside node"),
@@ -234,6 +242,7 @@ impl From<Error> for sekas_api::server::v1::Error {
             Error::CasFailed(index, cond_index, prev_value) => {
                 v1::Error::cas_failed(index, cond_index, prev_value)
             }
+            Error::TxnConflict => v1::Error::txn_conflict(),
 
             Error::Forward(_) => panic!("Forward only used inside node"),
             Error::ServiceIsBusy(_) => panic!("ServiceIsBusy only used inside node"),
@@ -274,6 +283,7 @@ impl From<sekas_client::Error> for Error {
             sekas_client::Error::CasFailed(index, cond_index, prev_value) => {
                 Error::CasFailed(index, cond_index, prev_value)
             }
+            sekas_client::Error::TxnConflict => Error::TxnConflict,
             sekas_client::Error::Rpc(err) => Error::Rpc(err),
             sekas_client::Error::Connect(err) => Error::Rpc(err),
             sekas_client::Error::Transport(err) => Error::Rpc(err),

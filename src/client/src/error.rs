@@ -37,6 +37,9 @@ pub enum AppError {
     #[error("cas condition {1} not satisfied, operation index {0}")]
     CasFailed(u64, u64, Option<Value>),
 
+    #[error("the txn is conflict with others")]
+    TxnConflict,
+
     #[error("network: {0}")]
     Network(tonic::Status),
 
@@ -63,6 +66,9 @@ pub enum Error {
 
     #[error("cas condition {1} not satisfied, operation index {0}")]
     CasFailed(u64, u64, Option<Value>),
+
+    #[error("the txn is conflict with others")]
+    TxnConflict,
 
     #[error("group epoch not match")]
     EpochNotMatch(GroupDesc),
@@ -142,6 +148,7 @@ impl From<sekas_api::server::v1::Error> for Error {
             Some(Value::NotMatch(v)) => Error::EpochNotMatch(v.descriptor.unwrap_or_default()),
             Some(Value::StatusCode(v)) => Status::new(v.into(), msg).into(),
             Some(Value::CasFailed(v)) => Error::CasFailed(v.index, v.cond_index, v.prev_value),
+            Some(Value::TxnConflict(_)) => Error::TxnConflict,
             _ => Status::internal(format!("unknown error detail, msg: {msg}")).into(),
         }
     }
@@ -163,6 +170,7 @@ impl From<Error> for AppError {
             Error::CasFailed(index, cond_index, prev_value) => {
                 AppError::CasFailed(index, cond_index, prev_value)
             }
+            Error::TxnConflict => AppError::TxnConflict,
             Error::Internal(v) => AppError::Internal(v),
 
             Error::Transport(status) => AppError::Network(status),
@@ -189,6 +197,7 @@ impl From<AppError> for tonic::Status {
             AppError::InvalidArgument(msg) => Status::invalid_argument(msg),
             AppError::DeadlineExceeded(msg) => Status::deadline_exceeded(msg),
             AppError::CasFailed(_, _, _) => todo!("not supported"),
+            AppError::TxnConflict => todo!("not supported"),
             AppError::Network(status) => status, // as proxy
             AppError::Internal(err) => Status::internal(err.to_string()),
         }

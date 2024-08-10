@@ -276,7 +276,10 @@ impl GroupClient {
             }
             Error::EpochNotMatch(group_desc) => self.apply_epoch_not_match_status(group_desc, opt),
             e => {
-                if !matches!(e, Error::CasFailed(_, _, _) | Error::InvalidArgument(_)) {
+                if !matches!(
+                    e,
+                    Error::CasFailed(_, _, _) | Error::InvalidArgument(_) | Error::TxnConflict
+                ) {
                     warn!(
                         "group {} issue rpc to {}: epoch {} with unknown error {e:?}",
                         self.group_id,

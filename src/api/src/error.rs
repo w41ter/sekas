@@ -147,6 +147,11 @@ impl Error {
     }
 
     #[inline]
+    pub fn txn_conflict() -> Self {
+        Self::with_detail_value(error_detail_union::Value::TxnConflict(TxnConflict {}))
+    }
+
+    #[inline]
     pub fn status(code: i32, msg: impl Into<String>) -> Self {
         Error { details: vec![ErrorDetail::status(code, msg)] }
     }
