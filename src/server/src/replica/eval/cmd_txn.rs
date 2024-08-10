@@ -61,7 +61,7 @@ pub(crate) async fn write_intent<T: LatchGuard>(
     .await?;
 
     if let Some(value) = prev_value.as_ref() {
-        if value.version > req.start_version {
+        if value.version > req.start_version && !is_atomic_operation(write) {
             trace!("txn {} are conflict with committed value {}", req.start_version, value.version);
             return Err(Error::TxnConflict);
         }
@@ -324,6 +324,18 @@ async fn read_target_intent(
         return Ok(None);
     }
     Ok(Some(intent))
+}
+
+// An atomic operation will not conflict with previous values.
+fn is_atomic_operation(write: &WriteRequest) -> bool {
+    match write {
+        WriteRequest::Put(put)
+            if put.conditions.is_empty() && put.put_type == PutType::AddI64 as i32 =>
+        {
+            true
+        }
+        _ => false,
+    }
 }
 
 #[cfg(test)]

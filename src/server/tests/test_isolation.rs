@@ -55,6 +55,46 @@ async fn bootstrap_servers_and_tables(
 }
 
 #[sekas_macro::test]
+async fn test_atomic_operation() {
+    // The atomic operation should not count in conflict ranges, since it does not
+    // depend on the previous value.
+    let (ctx, c, db, table_a, _table_b) = bootstrap_servers_and_tables(fn_name!()).await;
+
+    let table_a = table_a.id;
+    let loop_times = 100;
+
+    let db_clone = db.clone();
+    let bumper_a = spawn(async move {
+        for _ in 0..loop_times {
+            let mut txn = db_clone.begin_txn();
+            let put = WriteBuilder::new(table_a.to_string().into_bytes()).ensure_add(1);
+            txn.put(table_a, put);
+            txn.commit().await.unwrap();
+        }
+    });
+
+    let db_clone = db.clone();
+    let bumper_b = spawn(async move {
+        for _ in 0..loop_times {
+            let mut txn = db_clone.begin_txn();
+            let put = WriteBuilder::new(table_a.to_string().into_bytes()).ensure_add(1000);
+            txn.put(table_a, put);
+            txn.commit().await.unwrap();
+        }
+    });
+
+    bumper_a.await.unwrap();
+    bumper_b.await.unwrap();
+
+    let txn = db.begin_txn();
+    let value = read_i64(&txn, table_a, table_a.to_string().into_bytes()).await;
+    assert_eq!(value, loop_times * 1001);
+
+    drop(c);
+    drop(ctx);
+}
+
+#[sekas_macro::test]
 async fn test_lost_update_anomaly() {
     // The constraint:
     //      r1[x]...w2[x]...w1[x]...c1
@@ -125,7 +165,7 @@ async fn test_lost_update_anomaly() {
 
     let txn = db.begin_txn();
     let value = read_i64(&txn, table_a, table_a.to_string().into_bytes()).await;
-    assert_eq!(value, (100 << 16) | 100);
+    assert_eq!(value, (loop_times << 16) | loop_times);
 
     drop(c);
     drop(ctx);
