@@ -49,37 +49,38 @@ message GroupRequestUnion {
         ShardScanRequest scan = 2;
         ShardWriteRequest write = 3;
 
+        // Watch a key's updation.
+        WatchKeyRequest watch_key = 4;
+
         // Txn releated operation.
-        WriteIntentRequest write_intent = 4;
-        CommitIntentRequest commit_intent = 5;
-        ClearIntentRequest clear_intent = 6;
+        WriteIntentRequest write_intent = 11;
+        CommitIntentRequest commit_intent = 12;
+        ClearIntentRequest clear_intent = 13;
 
         // Add a new shard to an existing group.
-        CreateShardRequest create_shard = 7;
+        CreateShardRequest create_shard = 20;
 
         // Change replicas of an existing group.
-        ChangeReplicasRequest change_replicas = 8;
+        ChangeReplicasRequest change_replicas = 21;
 
         // Issue a moving shard request. This request need to send to the dest group.
-        AcceptShardRequest accept_shard = 9;
+        AcceptShardRequest accept_shard = 22;
 
         // Transfer leadership to another replicas. This request is executed as a notice, so
         // the response doesn't reflect the actual execution result of transferring.
-        TransferRequest transfer = 10;
+        TransferRequest transfer = 23;
 
         // MoveReplicas delegates the replicas moving to group leader.
         //
         // Response once the group leader accepts the moving replicas request. When there exists
         // some conflicts, such as group is in joint, `Error::AlreadyExists` is returned.
-        MoveReplicasRequest move_replicas = 11;
-
-        // Watch a key's updation.
-        WatchKeyRequest watch_key = 12;
+        MoveReplicasRequest move_replicas = 24;
 
         // Split a shard.
-        SplitShardRequest split_shard = 13;
+        SplitShardRequest split_shard = 25;
+
         // Merge two shards.
-        MergeShardRequest merge_shard = 14;
+        MergeShardRequest merge_shard = 26;
     }
 }
 
@@ -88,18 +89,19 @@ message GroupResponseUnion {
         ShardGetResponse get = 1;
         ShardScanResponse scan = 2;
         ShardWriteResponse write = 3;
-        WriteIntentResponse write_intent = 4;
-        CommitIntentResponse commit_intent = 5;
-        ClearIntentResponse clear_intent = 6;
+        WatchKeyResponse watch_key = 4;
 
-        CreateShardResponse create_shard = 7;
-        ChangeReplicasResponse change_replicas = 8;
-        AcceptShardResponse accept_shard = 9;
-        TransferResponse transfer = 10;
-        MoveReplicasResponse move_replicas = 11;
-        WatchKeyResponse watch_key = 12;
-        SplitShardResponse split_shard = 13;
-        MergeShardResponse merge_shard = 14;
+        WriteIntentResponse write_intent = 10;
+        CommitIntentResponse commit_intent = 11;
+        ClearIntentResponse clear_intent = 12;
+
+        CreateShardResponse create_shard = 20;
+        ChangeReplicasResponse change_replicas = 21;
+        AcceptShardResponse accept_shard = 22;
+        TransferResponse transfer = 23;
+        MoveReplicasResponse move_replicas = 24;
+        SplitShardResponse split_shard = 25;
+        MergeShardResponse merge_shard = 26;
     }
 }
 
