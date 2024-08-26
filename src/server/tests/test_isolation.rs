@@ -13,6 +13,8 @@
 // limitations under the License.
 mod helper;
 
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use helper::client::ClusterClient;
@@ -167,6 +169,99 @@ async fn test_lost_update_anomaly() {
     let value = read_i64(&txn, table_a, table_a.to_string().into_bytes()).await;
     assert_eq!(value, (loop_times << 16) | loop_times);
 
+    drop(c);
+    drop(ctx);
+}
+
+// TODO(walter) support serializable snapshot isolation.
+#[ignore]
+#[sekas_macro::test]
+async fn test_write_skew_anomaly() {
+    // The constraint: account balances are allowed to go negative as long as the
+    // sum of commonly held balances remains non-negative
+
+    let (ctx, c, db, table_a, table_b) = bootstrap_servers_and_tables(fn_name!()).await;
+
+    let table_a = table_a.id;
+    let table_b = table_b.id;
+
+    let loop_times = 100;
+
+    let exit_flag = Arc::new(AtomicBool::new(false));
+    let db_clone = db.clone();
+    let exit_flag_clone = exit_flag.clone();
+    let checker = spawn(async move {
+        for _ in 0..loop_times {
+            let mut txn = db_clone.begin_txn();
+            let future_a = read_i64(&txn, table_a, table_a.to_string().into_bytes());
+            let future_b = read_i64(&txn, table_b, table_b.to_string().into_bytes());
+            let (a, b) = tokio::join!(future_a, future_b);
+            if a + b < 0 {
+                panic!("a + b < 0, a={a}, b={b}, the write skew anomaly is exists");
+            }
+            if a + b == 0 {
+                info!("both account A and B are consumed");
+                if a <= 0 {
+                    info!("account A add {}", 1 - a);
+                    let put = WriteBuilder::new(table_a.to_string().into_bytes()).ensure_add(1 - a);
+                    txn.put(table_a, put);
+                }
+                if b <= 0 {
+                    info!("account B add {}", 1 - b);
+                    let put = WriteBuilder::new(table_b.to_string().into_bytes()).ensure_add(1 - b);
+                    txn.put(table_b, put);
+                }
+                txn.commit().await.unwrap();
+            }
+            sekas_runtime::yield_now().await;
+        }
+        exit_flag_clone.store(true, Ordering::Release);
+        info!("checker is exit");
+    });
+
+    // consumer a will decrement account b if a + b > 0
+    let db_clone = db.clone();
+    let exit_flag_clone = exit_flag.clone();
+    let consumer_a = spawn(async move {
+        while !exit_flag_clone.load(Ordering::Acquire) {
+            let mut txn = db_clone.begin_txn();
+            let future_a = read_i64(&txn, table_a, table_a.to_string().into_bytes());
+            let future_b = read_i64(&txn, table_b, table_b.to_string().into_bytes());
+            let (a, b) = tokio::join!(future_a, future_b);
+            if a + b > 0 {
+                info!("account A sub 1, a={a}, b={b}");
+                let put = WriteBuilder::new(table_a.to_string().into_bytes()).ensure_add(-1);
+                txn.put(table_a, put);
+                txn.commit().await.unwrap();
+            }
+            sekas_runtime::yield_now().await;
+        }
+        info!("consumer a is exit");
+    });
+
+    // consumer b will decrement account b if a + b > 0
+    let db_clone = db.clone();
+    let exit_flag_clone = exit_flag.clone();
+    let consumer_b = spawn(async move {
+        while !exit_flag_clone.load(Ordering::Acquire) {
+            let mut txn = db_clone.begin_txn();
+            let future_a = read_i64(&txn, table_a, table_a.to_string().into_bytes());
+            let future_b = read_i64(&txn, table_b, table_b.to_string().into_bytes());
+            let (a, b) = tokio::join!(future_a, future_b);
+            if a + b > 0 {
+                info!("account B sub 1, a={a}, b={b}");
+                let put = WriteBuilder::new(table_b.to_string().into_bytes()).ensure_add(-1);
+                txn.put(table_b, put);
+                txn.commit().await.unwrap();
+            }
+            sekas_runtime::yield_now().await;
+        }
+        info!("consumer b is exit");
+    });
+
+    consumer_a.await.unwrap();
+    consumer_b.await.unwrap();
+    checker.await.unwrap();
     drop(c);
     drop(ctx);
 }
