@@ -40,10 +40,6 @@ impl futures::Stream for GroupStream {
     type Item = Result<GroupResponse, Status>;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        // 1. scan the key to obtain the base version.
-        // 2. watch key's updation.
-        // 3. read the key value and return
-        // 4. skip to 1
         self.get_mut().inner.poll_next_unpin(cx)
     }
 }
@@ -114,7 +110,7 @@ fn handle_group_request(
             }
         };
         let ShardResponse::Scan(mut scan_resp) = resp.response
-            .expect("The GroupResponse::resposne is required")
+            .expect("The GroupResponse::response is required")
             .response
             .expect("The GroupResponseUnion::response is required")
             else { panic!("The ScanResponse is required in here") };
@@ -253,13 +249,6 @@ impl node_server::Node for Server {
         };
         Ok(Response::new(MoveShardResponse { response: Some(resp) }))
     }
-
-    // async fn watch(
-    //     &self,
-    //     _request: Request<WatchKeyRequest>,
-    // ) -> Result<Response<BatchStream>, Status> {
-    //     todo!()
-    // }
 }
 
 impl Server {
