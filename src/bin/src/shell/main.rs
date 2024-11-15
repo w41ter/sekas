@@ -125,7 +125,7 @@ impl Session {
                     )))
                 }
                 Err(AppError::NotFound(_)) => {
-                    // no such db exsists, create it.
+                    // no such db exists, create it.
                 }
                 Err(err) => return Err(err).context("failed to open database"),
             };

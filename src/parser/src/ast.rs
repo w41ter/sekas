@@ -111,11 +111,11 @@ impl HelpStatement {
         match topic {
             "create" | "CREATE" => Self::display_create_topic(),
             "show" | "SHOW" => Self::display_show_topic(),
-            "pub" | "PUT" => Self::display_put_topic(),
+            "put" | "PUT" => Self::display_put_topic(),
             "delete" | "DELETE" => Self::display_delete_topic(),
             "get" | "GET" => Self::display_get_topic(),
             _ => {
-                format!("unkonwn command `{}`. Try `help`?", topic)
+                format!("unknown command `{}`. Try `help`?", topic)
             }
         }
     }
@@ -190,7 +190,7 @@ List of commands:
 
 create      create database, table ...
 show        show properties, such as databases, tables ...
-pub         put value into a table
+put         put value into a table
 delete      delete key from a table
 get         get the value of the key from a table
 help        get help about a topic or command
