@@ -520,7 +520,7 @@ impl Node {
         for group_id in group_id_list {
             if let Some(replica) = self.replica_route_table.find(group_id) {
                 let info = replica.replica_info();
-                if info.is_terminated() || info.group_id == ROOT_GROUP_ID {
+                if info.is_terminated() {
                     continue;
                 }
                 let descriptor = replica.descriptor();
