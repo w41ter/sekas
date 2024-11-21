@@ -137,6 +137,10 @@ impl ClusterStats {
                     continue;
                 }
                 if let Some(&group_id) = table_stats.shard_indexes.get(&shard_stats.shard_id) {
+                    if group_id == sekas_schema::ROOT_GROUP_ID {
+                        // Don't split the root groups, such as txn shard.
+                        continue;
+                    }
                     target_shards.push((group_id, shard_stats.shard_id));
                     if target_shards.len() >= limit {
                         break;

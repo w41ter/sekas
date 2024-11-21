@@ -597,7 +597,7 @@ impl ScheduleContext {
         Ok(SchedResult::ack())
     }
 
-    /// Handle the spliting shard stask and update the sched stats.
+    /// Handle the spliting shard shards and update the sched stats.
     async fn handle_split_shard(&self, task: &mut SplitShardTask) -> Result<SchedResult> {
         let result = self.handle_split_shard_inner(task).await?;
         if result.ack {
