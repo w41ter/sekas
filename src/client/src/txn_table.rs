@@ -300,6 +300,9 @@ impl TxnStateTable {
         let key = txn_lower_key(write.hash_tag);
         let (group_state, shard_desc) = router.find_shard(table::txn_table_id(), &key)?;
 
+        #[cfg(debug_assertions)]
+        check_txn_writes_in_shards(write, &shard_desc);
+
         let mut group_client = GroupClient::new(group_state, self.client.clone());
         if let Some(duration) = timeout {
             group_client.set_timeout(duration);
@@ -403,6 +406,32 @@ fn txn_state_value(state: TxnState) -> Vec<u8> {
 #[inline]
 fn txn_u64_value(val: u64) -> Vec<u8> {
     val.to_be_bytes().to_vec()
+}
+
+#[cfg(debug_assertions)]
+fn check_txn_writes_in_shards(write: &TxnWriteRequest, shard: &ShardDesc) {
+    use sekas_rock::ascii::escape_bytes;
+    use sekas_schema::shard::{belong_to, end_key, start_key};
+
+    for delete in &write.deletes {
+        assert!(
+            belong_to(shard, &delete.key),
+            "check txn writes in shards: delete key {} is not in range [{}, {})",
+            escape_bytes(&delete.key),
+            escape_bytes(&start_key(shard)),
+            escape_bytes(&end_key(shard))
+        );
+    }
+
+    for put in &write.puts {
+        assert!(
+            belong_to(shard, &put.key),
+            "check txn writes in shards: put key {} is not in range [{}, {})",
+            escape_bytes(&put.key),
+            escape_bytes(&start_key(shard)),
+            escape_bytes(&end_key(shard))
+        )
+    }
 }
 
 #[cfg(test)]

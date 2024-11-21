@@ -18,7 +18,7 @@ use std::ops::Add;
 use std::sync::Arc;
 use std::vec;
 
-use log::{info, trace, warn};
+use log::{debug, error, info, trace, warn};
 use sekas_api::server::v1::watch_response::{update_event, UpdateEvent};
 use sekas_api::server::v1::*;
 use tokio::time::Instant;
@@ -48,7 +48,7 @@ impl Root {
                 nodes.move_first(cur_node_id);
                 nodes.0
             };
-            trace!(
+            info!(
                 "sync root info with heartbeat. root={:?}",
                 root.root_nodes.iter().map(|n| n.id).collect::<Vec<_>>(),
             );
@@ -77,11 +77,9 @@ impl Root {
             metrics::HEARTBEAT_NODES_BATCH_SIZE.set(nodes.len() as i64);
             let mut handles = Vec::new();
             for node in &nodes {
-                trace!(
+                info!(
                     "send heartbeat to node {}, addr: {}, status: {}",
-                    node.id,
-                    node.addr,
-                    node.status
+                    node.id, node.addr, node.status
                 );
                 let piggybacks = piggybacks.to_owned();
                 let client = self.shared.transport_manager.get_node_client(node.addr.to_owned())?;
@@ -95,9 +93,10 @@ impl Root {
                 });
                 handles.push(handle);
             }
+            // FIXME: Queue head blocking, a slowly node will effect all other normal nodes.
             let mut resps = Vec::with_capacity(handles.len());
             for handle in handles.into_iter() {
-                resps.push(handle.await?)
+                resps.push(handle.await?);
             }
             resps
         };
@@ -173,6 +172,7 @@ impl Root {
             }
         }
         for gs in &resp.group_stats {
+            info!("update group stats {}", gs.group_id);
             self.cluster_stats.handle_group_stats(gs.clone());
         }
         Ok(())
@@ -187,14 +187,24 @@ impl Root {
         let _timer = super::metrics::HEARTBEAT_HANDLE_GROUP_DETAIL_DURATION_SECONDS.start_timer();
         let mut update_events = Vec::new();
         for desc in &resp.group_descs {
+            info!("handle group desc {}", desc.id);
             if let Some(ex) = groups.iter().find(|g| g.id == desc.id) {
+                if desc.epoch == ex.epoch {
+                    Self::check_group_desc_consistency(ex, desc);
+                }
                 if desc.epoch <= ex.epoch {
                     continue;
                 }
             }
             schema.update_group_replica(Some(desc.to_owned()), None).await?;
             metrics::ROOT_UPDATE_GROUP_DESC_TOTAL.heartbeat.inc();
-            info!("update group_desc from heartbeat response. group={}, desc={:?}", desc.id, desc);
+            info!(
+                "update group_desc from heartbeat response. group={}, epoch={}, num shards={}, num replicas={}",
+                desc.id,
+                sekas_api::Epoch(desc.epoch),
+                desc.shards.len(),
+                desc.replicas.len()
+            );
             if desc.id == ROOT_GROUP_ID {
                 self.heartbeat_queue
                     .try_schedule(
@@ -245,5 +255,32 @@ impl Root {
     async fn handle_schedule_state(&self, resp: &CollectScheduleStateResponse) -> Result<()> {
         self.cluster_stats.handle_schedule_update(&resp.schedule_states, None);
         Ok(())
+    }
+
+    fn check_group_desc_consistency(exists: &GroupDesc, report: &GroupDesc) {
+        if exists.shards.len() != report.shards.len() {
+            error!(
+                "The num shards {} of exists group desc is not equals to reported {}, group id: {}",
+                exists.shards.len(),
+                report.shards.len(),
+                exists.id
+            );
+            return;
+        }
+        for shard in &exists.shards {
+            let Some(reported) = report.shards.iter().find(|s| s.id == shard.id) else {
+                error!(
+                    "the shard {} is not exists in the reported, group id: {}",
+                    shard.id, exists.id
+                );
+                return;
+            };
+            if reported.range != shard.range {
+                error!(
+                    "the shard {} range {:?} is not equals to the reported {:?}, group id: {}",
+                    shard.id, shard.range, reported.range, exists.id
+                );
+            }
+        }
     }
 }
