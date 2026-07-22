@@ -20,14 +20,14 @@ use raft::prelude::{ConfChangeV2, Entry, EntryType};
 use raft::{RawNode, ReadState};
 use sekas_api::server::v1::ReplicaDesc;
 
+use super::ApplyEntry;
 use super::fsm::StateMachine;
 use super::monitor::ApplierPerfContext;
 use super::storage::Storage;
-use super::ApplyEntry;
 use crate::raftgroup::metrics::*;
 use crate::raftgroup::monitor::record_perf_point;
 use crate::serverpb::v1::{EntryId, EvalResult};
-use crate::{record_latency, Error, Result};
+use crate::{Error, Result, record_latency};
 
 struct ProposalContext {
     index: u64,
@@ -156,8 +156,10 @@ impl<M: StateMachine> Applier<M> {
         let mut entry_ids = Vec::with_capacity(committed_entries.len());
         for entry in committed_entries {
             if entry.index != self.last_applied_index + 1 && self.last_applied_index != 0 {
-                panic!("group {} apply entries: log is not discontinuous, last applied index {}, entry index {}",
-                    self.group_id, self.last_applied_index, entry.index);
+                panic!(
+                    "group {} apply entries: log is not discontinuous, last applied index {}, entry index {}",
+                    self.group_id, self.last_applied_index, entry.index
+                );
             }
 
             self.last_applied_index = entry.index;

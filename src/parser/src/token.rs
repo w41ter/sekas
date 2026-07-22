@@ -110,7 +110,7 @@ pub(crate) struct Semicolon {
 impl<'a> TokenRule<'a> for Semicolon {
     fn parse(tokenizer: &mut Tokenizer<'a>) -> ParseResult<Self> {
         let coord = tokenizer.coord();
-        if !tokenizer.input.starts_with(&[b';']) && !tokenizer.input.is_empty() {
+        if !tokenizer.input.starts_with(b";") && !tokenizer.input.is_empty() {
             return Err(ParseError::Expect("symbol ;".to_owned(), coord));
         }
 
@@ -184,7 +184,7 @@ impl<'a> Literal<'a> {
 
 impl<'a> TokenRule<'a> for Literal<'a> {
     fn parse(tokenizer: &mut Tokenizer<'a>) -> ParseResult<Self> {
-        if tokenizer.input.starts_with(&[b'"']) {
+        if tokenizer.input.starts_with(b"\"") {
             let mut value = vec![];
             let len = tokenizer.input.len();
             let mut i = 1;

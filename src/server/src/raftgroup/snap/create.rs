@@ -14,20 +14,20 @@
 
 use std::path::Path;
 
-use futures::channel::mpsc;
 use futures::SinkExt;
+use futures::channel::mpsc;
 use log::{error, info};
 use prost::Message;
 use sekas_runtime::JoinHandle;
 
-use super::{SnapManager, SNAP_DATA};
+use super::{SNAP_DATA, SnapManager};
+use crate::raftgroup::StateMachine;
 use crate::raftgroup::fsm::SnapshotBuilder;
 use crate::raftgroup::metrics::*;
 use crate::raftgroup::snap::{SNAP_META, SNAP_TEMP};
 use crate::raftgroup::worker::Request;
-use crate::raftgroup::StateMachine;
 use crate::serverpb::v1::{SnapshotFile, SnapshotMeta};
-use crate::{record_latency, Error, Result};
+use crate::{Error, Result, record_latency};
 
 pub fn dispatch_creating_snap_task(
     replica_id: u64,
@@ -62,7 +62,7 @@ pub(super) async fn create_snapshot(
 
     let data = snap_dir.join(SNAP_DATA);
     let (apply_state, descriptor) = builder.checkpoint(&data).await?;
-    if !std::fs::try_exists(&data)? {
+    if !data.try_exists()? {
         panic!("Checkpoint did not generate any data.");
     }
 
@@ -148,7 +148,10 @@ async fn read_file_meta(filename: &Path) -> Result<SnapshotFile> {
     let Some(name) = name.to_str() else {
         return Err(Error::Io(std::io::Error::new(
             ErrorKind::InvalidInput,
-            format!("{} is not a valid UTF-8 encoding, the name of snapshot data requires UTF-8 encoding", name.display()),
+            format!(
+                "{} is not a valid UTF-8 encoding, the name of snapshot data requires UTF-8 encoding",
+                name.display()
+            ),
         )));
     };
     Ok(SnapshotFile { name: name.to_owned(), crc32, size })

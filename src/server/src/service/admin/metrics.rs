@@ -15,11 +15,11 @@
 use std::collections::HashMap;
 
 use lazy_static::lazy_static;
-use prometheus::{register_int_counter, IntCounter, TextEncoder};
+use prometheus::{IntCounter, TextEncoder, register_int_counter};
 use tonic::codegen::*;
 
-use crate::root::RootCollector;
 use crate::Server;
+use crate::root::RootCollector;
 
 lazy_static! {
     // A special metric for testing metrics pulling.

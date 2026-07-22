@@ -23,7 +23,7 @@ use log::debug;
 
 use super::{SnapManager, SnapshotGuard};
 use crate::raftgroup::metrics::*;
-use crate::serverpb::v1::{snapshot_chunk, SnapshotChunk};
+use crate::serverpb::v1::{SnapshotChunk, snapshot_chunk};
 use crate::{Error, Result};
 
 type SnapResult = Result<SnapshotChunk, tonic::Status>;

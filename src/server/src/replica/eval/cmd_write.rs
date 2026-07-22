@@ -104,7 +104,7 @@ mod tests {
     use tempdir::TempDir;
 
     use super::*;
-    use crate::engine::{create_group_engine, WriteStates};
+    use crate::engine::{WriteStates, create_group_engine};
 
     const SHARD_ID: u64 = 1;
 
@@ -129,9 +129,9 @@ mod tests {
         let exec_ctx = ExecCtx::default();
         let req = ShardWriteRequest {
             shard_id: SHARD_ID,
-            puts: vec![WriteBuilder::new(b"key".to_vec())
-                .expect_exists()
-                .ensure_put(b"value".to_vec())],
+            puts: vec![
+                WriteBuilder::new(b"key".to_vec()).expect_exists().ensure_put(b"value".to_vec()),
+            ],
             ..Default::default()
         };
         let r = batch_write(&exec_ctx, &engine, &req).await;
@@ -152,9 +152,9 @@ mod tests {
         // 3. put exists success
         let req = ShardWriteRequest {
             shard_id: SHARD_ID,
-            puts: vec![WriteBuilder::new(b"key".to_vec())
-                .expect_exists()
-                .ensure_put(b"value".to_vec())],
+            puts: vec![
+                WriteBuilder::new(b"key".to_vec()).expect_exists().ensure_put(b"value".to_vec()),
+            ],
             ..Default::default()
         };
         let r = batch_write(&exec_ctx, &engine, &req).await;

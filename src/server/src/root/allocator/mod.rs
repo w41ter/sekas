@@ -20,7 +20,7 @@ use self::policy_leader_cnt::LeaderCountPolicy;
 use self::policy_replica_cnt::ReplicaCountPolicy;
 use self::policy_shard_cnt::ShardCountPolicy;
 use self::source::NodeFilter;
-use super::{metrics, ClusterStats, RootShared};
+use super::{ClusterStats, RootShared, metrics};
 use crate::{Result, RootConfig};
 
 #[cfg(test)]

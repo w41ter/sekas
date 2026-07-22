@@ -14,7 +14,7 @@
 // limitations under the License.
 
 use std::collections::HashSet;
-use std::sync::{atomic, Arc, Mutex};
+use std::sync::{Arc, Mutex, atomic};
 use std::task::{Poll, Waker};
 use std::time::Duration;
 
@@ -29,9 +29,9 @@ use super::allocator::*;
 use super::schedule::background_job::Job;
 use super::schedule::*;
 use super::{HeartbeatQueue, HeartbeatTask, RootShared, Schema};
+use crate::Result;
 use crate::constants::INITIAL_EPOCH;
 use crate::root::metrics;
-use crate::Result;
 
 pub struct Jobs {
     core: JobCore,
@@ -345,7 +345,7 @@ impl Jobs {
                 }
 
                 CreateOneGroupStatus::Finish | CreateOneGroupStatus::Abort => {
-                    return self.handle_finish_create_group(job, create_group).await
+                    return self.handle_finish_create_group(job, create_group).await;
                 }
             }
         }
@@ -437,8 +437,9 @@ impl Jobs {
                     create_group.create_retry += 1;
                 } else {
                     warn!(
-                        "create replica for new group error, start rollback: {err:?}. node={}, replica={}, group={}", 
-                        n.id, replica.id, group_desc.id);
+                        "create replica for new group error, start rollback: {err:?}. node={}, replica={}, group={}",
+                        n.id, replica.id, group_desc.id
+                    );
                     create_group.status = CreateOneGroupStatus::Rollbacking as i32;
                 };
                 self.save_create_group(job_id, create_group).await?;

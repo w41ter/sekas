@@ -16,9 +16,9 @@
 use std::sync::Arc;
 use std::thread::{Builder, JoinHandle};
 
+use futures::StreamExt;
 use futures::channel::{mpsc, oneshot};
 use futures::stream::FusedStream;
-use futures::StreamExt;
 use log::error;
 
 use crate::Result;
@@ -54,7 +54,9 @@ impl LogWriter {
             Err(err) => {
                 // Ignore disconnect error, since a available Sender is still hold.
                 if err.is_full() {
-                    panic!("submit log request to log writer: channel capacity must enough to receive requests");
+                    panic!(
+                        "submit log request to log writer: channel capacity must enough to receive requests"
+                    );
                 }
             }
         }

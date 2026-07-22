@@ -25,10 +25,10 @@ use std::task::Poll;
 
 use futures::channel::mpsc;
 use log::{info, trace, warn};
+use sekas_api::Epoch;
 use sekas_api::server::v1::group_request_union::Request;
 use sekas_api::server::v1::group_response_union::Response;
 use sekas_api::server::v1::*;
-use sekas_api::Epoch;
 use serde::Serialize;
 
 use self::eval::acquire_row_latches;
@@ -39,7 +39,7 @@ pub use self::state::{LeaseState, LeaseStateObserver};
 use crate::engine::GroupEngine;
 use crate::error::BusyReason;
 use crate::raftgroup::{
-    perf_point_micros, write_initial_state, RaftGroup, ReadPolicy, WorkerPerfContext,
+    RaftGroup, ReadPolicy, WorkerPerfContext, perf_point_micros, write_initial_state,
 };
 use crate::schedule::MoveReplicasProvider;
 use crate::serverpb::v1::*;
@@ -304,7 +304,7 @@ impl Replica {
 
 impl Replica {
     #[inline]
-    async fn take_acl_guard(&self, request: &Request) -> MetaAclGuard {
+    async fn take_acl_guard(&self, request: &Request) -> MetaAclGuard<'_> {
         // `Request::MoveReplicas` is very special, it doesn't modify the metadata
         // directly, instead, it does some config changes asynchronously, so
         // there's no need for a write lock here.
@@ -316,12 +316,12 @@ impl Replica {
     }
 
     #[inline]
-    async fn take_write_acl_guard(&self) -> MetaAclGuard {
+    async fn take_write_acl_guard(&self) -> MetaAclGuard<'_> {
         MetaAclGuard::Write(self.meta_acl.write().await)
     }
 
     #[inline]
-    async fn take_read_acl_guard(&self) -> MetaAclGuard {
+    async fn take_read_acl_guard(&self) -> MetaAclGuard<'_> {
         MetaAclGuard::Read(self.meta_acl.read().await)
     }
 
@@ -489,8 +489,7 @@ impl Replica {
         } else if lease_state.has_shard_moving() && matches!(req, Request::AcceptShard(_)) {
             trace!(
                 "the request shard is in moving, group: {}, replica: {}",
-                self.info.group_id,
-                self.info.replica_id
+                self.info.group_id, self.info.replica_id
             );
             // At the same time, there can only be one moving shard task.
             Err(Error::ServiceIsBusy(BusyReason::Moving))

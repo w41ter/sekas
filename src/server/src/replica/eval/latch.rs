@@ -369,7 +369,9 @@ pub mod remote {
             start_version: u64,
             intent_version: u64,
         ) -> Result<Option<Value>> {
-            trace!("txn {start_version} try resolve txn {intent_version}, shard {shard_id} user key {user_key:?}");
+            trace!(
+                "txn {start_version} try resolve txn {intent_version}, shard {shard_id} user key {user_key:?}"
+            );
             let mut latch_guard = self.acquire(shard_id, user_key).await?;
             // read the txn intent again with latch guard.
             let snapshot_mode = SnapshotMode::Key { key: user_key };
@@ -465,8 +467,11 @@ pub mod remote {
                     (txn_record.state, txn_record.commit_version.unwrap_or_default())
                 };
 
-                debug!("txn {} intent state {}, commit version {commit_version} delete intent {delete_intent}", start_version,
-                    actual_txn_state.as_str_name());
+                debug!(
+                    "txn {} intent state {}, commit version {commit_version} delete intent {delete_intent}",
+                    start_version,
+                    actual_txn_state.as_str_name()
+                );
                 match actual_txn_state {
                     TxnState::Committed => {
                         if delete_intent {
@@ -618,10 +623,10 @@ pub mod local {
     impl LocalLatchManager {
         fn release(&self, shard_key: &ShardKey) {
             let mut latches = self.latches.lock().unwrap();
-            if let Some(latch_block) = latches.get_mut(shard_key) {
-                if self.transfer_latch_guard(latch_block) {
-                    latches.remove(shard_key);
-                }
+            if let Some(latch_block) = latches.get_mut(shard_key)
+                && self.transfer_latch_guard(latch_block)
+            {
+                latches.remove(shard_key);
             }
         }
 

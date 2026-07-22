@@ -27,7 +27,7 @@ use tonic::{Code, Status};
 
 use crate::metrics::*;
 use crate::rpc::{NodeClient, RouterGroupState, RpcTimeout};
-use crate::{record_latency_opt, Error, Result, SekasClient};
+use crate::{Error, Result, SekasClient, record_latency_opt};
 
 #[derive(Clone, Debug, Default)]
 struct InvokeOpt<'a> {
@@ -189,8 +189,7 @@ impl GroupClient {
         if let Some(node_id) = leader_node_id {
             trace!(
                 "group client refresh group {} state with leader node id {}",
-                self.group_id,
-                node_id
+                self.group_id, node_id
             );
             move_node_to_first_element(&mut self.replicas, node_id);
         }
@@ -501,7 +500,7 @@ impl GroupClient {
             _ => {
                 return Err(Error::Internal(
                     "invalid response type, `MoveReplicas` is required".into(),
-                ))
+                ));
             }
         };
         resp.schedule_state.ok_or_else(|| {

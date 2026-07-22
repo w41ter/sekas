@@ -107,8 +107,8 @@ impl RootStore {
     }
 
     async fn submit_request(&self, req: Request) -> Result<GroupResponse> {
-        use crate::replica::retry::execute;
         use crate::replica::ExecCtx;
+        use crate::replica::retry::execute;
 
         let request = GroupRequest {
             group_id: ROOT_GROUP_ID,

@@ -16,8 +16,8 @@ use std::path::Path;
 
 use sekas_api::server::v1::{ChangeReplicas, GroupDesc};
 
-use crate::serverpb::v1::{ApplyState, EvalResult};
 use crate::Result;
+use crate::serverpb::v1::{ApplyState, EvalResult};
 
 /// A helper structure to used to access the internal field of entries.
 pub enum ApplyEntry {

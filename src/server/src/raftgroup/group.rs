@@ -22,7 +22,7 @@ use super::worker::{RaftGroupState, Request};
 use super::{ReadPolicy, WorkerPerfContext};
 use crate::error::BusyReason;
 use crate::serverpb::v1::{EvalResult, RaftMessage};
-use crate::{record_latency, Result};
+use crate::{Result, record_latency};
 
 /// `RaftGroup` wraps the operations of raft.
 #[derive(Clone)]

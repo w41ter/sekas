@@ -480,6 +480,18 @@ before taking old, removed peers offline.
 #![recursion_limit = "128"]
 // TODO: remove this when we update the mininum rust compatible version.
 #![allow(unused_imports)]
+// Newer Clippy releases report additional documentation and style lints in
+// this vendored crate. Keep the existing lint strictness without rewriting the
+// upstream docs and tests as part of the workspace toolchain bump.
+#![allow(clippy::doc_lazy_continuation)]
+#![allow(clippy::doc_overindented_list_items)]
+#![allow(clippy::double_ended_iterator_last)]
+#![allow(clippy::io_other_error)]
+#![allow(clippy::legacy_numeric_constants)]
+#![allow(clippy::unnecessary_map_or)]
+#![allow(clippy::unnecessary_sort_by)]
+#![allow(clippy::useless_borrows_in_formatting)]
+#![allow(clippy::useless_vec)]
 // This is necessary to support prost and rust-protobuf at the same time.
 #![allow(clippy::useless_conversion)]
 // This lint recommends some bad choices sometimes.
@@ -573,20 +585,16 @@ pub mod prelude {
 #[cfg(any(test, feature = "default-logger"))]
 pub fn default_logger() -> slog::Logger {
     use slog::{o, Drain};
-    use std::sync::{Mutex, Once};
+    use std::sync::{Mutex, OnceLock};
 
-    static LOGGER_INITIALIZED: Once = Once::new();
-    static mut LOGGER: Option<slog::Logger> = None;
+    static LOGGER: OnceLock<slog::Logger> = OnceLock::new();
 
-    let logger = unsafe {
-        LOGGER_INITIALIZED.call_once(|| {
-            let decorator = slog_term::TermDecorator::new().build();
-            let drain = slog_term::CompactFormat::new(decorator).build();
-            let drain = slog_envlogger::new(drain);
-            LOGGER = Some(slog::Logger::root(Mutex::new(drain).fuse(), o!()));
-        });
-        LOGGER.as_ref().unwrap()
-    };
+    let logger = LOGGER.get_or_init(|| {
+        let decorator = slog_term::TermDecorator::new().build();
+        let drain = slog_term::CompactFormat::new(decorator).build();
+        let drain = slog_envlogger::new(drain);
+        slog::Logger::root(Mutex::new(drain).fuse(), o!())
+    });
     if let Some(case) = std::thread::current()
         .name()
         .and_then(|v| v.split(':').last())

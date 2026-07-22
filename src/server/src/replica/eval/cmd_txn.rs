@@ -18,9 +18,9 @@ use sekas_api::server::v1::*;
 use sekas_rock::num::decode_i64;
 use sekas_schema::system::txn::TXN_INTENT_VERSION;
 
+use super::LatchGuard;
 use super::cas::eval_conditions;
 use super::latch::DeferSignalLatchGuard;
-use super::LatchGuard;
 use crate::engine::{GroupEngine, SnapshotMode, WriteBatch};
 use crate::node::move_shard::ForwardCtx;
 use crate::replica::ExecCtx;
@@ -83,11 +83,7 @@ pub(crate) async fn write_intent<T: LatchGuard>(
                     TXN_INTENT_VERSION,
                 )?;
             }
-            if del.take_prev_value {
-                prev_value
-            } else {
-                None
-            }
+            if del.take_prev_value { prev_value } else { None }
         }
         WriteRequest::Put(put) => {
             if !skip_write {
@@ -107,11 +103,7 @@ pub(crate) async fn write_intent<T: LatchGuard>(
                     TXN_INTENT_VERSION,
                 )?;
             }
-            if put.take_prev_value {
-                prev_value
-            } else {
-                None
-            }
+            if put.take_prev_value { prev_value } else { None }
         }
     };
 
@@ -129,9 +121,7 @@ pub(crate) async fn commit_intent<T: LatchGuard>(
 ) -> Result<Option<EvalResult>> {
     trace!(
         "group {} commit txn {} intent with version {}",
-        exec_ctx.group_id,
-        req.start_version,
-        req.commit_version
+        exec_ctx.group_id, req.start_version, req.commit_version
     );
 
     if let Some(desc) = exec_ctx.move_shard_desc.as_ref() {
@@ -178,18 +168,14 @@ pub(crate) async fn commit_intent<T: LatchGuard>(
 
     trace!(
         "group {} commit txn {} intent with version {}, try signal all",
-        exec_ctx.group_id,
-        req.start_version,
-        req.commit_version
+        exec_ctx.group_id, req.start_version, req.commit_version
     );
 
     latch_guard.signal_all(TxnState::Committed, Some(req.commit_version));
 
     trace!(
         "group {} commit txn {} intent with version {}, after signal all",
-        exec_ctx.group_id,
-        req.start_version,
-        req.commit_version
+        exec_ctx.group_id, req.start_version, req.commit_version
     );
 
     Ok(if wb.is_empty() { None } else { Some(EvalResult::with_batch(wb.data().to_owned())) })
@@ -263,7 +249,9 @@ async fn read_first_non_intent_key<T: LatchGuard>(
         let Some(txn_intent) = txn_intent else { return Ok((false, prev_value)) };
         if txn_intent.start_version == start_version {
             // Support idempotent.
-            debug!("the intent of key {key:?} already exists, shard {shard_id}, start version {start_version}");
+            debug!(
+                "the intent of key {key:?} already exists, shard {shard_id}, start version {start_version}"
+            );
             return Ok((true, prev_value));
         }
 
@@ -328,14 +316,11 @@ async fn read_target_intent(
 
 // An atomic operation will not conflict with previous values.
 fn is_atomic_operation(write: &WriteRequest) -> bool {
-    match write {
+    matches!(
+        write,
         WriteRequest::Put(put)
-            if put.conditions.is_empty() && put.put_type == PutType::AddI64 as i32 =>
-        {
-            true
-        }
-        _ => false,
-    }
+            if put.conditions.is_empty() && put.put_type == PutType::AddI64 as i32
+    )
 }
 
 #[cfg(test)]
@@ -351,9 +336,9 @@ mod tests {
     use tempdir::TempDir;
 
     use super::*;
-    use crate::engine::{create_group_engine, WriteStates};
-    use crate::replica::eval::latch::local::LocalLatchManager;
+    use crate::engine::{WriteStates, create_group_engine};
     use crate::replica::eval::LatchManager;
+    use crate::replica::eval::latch::local::LocalLatchManager;
 
     #[derive(Default)]
     struct NotifyLatchGuard {
@@ -387,12 +372,14 @@ mod tests {
     #[test]
     fn apply_nop() {
         assert!(apply_put_op(PutType::Nop, None, vec![]).unwrap().is_none());
-        assert!(apply_put_op(PutType::Nop, Some(&Value::tombstone(123)), vec![])
-            .unwrap()
-            .is_none());
-        assert!(apply_put_op(PutType::Nop, Some(&Value::with_value(vec![], 123)), vec![])
-            .unwrap()
-            .is_none());
+        assert!(
+            apply_put_op(PutType::Nop, Some(&Value::tombstone(123)), vec![]).unwrap().is_none()
+        );
+        assert!(
+            apply_put_op(PutType::Nop, Some(&Value::with_value(vec![], 123)), vec![])
+                .unwrap()
+                .is_none()
+        );
     }
 
     fn commit_values(engine: &GroupEngine, key: &[u8], values: &[Value]) {
@@ -408,11 +395,11 @@ mod tests {
     }
 
     fn commit_eval_result(engine: &GroupEngine, eval_result: Option<EvalResult>) {
-        if let Some(eval_result) = eval_result {
-            if let Some(batch) = eval_result.batch {
-                let wb = WriteBatch::new(&batch.data);
-                engine.commit(wb, WriteStates::default(), false).unwrap();
-            }
+        if let Some(eval_result) = eval_result
+            && let Some(batch) = eval_result.batch
+        {
+            let wb = WriteBatch::new(&batch.data);
+            engine.commit(wb, WriteStates::default(), false).unwrap();
         }
     }
 
@@ -763,7 +750,9 @@ mod tests {
                         .unwrap();
                 commit_eval_result(&engine_clone, eval_result);
 
-                info!("txn {i} write intent with start version {start_version}, commit version {commit_version}");
+                info!(
+                    "txn {i} write intent with start version {start_version}, commit version {commit_version}"
+                );
             });
             handles.push(handle);
         }

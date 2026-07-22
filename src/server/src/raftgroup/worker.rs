@@ -28,7 +28,7 @@ use raft::{SoftState, StateRole};
 use raft_engine::{Engine, LogBatch};
 use sekas_api::server::v1::{ChangeReplicas, RaftRole, ReplicaDesc};
 use sekas_runtime::TaskGroup;
-use tokio::time::{interval, Interval, MissedTickBehavior};
+use tokio::time::{Interval, MissedTickBehavior, interval};
 
 use super::applier::{Applier, ReplicaCache};
 use super::fsm::StateMachine;
@@ -41,7 +41,7 @@ use super::snap::{RecycleSnapMode, SnapManager};
 use super::{RaftManager, ReadPolicy};
 use crate::raftgroup::monitor::record_perf_point;
 use crate::serverpb::v1::{EvalResult, RaftMessage};
-use crate::{record_latency, RaftConfig, Result};
+use crate::{RaftConfig, Result, record_latency};
 
 pub enum Request {
     Read { policy: ReadPolicy, sender: oneshot::Sender<Result<()>> },

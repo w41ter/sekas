@@ -16,9 +16,9 @@
 use log::info;
 use sekas_api::server::v1::*;
 
+use crate::Result;
 use crate::replica::ExecCtx;
 use crate::schedule::MoveReplicasProvider;
-use crate::Result;
 
 pub(crate) async fn move_replicas(
     ctx: &ExecCtx,

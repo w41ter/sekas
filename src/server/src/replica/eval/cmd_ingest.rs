@@ -13,9 +13,9 @@
 // limitations under the License.
 use sekas_api::server::v1::ValueSet;
 
+use crate::Result;
 use crate::engine::{GroupEngine, WriteBatch};
 use crate::serverpb::v1::{EvalResult, WriteBatchRep};
-use crate::Result;
 
 pub async fn ingest_value_set(
     engine: &GroupEngine,
@@ -54,7 +54,7 @@ mod tests {
     use tempdir::TempDir;
 
     use super::*;
-    use crate::engine::{create_group_engine, WriteStates};
+    use crate::engine::{WriteStates, create_group_engine};
 
     const SHARD_ID: u64 = 1;
 

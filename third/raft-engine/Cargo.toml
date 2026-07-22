@@ -76,7 +76,6 @@ std_fs = []
 nightly_group = ["nightly", "swap"]
 
 [dependencies.raft]
-git = "https://github.com/w41ter/raft-rs.git"
+path = "../raft-rs"
 features = ["prost-codec", "default-logger"]
 default-features = false
-branch = "prost-0.11"

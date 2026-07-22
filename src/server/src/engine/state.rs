@@ -17,9 +17,9 @@ use std::sync::Arc;
 
 use sekas_api::server::v1::*;
 
+use crate::Result;
 use crate::constants::STATE_REPLICA_ID;
 use crate::serverpb::v1::*;
-use crate::Result;
 
 /// A structure supports saving and loading local states.
 ///

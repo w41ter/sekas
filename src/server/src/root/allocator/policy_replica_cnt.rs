@@ -20,10 +20,10 @@ use sekas_api::server::v1::{NodeDesc, ReplicaDesc};
 
 use super::source::NodeFilter;
 use super::{AllocSource, ReallocateReplica, ReplicaAction};
-use crate::constants::{REPLICA_PER_GROUP, ROOT_GROUP_ID};
-use crate::root::allocator::BalanceStatus;
-use crate::root::ClusterStats;
 use crate::Result;
+use crate::constants::{REPLICA_PER_GROUP, ROOT_GROUP_ID};
+use crate::root::ClusterStats;
+use crate::root::allocator::BalanceStatus;
 
 pub struct ReplicaCountPolicy<T: AllocSource> {
     alloc_source: Arc<T>,
@@ -43,7 +43,7 @@ impl<T: AllocSource> ReplicaCountPolicy<T> {
         let mut candidate_nodes = self.alloc_source.nodes(NodeFilter::Schedulable);
 
         // skip the nodes already have group replicas.
-        candidate_nodes.retain(|n| !existing_replica_nodes.iter().any(|rn| *rn == n.id));
+        candidate_nodes.retain(|n| !existing_replica_nodes.contains(&n.id));
 
         // sort by alloc score
         candidate_nodes.sort_by(|n1, n2| {

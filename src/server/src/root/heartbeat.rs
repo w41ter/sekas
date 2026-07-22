@@ -18,16 +18,16 @@ use std::ops::Add;
 use std::sync::Arc;
 use std::vec;
 
-use log::{debug, error, info, trace, warn};
-use sekas_api::server::v1::watch_response::{update_event, UpdateEvent};
+use log::{error, info, warn};
+use sekas_api::server::v1::watch_response::{UpdateEvent, update_event};
 use sekas_api::server::v1::*;
 use tokio::time::Instant;
 
 use super::{HeartbeatTask, Root, Schema};
+use crate::Result;
 use crate::constants::ROOT_GROUP_ID;
 use crate::root::metrics;
 use crate::root::schema::ReplicaNodes;
-use crate::Result;
 
 impl Root {
     pub async fn send_heartbeat(&self, schema: Arc<Schema>, tasks: &[HeartbeatTask]) -> Result<()> {
@@ -113,13 +113,13 @@ impl Root {
                         match resp.info.as_ref().unwrap() {
                             piggyback_response::Info::SyncRoot(_)
                             | piggyback_response::Info::CollectMovingShardState(_) => {}
-                            piggyback_response::Info::CollectStats(ref resp) => {
+                            piggyback_response::Info::CollectStats(resp) => {
                                 self.handle_collect_stats(&schema, resp, n.to_owned()).await?
                             }
-                            piggyback_response::Info::CollectGroupDetail(ref resp) => {
+                            piggyback_response::Info::CollectGroupDetail(resp) => {
                                 self.handle_group_detail(&schema, resp, &groups).await?
                             }
-                            piggyback_response::Info::CollectScheduleState(ref resp) => {
+                            piggyback_response::Info::CollectScheduleState(resp) => {
                                 self.handle_schedule_state(resp).await?
                             }
                         }
@@ -163,9 +163,7 @@ impl Root {
                 cap.leader_count = new_leader_count;
                 info!(
                     "update node stats by heartbeat response. node={}, replica_count={}, leader_count={}",
-                    node.id,
-                    cap.replica_count,
-                    cap.leader_count,
+                    node.id, cap.replica_count, cap.leader_count,
                 );
                 node.capacity = Some(cap);
                 schema.update_node(node).await?;
@@ -232,9 +230,7 @@ impl Root {
             metrics::ROOT_UPDATE_REPLICA_STATE_TOTAL.heartbeat.inc();
             info!(
                 "attempt update replica_state from heartbeat response. group={}, replica={}, state={:?}",
-                state.group_id,
-                state.replica_id,
-                state,
+                state.group_id, state.replica_id, state,
             );
             changed_group_states.insert(state.group_id);
         }

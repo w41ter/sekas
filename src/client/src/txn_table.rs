@@ -111,9 +111,11 @@ impl TxnStateTable {
         let hash_tag = system::txn::hash_tag(start_version);
         let request = TxnWriteRequest {
             hash_tag,
-            puts: vec![WriteBuilder::new(keys::txn_heartbeat_key(hash_tag, start_version))
-                .expect_exists()
-                .ensure_put(heartbeat_value)],
+            puts: vec![
+                WriteBuilder::new(keys::txn_heartbeat_key(hash_tag, start_version))
+                    .expect_exists()
+                    .ensure_put(heartbeat_value),
+            ],
             ..Default::default()
         };
 
@@ -254,9 +256,7 @@ impl TxnStateTable {
             let (group_state, shard_desc) = router.find_shard(table::txn_table_id(), txn_prefix)?;
             trace!(
                 "scan txn keys, group: {} shard {}, version: {}",
-                group_state.id,
-                shard_desc.id,
-                start_version
+                group_state.id, shard_desc.id, start_version
             );
 
             let mut group_client = GroupClient::new(group_state, self.client.clone());
@@ -271,7 +271,7 @@ impl TxnStateTable {
             match group_client.request(&request).await {
                 Ok(Response::Scan(resp)) => return Ok(resp),
                 Ok(_) => {
-                    return Err(Error::Internal("invalid response type, Scan is required".into()))
+                    return Err(Error::Internal("invalid response type, Scan is required".into()));
                 }
                 Err(err) => retry_state.retry(err).await?,
             }

@@ -16,7 +16,7 @@
 use log::{debug, info};
 use sekas_api::server::v1::*;
 
-use super::eval::{ingest_value_set, LatchManager};
+use super::eval::{LatchManager, ingest_value_set};
 use super::{LeaseState, Replica, ReplicaInfo};
 use crate::engine::WriteBatch;
 use crate::serverpb::v1::*;
@@ -187,7 +187,8 @@ impl Replica {
         if is_moving_shard_finished(info, desc, &lease_state.descriptor) {
             info!(
                 "this moving shard has been committed, skip commit request. replica={}, group={}, desc={}",
-                    info.replica_id, info.group_id, desc);
+                info.replica_id, info.group_id, desc
+            );
             Ok(false)
         } else if lease_state.move_shard_state.is_none() || !lease_state.is_same_shard_moving(desc)
         {
@@ -200,7 +201,8 @@ impl Replica {
         {
             info!(
                 "this moving shard has been committed, skip commit request. replica={}, group={}, desc={}",
-                info.replica_id, info.group_id, desc);
+                info.replica_id, info.group_id, desc
+            );
             Ok(false)
         } else {
             Ok(true)

@@ -18,10 +18,10 @@ use std::time::Duration;
 
 use futures::StreamExt;
 use log::{info, trace, warn};
+use sekas_api::Epoch;
 use sekas_api::server::v1::watch_response::delete_event::Event as DeleteEvent;
 use sekas_api::server::v1::watch_response::update_event::Event as UpdateEvent;
 use sekas_api::server::v1::*;
-use sekas_api::Epoch;
 use tokio::task::JoinHandle;
 use tonic::Streaming;
 

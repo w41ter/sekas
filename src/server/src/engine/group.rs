@@ -351,7 +351,7 @@ impl GroupEngine {
         Ok(())
     }
 
-    pub fn snapshot(&self, shard_id: u64, mode: SnapshotMode) -> Result<Snapshot> {
+    pub fn snapshot(&self, shard_id: u64, mode: SnapshotMode) -> Result<Snapshot<'_>> {
         use rocksdb::{Direction, IteratorMode, ReadOptions};
 
         let desc = self.shard_desc(shard_id)?;
@@ -385,7 +385,7 @@ impl GroupEngine {
         Ok(Snapshot::new(table_id, iter, mode, &desc))
     }
 
-    pub fn raw_iter(&self) -> Result<RawIterator> {
+    pub fn raw_iter(&self) -> Result<RawIterator<'_>> {
         use rocksdb::{IteratorMode, ReadOptions};
 
         let opts = ReadOptions::default();
@@ -472,7 +472,7 @@ impl GroupEngine {
     }
 
     #[inline]
-    fn cf_handle(&self) -> Arc<rocksdb::BoundColumnFamily> {
+    fn cf_handle(&self) -> Arc<rocksdb::BoundColumnFamily<'_>> {
         self.raw_db.cf_handle(&self.name).expect("column family handle")
     }
 
@@ -733,11 +733,11 @@ mod keys {
         let mut buf = Vec::with_capacity(buf_len);
         buf.extend_from_slice(table_id.to_le_bytes().as_slice());
         let mut cursor = Cursor::new(key);
-        while !cursor.is_empty() {
+        while !cursor_remaining_is_empty(&cursor) {
             let mut group = [0u8; 8];
             let mut size = cursor.read(&mut group[..]).unwrap() as u8;
             debug_assert_ne!(size, 0);
-            if size == 8 && !cursor.is_empty() {
+            if size == 8 && !cursor_remaining_is_empty(&cursor) {
                 size += 1;
             }
             buf.extend_from_slice(group.as_slice());
@@ -770,13 +770,17 @@ mod keys {
         let num_groups = encoded_user_key.len() / 9;
         let mut buf = Vec::with_capacity(num_groups * 8);
         let mut cursor = Cursor::new(encoded_user_key);
-        while !cursor.is_empty() {
+        while !cursor_remaining_is_empty(&cursor) {
             let mut group = [0u8; 9];
             let _ = cursor.read(&mut group[..]).unwrap();
             let num_element = std::cmp::min((group[8] - b'0') as usize, 8);
             buf.extend_from_slice(&group[..num_element]);
         }
         buf
+    }
+
+    fn cursor_remaining_is_empty(cursor: &std::io::Cursor<&[u8]>) -> bool {
+        cursor.position() as usize >= cursor.get_ref().len()
     }
 
     #[inline]
@@ -1005,7 +1009,7 @@ mod tests {
             right_version: u64,
         }
 
-        let tests = vec![
+        let tests = [
             // 1. compare version
             Less { left: b"1", left_version: 1, right: b"1", right_version: 0 },
             Less { left: b"1", left_version: 256, right: b"1", right_version: 255 },

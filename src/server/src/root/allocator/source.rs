@@ -12,15 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::collections::hash_map::Entry;
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::sync::{Arc, Mutex};
 
 use sekas_api::server::v1::*;
 
 use super::RootShared;
-use crate::root::liveness::Liveness;
 use crate::Result;
+use crate::root::liveness::Liveness;
 
 pub enum NodeFilter {
     All,

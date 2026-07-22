@@ -35,7 +35,7 @@ impl TablePropertiesCollectorFactory for SplitKeyCollectorFactory {
     }
 
     fn name(&self) -> &CStr {
-        CStr::from_bytes_with_nul(b"sekas-split-key-collector-factory\0").expect("nul is provided")
+        c"sekas-split-key-collector-factory"
     }
 }
 
@@ -51,7 +51,7 @@ pub(crate) struct SplitKeyCollector {
 
 impl TablePropertiesCollector for SplitKeyCollector {
     fn name(&self) -> &CStr {
-        CStr::from_bytes_with_nul(b"sekas-split-key-collector\0").expect("nul is provide")
+        c"sekas-split-key-collector"
     }
 
     fn add_user_key(

@@ -13,10 +13,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::collections::hash_map::Entry;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::collections::hash_map::Entry;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use sekas_api::server::v1::*;
 use sekas_runtime::ExecutorOwner;

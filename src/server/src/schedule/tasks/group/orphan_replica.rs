@@ -78,7 +78,7 @@ impl RemoveOrphanReplica {
             let interval = Duration::from_secs(60);
             self.orphan_replicas
                 .iter()
-                .filter(|(_, &instant)| instant + interval < now)
+                .filter(|&(_, &instant)| instant + interval < now)
                 .map(|(&id, _)| id)
                 .collect::<HashSet<_>>()
         }

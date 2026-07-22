@@ -34,12 +34,11 @@ use sekas_runtime::TaskGroup;
 use self::job::StateChannel;
 use self::move_shard::{ForwardCtx, MoveShardController};
 pub use self::route_table::{RaftRouteTable, ReplicaRouteTable};
-use crate::constants::ROOT_GROUP_ID;
 use crate::engine::{Engines, GroupEngine, RawDb, StateEngine};
 use crate::raftgroup::snap::RecycleSnapMode;
 use crate::raftgroup::{ChannelManager, RaftGroup, RaftManager, SnapManager};
-use crate::replica::fsm::{GroupStateMachine, WatchHub};
 pub use crate::replica::Replica;
+use crate::replica::fsm::{GroupStateMachine, WatchHub};
 use crate::replica::{ExecCtx, LeaseState, LeaseStateObserver, ReplicaInfo};
 use crate::schedule::MoveReplicasProvider;
 use crate::serverpb::v1::*;
@@ -683,7 +682,9 @@ async fn open_group_engine(
             GroupEngine::create(cfg, raw_db, group_id, replica_id).await
         }
         None => {
-            panic!("group {group_id} replica {replica_id} open group engine: no such group engine exists");
+            panic!(
+                "group {group_id} replica {replica_id} open group engine: no such group engine exists"
+            );
         }
     }
 }
@@ -726,8 +727,8 @@ mod tests {
     use tempdir::TempDir;
 
     use super::*;
-    use crate::constants::INITIAL_EPOCH;
     use crate::RaftConfig;
+    use crate::constants::INITIAL_EPOCH;
 
     const TABLE_ID: u64 = 1;
     const NODE_ID: u64 = 2;

@@ -16,9 +16,9 @@
 use std::time::Duration;
 
 use log::trace;
+use sekas_api::Epoch;
 use sekas_api::server::v1::group_request_union::Request;
 use sekas_api::server::v1::*;
-use sekas_api::Epoch;
 use sekas_schema::shard;
 
 use super::{ExecCtx, Replica};

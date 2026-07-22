@@ -8,7 +8,7 @@ repository.workspace = true
 description = "The Sekas macro library."
 
 [lib]
-proc_macro = true
+proc-macro = true
 
 [dependencies]
 sekas-rock = { path = "../rock" }

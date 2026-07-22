@@ -259,7 +259,7 @@ mod tests {
     use tempdir::TempDir;
 
     use super::*;
-    use crate::engine::{create_group_engine, WriteBatch, WriteStates};
+    use crate::engine::{WriteBatch, WriteStates, create_group_engine};
     use crate::replica::eval::latch::local::LocalLatchManager;
 
     const SHARD_ID: u64 = 1;

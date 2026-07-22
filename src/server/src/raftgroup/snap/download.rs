@@ -27,9 +27,9 @@ use sekas_runtime::JoinHandle;
 use super::SnapManager;
 use crate::raftgroup::metrics::*;
 use crate::raftgroup::worker::Request;
-use crate::raftgroup::{retrive_snapshot, ChannelManager};
-use crate::serverpb::v1::{snapshot_chunk, SnapshotChunk, SnapshotFile, SnapshotMeta};
-use crate::{record_latency, Error, Result};
+use crate::raftgroup::{ChannelManager, retrive_snapshot};
+use crate::serverpb::v1::{SnapshotChunk, SnapshotFile, SnapshotMeta, snapshot_chunk};
+use crate::{Error, Result, record_latency};
 
 struct PartialFile {
     meta: SnapshotFile,
@@ -83,7 +83,7 @@ impl SnapshotBuilder {
         let str = OsString::from(name.clone());
         let path = self.base_dir.join(str);
         if let Some(parent) = path.parent() {
-            if !std::fs::try_exists(parent)? {
+            if !parent.try_exists()? {
                 std::fs::create_dir_all(parent)?;
             }
         }

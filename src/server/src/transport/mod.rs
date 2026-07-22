@@ -23,8 +23,8 @@ use sekas_client::*;
 
 pub(crate) use self::discovery::RootDiscovery;
 pub(crate) use self::resolver::AddressResolver;
-use crate::engine::StateEngine;
 use crate::Result;
+use crate::engine::StateEngine;
 
 #[derive(Clone)]
 pub(crate) struct TransportManager {

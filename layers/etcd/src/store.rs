@@ -15,9 +15,9 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+use futures::StreamExt;
 use futures::channel::mpsc;
 use futures::lock::Mutex;
-use futures::StreamExt;
 use prost::Message;
 use sekas_client::{AppError, AppResult};
 use sekas_rock::lexical::{lexical_next, lexical_next_boundary};

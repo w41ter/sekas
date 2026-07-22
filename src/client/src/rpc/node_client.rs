@@ -17,8 +17,8 @@ use std::time::Duration;
 
 use prost::Message;
 use sekas_api::server::v1::*;
-use tonic::transport::Channel;
 use tonic::IntoRequest;
+use tonic::transport::Channel;
 
 #[derive(Debug, Clone)]
 pub struct Client {
@@ -210,8 +210,8 @@ mod timeout_error_tests {
     use std::net::SocketAddr;
 
     use socket2::{Domain, Socket, Type};
-    use tonic::transport::Endpoint;
     use tonic::Code;
+    use tonic::transport::Endpoint;
 
     use super::{Client as NodeClient, *};
     use crate::error::retryable_rpc_err;

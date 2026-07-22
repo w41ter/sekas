@@ -13,10 +13,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#![feature(const_type_name)]
-#![feature(cursor_remaining)]
-#![feature(exclusive_range_pattern)]
-#![feature(fs_try_exists)]
+#![allow(clippy::cloned_ref_to_slice_refs)]
+#![allow(clippy::collapsible_if)]
+#![allow(clippy::manual_async_fn)]
+#![allow(clippy::manual_ok_err)]
+#![allow(clippy::manual_pop_if)]
+#![allow(clippy::manual_saturating_arithmetic)]
+#![allow(clippy::result_large_err)]
+#![allow(clippy::unnecessary_sort_by)]
 #![feature(linked_list_cursors)]
 
 mod bootstrap;

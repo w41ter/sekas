@@ -20,13 +20,13 @@ use sekas_api::server::v1::ScheduleState;
 use sekas_runtime::JoinHandle;
 
 use super::ScheduleStateObserver;
+use crate::ReplicaConfig;
 use crate::node::Replica;
 use crate::schedule::event_source::EventSource;
 use crate::schedule::provider::{GroupProviders, MoveReplicasProvider};
 use crate::schedule::scheduler::Scheduler;
 use crate::schedule::task::Task;
 use crate::transport::TransportManager;
-use crate::ReplicaConfig;
 
 pub(crate) fn setup_scheduler(
     cfg: ReplicaConfig,

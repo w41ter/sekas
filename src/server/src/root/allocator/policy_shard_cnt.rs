@@ -20,9 +20,9 @@ use log::debug;
 use sekas_api::server::v1::{GroupDesc, ShardDesc};
 
 use super::{AllocSource, ReallocateShard, ShardAction};
+use crate::Result;
 use crate::constants::ROOT_GROUP_ID;
 use crate::root::allocator::BalanceStatus;
-use crate::Result;
 
 pub struct ShardCountPolicy<T: AllocSource> {
     alloc_source: Arc<T>,

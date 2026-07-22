@@ -17,11 +17,11 @@ mod checkpoint;
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
-use std::sync::{mpsc, Arc};
+use std::sync::{Arc, mpsc};
 
 use log::{info, trace, warn};
 use sekas_api::server::v1::*;
-use sekas_api::{apply_config_delta, apply_shard_delta, Epoch};
+use sekas_api::{Epoch, apply_config_delta, apply_shard_delta};
 
 use super::ReplicaInfo;
 use crate::engine::{GroupEngine, MvccEntry, WriteBatch, WriteStates};
@@ -411,8 +411,7 @@ impl GroupStateMachine {
         for (shard_id, shard_desc) in std::mem::take(&mut self.move_out_shards) {
             trace!(
                 "shard {} is moved out from group {}, release all related watchers",
-                self.info.group_id,
-                shard_id
+                self.info.group_id, shard_id
             );
             // This shard has been moved out, remove the related watchers.
             self.watch_hub
@@ -700,11 +699,10 @@ fn apply_merge_shard(group_desc: &mut GroupDesc, merge_shard: MergeShard) -> Res
         ))
     })?;
     if left_shard.table_id != right_shard.table_id {
-        return Err(Error::InvalidData(
-                format!("apply merge shard but two shard from different table, left {} table {}, right {} table {}",
-                left_shard.id, left_shard.table_id,
-                right_shard.id, right_shard.table_id)
-            ));
+        return Err(Error::InvalidData(format!(
+            "apply merge shard but two shard from different table, left {} table {}, right {} table {}",
+            left_shard.id, left_shard.table_id, right_shard.id, right_shard.table_id
+        )));
     }
     let Some(RangePartition { start: left_start, end: left_end }) = &left_shard.range else {
         return Err(Error::InvalidData(format!(

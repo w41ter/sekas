@@ -14,8 +14,8 @@
 
 use std::time::Duration;
 
-use futures::channel::mpsc;
 use futures::StreamExt;
+use futures::channel::mpsc;
 use log::warn;
 use sekas_api::server::v1::report_request::GroupUpdates;
 use sekas_api::server::v1::{GroupDesc, ReplicaState, ReportRequest, ScheduleState};

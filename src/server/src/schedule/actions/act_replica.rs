@@ -18,10 +18,10 @@ use log::{debug, info, warn};
 use sekas_api::server::v1::*;
 
 use super::{Action, ActionState};
+use crate::Result;
 use crate::root::RemoteStore;
 use crate::schedule::scheduler::ScheduleContext;
 use crate::transport::TransportManager;
-use crate::Result;
 
 pub(crate) struct CreateReplicas {
     pub replicas: Vec<ReplicaDesc>,
@@ -73,13 +73,17 @@ impl Action for CreateReplicas {
                 Err(sekas_client::Error::Rpc(status))
                     if sekas_client::error::retryable_rpc_err(&status) && self.retry_count < 30 =>
                 {
-                    debug!("group {group_id} replica {replica_id} task {task_id} create replica {r:?}: {status}");
+                    debug!(
+                        "group {group_id} replica {replica_id} task {task_id} create replica {r:?}: {status}"
+                    );
                     self.retry_count += 1;
                     self.interval_ms = std::cmp::min(self.interval_ms * 2, 1000);
                     return ActionState::Pending(Some(Duration::from_millis(self.interval_ms)));
                 }
                 Err(e) => {
-                    warn!("group {group_id} replica {replica_id} task {task_id} abort creating replica {r:?}: {e}");
+                    warn!(
+                        "group {group_id} replica {replica_id} task {task_id} abort creating replica {r:?}: {e}"
+                    );
                     return ActionState::Aborted;
                 }
             }
@@ -115,18 +119,24 @@ impl Action for RemoveReplica {
         let replica = &self.replica;
         match self.remove_replica(replica, self.group.clone(), ctx.transport_manager).await {
             Ok(()) => {
-                info!("group {group_id} replica {replica_id} task {task_id} remove replica {replica:?} success");
+                info!(
+                    "group {group_id} replica {replica_id} task {task_id} remove replica {replica:?} success"
+                );
                 return ActionState::Done;
             }
             Err(sekas_client::Error::Rpc(status))
                 if sekas_client::error::retryable_rpc_err(&status) && self.retry_count < 3 =>
             {
-                debug!("group {group_id} replica {replica_id} task {task_id} remove replica {replica:?}: {status}");
+                debug!(
+                    "group {group_id} replica {replica_id} task {task_id} remove replica {replica:?}: {status}"
+                );
                 self.retry_count += 1;
                 ActionState::Pending(Some(Duration::from_secs(30)))
             }
             Err(e) => {
-                warn!("group {group_id} replica {replica_id} task {task_id} abort removing replica {replica:?}: {e}");
+                warn!(
+                    "group {group_id} replica {replica_id} task {task_id} abort removing replica {replica:?}: {e}"
+                );
                 ActionState::Aborted
             }
         }
@@ -148,10 +158,14 @@ impl Action for ClearReplicaState {
 
         let root_store = RemoteStore::new(ctx.transport_manager.clone());
         if let Err(e) = root_store.clear_replica_state(group_id, target_id).await {
-            warn!("group {group_id} replica {replica_id} task {task_id} abort clearing replica {target_id} state: {e}");
+            warn!(
+                "group {group_id} replica {replica_id} task {task_id} abort clearing replica {target_id} state: {e}"
+            );
             ActionState::Aborted
         } else {
-            info!("group {group_id} replica {replica_id} task {task_id} clear replica {target_id} state success");
+            info!(
+                "group {group_id} replica {replica_id} task {task_id} clear replica {target_id} state success"
+            );
             ActionState::Done
         }
     }

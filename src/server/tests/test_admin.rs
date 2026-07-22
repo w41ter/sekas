@@ -111,11 +111,9 @@ async fn admin_basic() {
     let new_db = {
         let cnt = c.list_database().await.unwrap().len();
 
-        assert!(sys_db
-            .get(sys_db_col.id, new_db_name.as_bytes().to_owned())
-            .await
-            .unwrap()
-            .is_none());
+        assert!(
+            sys_db.get(sys_db_col.id, new_db_name.as_bytes().to_owned()).await.unwrap().is_none()
+        );
 
         let new_db = c.create_database(new_db_name.to_owned()).await.unwrap();
 

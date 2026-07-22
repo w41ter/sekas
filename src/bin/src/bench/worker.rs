@@ -19,8 +19,8 @@ use log::trace;
 use rand::prelude::*;
 use sekas_client::Database;
 
-use super::metrics::*;
 use super::AppConfig;
+use super::metrics::*;
 
 pub struct Job {
     db: Database,
@@ -28,7 +28,7 @@ pub struct Job {
 
     consumed: usize,
     num_op: usize,
-    gen: Generator,
+    generator: Generator,
 }
 
 pub struct Generator {
@@ -78,7 +78,7 @@ impl Generator {
 impl Job {
     pub fn new(db: Database, table_id: u64, seed: u64, num_op: usize, cfg: AppConfig) -> Job {
         let limited = cfg.data.limited;
-        Job { db, table_id, consumed: 0, num_op, gen: Generator::new(seed, cfg, 0..limited) }
+        Job { db, table_id, consumed: 0, num_op, generator: Generator::new(seed, cfg, 0..limited) }
     }
 }
 
@@ -90,7 +90,7 @@ impl Iterator for Job {
             None
         } else {
             self.consumed += 1;
-            Some(self.gen.next_op())
+            Some(self.generator.next_op())
         }
     }
 }

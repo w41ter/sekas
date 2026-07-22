@@ -36,7 +36,7 @@ pub(crate) use self::cmd_scan::{merge_scan_response, scan};
 pub(crate) use self::cmd_split_shard::split_shard;
 pub(crate) use self::cmd_txn::{clear_intent, commit_intent, write_intent};
 pub(crate) use self::cmd_write::batch_write;
-pub(crate) use self::latch::{acquire_row_latches, remote, LatchGuard, LatchManager};
+pub(crate) use self::latch::{LatchGuard, LatchManager, acquire_row_latches, remote};
 use crate::serverpb::v1::EvalResult;
 
 pub fn add_shard(shard: ShardDesc) -> EvalResult {

@@ -14,8 +14,8 @@
 
 use proc_macro::TokenStream;
 use quote::quote;
-use syn::spanned::Spanned;
 use syn::ItemFn;
+use syn::spanned::Spanned;
 
 #[proc_macro_attribute]
 pub fn test(_args: TokenStream, item: TokenStream) -> TokenStream {

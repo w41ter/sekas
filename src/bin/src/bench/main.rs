@@ -17,8 +17,8 @@ use std::time::Duration;
 
 use clap::Parser;
 use log::{debug, info};
-use rand::rngs::OsRng;
 use rand::RngCore;
+use rand::rngs::OsRng;
 use sekas_client::{AppError, ClientOptions, Database, SekasClient, TableDesc};
 use sekas_runtime::sync::WaitGroup;
 use sekas_runtime::{Shutdown, ShutdownNotifier};
@@ -90,10 +90,10 @@ impl Command {
         for i in 0..cfg.worker.num_worker {
             let seed = base_seed + i as u64;
             spawn_worker(&ctx, cfg.clone(), i, seed, num_op, db.clone(), co.id);
-            if let Some(interval) = cfg.worker.start_intervals {
-                if recv.recv_timeout(interval).is_ok() {
-                    break;
-                }
+            if let Some(interval) = cfg.worker.start_intervals
+                && recv.recv_timeout(interval).is_ok()
+            {
+                break;
             }
         }
 

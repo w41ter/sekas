@@ -24,16 +24,16 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use futures::channel::mpsc;
 use futures::StreamExt;
+use futures::channel::mpsc;
 use log::{error, info, warn};
 use raft::prelude::{Snapshot, SnapshotMetadata};
 use sekas_runtime::JoinHandle;
 
 pub use self::create::dispatch_creating_snap_task;
 pub use self::download::dispatch_downloading_snap_task;
-use crate::serverpb::v1::SnapshotMeta;
 use crate::Result;
+use crate::serverpb::v1::SnapshotMeta;
 
 const SNAP_DATA: &str = "DATA";
 const SNAP_TEMP: &str = "TEMP";
@@ -119,9 +119,11 @@ impl SnapManager {
         for (replica_id, replica_dir) in list_numeric_path(root_dir)? {
             for (index, snap_dir) in list_numeric_path(&replica_dir)? {
                 let meta_name = snap_dir.join(SNAP_META);
-                if !std::fs::try_exists(&meta_name)? {
-                    warn!("replica {replica_id} recycles snap {index} since {SNAP_META} is not exists, dir {}",
-                        snap_dir.display());
+                if !meta_name.try_exists()? {
+                    warn!(
+                        "replica {replica_id} recycles snap {index} since {SNAP_META} is not exists, dir {}",
+                        snap_dir.display()
+                    );
                     sender.start_send((replica_id, snap_dir)).unwrap_or_default();
                     continue;
                 }
@@ -129,7 +131,9 @@ impl SnapManager {
                 let snapshot_meta = match SnapshotMeta::decode(&*bytes) {
                     Ok(meta) => meta,
                     Err(e) => {
-                        warn!("replica {replica_id} recycles snap {index} since decode {SNAP_META}: {e}");
+                        warn!(
+                            "replica {replica_id} recycles snap {index} since decode {SNAP_META}: {e}"
+                        );
                         sender.start_send((replica_id, snap_dir)).unwrap_or_default();
                         continue;
                     }
@@ -384,8 +388,8 @@ async fn recycle_snapshot(mut receiver: mpsc::UnboundedReceiver<(u64, PathBuf)>)
 #[cfg(test)]
 mod tests {
     use sekas_api::server::v1::GroupDesc;
-    use sekas_runtime::time::sleep;
     use sekas_runtime::ExecutorOwner;
+    use sekas_runtime::time::sleep;
     use tempdir::TempDir;
 
     use super::*;

@@ -20,8 +20,8 @@ use std::time::Duration;
 use anyhow::{Context, Error};
 use clap::Parser;
 use log::error;
-use rustyline::error::ReadlineError;
 use rustyline::Editor;
+use rustyline::error::ReadlineError;
 use sekas_client::{AppError, ClientOptions, Database, SekasClient};
 use sekas_parser::*;
 
@@ -122,7 +122,7 @@ impl Session {
                     return Ok(ExecuteResult::Msg(format!(
                         "db {} already exists",
                         create_db_stmt.db_name
-                    )))
+                    )));
                 }
                 Err(AppError::NotFound(_)) => {
                     // no such db exists, create it.
@@ -275,8 +275,8 @@ impl Session {
 }
 
 async fn editor_main(cmd: Command) {
-    use rustyline::history::MemHistory;
     use rustyline::Config;
+    use rustyline::history::MemHistory;
 
     let mut session = new_session(cmd).await.expect("new session");
     let cfg = Config::builder().build();

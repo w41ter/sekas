@@ -15,8 +15,12 @@
 use std::error::Error;
 
 fn main() -> Result<(), Box<dyn Error>> {
-    std::env::set_var("PROTOC", protoc_build::PROTOC);
-    std::env::set_var("PROTOC_INCLUDE", protoc_build::PROTOC_INCLUDE);
+    // SAFETY: build scripts run before protoc is invoked and this script does
+    // not spawn threads that concurrently read or mutate the process env.
+    unsafe {
+        std::env::set_var("PROTOC", protoc_build::PROTOC);
+        std::env::set_var("PROTOC_INCLUDE", protoc_build::PROTOC_INCLUDE);
+    }
 
     tonic_build::configure().compile(
         &["proto/auth.proto", "proto/kv.proto", "proto/record.proto", "proto/version.proto"],

@@ -193,6 +193,8 @@ fn display_histogram(name: &str, h: &Histogram, interval: Duration, count: u64) 
     let seconds = interval.as_secs_f64();
     let qps = (h.count as f64) / seconds;
 
-    println!("{name} - Takes(s): {:.1}, Count: {}, OPS: {:.1}, Avg(us): {}, Min(us): {}, Max(us): {}, 99th(us): {}, 99.9th(us): {}, 99.99th(us): {}",
-        seconds, count, qps, h.avg, h.min, h.max, h.p99, h.p999, h.p9999);
+    println!(
+        "{name} - Takes(s): {:.1}, Count: {}, OPS: {:.1}, Avg(us): {}, Min(us): {}, Max(us): {}, 99th(us): {}, 99.9th(us): {}, 99.99th(us): {}",
+        seconds, count, qps, h.avg, h.min, h.max, h.p99, h.p999, h.p9999
+    );
 }

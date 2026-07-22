@@ -22,7 +22,7 @@ use sekas_api::server::v1::RaftRole;
 
 use super::applier::{Applier, ReplicaCache};
 use super::fsm::StateMachine;
-use super::monitor::{record_perf_point, AdvancePerfContext};
+use super::monitor::{AdvancePerfContext, record_perf_point};
 use super::snap::apply::apply_snapshot;
 use super::storage::Storage;
 use super::{RaftManager, SnapManager};
@@ -329,7 +329,7 @@ where
     }
 
     #[inline]
-    pub fn raft_status(&self) -> raft::Status {
+    pub fn raft_status(&self) -> raft::Status<'_> {
         self.raw_node.status()
     }
 
@@ -453,7 +453,8 @@ async fn try_apply_fresh_snapshot<M>(
         if applier.flushed_index() < apply_state.index {
             info!(
                 "replica {replica_id} apply fresh snapshot index {} term {}, local applied index {}",
-                apply_state.index, apply_state.term,
+                apply_state.index,
+                apply_state.term,
                 applier.flushed_index()
             );
             apply_snapshot(replica_id, snap_mgr, applier, &info.to_raft_snapshot());
@@ -502,11 +503,11 @@ mod tests {
     use sekas_runtime::ExecutorOwner;
 
     use super::*;
+    use crate::RaftConfig;
     use crate::node::RaftRouteTable;
     use crate::raftgroup::io::LogWriter;
-    use crate::raftgroup::{write_initial_state, AddressResolver, ChannelManager};
+    use crate::raftgroup::{AddressResolver, ChannelManager, write_initial_state};
     use crate::serverpb::v1::{ApplyState, EvalResult, SnapshotMeta};
-    use crate::RaftConfig;
 
     struct SimpleStateMachine {
         current_snapshot: Option<PathBuf>,

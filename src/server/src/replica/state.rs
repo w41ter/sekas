@@ -19,11 +19,11 @@ use std::task::Waker;
 
 use futures::channel::mpsc;
 use log::info;
-use sekas_api::server::v1::*;
 use sekas_api::Epoch;
+use sekas_api::server::v1::*;
 
-use super::fsm::StateMachineObserver;
 use super::ReplicaInfo;
+use super::fsm::StateMachineObserver;
 use crate::node::job::StateChannel;
 use crate::raftgroup::StateObserver;
 use crate::schedule::ScheduleStateObserver;

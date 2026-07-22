@@ -150,8 +150,8 @@ mod tests {
     use tempdir::TempDir;
 
     use super::*;
-    use crate::engine::{WriteBatch, WriteStates};
     use crate::EngineConfig;
+    use crate::engine::{WriteBatch, WriteStates};
 
     async fn create_engine(dir: &Path, group_id: u64, shard_id: u64) -> GroupEngine {
         use crate::bootstrap::open_engine_with_default_config;

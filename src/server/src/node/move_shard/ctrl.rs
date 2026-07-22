@@ -15,21 +15,21 @@
 
 use std::sync::Arc;
 
-use futures::channel::mpsc;
 use futures::StreamExt;
+use futures::channel::mpsc;
 use log::{debug, error, info, trace, warn};
+use sekas_api::Epoch;
 use sekas_api::server::v1::group_request_union::Request;
 use sekas_api::server::v1::group_response_union::Response;
 use sekas_api::server::v1::*;
-use sekas_api::Epoch;
 use sekas_client::MoveShardClient;
 use sekas_runtime::JoinHandle;
 
-use crate::node::metrics::*;
 use crate::node::Replica;
+use crate::node::metrics::*;
 use crate::serverpb::v1::*;
 use crate::transport::TransportManager;
-use crate::{record_latency, NodeConfig, Result};
+use crate::{NodeConfig, Result, record_latency};
 
 #[derive(Debug)]
 pub struct ForwardCtx {
@@ -177,7 +177,11 @@ impl MoveShardCoordinator {
                 // Since the epoch is not matched, this moving shard should be rollback.
                 warn!(
                     "abort moving shard since epoch not match, new epoch is {}. replica={}, group={}, desc={}",
-                        Epoch(group_desc.epoch), self.replica_id, self.group_id, self.desc);
+                    Epoch(group_desc.epoch),
+                    self.replica_id,
+                    self.group_id,
+                    self.desc
+                );
                 self.abort_moving_shard().await;
             }
             Err(err) => {

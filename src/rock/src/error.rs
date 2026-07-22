@@ -20,7 +20,7 @@ use std::panic::Location;
 ///
 /// Its location is constructed via the [`track_caller`] macro.
 ///
-/// - [`track_caller`]: https://doc.rust-lang.org/reference/attributes/codegen.html#the-track_caller-attribute
+/// - [`track_caller`][]: https://doc.rust-lang.org/reference/attributes/codegen.html#the-track_caller-attribute
 struct StackFrame {
     /// The message attached to this frame.
     message: &'static str,
@@ -32,7 +32,7 @@ struct StackFrame {
 /// a set of virtual stack frames (containing a static message and a caller
 /// location).
 ///
-/// - [`Error`]: std::error::Error
+/// - [`Error`][]: std::error::Error
 pub struct ContextError<E: Error + 'static> {
     /// The frames attached to this error.
     frames: Vec<StackFrame>,
@@ -42,7 +42,7 @@ pub struct ContextError<E: Error + 'static> {
 
 /// Construct [`ContextError`] from a generic [`Error`].
 ///
-/// - [`Error`]: std::error::Error
+/// - [`Error`][]: std::error::Error
 impl<E: Error> From<E> for ContextError<E> {
     #[inline]
     fn from(source: E) -> Self {

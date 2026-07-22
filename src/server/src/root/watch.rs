@@ -18,8 +18,8 @@ use std::task::{Poll, Waker};
 use std::vec;
 
 use futures::Stream;
-use sekas_api::server::v1::watch_response::{DeleteEvent, UpdateEvent};
 use sekas_api::server::v1::WatchResponse;
+use sekas_api::server::v1::watch_response::{DeleteEvent, UpdateEvent};
 use tokio::sync::{RwLock, RwLockWriteGuard};
 
 use crate::{Error, Result};
@@ -49,7 +49,7 @@ impl<'a> WatcherInitializer<'a> {
 }
 
 impl WatchHub {
-    pub async fn create_watcher(&self) -> (Watcher, WatcherInitializer) {
+    pub async fn create_watcher(&self) -> (Watcher, WatcherInitializer<'_>) {
         let mut inner = self.inner.write().await;
         inner.next_watcher_id += 1;
         let watcher_inner = Arc::new(Mutex::new(WatcherInner::default()));

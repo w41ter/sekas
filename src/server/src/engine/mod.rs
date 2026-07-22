@@ -45,7 +45,7 @@ pub(crate) struct RawDb {
 
 impl RawDb {
     #[inline]
-    pub fn cf_handle(&self, name: &str) -> Option<Arc<rocksdb::BoundColumnFamily>> {
+    pub fn cf_handle(&self, name: &str) -> Option<Arc<rocksdb::BoundColumnFamily<'_>>> {
         self.db.cf_handle(name)
     }
 
@@ -78,7 +78,7 @@ impl RawDb {
         &self,
         cf: &impl rocksdb::AsColumnFamilyRef,
         key: K,
-    ) -> DbResult<Option<rocksdb::DBPinnableSlice>> {
+    ) -> DbResult<Option<rocksdb::DBPinnableSlice<'_>>> {
         self.db.get_pinned_cf(cf, key)
     }
 
@@ -88,7 +88,7 @@ impl RawDb {
         cf: &impl rocksdb::AsColumnFamilyRef,
         key: K,
         readopts: &rocksdb::ReadOptions,
-    ) -> DbResult<Option<rocksdb::DBPinnableSlice>> {
+    ) -> DbResult<Option<rocksdb::DBPinnableSlice<'_>>> {
         self.db.get_pinned_cf_opt(cf, key, readopts)
     }
 

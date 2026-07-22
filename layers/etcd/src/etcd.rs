@@ -13,6 +13,7 @@
 // limitations under the License.
 
 pub mod etcdserverpb {
+    #![allow(dead_code)]
     #![allow(clippy::all)]
     tonic::include_proto!("etcdserverpb");
 
@@ -89,11 +90,13 @@ pub mod etcdserverpb {
 }
 
 pub mod authpb {
+    #![allow(dead_code)]
     #![allow(clippy::all)]
     tonic::include_proto!("authpb");
 }
 
 pub mod recordpb {
+    #![allow(dead_code)]
     #![allow(clippy::all)]
     tonic::include_proto!("recordpb");
 

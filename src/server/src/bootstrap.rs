@@ -28,8 +28,8 @@ use crate::constants::*;
 use crate::engine::{Engines, StateEngine};
 use crate::node::Node;
 use crate::root::Root;
-use crate::serverpb::v1::raft_server::RaftServer;
 use crate::serverpb::v1::NodeIdent;
+use crate::serverpb::v1::raft_server::RaftServer;
 use crate::transport::TransportManager;
 use crate::{Config, Error, Result, Server};
 

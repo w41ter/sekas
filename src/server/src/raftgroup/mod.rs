@@ -34,7 +34,7 @@ use sekas_runtime::{JoinHandle, TaskGroup};
 pub use self::fsm::{ApplyEntry, SnapshotBuilder, StateMachine};
 pub use self::group::RaftGroup;
 use self::io::LogWriter;
-pub use self::io::{retrive_snapshot, AddressResolver, ChannelManager};
+pub use self::io::{AddressResolver, ChannelManager, retrive_snapshot};
 pub use self::monitor::*;
 pub use self::snap::SnapManager;
 pub use self::storage::{destory as destory_storage, write_initial_state};

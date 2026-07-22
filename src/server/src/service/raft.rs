@@ -17,10 +17,10 @@ use futures::StreamExt;
 use log::{error, warn};
 use tonic::{Request, Response, Status, Streaming};
 
-use crate::raftgroup::snap::send::{send_snapshot, SnapshotChunkStream};
+use crate::Server;
+use crate::raftgroup::snap::send::{SnapshotChunkStream, send_snapshot};
 use crate::serverpb::v1::*;
 use crate::service::metrics::*;
-use crate::Server;
 
 #[tonic::async_trait]
 impl raft_server::Raft for Server {

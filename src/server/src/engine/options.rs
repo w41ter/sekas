@@ -14,8 +14,8 @@
 
 use rocksdb::{BlockBasedIndexType, BlockBasedOptions, Cache, Options};
 
-use crate::engine::properties::SplitKeyCollectorFactory;
 use crate::DbConfig;
+use crate::engine::properties::SplitKeyCollectorFactory;
 
 pub fn to_rocksdb_options(cfg: &DbConfig) -> rocksdb::Options {
     let mut opts = Options::default();

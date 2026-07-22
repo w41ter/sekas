@@ -815,7 +815,10 @@ impl Root {
             .allocate_group_replica(existing_replicas.into_iter().collect(), requested_cnt as usize)
             .await?;
         if nodes.len() != requested_cnt as usize {
-            warn!("non enough nodes to allocate replicas, exist nodes: {}, requested: {requested_cnt}", nodes.len());
+            warn!(
+                "non enough nodes to allocate replicas, exist nodes: {}, requested: {requested_cnt}",
+                nodes.len()
+            );
             return Err(Error::ResourceExhausted("no enough nodes".to_owned()));
         }
 
@@ -1007,7 +1010,7 @@ impl HeartbeatQueue {
 #[cfg(test)]
 mod root_test {
     use futures::StreamExt;
-    use sekas_api::server::v1::watch_response::{update_event, UpdateEvent};
+    use sekas_api::server::v1::watch_response::{UpdateEvent, update_event};
     use sekas_api::server::v1::{DatabaseDesc, GroupDesc};
     use sekas_rock::fn_name;
     use tempdir::TempDir;

@@ -17,7 +17,7 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use tonic::body::BoxBody;
-use tonic::codegen::{empty_body, http, BoxFuture, Service};
+use tonic::codegen::{BoxFuture, Service, empty_body, http};
 use tonic::transport::NamedService;
 
 #[crate::async_trait]
@@ -116,7 +116,7 @@ impl Router {
                 return Ok(http::Response::builder()
                     .status(http::StatusCode::NOT_FOUND)
                     .body(empty_body())
-                    .unwrap())
+                    .unwrap());
             }
         };
 

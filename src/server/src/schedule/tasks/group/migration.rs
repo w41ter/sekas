@@ -17,13 +17,13 @@ use std::sync::Arc;
 use log::debug;
 
 use super::ActionTaskWithLocks;
+use crate::Error;
 use crate::schedule::actions::*;
 use crate::schedule::event_source::EventSource;
 use crate::schedule::provider::GroupProviders;
 use crate::schedule::scheduler::ScheduleContext;
 use crate::schedule::task::{Task, TaskState};
 use crate::schedule::tasks::{ActionTask, REPLICA_MIGRATION_TASK_ID};
-use crate::Error;
 
 pub struct ReplicaMigration {
     providers: Arc<GroupProviders>,
@@ -82,8 +82,10 @@ impl Task for ReplicaMigration {
                 ctx.delegate(Box::new(ActionTaskWithLocks::new(locks, action_task)));
                 move_replicas.sender.send(Ok(())).unwrap_or_default();
             } else {
-                debug!("group {} replica {} reject moving replicas requests because config change already exists",
-                    ctx.group_id, ctx.replica_id);
+                debug!(
+                    "group {} replica {} reject moving replicas requests because config change already exists",
+                    ctx.group_id, ctx.replica_id
+                );
                 move_replicas
                     .sender
                     .send(Err(Error::AlreadyExists("config change".to_owned())))

@@ -13,10 +13,10 @@
 // limitations under the License.
 use raft::prelude::Snapshot;
 
-use super::{SnapManager, SNAP_DATA};
+use super::{SNAP_DATA, SnapManager};
+use crate::raftgroup::StateMachine;
 use crate::raftgroup::applier::Applier;
 use crate::raftgroup::metrics::*;
-use crate::raftgroup::StateMachine;
 use crate::record_latency;
 
 pub fn apply_snapshot<M: StateMachine>(

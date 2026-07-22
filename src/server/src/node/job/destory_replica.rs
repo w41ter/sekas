@@ -21,7 +21,7 @@ use crate::engine::{Engines, GroupEngine, RawDb, StateEngine};
 use crate::node::metrics::*;
 use crate::raftgroup::destory_storage;
 use crate::serverpb::v1::ReplicaLocalState;
-use crate::{record_latency, Error, Result};
+use crate::{Error, Result, record_latency};
 
 /// Clean a group engine and save the replica state to
 /// [`ReplicaLocalState::Tombstone`].

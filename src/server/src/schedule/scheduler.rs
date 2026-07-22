@@ -21,13 +21,13 @@ use std::time::{Duration, Instant};
 
 use futures::Future;
 
+use super::ScheduleStateObserver;
 use super::event_source::EventSource;
 use super::task::{Task, TaskState};
-use super::tasks::{GroupLockTable, GENERATED_TASK_ID};
-use super::ScheduleStateObserver;
+use super::tasks::{GENERATED_TASK_ID, GroupLockTable};
+use crate::ReplicaConfig;
 use crate::node::Replica;
 use crate::transport::TransportManager;
-use crate::ReplicaConfig;
 
 #[derive(Clone)]
 pub struct EventWaker {

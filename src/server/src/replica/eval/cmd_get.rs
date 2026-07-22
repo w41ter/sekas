@@ -43,9 +43,7 @@ pub(crate) async fn get<T: LatchManager>(
 
     trace!(
         "read key {:?} at shard {} with version {}",
-        req.user_key,
-        req.shard_id,
-        req.start_version
+        req.user_key, req.shard_id, req.start_version
     );
     read_key(engine, latch_mgr, req.shard_id, &req.user_key, req.start_version).await
 }
@@ -77,8 +75,10 @@ async fn read_key<T: LatchManager>(
                         .await?
                     {
                         if value.version <= start_version {
-                            trace!("get return resolve txn intent, shard_id {}, value version: {}, start version: {}",
-                                    shard_id, value.version, start_version);
+                            trace!(
+                                "get return resolve txn intent, shard_id {}, value version: {}, start version: {}",
+                                shard_id, value.version, start_version
+                            );
                             return Ok(Some(value));
                         }
                     }
@@ -108,7 +108,7 @@ mod tests {
     use tempdir::TempDir;
 
     use super::*;
-    use crate::engine::{create_group_engine, WriteBatch, WriteStates};
+    use crate::engine::{WriteBatch, WriteStates, create_group_engine};
     use crate::replica::eval;
 
     #[derive(Default)]

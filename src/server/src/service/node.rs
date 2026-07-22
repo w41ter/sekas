@@ -17,8 +17,8 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use async_stream::try_stream;
-use futures::channel::mpsc;
 use futures::StreamExt;
+use futures::channel::mpsc;
 use log::trace;
 use sekas_api::server::v1::group_request_union::Request as ShardRequest;
 use sekas_api::server::v1::group_response_union::Response as ShardResponse;
@@ -30,7 +30,7 @@ use tonic::{Request, Response, Status};
 use super::metrics::*;
 use crate::replica::ExecCtx;
 use crate::serverpb::v1::MoveShardEvent;
-use crate::{record_latency, record_latency_opt, Error, Server};
+use crate::{Error, Server, record_latency, record_latency_opt};
 
 pub struct GroupStream {
     inner: Pin<Box<dyn futures::Stream<Item = Result<GroupResponse, Status>> + Send>>,

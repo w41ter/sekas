@@ -13,15 +13,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::collections::hash_map::Entry;
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::sync::Arc;
 
 use futures::lock::Mutex;
 use lazy_static::lazy_static;
 use log::{debug, info, warn};
 use prost::Message;
-use sekas_api::server::v1::watch_response::{delete_event, update_event, DeleteEvent, UpdateEvent};
+use sekas_api::server::v1::watch_response::{DeleteEvent, UpdateEvent, delete_event, update_event};
 use sekas_api::server::v1::*;
 use sekas_rock::time::timestamp_nanos;
 use sekas_schema::system::table;

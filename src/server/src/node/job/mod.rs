@@ -16,4 +16,4 @@ mod destory_replica;
 mod report_state;
 
 pub(crate) use destory_replica::setup as setup_destory_replica;
-pub(crate) use report_state::{setup as setup_report_state, StateChannel};
+pub(crate) use report_state::{StateChannel, setup as setup_report_state};

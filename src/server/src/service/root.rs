@@ -18,7 +18,7 @@ use tonic::{Request, Response, Status};
 
 use super::metrics::*;
 use crate::root::Watcher;
-use crate::{record_latency, Error, Result, Server};
+use crate::{Error, Result, Server, record_latency};
 
 #[tonic::async_trait]
 impl root_server::Root for Server {

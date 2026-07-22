@@ -382,12 +382,14 @@ impl ScheduleContext {
             Err(crate::Error::AbortScheduleTask(_)) => return Ok(SchedResult::next()),
             Err(crate::Error::EpochNotMatch(new_group)) => {
                 warn!(
-  "shed leader meet epoch not match, abort task and retry allocator. group={group}, replica={replica}, new_group={new_group:?}");
+                    "shed leader meet epoch not match, abort task and retry allocator. group={group}, replica={replica}, new_group={new_group:?}"
+                );
                 return Ok(SchedResult::ack());
             }
             Err(err) => {
-                warn!("shed leader in source replica fail, retry in next tick: {err:?}. group={group}, replica={replica}",
-            );
+                warn!(
+                    "shed leader in source replica fail, retry in next tick: {err:?}. group={group}, replica={replica}",
+                );
                 metrics::RECONCILE_RETRY_TASK_TOTAL.reallocate_replica.inc();
                 return Err(err);
             }
@@ -434,10 +436,10 @@ impl ScheduleContext {
             }
             Err(crate::Error::AlreadyExists(_)) | Err(crate::Error::EpochNotMatch(_)) => {
                 warn!(
-            "move replica task aborted due to replica already changed. group={group}, src_node={}, dest_node={}",
-            task.src_node,
-            task.dest_node.as_ref().unwrap().id
-        );
+                    "move replica task aborted due to replica already changed. group={group}, src_node={}, dest_node={}",
+                    task.src_node,
+                    task.dest_node.as_ref().unwrap().id
+                );
                 Ok(SchedResult::ack())
             }
             Err(err) => {
@@ -486,7 +488,8 @@ impl ScheduleContext {
             Err(crate::Error::EpochNotMatch(new_group)) => {
                 warn!(
                     "transfer target meet epoch not match, abort transfer task. group={}, dest={}, new_group={:?}",
-                        task.group, task.target_replica, new_group);
+                    task.group, task.target_replica, new_group
+                );
                 return Ok(SchedResult::ack());
             }
             Err(err) => {
@@ -621,7 +624,8 @@ impl ScheduleContext {
             Err(crate::Error::EpochNotMatch(_)) => {
                 warn!(
                     "split shard meet epoch not match, abort split shard task. group={}, shard={}, new_shard={}",
-                        task.group_id, old_shard_id, new_shard_id);
+                    task.group_id, old_shard_id, new_shard_id
+                );
                 Ok(SchedResult::next())
             }
             Err(crate::Error::InvalidArgument(msg))
@@ -671,8 +675,7 @@ impl ScheduleContext {
             // TODO: find least-leader node.
             info!(
                 "attempt remove leader replica, so transfer leader to {} in node {}. group={}, replica={}",
-                target_replica.id,
-                target_replica.node_id, group.id, remove_replica
+                target_replica.id, target_replica.node_id, group.id, remove_replica
             );
             self.try_transfer_leader(group_id, target_replica.id).await?;
         }

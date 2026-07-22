@@ -28,7 +28,7 @@ use crate::metrics::*;
 use crate::range::RangeStream;
 use crate::retry::RetryState;
 use crate::{
-    record_latency, AppResult, Database, Error, RangeRequest, Result, SekasClient, TxnStateTable,
+    AppResult, Database, Error, RangeRequest, Result, SekasClient, TxnStateTable, record_latency,
 };
 
 #[derive(Debug, Default, Clone)]
@@ -429,9 +429,7 @@ impl Txn {
 
         trace!(
             "get key from shard {}, group: {}, start version: {}",
-            shard.id,
-            group.id,
-            start_version
+            shard.id, group.id, start_version
         );
 
         let mut group_client = GroupClient::new(group, self.db.client.clone());
@@ -677,8 +675,7 @@ impl WriteBatchContext {
 
         trace!(
             "commit txn, alloc txn version: {}, start version: {}",
-            self.commit_version,
-            self.start_version
+            self.commit_version, self.start_version
         );
 
         self.commit_txn().await?;
@@ -794,8 +791,7 @@ impl WriteBatchContext {
     async fn commit_txn(&mut self) -> Result<()> {
         trace!(
             "commit txn update txn table, start version: {}, commit version: {}",
-            self.start_version,
-            self.commit_version
+            self.start_version, self.commit_version
         );
         TxnStateTable::new(self.client.clone(), self.retry_state.timeout())
             .commit_txn(self.start_version, self.commit_version)
@@ -813,8 +809,7 @@ impl WriteBatchContext {
         tokio::spawn(async move {
             trace!(
                 "commit txn intents, start version: {}, commit version: {}",
-                self.start_version,
-                self.commit_version
+                self.start_version, self.commit_version
             );
             self.num_doing_writes = self.writes.len();
             for write in &mut self.writes {

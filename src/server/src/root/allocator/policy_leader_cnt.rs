@@ -22,8 +22,8 @@ use sekas_api::server::v1::{NodeDesc, RaftRole, ReplicaDesc, ReplicaRole};
 
 use super::source::NodeFilter;
 use super::{AllocSource, BalanceStatus, LeaderAction, TransferLeader};
-use crate::constants::ROOT_GROUP_ID;
 use crate::Result;
+use crate::constants::ROOT_GROUP_ID;
 
 pub struct LeaderCountPolicy<T: AllocSource> {
     alloc_source: Arc<T>,
@@ -165,13 +165,11 @@ impl<T: AllocSource> LeaderCountPolicy<T> {
             if (n2.1 == BalanceStatus::Underfull) && (n1.1 != BalanceStatus::Underfull) {
                 return Ordering::Less;
             }
-            return n2
-                .0
-                .capacity
+            n2.0.capacity
                 .as_ref()
                 .unwrap()
                 .leader_count
-                .cmp(&n1.0.capacity.as_ref().unwrap().leader_count);
+                .cmp(&n1.0.capacity.as_ref().unwrap().leader_count)
         });
         with_status
     }

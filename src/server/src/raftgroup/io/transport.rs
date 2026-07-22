@@ -14,17 +14,17 @@
 // limitations under the License.
 use std::sync::Arc;
 
-use futures::channel::mpsc;
 use futures::StreamExt;
+use futures::channel::mpsc;
 use log::{debug, warn};
 use sekas_api::server::v1::{NodeDesc, ReplicaDesc};
 use sekas_runtime::{JoinHandle, TaskGroup};
 
+use crate::Result;
 use crate::node::route_table::RaftRouteTable;
 use crate::raftgroup::RaftGroup;
 use crate::serverpb::v1::raft_client::RaftClient;
 use crate::serverpb::v1::{RaftMessage, SnapshotChunk, SnapshotRequest};
-use crate::Result;
 
 struct StreamingRequest {
     from: ReplicaDesc,

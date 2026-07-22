@@ -13,6 +13,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#![allow(clippy::result_large_err)]
+
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
@@ -120,10 +122,10 @@ impl ClusterClient {
 
     pub async fn assert_group_contains_member(&self, group_id: u64, replica_id: u64) {
         for _ in 0..10000 {
-            if let Ok(state) = self.router.find_group(group_id) {
-                if state.replicas.contains_key(&replica_id) {
-                    return;
-                }
+            if let Ok(state) = self.router.find_group(group_id)
+                && state.replicas.contains_key(&replica_id)
+            {
+                return;
             }
 
             tokio::time::sleep(Duration::from_millis(10)).await;
@@ -133,10 +135,10 @@ impl ClusterClient {
 
     pub async fn assert_group_not_contains_member(&self, group_id: u64, replica_id: u64) {
         for _ in 0..10000 {
-            if let Ok(state) = self.router.find_group(group_id) {
-                if !state.replicas.contains_key(&replica_id) {
-                    return;
-                }
+            if let Ok(state) = self.router.find_group(group_id)
+                && !state.replicas.contains_key(&replica_id)
+            {
+                return;
             }
 
             tokio::time::sleep(Duration::from_millis(10)).await;
@@ -146,10 +148,10 @@ impl ClusterClient {
 
     pub async fn assert_group_not_contains_node(&self, group_id: u64, node_id: u64) {
         for _ in 0..10000 {
-            if let Ok(state) = self.router.find_group(group_id) {
-                if !state.replicas.iter().any(|(_, r)| r.node_id == node_id) {
-                    return;
-                }
+            if let Ok(state) = self.router.find_group(group_id)
+                && !state.replicas.iter().any(|(_, r)| r.node_id == node_id)
+            {
+                return;
             }
 
             tokio::time::sleep(Duration::from_millis(10)).await;
@@ -173,22 +175,22 @@ impl ClusterClient {
     }
 
     pub async fn get_group_any_follower(&self, group_id: u64) -> Option<ReplicaDesc> {
-        use rand::{thread_rng, Rng};
+        use rand::{Rng, thread_rng};
 
-        if let Some(leader_id) = self.get_group_leader(group_id).await {
-            if let Ok(state) = self.router.find_group(group_id) {
-                let replicas = state
-                    .replicas
-                    .into_iter()
-                    .filter(|(_, replica)| replica.id != leader_id)
-                    .map(|(_, replica)| replica)
-                    .collect::<Vec<_>>();
-                if replicas.is_empty() {
-                    return None;
-                }
-                let index = thread_rng().gen_range(0..replicas.len());
-                return Some(replicas[index].clone());
+        if let Some(leader_id) = self.get_group_leader(group_id).await
+            && let Ok(state) = self.router.find_group(group_id)
+        {
+            let replicas = state
+                .replicas
+                .into_iter()
+                .filter(|(_, replica)| replica.id != leader_id)
+                .map(|(_, replica)| replica)
+                .collect::<Vec<_>>();
+            if replicas.is_empty() {
+                return None;
             }
+            let index = thread_rng().gen_range(0..replicas.len());
+            return Some(replicas[index].clone());
         }
         None
     }
@@ -244,10 +246,10 @@ impl ClusterClient {
 
     pub async fn assert_large_group_epoch(&self, group_id: u64, former_epoch: u64) -> u64 {
         for _ in 0..1000 {
-            if let Some(epoch) = self.get_group_epoch(group_id) {
-                if epoch > former_epoch {
-                    return epoch;
-                }
+            if let Some(epoch) = self.get_group_epoch(group_id)
+                && epoch > former_epoch
+            {
+                return epoch;
             }
 
             tokio::time::sleep(Duration::from_millis(10)).await;
@@ -256,10 +258,10 @@ impl ClusterClient {
     }
 
     pub fn group_contains_shard(&self, group_id: u64, shard_id: u64) -> bool {
-        if let Ok(state) = self.router.find_group_by_shard(shard_id) {
-            if state.id == group_id {
-                return true;
-            }
+        if let Ok(state) = self.router.find_group_by_shard(shard_id)
+            && state.id == group_id
+        {
+            return true;
         }
         false
     }

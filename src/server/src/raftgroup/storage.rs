@@ -19,16 +19,16 @@ use std::sync::Arc;
 
 use log::{debug, error, info};
 use prost::Message;
-use raft::prelude::*;
 use raft::GetEntriesContext;
+use raft::prelude::*;
 use raft_engine::{Command, Engine, LogBatch, MessageExt};
 use sekas_api::server::v1::*;
 
+use super::RaftConfig;
 use super::node::WriteTask;
 use super::snap::SnapManager;
-use super::RaftConfig;
-use crate::serverpb::v1::{EntryId, EvalResult, RaftLocalState};
 use crate::Result;
+use crate::serverpb::v1::{EntryId, EvalResult, RaftLocalState};
 
 #[derive(Clone)]
 pub struct MessageExtTyped;
@@ -88,8 +88,11 @@ impl Storage {
         if let Some(truncated) = local_state.last_truncated.clone() {
             if first_index <= last_index {
                 if truncated.index + 1 != first_index {
-                    panic!("some log entries are missing, truncated state {truncated:?}, engine range [{}, {})",
-                        first_index, last_index + 1);
+                    panic!(
+                        "some log entries are missing, truncated state {truncated:?}, engine range [{}, {})",
+                        first_index,
+                        last_index + 1
+                    );
                 }
             } else {
                 // update empty range.
@@ -105,8 +108,11 @@ impl Storage {
                 applied_index = 5;
             }
 
-            assert!(first_index <= applied_index + 1,
-                "there are some missing entries, applied index {applied_index}, entries [{first_index}, {})", last_index + 1);
+            assert!(
+                first_index <= applied_index + 1,
+                "there are some missing entries, applied index {applied_index}, entries [{first_index}, {})",
+                last_index + 1
+            );
 
             debug!(
                 "replica {replica_id} fetch uncommitted entries in range [{}, {})",
@@ -996,7 +1002,7 @@ mod tests {
             e.set_data(vec![0; 1024]);
             e
         };
-        cache.append(&[e.to_owned()]);
+        cache.append(std::slice::from_ref(&e));
 
         let mut entries = Vec::new();
         cache.fetch_entries_to(2, 3, 10, &mut entries);
