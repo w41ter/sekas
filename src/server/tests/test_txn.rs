@@ -18,7 +18,7 @@ use std::time::Duration;
 
 use log::info;
 use sekas_api::server::v1::{TxnState, *};
-use sekas_client::{AppError, ClientOptions, Error};
+use sekas_client::{AppError, ClientOptions, Error, WriteBuilder};
 use sekas_rock::fn_name;
 
 use crate::helper::client::*;
@@ -62,7 +62,7 @@ async fn txn_abort_and_clear_intents_after_prepare_failure() {
             .expect_not_exists()
             .ensure_put(b"should_not_commit".to_vec()),
     );
-    let start_version = txn.get_start_version().await.unwrap();
+    let start_version = txn.start_version().await.unwrap();
 
     let result = txn.commit().await;
     assert!(matches!(result, Err(AppError::CasFailed(1, 0, _))));

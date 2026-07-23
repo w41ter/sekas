@@ -31,8 +31,7 @@ use crate::{
     AppResult, Database, Error, RangeRequest, Result, SekasClient, TxnStateTable, record_latency,
 };
 
-#[derive(Debug, Default, Clone)]
-struct WriteBatchRequest {}
+const TXN_CLEANUP_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Default, Clone)]
 pub struct WriteBatchResponse {
@@ -68,8 +67,6 @@ pub struct Txn {
     ///
     /// The default value is inherited from database, and it can be overwrite by
     /// [`Txn::set_timeout`].
-    ///
-    /// FIXME(walter) abort expired txn.
     deadline: Option<Instant>,
     /// The transaction start version.
     start_version: OnceCell<u64>,
@@ -87,7 +84,7 @@ struct WriteContext {
     request: WriteRequest,
     /// The response.
     response: Option<WriteResponse>,
-    /// The index in the requests.
+    /// The index in the request batch.
     index: usize,
     /// Is this request has been accepted.
     done: bool,
@@ -105,6 +102,7 @@ pub struct WriteBatchContext {
 
     start_version: u64,
     commit_version: u64,
+    txn_started: bool,
 
     retry_state: RetryState,
 }
@@ -375,6 +373,11 @@ impl Txn {
         Ok(ctx.commit().await?)
     }
 
+    /// Return the transaction start version, allocating one if necessary.
+    pub async fn start_version(&self) -> AppResult<u64> {
+        Ok(self.get_start_version().await?)
+    }
+
     /// Get key value with in an transaction.
     ///
     /// NOTE: This request will be sent to node servers, and the put/delete
@@ -622,7 +625,12 @@ impl WriteBatchContext {
         let num_doing_writes = num_deletes + num_puts;
         let mut writes = Vec::with_capacity(num_doing_writes);
         writes.extend(deletes.into_iter().enumerate().map(WriteContext::with_delete));
-        writes.extend(puts.into_iter().enumerate().map(WriteContext::with_put));
+        writes.extend(
+            puts.into_iter()
+                .enumerate()
+                .map(|(idx, put)| (num_deletes + idx, put))
+                .map(WriteContext::with_put),
+        );
 
         WriteBatchContext {
             client,
@@ -631,15 +639,14 @@ impl WriteBatchContext {
             num_doing_writes,
             start_version,
             commit_version: 0,
+            txn_started: false,
             retry_state: RetryState::with_deadline_opt(deadline),
         }
     }
 
     pub async fn commit(mut self) -> Result<WriteBatchResponse> {
-        // TODO: check parameters
-
-        // TODO: handle errors to abort txn.
         self.start_txn().await?;
+        self.txn_started = true;
 
         let start_version = self.start_version;
         let txn_table = TxnStateTable::new(self.client.clone(), self.retry_state.timeout());
@@ -650,13 +657,21 @@ impl WriteBatchContext {
             self.retry_state.timeout()
         );
 
-        tokio::select! {
+        let resp = tokio::select! {
             _ = Self::lease_txn(txn_table, start_version) => {
                 unreachable!()
             },
             resp = self.commit_inner() => {
                 resp
             }
+        };
+
+        match resp {
+            Ok(resp) => {
+                self.commit_intents();
+                Ok(resp)
+            }
+            Err(err) => self.finish_after_error(err).await,
         }
     }
 
@@ -669,7 +684,7 @@ impl WriteBatchContext {
         }
     }
 
-    async fn commit_inner(mut self) -> Result<WriteBatchResponse> {
+    async fn commit_inner(&mut self) -> Result<WriteBatchResponse> {
         self.prepare_intents().await?;
         self.commit_version = self.alloc_txn_version().await?;
 
@@ -679,8 +694,10 @@ impl WriteBatchContext {
         );
 
         self.commit_txn().await?;
-        let version = self.commit_version;
+        Ok(self.take_response(self.commit_version))
+    }
 
+    fn take_response(&mut self, version: u64) -> WriteBatchResponse {
         let mut deletes = Vec::with_capacity(self.num_deletes);
         let mut puts = Vec::with_capacity(self.writes.len() - self.num_deletes);
         for write in &mut self.writes {
@@ -694,8 +711,65 @@ impl WriteBatchContext {
             }
         }
 
-        self.commit_intents();
-        Ok(WriteBatchResponse { version, deletes, puts })
+        WriteBatchResponse { version, deletes, puts }
+    }
+
+    async fn finish_after_error(mut self, err: Error) -> Result<WriteBatchResponse> {
+        if !self.txn_started {
+            return Err(err);
+        }
+
+        if let Some(resp) = self.try_finish_committed_txn().await? {
+            return Ok(resp);
+        }
+
+        if let Err(abort_err) = self.abort_txn().await {
+            if let Some(resp) = self.try_finish_committed_txn().await? {
+                return Ok(resp);
+            }
+            return Err(abort_err);
+        }
+
+        self.clear_intents().await?;
+        Err(err)
+    }
+
+    async fn try_finish_committed_txn(&mut self) -> Result<Option<WriteBatchResponse>> {
+        let txn_table = TxnStateTable::new(self.client.clone(), Some(TXN_CLEANUP_TIMEOUT));
+        let Some(record) = txn_table.get_txn_record(self.start_version).await? else {
+            return Ok(None);
+        };
+        if record.state != TxnState::Committed {
+            return Ok(None);
+        }
+
+        let commit_version = record.commit_version.ok_or_else(|| {
+            Error::Internal(
+                format!("txn {} is committed without commit version", self.start_version).into(),
+            )
+        })?;
+        if self.commit_version == 0 {
+            self.commit_version = commit_version;
+        }
+        let resp = self.take_response(commit_version);
+        self.finish_commit_intents().await?;
+        Ok(Some(resp))
+    }
+
+    async fn finish_commit_intents(&mut self) -> Result<()> {
+        self.num_doing_writes = self.writes.len();
+        for write in &mut self.writes {
+            write.done = false;
+        }
+
+        let mut retry_state = RetryState::new(TXN_CLEANUP_TIMEOUT);
+        loop {
+            match self.commit_intents_inner().await {
+                Ok(false) => return Ok(()),
+                Ok(true) => retry_state.force_retry().await?,
+                Err(err) => retry_state.retry(err).await?,
+            }
+        }
     }
 
     async fn alloc_txn_version(&mut self) -> Result<u64> {
@@ -750,11 +824,17 @@ impl WriteBatchContext {
                 shard_id: shard_desc.id,
                 write: Some(write.request.clone()),
             });
+            let write_index = write.index as u64;
             if let Some(duration) = self.retry_state.timeout() {
                 client.set_timeout(duration);
             }
             let handle = tokio::spawn(async move {
-                match client.request(&req).await? {
+                match client.request(&req).await.map_err(|err| match err {
+                    Error::CasFailed(_, cond_index, prev_value) => {
+                        Error::CasFailed(write_index, cond_index, prev_value)
+                    }
+                    err => err,
+                })? {
                     Response::WriteIntent(WriteIntentResponse { write: Some(resp) }) => {
                         Ok((resp, index))
                     }
@@ -776,7 +856,6 @@ impl WriteBatchContext {
                     write.response = Some(resp);
                 }
                 Err(err) => {
-                    // FIXME(walter) UPDATE THE CAS FAILED INDEX.
                     trace!("txn {} write intent: {err:?}", self.start_version);
                     if !self.retry_state.is_retryable(&err) {
                         return Err(err);
@@ -798,9 +877,8 @@ impl WriteBatchContext {
             .await
     }
 
-    #[allow(unused)]
     async fn abort_txn(&mut self) -> Result<()> {
-        TxnStateTable::new(self.client.clone(), self.retry_state.timeout())
+        TxnStateTable::new(self.client.clone(), Some(TXN_CLEANUP_TIMEOUT))
             .abort_txn(self.start_version)
             .await
     }
@@ -833,7 +911,7 @@ impl WriteBatchContext {
         let router = self.client.router();
 
         let mut handles = Vec::with_capacity(self.writes.len());
-        for write in &self.writes {
+        for (index, write) in self.writes.iter().enumerate() {
             if write.done {
                 continue;
             }
@@ -846,7 +924,6 @@ impl WriteBatchContext {
                 commit_version: self.commit_version,
                 user_key: user_key.to_vec(),
             };
-            let index = write.index;
             let mut client = GroupClient::new(group_state, self.client.clone());
             let handle = tokio::spawn(async move {
                 match client.request(&Request::CommitIntent(req)).await {
@@ -854,7 +931,7 @@ impl WriteBatchContext {
                     Ok(other) => Err(Error::Internal(
                         format!("invalid response {other:?}, `CommitIntent` is required").into(),
                     )),
-                    Err(err) => Err(Error::Internal(format!("commit intent: {err:?}").into())),
+                    Err(err) => Err(err),
                 }
             });
             handles.push(handle);
@@ -877,9 +954,60 @@ impl WriteBatchContext {
         Ok(self.num_doing_writes > 0)
     }
 
-    #[allow(unused)]
     async fn clear_intents(&mut self) -> Result<()> {
-        todo!()
+        let mut retry_state = RetryState::new(TXN_CLEANUP_TIMEOUT);
+        loop {
+            match self.clear_intents_inner(retry_state.timeout()).await {
+                Ok(false) => return Ok(()),
+                Ok(true) => retry_state.force_retry().await?,
+                Err(err) => retry_state.retry(err).await?,
+            }
+        }
+    }
+
+    async fn clear_intents_inner(&mut self, timeout: Option<Duration>) -> Result<bool> {
+        let router = self.client.router();
+        let mut handles = Vec::with_capacity(self.writes.len());
+        for (index, write) in self.writes.iter().enumerate() {
+            if !write.done {
+                continue;
+            }
+
+            let user_key = write.user_key();
+            let (group_state, shard_desc) = router.find_shard(write.table_id, user_key)?;
+            let req = ClearIntentRequest {
+                shard_id: shard_desc.id,
+                start_version: self.start_version,
+                user_key: user_key.to_vec(),
+            };
+            let mut client = GroupClient::new(group_state, self.client.clone());
+            client.set_timeout_opt(timeout);
+            let handle = tokio::spawn(async move {
+                match client.request(&Request::ClearIntent(req)).await {
+                    Ok(Response::ClearIntent(_)) => Ok(index),
+                    Ok(other) => Err(Error::Internal(
+                        format!("invalid response {other:?}, `ClearIntent` is required").into(),
+                    )),
+                    Err(err) => Err(err),
+                }
+            });
+            handles.push(handle);
+        }
+
+        for handle in handles {
+            match handle.await? {
+                Ok(index) => {
+                    self.writes[index].done = false;
+                }
+                Err(err) => {
+                    if !self.retry_state.is_retryable(&err) {
+                        return Err(err);
+                    }
+                }
+            }
+        }
+
+        Ok(self.writes.iter().any(|write| write.done))
     }
 }
 
