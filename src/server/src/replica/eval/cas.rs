@@ -335,6 +335,34 @@ mod tests {
     }
 
     #[test]
+    fn expect_contains() {
+        struct TestCase {
+            value: Option<Value>,
+            expect: bool,
+        }
+
+        let needle = b"123".to_vec();
+        let cases = vec![
+            TestCase { value: None, expect: false },
+            TestCase { value: Some(Value::tombstone(10)), expect: false },
+            TestCase { value: Some(Value::with_value(b"12".to_vec(), 10)), expect: false },
+            TestCase { value: Some(Value::with_value(b"123".to_vec(), 10)), expect: true },
+            TestCase { value: Some(Value::with_value(b"0123".to_vec(), 10)), expect: true },
+            TestCase { value: Some(Value::with_value(b"1234".to_vec(), 10)), expect: true },
+            TestCase { value: Some(Value::with_value(b"1203".to_vec(), 10)), expect: false },
+        ];
+        let cond = WriteCondition {
+            r#type: WriteConditionType::ExpectContains.into(),
+            value: needle,
+            ..Default::default()
+        };
+        for TestCase { value, expect } in cases {
+            let r = eval_condition(&cond, value.as_ref()).unwrap();
+            assert_eq!(r, expect);
+        }
+    }
+
+    #[test]
     fn expect_slice() {
         struct TestCase {
             value: Option<Value>,

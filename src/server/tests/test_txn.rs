@@ -17,6 +17,7 @@ mod helper;
 use std::time::Duration;
 
 use log::info;
+use sekas_api::server::v1::group_request_union::Request;
 use sekas_api::server::v1::{TxnState, *};
 use sekas_client::{AppError, ClientOptions, Error, TxnReadOptions, WriteBuilder};
 use sekas_rock::fn_name;
@@ -112,6 +113,48 @@ async fn txn_guard_key_conflicts() {
     assert!(matches!(result, Err(AppError::TxnConflict)));
 
     assert!(db.get(co.id, key_a).await.unwrap().is_none());
+}
+
+#[sekas_macro::test]
+async fn txn_read_resolves_committed_orphan_intent() {
+    let mut ctx = TestContext::new(fn_name!());
+    let nodes = ctx.bootstrap_servers(3).await;
+    let c = ClusterClient::new(nodes).await;
+    let app = c.app_client().await;
+
+    let db = app.create_database("test_db".to_string()).await.unwrap();
+    let co = db.create_table("test_co".to_string()).await.unwrap();
+    c.assert_table_ready(co.id).await;
+
+    let key = b"orphan_intent_key".to_vec();
+    let value = b"committed_value".to_vec();
+
+    let txn = db.begin_txn();
+    let start_version = txn.start_version().await.unwrap();
+    drop(txn);
+    let commit_version = start_version + 1;
+
+    let shard = c.get_shard_desc(co.id, &key).await.unwrap();
+    let group_state = c.find_router_group_state_by_key(co.id, &key).await.unwrap();
+    let mut group_client = sekas_client::GroupClient::new(group_state, app.clone());
+    group_client
+        .request(&Request::WriteIntent(WriteIntentRequest {
+            start_version,
+            shard_id: shard.id,
+            write: Some(WriteRequest::Put(
+                WriteBuilder::new(key.clone()).ensure_put(value.clone()),
+            )),
+        }))
+        .await
+        .unwrap();
+
+    let txn_table = sekas_client::TxnStateTable::new(app.clone(), Some(Duration::from_secs(5)));
+    txn_table.begin_txn(start_version).await.unwrap();
+    txn_table.commit_txn(start_version, commit_version).await.unwrap();
+
+    assert_eq!(db.get(co.id, key.clone()).await.unwrap(), Some(value));
+    let resolved = db.get_raw_value(co.id, key).await.unwrap().unwrap();
+    assert_eq!(resolved.version, commit_version);
 }
 
 #[sekas_macro::test]
