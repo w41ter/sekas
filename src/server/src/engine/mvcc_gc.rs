@@ -1,4 +1,4 @@
-// Copyright 2022 The Engula Authors.
+// Copyright 2026-present The Sekas Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,10 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-mod destory_replica;
-mod mvcc_gc;
-mod report_state;
-
-pub(crate) use destory_replica::setup as setup_destory_replica;
-pub(crate) use mvcc_gc::setup as setup_mvcc_gc;
-pub(crate) use report_state::{StateChannel, setup as setup_report_state};
+pub(crate) fn min_allowed_version_from_retention(retention_ms: u64) -> u64 {
+    sekas_rock::time::timestamp_nanos().saturating_sub(retention_ms.saturating_mul(1_000_000))
+}

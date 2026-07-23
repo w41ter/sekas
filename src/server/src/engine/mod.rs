@@ -13,6 +13,8 @@
 // limitations under the License.
 
 mod group;
+mod group_filter;
+pub(crate) mod mvcc_gc;
 mod options;
 mod properties;
 mod state;

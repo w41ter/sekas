@@ -25,6 +25,9 @@ cpu_nums = 0
 [node]
 shard_chunk_size = 67108864
 shard_gc_keys = 256
+mvcc_gc_keys = 256
+mvcc_gc_interval_ms = 0
+mvcc_gc_retention_ms = 0
 
 [node.replica]
 snap_file_size = 68719476736
@@ -52,3 +55,6 @@ schedule_interval_sec = 1
 [executor]
 event_interval = 31
 global_event_interval = 31
+
+[db]
+mvcc_gc_retention_ms = 0

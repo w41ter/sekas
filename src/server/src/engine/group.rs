@@ -709,10 +709,16 @@ impl<'a> Default for SnapshotMode<'a> {
     }
 }
 
-mod keys {
+pub(super) mod keys {
     const APPLY_STATE: &[u8] = b"APPLY_STATE";
     const DESCRIPTOR: &[u8] = b"DESCRIPTOR";
     const MIGRATE_STATE: &[u8] = b"MIGRATE_STATE";
+
+    pub(crate) struct ParsedMvccKey<'a> {
+        pub table_id: u64,
+        pub encoded_user_key: &'a [u8],
+        pub version: u64,
+    }
 
     #[inline]
     pub fn raw(table_id: u64, key: &[u8]) -> Vec<u8> {
@@ -749,24 +755,65 @@ mod keys {
 
     /// Extracts user key from the mvcc key.
     pub fn may_revert_mvcc_key(key: &[u8]) -> Option<Vec<u8>> {
-        const L: usize = core::mem::size_of::<u64>();
-        let len = key.len();
-        if len <= 2 * L {
+        parse_mvcc_key(key).map(|parsed| revert_encoded_user_key(parsed.encoded_user_key))
+    }
+
+    pub fn is_mvcc_key(key: &[u8]) -> bool {
+        table_id(key).map(|table_id| table_id != super::LOCAL_TABLE_ID).unwrap_or_default()
+    }
+
+    pub fn parse_mvcc_key(key: &[u8]) -> Option<ParsedMvccKey<'_>> {
+        let table_id = table_id(key)?;
+        if table_id == super::LOCAL_TABLE_ID {
             return None;
         }
-        Some(revert_mvcc_key(key))
+
+        const L: usize = core::mem::size_of::<u64>();
+        let (_, encoded_user_key, version_bytes) = split_mvcc_key(key)?;
+        let mut version_buf = [0u8; L];
+        version_buf.copy_from_slice(version_bytes);
+        let version = !u64::from_be_bytes(version_buf);
+
+        Some(ParsedMvccKey { table_id, encoded_user_key, version })
+    }
+
+    fn table_id(key: &[u8]) -> Option<u64> {
+        const L: usize = core::mem::size_of::<u64>();
+        if key.len() < L {
+            return None;
+        }
+        let mut buf = [0u8; L];
+        buf.copy_from_slice(&key[..L]);
+        Some(u64::from_le_bytes(buf))
+    }
+
+    fn split_mvcc_key(key: &[u8]) -> Option<(&[u8], &[u8], &[u8])> {
+        const L: usize = core::mem::size_of::<u64>();
+        let len = key.len();
+        if len <= 2 * L || !(len - 2 * L).is_multiple_of(9) {
+            return None;
+        }
+
+        let encoded_user_key = &key[L..(len - L)];
+        validate_encoded_user_key(encoded_user_key)?;
+
+        Some((&key[..L], encoded_user_key, &key[(len - L)..]))
     }
 
     /// Extracts user key from the mvcc key.
     pub fn revert_mvcc_key(key: &[u8]) -> Vec<u8> {
-        use std::io::{Cursor, Read};
-
         const L: usize = core::mem::size_of::<u64>();
         let len = key.len();
         debug_assert!(len > 2 * L);
         let encoded_user_key = &key[L..(len - L)];
 
         debug_assert_eq!(encoded_user_key.len() % 9, 0);
+        revert_encoded_user_key(encoded_user_key)
+    }
+
+    pub fn revert_encoded_user_key(encoded_user_key: &[u8]) -> Vec<u8> {
+        use std::io::{Cursor, Read};
+
         let num_groups = encoded_user_key.len() / 9;
         let mut buf = Vec::with_capacity(num_groups * 8);
         let mut cursor = Cursor::new(encoded_user_key);
@@ -777,6 +824,19 @@ mod keys {
             buf.extend_from_slice(&group[..num_element]);
         }
         buf
+    }
+
+    fn validate_encoded_user_key(encoded_user_key: &[u8]) -> Option<()> {
+        if encoded_user_key.is_empty() || !encoded_user_key.len().is_multiple_of(9) {
+            return None;
+        }
+        for group in encoded_user_key.chunks_exact(9) {
+            let num_element = group[8].checked_sub(b'0')? as usize;
+            if num_element == 0 || num_element > 9 {
+                return None;
+            }
+        }
+        Some(())
     }
 
     fn cursor_remaining_is_empty(cursor: &std::io::Cursor<&[u8]>) -> bool {
@@ -1560,6 +1620,30 @@ mod tests {
             let value_set = engine.get_all_versions(1, key.as_bytes()).await.unwrap();
             assert_eq!(value_set.values, case, "idx = {idx}");
         }
+    }
+
+    #[test]
+    fn parse_mvcc_key_rejects_local_metadata_key() {
+        assert!(!keys::is_mvcc_key(&keys::descriptor()));
+        assert!(keys::parse_mvcc_key(&keys::descriptor()).is_none());
+    }
+
+    #[test]
+    fn is_mvcc_key_is_based_on_table_id() {
+        let non_local_prefix_only = 1_u64.to_le_bytes();
+        assert!(keys::is_mvcc_key(&non_local_prefix_only));
+        assert!(keys::parse_mvcc_key(&non_local_prefix_only).is_none());
+    }
+
+    #[test]
+    fn parse_mvcc_key_supports_long_user_key() {
+        let key = b"123456789";
+        let mvcc_key = keys::mvcc_key(1, key, 123);
+        assert!(keys::is_mvcc_key(&mvcc_key));
+        let parsed = keys::parse_mvcc_key(&mvcc_key).unwrap();
+        assert_eq!(parsed.table_id, 1);
+        assert_eq!(keys::revert_encoded_user_key(parsed.encoded_user_key), key);
+        assert_eq!(parsed.version, 123);
     }
 
     #[sekas_macro::test]

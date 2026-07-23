@@ -65,6 +65,21 @@ pub struct NodeConfig {
     /// Default: 256.
     pub shard_gc_keys: usize,
 
+    /// The max number of MVCC versions to delete in one background GC batch.
+    ///
+    /// Default: 256.
+    pub mvcc_gc_keys: usize,
+
+    /// The interval of background MVCC GC, in millis. 0 disables the task.
+    ///
+    /// Default: 0.
+    pub mvcc_gc_interval_ms: u64,
+
+    /// MVCC versions older than this retention are GC candidates, in millis.
+    ///
+    /// Default: 0.
+    pub mvcc_gc_retention_ms: u64,
+
     #[serde(default)]
     pub replica: ReplicaConfig,
 
@@ -99,6 +114,7 @@ pub struct EngineConfig {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
 pub struct DbConfig {
     // io related configs
     pub max_background_jobs: i32,
@@ -140,6 +156,12 @@ pub struct DbConfig {
     pub rate_limiter_bytes_per_sec: i64,
     pub rate_limiter_refill_period: i64,
     pub rate_limiter_auto_tuned: bool,
+
+    /// MVCC versions older than this retention are GC candidates during RocksDB
+    /// compaction, in millis.
+    ///
+    /// Default: 0.
+    pub mvcc_gc_retention_ms: u64,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -242,6 +264,9 @@ impl Default for NodeConfig {
         NodeConfig {
             shard_chunk_size: 64 * 1024 * 1024,
             shard_gc_keys: 256,
+            mvcc_gc_keys: 256,
+            mvcc_gc_interval_ms: 0,
+            mvcc_gc_retention_ms: 0,
             replica: ReplicaConfig::default(),
             engine: EngineConfig::default(),
         }
@@ -301,6 +326,8 @@ impl Default for DbConfig {
             rate_limiter_bytes_per_sec: 10 << 30,
             rate_limiter_refill_period: 100_000,
             rate_limiter_auto_tuned: true,
+
+            mvcc_gc_retention_ms: 0,
         }
     }
 }

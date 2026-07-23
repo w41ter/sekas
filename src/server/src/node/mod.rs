@@ -348,6 +348,10 @@ impl Node {
         );
         task_group.add_task(scheduler_handle);
 
+        if let Some(mvcc_gc_handle) = self::job::setup_mvcc_gc(self.cfg.clone(), replica) {
+            task_group.add_task(mvcc_gc_handle);
+        }
+
         // Now that all initialization work is done, the replica is ready to serve, mark
         // it as normal state.
         if matches!(local_state, ReplicaLocalState::Initial) {
