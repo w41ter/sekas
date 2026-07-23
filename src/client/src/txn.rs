@@ -19,6 +19,7 @@ use log::{trace, warn};
 use sekas_api::server::v1::group_request_union::Request;
 use sekas_api::server::v1::group_response_union::Response;
 use sekas_api::server::v1::*;
+use sekas_rock::num::decode_i64;
 use sekas_runtime::sync::OnceCell;
 use sekas_schema::system::txn::TXN_MAX_VERSION;
 use tokio::sync::mpsc;
@@ -32,6 +33,12 @@ use crate::{
 };
 
 const TXN_CLEANUP_TIMEOUT: Duration = Duration::from_secs(5);
+
+#[derive(Debug, Default, Clone, Copy)]
+pub struct TxnReadOptions {
+    /// Whether point reads should overlay writes buffered in this transaction.
+    pub overlay_writes: bool,
+}
 
 #[derive(Debug, Default, Clone)]
 pub struct WriteBatchResponse {
@@ -59,7 +66,7 @@ pub struct WriteBuilder {
     take_prev_value: bool,
 }
 
-/// A structure to support ACID transaction.
+/// A structure to support snapshot-isolated transaction.
 pub struct Txn {
     /// The database to submit transactions.
     db: Database,
@@ -162,7 +169,7 @@ impl WriteBuilder {
             value: vec![],
             ttl: 0,
             conditions: self.conditions,
-            take_prev_value: false,
+            take_prev_value: self.take_prev_value,
         })
     }
 
@@ -378,7 +385,7 @@ impl Txn {
         Ok(self.get_start_version().await?)
     }
 
-    /// Get key value with in an transaction.
+    /// Get key value within a transaction.
     ///
     /// NOTE: This request will be sent to node servers, and the put/delete
     /// requests already buffered in this TXN will be ignored.
@@ -387,14 +394,43 @@ impl Txn {
         Ok(value.and_then(|v| v.content))
     }
 
+    /// Get key value with explicit read options.
+    pub async fn get_with_options(
+        &self,
+        table_id: u64,
+        key: Vec<u8>,
+        options: TxnReadOptions,
+    ) -> AppResult<Option<Vec<u8>>> {
+        let value = self.get_raw_value_with_options(table_id, key, options).await?;
+        Ok(value.and_then(|v| v.content))
+    }
+
     /// Get a raw key value from this transaction.
     ///
     /// NOTE: This request will be sent to node servers, and the put/delete
     /// requests already buffered in this TXN will be ignored.
     pub async fn get_raw_value(&self, table_id: u64, key: Vec<u8>) -> AppResult<Option<Value>> {
+        self.get_raw_value_with_options(table_id, key, TxnReadOptions::default()).await
+    }
+
+    /// Get a raw key value with explicit read options.
+    pub async fn get_raw_value_with_options(
+        &self,
+        table_id: u64,
+        key: Vec<u8>,
+        options: TxnReadOptions,
+    ) -> AppResult<Option<Value>> {
         CLIENT_DATABASE_BYTES_TOTAL.rx.inc_by(key.len() as u64);
         CLIENT_DATABASE_REQUEST_TOTAL.get.inc();
         record_latency!(&CLIENT_DATABASE_REQUEST_DURATION_SECONDS.get);
+        if options.overlay_writes
+            && let Some(value) = self.local_write_value(table_id, &key).await?
+        {
+            CLIENT_DATABASE_BYTES_TOTAL
+                .tx
+                .inc_by(value.content.as_ref().map(Vec::len).unwrap_or_default() as u64);
+            return Ok(Some(value));
+        }
         let mut retry_state = RetryState::with_deadline_opt(self.deadline);
 
         loop {
@@ -580,6 +616,67 @@ impl Txn {
         } else {
             self.get_start_version().await
         }
+    }
+
+    async fn local_write_value(&self, table_id: u64, key: &[u8]) -> AppResult<Option<Value>> {
+        enum LocalWrite<'a> {
+            Put(&'a PutRequest),
+            Delete,
+        }
+
+        let mut local_writes = Vec::new();
+        for (write_table_id, delete) in &self.deletes {
+            if *write_table_id == table_id && delete.key == key {
+                local_writes.push(LocalWrite::Delete);
+            }
+        }
+        for (write_table_id, put) in &self.puts {
+            if *write_table_id == table_id && put.key == key {
+                local_writes.push(LocalWrite::Put(put));
+            }
+        }
+
+        if local_writes.is_empty() {
+            return Ok(None);
+        }
+
+        let start_version = self.get_read_version().await?;
+        let mut value = self
+            .get_inner(
+                table_id,
+                key,
+                self.deadline.map(|d| d.saturating_duration_since(Instant::now())),
+            )
+            .await?;
+        for local_write in local_writes {
+            match local_write {
+                LocalWrite::Put(put) => match put.put_type() {
+                    PutType::None => {
+                        value = Some(Value::with_value(put.value.clone(), start_version));
+                    }
+                    PutType::Nop => {}
+                    PutType::AddI64 => {
+                        let delta = decode_i64(&put.value).ok_or_else(|| {
+                            Error::InvalidArgument("input value is not a valid i64".into())
+                        })?;
+                        let former_value = match value.as_ref().and_then(|v| v.content.as_ref()) {
+                            Some(content) => decode_i64(content).ok_or_else(|| {
+                                Error::InvalidArgument("the exists value is not a valid i64".into())
+                            })?,
+                            None => 0,
+                        };
+                        value = Some(Value::with_value(
+                            former_value.wrapping_add(delta).to_be_bytes().to_vec(),
+                            start_version,
+                        ));
+                    }
+                },
+                LocalWrite::Delete => {
+                    value = Some(Value::tombstone(start_version));
+                }
+            }
+        }
+        Ok(value)
     }
 }
 

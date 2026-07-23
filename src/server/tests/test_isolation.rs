@@ -173,7 +173,8 @@ async fn test_lost_update_anomaly() {
     drop(ctx);
 }
 
-// TODO(walter) support serializable snapshot isolation.
+// Snapshot isolation allows write skew. Cross-key invariants should be
+// protected with explicit guard keys or CAS conditions.
 #[ignore]
 #[sekas_macro::test]
 async fn test_write_skew_anomaly() {

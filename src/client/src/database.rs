@@ -83,8 +83,11 @@ impl Database {
         Ok(())
     }
 
-    /// Begin a transcation at the database, which supports serializable
-    /// snapshot isolation (WIP...)
+    /// Begin a transaction at the database.
+    ///
+    /// Sekas transactions provide snapshot isolation. Cross-key invariants are
+    /// not protected automatically; encode them with CAS conditions or ordinary
+    /// writes to dedicated constraint keys.
     #[inline]
     pub fn begin_txn(&self) -> Txn {
         Txn::new(self.clone())

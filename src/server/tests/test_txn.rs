@@ -18,7 +18,7 @@ use std::time::Duration;
 
 use log::info;
 use sekas_api::server::v1::{TxnState, *};
-use sekas_client::{AppError, ClientOptions, Error, WriteBuilder};
+use sekas_client::{AppError, ClientOptions, Error, TxnReadOptions, WriteBuilder};
 use sekas_rock::fn_name;
 
 use crate::helper::client::*;
@@ -35,6 +35,83 @@ fn init() {
 #[sekas_macro::test]
 async fn txn_write_batch_basic() {
     // TODO(walter) add two table and write in batch.
+}
+
+#[sekas_macro::test]
+async fn txn_point_read_overlay_is_opt_in() {
+    let mut ctx = TestContext::new(fn_name!());
+    let nodes = ctx.bootstrap_servers(3).await;
+    let c = ClusterClient::new(nodes).await;
+    let app = c.app_client().await;
+
+    let db = app.create_database("test_db".to_string()).await.unwrap();
+    let co = db.create_table("test_co".to_string()).await.unwrap();
+    c.assert_table_ready(co.id).await;
+
+    let put_key = b"put_key".to_vec();
+    let delete_key = b"delete_key".to_vec();
+    let add_key = b"add_key".to_vec();
+
+    db.put(co.id, delete_key.clone(), b"deleted".to_vec()).await.unwrap();
+    db.put(co.id, add_key.clone(), 1_i64.to_be_bytes().to_vec()).await.unwrap();
+
+    let mut txn = db.begin_txn();
+    txn.put(co.id, WriteBuilder::new(put_key.clone()).ensure_put(b"local".to_vec()));
+    txn.delete(co.id, WriteBuilder::new(delete_key.clone()).ensure_delete());
+    txn.put(co.id, WriteBuilder::new(add_key.clone()).ensure_add(41));
+
+    assert!(txn.get(co.id, put_key.clone()).await.unwrap().is_none());
+    assert_eq!(txn.get(co.id, delete_key.clone()).await.unwrap(), Some(b"deleted".to_vec()));
+    assert_eq!(txn.get(co.id, add_key.clone()).await.unwrap(), Some(1_i64.to_be_bytes().to_vec()));
+
+    let overlay = TxnReadOptions { overlay_writes: true };
+    assert_eq!(
+        txn.get_with_options(co.id, put_key.clone(), overlay).await.unwrap(),
+        Some(b"local".to_vec())
+    );
+    assert!(txn.get_with_options(co.id, delete_key.clone(), overlay).await.unwrap().is_none());
+    assert_eq!(
+        txn.get_with_options(co.id, add_key.clone(), overlay).await.unwrap(),
+        Some(42_i64.to_be_bytes().to_vec())
+    );
+
+    txn.commit().await.unwrap();
+
+    assert_eq!(db.get(co.id, put_key).await.unwrap(), Some(b"local".to_vec()));
+    assert!(db.get(co.id, delete_key).await.unwrap().is_none());
+    assert_eq!(db.get(co.id, add_key).await.unwrap(), Some(42_i64.to_be_bytes().to_vec()));
+}
+
+#[sekas_macro::test]
+async fn txn_guard_key_conflicts() {
+    let mut ctx = TestContext::new(fn_name!());
+    let nodes = ctx.bootstrap_servers(3).await;
+    let c = ClusterClient::new(nodes).await;
+    let app = c.app_client().await;
+
+    let db = app.create_database("test_db".to_string()).await.unwrap();
+    let co = db.create_table("test_co".to_string()).await.unwrap();
+    c.assert_table_ready(co.id).await;
+
+    let guard_key = b"account_pair_guard".to_vec();
+    let key_a = b"account_a".to_vec();
+    let key_b = b"account_b".to_vec();
+    db.put(co.id, guard_key.clone(), b"guard".to_vec()).await.unwrap();
+
+    let mut txn_a = db.begin_txn();
+    txn_a.put(co.id, WriteBuilder::new(guard_key.clone()).ensure_put(Vec::new()));
+    txn_a.put(co.id, WriteBuilder::new(key_a.clone()).ensure_put(b"a".to_vec()));
+    let _ = txn_a.start_version().await.unwrap();
+
+    let mut txn_b = db.begin_txn();
+    txn_b.put(co.id, WriteBuilder::new(guard_key).ensure_put(Vec::new()));
+    txn_b.put(co.id, WriteBuilder::new(key_b).ensure_put(b"b".to_vec()));
+    txn_b.commit().await.unwrap();
+
+    let result = txn_a.commit().await;
+    assert!(matches!(result, Err(AppError::TxnConflict)));
+
+    assert!(db.get(co.id, key_a).await.unwrap().is_none());
 }
 
 #[sekas_macro::test]

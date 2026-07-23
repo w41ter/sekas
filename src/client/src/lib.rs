@@ -44,5 +44,5 @@ pub use crate::range::{Range, RangeRequest};
 pub use crate::retry::RetryState;
 pub use crate::rpc::{ConnManager, NodeClient, RootClient, Router, RouterGroupState};
 pub use crate::shard_client::ShardClient;
-pub use crate::txn::{Txn, WriteBatchResponse, WriteBuilder};
+pub use crate::txn::{Txn, TxnReadOptions, WriteBatchResponse, WriteBuilder};
 pub use crate::txn_table::TxnStateTable;

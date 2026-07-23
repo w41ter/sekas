@@ -16,7 +16,6 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use futures::StreamExt;
-use futures::channel::mpsc;
 use futures::lock::Mutex;
 use prost::Message;
 use sekas_client::{AppError, AppResult};
@@ -90,7 +89,8 @@ impl KvStore {
 
     pub async fn range(&self, request: &RangeRequest) -> AppResult<RangeResponse> {
         let kv_store = self.ensure_handle().await?;
-        kv_store.apply_range(request).await
+        let txn = kv_store.db.begin_txn();
+        kv_store.apply_range(&txn, request).await
     }
 
     pub async fn delete_range(&self, req: &DeleteRangeRequest) -> AppResult<DeleteRangeResponse> {
@@ -126,8 +126,12 @@ impl KvStore {
 }
 
 impl SekasHandle {
-    async fn get_key_value(&self, value_key: Vec<u8>) -> AppResult<Option<KeyValue>> {
-        if let Some(raw_value) = self.db.get_raw_value(self.table_id, value_key.to_owned()).await? {
+    async fn get_key_value(
+        &self,
+        txn: &sekas_client::Txn,
+        value_key: Vec<u8>,
+    ) -> AppResult<Option<KeyValue>> {
+        if let Some(raw_value) = txn.get_raw_value(self.table_id, value_key.to_owned()).await? {
             let Some(content) = raw_value.content else { return Ok(None) };
             let key_value =
                 ValueRecord::decode_to_key_value(&value_key, &content, raw_value.version as i64)?;
@@ -143,7 +147,7 @@ impl SekasHandle {
         request: &PutRequest,
     ) -> AppResult<PutResponse> {
         // read old value.
-        let mut key_value = match self.get_key_value(request.key.clone()).await? {
+        let mut key_value = match self.get_key_value(txn, request.key.clone()).await? {
             Some(key_value) => key_value,
             None if request.ignore_lease || request.ignore_value => {
                 // See below links for details:
@@ -230,24 +234,12 @@ impl SekasHandle {
             }
         }
 
-        // read all keys in the requests.
+        // read all keys in the requests with the same txn snapshot.
         let mut collected_key_values = HashMap::with_capacity(collected_keys.len());
-        let (sender, mut receiver) = mpsc::channel(collected_keys.len());
-        let mut task_handles = Vec::with_capacity(collected_keys.len());
         for key in collected_keys {
-            let mut sender_clone = sender.clone();
-            let store = self.clone();
-            let handle = sekas_runtime::spawn(async move {
-                // TODO(walter) support read with one version.
-                let result = store.db.get_raw_value(store.table_id, key.clone()).await;
-                let _ = sender_clone.start_send((key, result));
-            });
-            task_handles.push(handle);
-        }
-        drop(sender);
-
-        while let Some((key, get_raw_value_result)) = receiver.next().await {
-            let key_value = get_raw_value_result?
+            let key_value = txn
+                .get_raw_value(self.table_id, key.clone())
+                .await?
                 .and_then(|value| value.content.map(|c| (c, value.version)))
                 .map(|(content, version)| {
                     ValueRecord::decode_to_key_value(&key, &content, version as i64)
@@ -281,7 +273,7 @@ impl SekasHandle {
                     ResponseOp::put(self.apply_put(txn, put).await?)
                 }
                 Some(request_op::Request::RequestRange(range)) => {
-                    ResponseOp::range(self.apply_range(range).await?)
+                    ResponseOp::range(self.apply_range(txn, range).await?)
                 }
                 Some(request_op::Request::RequestDeleteRange(delete)) => {
                     ResponseOp::delete_range(self.apply_delete_range(txn, delete).await?)
@@ -300,7 +292,11 @@ impl SekasHandle {
         Ok(txn_resp)
     }
 
-    async fn apply_range(&self, request: &RangeRequest) -> AppResult<RangeResponse> {
+    async fn apply_range(
+        &self,
+        txn: &sekas_client::Txn,
+        request: &RangeRequest,
+    ) -> AppResult<RangeResponse> {
         if request.sort_order != 0 {
             return Err(AppError::InvalidArgument(
                 "RangeRequest::sort_order is not supported yet".into(),
@@ -321,7 +317,7 @@ impl SekasHandle {
             limit: request.limit as u64,
             ..Default::default()
         };
-        let mut range_stream = self.db.range(range_req).await?;
+        let mut range_stream = txn.range(range_req).await?;
         let mut range_resp = RangeResponse::default();
         'OUTER: while let Some(value_sets) = range_stream.next().await {
             let value_sets = value_sets?;
@@ -388,7 +384,7 @@ impl SekasHandle {
             ..Default::default()
         };
 
-        let mut range_stream = self.db.range(range_req).await?;
+        let mut range_stream = txn.range(range_req).await?;
         let mut delete_resp = DeleteRangeResponse::default();
         while let Some(value_sets) = range_stream.next().await {
             for value_set in value_sets? {
