@@ -764,7 +764,7 @@ impl WriteBatchContext {
 
         let mut retry_state = RetryState::new(TXN_CLEANUP_TIMEOUT);
         loop {
-            match self.commit_intents_inner().await {
+            match self.commit_intents_inner(retry_state.timeout()).await {
                 Ok(false) => return Ok(()),
                 Ok(true) => retry_state.force_retry().await?,
                 Err(err) => retry_state.retry(err).await?,
@@ -895,7 +895,7 @@ impl WriteBatchContext {
             }
 
             for i in [1, 3, 5] {
-                match self.commit_intents_inner().await {
+                match self.commit_intents_inner(None).await {
                     Ok(false) => break,
                     Ok(true) => tokio::time::sleep(Duration::from_millis(i)).await,
                     Err(err) => {
@@ -907,7 +907,7 @@ impl WriteBatchContext {
         });
     }
 
-    async fn commit_intents_inner(&mut self) -> Result<bool> {
+    async fn commit_intents_inner(&mut self, timeout: Option<Duration>) -> Result<bool> {
         let router = self.client.router();
 
         let mut handles = Vec::with_capacity(self.writes.len());
@@ -925,6 +925,7 @@ impl WriteBatchContext {
                 user_key: user_key.to_vec(),
             };
             let mut client = GroupClient::new(group_state, self.client.clone());
+            client.set_timeout_opt(timeout);
             let handle = tokio::spawn(async move {
                 match client.request(&Request::CommitIntent(req)).await {
                     Ok(Response::CommitIntent(_)) => Ok(index),

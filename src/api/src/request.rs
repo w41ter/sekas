@@ -43,6 +43,19 @@ impl GroupRequest {
         }
     }
 
+    /// build delete shard request.
+    pub fn delete_shard(group_id: u64, epoch: u64, shard_id: u64) -> Self {
+        GroupRequest {
+            group_id,
+            epoch,
+            request: Some(GroupRequestUnion {
+                request: Some(group_request_union::Request::DeleteShard(DeleteShardRequest {
+                    shard_id,
+                })),
+            }),
+        }
+    }
+
     /// build add replica request.
     pub fn add_replica(group_id: u64, epoch: u64, replica_id: u64, new_node_id: u64) -> Self {
         let change_replicas = ChangeReplicasRequest {

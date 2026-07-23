@@ -88,6 +88,10 @@ impl RootShared {
             .ok_or_else(|| Error::NotRootLeader(RootDesc::default(), 0, None))
     }
 
+    pub fn watcher_hub(&self) -> Arc<WatchHub> {
+        self.watcher_hub.clone()
+    }
+
     fn root_core(&self) -> Result<RootCore> {
         self.core
             .lock()
@@ -198,7 +202,7 @@ impl Root {
     }
 
     pub fn watcher_hub(&self) -> Arc<WatchHub> {
-        self.shared.watcher_hub.clone()
+        self.shared.watcher_hub()
     }
 
     // A Daemon task to:
@@ -567,6 +571,20 @@ impl Root {
         Ok(desc)
     }
 
+    pub async fn update_database(&self, desc: DatabaseDesc) -> Result<DatabaseDesc> {
+        if desc.id == sekas_schema::system::db::ID {
+            return Err(Error::InvalidArgument("not support update system database".into()));
+        }
+        let desc = self.schema()?.update_database(desc).await?;
+        self.watcher_hub()
+            .notify_updates(vec![UpdateEvent {
+                event: Some(update_event::Event::Database(desc.to_owned())),
+            }])
+            .await;
+        info!("update database. database_id={}, database={}", desc.id, desc.name);
+        Ok(desc)
+    }
+
     pub async fn delete_database(&self, name: &str) -> Result<()> {
         let db = self.get_database(name).await?;
         if db.is_none() {
@@ -576,7 +594,7 @@ impl Root {
         if db.id == sekas_schema::system::db::ID {
             return Err(Error::InvalidArgument("not support delete system database".into()));
         }
-        self.jobs.submit_purge_database_job(db.id, db.name.to_owned()).await?;
+        self.jobs.submit_purge_database_job(db.id, db.name.to_owned(), false).await?;
         let schema = self.schema()?;
         let id = schema.delete_database(&db).await?;
         self.watcher_hub()
@@ -614,6 +632,23 @@ impl Root {
         Ok(table)
     }
 
+    pub async fn update_table(&self, table: TableDesc) -> Result<TableDesc> {
+        if table.id < sekas_schema::FIRST_USER_TABLE_ID {
+            return Err(Error::InvalidArgument("unsupported update system table".into()));
+        }
+        let table = self.schema()?.update_table(table).await?;
+        self.watcher_hub()
+            .notify_updates(vec![UpdateEvent {
+                event: Some(update_event::Event::Table(table.to_owned())),
+            }])
+            .await;
+        info!(
+            "update table. database_id={}, table={}, table_id={}",
+            table.db, table.name, table.id
+        );
+        Ok(table)
+    }
+
     async fn do_create_table(&self, schema: Arc<Schema>, table: TableDesc) -> Result<()> {
         let wait_create = {
             let range = RangePartition { start: SHARD_MIN.to_owned(), end: SHARD_MAX.to_owned() };
@@ -636,7 +671,7 @@ impl Root {
             if table_id < sekas_schema::FIRST_USER_TABLE_ID {
                 return Err(Error::InvalidArgument("unsupported delete system table".into()));
             }
-            self.jobs.submit_purge_table_job(&db, &table).await?;
+            self.jobs.submit_purge_table_job(&db, &table, false).await?;
             schema.delete_table(table).await?;
             self.watcher_hub()
                 .notify_deletes(vec![DeleteEvent {

@@ -29,7 +29,7 @@ use crate::node::Replica;
 use crate::node::metrics::*;
 use crate::serverpb::v1::*;
 use crate::transport::TransportManager;
-use crate::{NodeConfig, Result, record_latency};
+use crate::{Result, record_latency};
 
 #[derive(Debug)]
 pub struct ForwardCtx {
@@ -39,8 +39,6 @@ pub struct ForwardCtx {
 }
 
 struct MoveShardCoordinator {
-    cfg: NodeConfig,
-
     replica_id: u64,
     group_id: u64,
 
@@ -56,15 +54,12 @@ pub struct MoveShardController {
 }
 
 struct MoveShardControllerShared {
-    cfg: NodeConfig,
     transport_manager: TransportManager,
 }
 
 impl MoveShardController {
-    pub(crate) fn new(cfg: NodeConfig, transport_manager: TransportManager) -> Self {
-        MoveShardController {
-            shared: Arc::new(MoveShardControllerShared { cfg, transport_manager }),
-        }
+    pub(crate) fn new(transport_manager: TransportManager) -> Self {
+        MoveShardController { shared: Arc::new(MoveShardControllerShared { transport_manager }) }
     }
 
     /// Watch moving shard state and do the corresponding step.
@@ -95,7 +90,6 @@ impl MoveShardController {
                     let client =
                         ctrl.shared.transport_manager.build_move_shard_client(target_group_id);
                     coord = Some(MoveShardCoordinator {
-                        cfg: ctrl.shared.cfg.clone(),
                         replica_id,
                         group_id,
                         replica: replica.clone(),
@@ -265,19 +259,8 @@ impl MoveShardCoordinator {
     }
 
     async fn clean_orphan_shard(&self) {
-        use super::gc::remove_shard;
-
         let group_engine = self.replica.group_engine();
-        if let Err(e) =
-            remove_shard(&self.cfg, self.replica.as_ref(), group_engine, self.desc.get_shard_id())
-                .await
-        {
-            error!(
-                "remove moved out shard from source group: {e:?}. replica={}, group={}, desc={}",
-                self.replica_id, self.group_id, self.desc
-            );
-            return;
-        }
+        group_engine.mark_deleted_shard(self.desc.get_shard_desc().clone());
 
         self.clean_move_shard_state().await;
     }

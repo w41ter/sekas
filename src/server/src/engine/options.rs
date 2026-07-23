@@ -15,10 +15,13 @@
 use rocksdb::{BlockBasedIndexType, BlockBasedOptions, Cache, Options};
 
 use crate::DbConfig;
-use crate::engine::group_filter::GroupCompactionFactory;
+use crate::engine::group_filter::{DeletedShardRegistry, GroupCompactionFactory};
 use crate::engine::properties::SplitKeyCollectorFactory;
 
-pub fn to_rocksdb_options(cfg: &DbConfig) -> rocksdb::Options {
+pub fn to_rocksdb_options(
+    cfg: &DbConfig,
+    deleted_shards: DeletedShardRegistry,
+) -> rocksdb::Options {
     let mut opts = Options::default();
     opts.create_if_missing(true);
     opts.create_missing_column_families(true);
@@ -70,9 +73,10 @@ pub fn to_rocksdb_options(cfg: &DbConfig) -> rocksdb::Options {
     opts.set_block_based_table_factory(&blk_opts);
 
     opts.add_table_properties_collector_factory(SplitKeyCollectorFactory);
-    if cfg.mvcc_gc_retention_ms > 0 {
-        opts.set_compaction_filter_factory(GroupCompactionFactory::new(cfg.mvcc_gc_retention_ms));
-    }
+    opts.set_compaction_filter_factory(GroupCompactionFactory::new(
+        cfg.mvcc_gc_retention_ms,
+        deleted_shards,
+    ));
 
     opts
 }

@@ -208,6 +208,19 @@ impl GroupStateMachine {
                 desc.epoch = apply_shard_delta(desc.epoch);
                 desc.shards.push(shard);
             }
+            if let Some(DeleteShard { shard_id }) = op.delete_shard {
+                let shard = desc.shard(shard_id).cloned().ok_or(Error::ShardNotFound(shard_id))?;
+                info!(
+                    "group {} delete shard {} at epoch {}",
+                    self.info.group_id,
+                    shard_id,
+                    Epoch(desc.epoch)
+                );
+                self.desc_updated = true;
+                desc.epoch = apply_shard_delta(desc.epoch);
+                desc.drop_shard(shard_id);
+                self.plugged_write_states.deleted_shards.push(shard);
+            }
             if let Some(m) = op.move_shard {
                 self.apply_move_shard_event(m, &mut desc);
             }

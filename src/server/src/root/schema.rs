@@ -93,8 +93,19 @@ impl Schema {
         Ok(Some(desc))
     }
 
-    pub async fn update_database(&self, _desc: DatabaseDesc) -> Result<()> {
-        todo!()
+    pub async fn update_database(&self, desc: DatabaseDesc) -> Result<DatabaseDesc> {
+        let current = self
+            .get_database(&desc.name)
+            .await?
+            .ok_or_else(|| Error::DatabaseNotFound(desc.name.clone()))?;
+        if current.id != desc.id {
+            return Err(Error::InvalidArgument(format!(
+                "database id mismatch, expected {}, got {}",
+                current.id, desc.id
+            )));
+        }
+        self.put_database(desc.clone()).await?;
+        Ok(desc)
     }
 
     pub async fn delete_database(&self, db: &DatabaseDesc) -> Result<u64> {
@@ -150,8 +161,19 @@ impl Schema {
             .collect::<Vec<_>>())
     }
 
-    pub async fn update_table(&self, _desc: TableDesc) -> Result<()> {
-        todo!()
+    pub async fn update_table(&self, desc: TableDesc) -> Result<TableDesc> {
+        let current = self
+            .get_table(desc.db, &desc.name)
+            .await?
+            .ok_or_else(|| Error::InvalidArgument(format!("table {} not found", desc.name)))?;
+        if current.id != desc.id {
+            return Err(Error::InvalidArgument(format!(
+                "table id mismatch, expected {}, got {}",
+                current.id, desc.id
+            )));
+        }
+        self.put_table(desc.clone()).await?;
+        Ok(desc)
     }
 
     pub async fn delete_table(&self, table: TableDesc) -> Result<()> {
@@ -486,7 +508,7 @@ impl Schema {
     }
 
     pub async fn update_job(&self, desc: BackgroundJob) -> Result<bool> {
-        if self.get(table::JOB_ID, &desc.id.to_be_bytes()).await?.is_none() {
+        if self.get(table::JOB_ID, &desc.id.to_le_bytes()).await?.is_none() {
             // TODO: replace this with storage put_condition operation.
             return Ok(false);
         }

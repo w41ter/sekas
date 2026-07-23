@@ -32,6 +32,11 @@ pub mod v1 {
         }
 
         #[inline]
+        pub fn delete_shard(shard_id: u64) -> Box<Self> {
+            Box::new(SyncOp { delete_shard: Some(DeleteShard { shard_id }), ..Default::default() })
+        }
+
+        #[inline]
         pub fn purge_replica(orphan_replica_id: u64) -> Box<Self> {
             Box::new(SyncOp {
                 purge_replica: Some(PurgeOrphanReplica { replica_id: orphan_replica_id }),

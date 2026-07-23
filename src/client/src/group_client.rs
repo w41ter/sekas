@@ -443,6 +443,23 @@ impl GroupClient {
         self.invoke(op).await
     }
 
+    pub async fn delete_shard(&mut self, shard_id: u64) -> Result<()> {
+        let op = |ctx: InvokeContext, client: NodeClient| {
+            let req = GroupRequest::delete_shard(ctx.group_id, ctx.epoch, shard_id);
+            async move {
+                let resp = client.unary_group_request(req).await.and_then(Self::group_response)?;
+                match resp {
+                    Response::DeleteShard(_) => Ok(()),
+                    _ => Err(Status::internal("invalid response type, DeleteShard is required")),
+                }
+            }
+        };
+        let req = Request::DeleteShard(DeleteShardRequest { shard_id });
+        let opt =
+            InvokeOpt { request: Some(&req), ignore_transport_error: true, ..Default::default() };
+        self.invoke_with_opt(op, opt).await
+    }
+
     pub async fn transfer_leader(&mut self, dest_replica: u64) -> Result<()> {
         let op = |ctx: InvokeContext, client: NodeClient| {
             let dest_replica = dest_replica.to_owned();
@@ -646,6 +663,7 @@ fn is_executable(descriptor: &GroupDesc, request: &Request) -> bool {
         Request::ClearIntent(req) => {
             is_target_shard_exists(descriptor, req.shard_id, &req.user_key)
         }
+        Request::DeleteShard(req) => descriptor.shards.iter().any(|s| s.id == req.shard_id),
         _ => false,
     }
 }

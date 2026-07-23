@@ -33,6 +33,7 @@ make_static_metric! {
             merge_shard,
             accept_shard,
             create_shard,
+            delete_shard,
             move_replicas,
             change_replicas,
 
@@ -54,6 +55,7 @@ make_static_metric! {
             merge_shard,
             accept_shard,
             create_shard,
+            delete_shard,
             move_replicas,
             change_replicas,
         }
@@ -122,6 +124,10 @@ pub fn take_group_request_metrics(
         Request::CreateShard(_) => {
             GROUP_CLIENT_GROUP_REQUEST_TOTAL.create_shard.inc();
             Some(&GROUP_CLIENT_GROUP_REQUEST_DURATION_SECONDS.create_shard)
+        }
+        Request::DeleteShard(_) => {
+            GROUP_CLIENT_GROUP_REQUEST_TOTAL.delete_shard.inc();
+            Some(&GROUP_CLIENT_GROUP_REQUEST_DURATION_SECONDS.delete_shard)
         }
         Request::ChangeReplicas(_) => {
             GROUP_CLIENT_GROUP_REQUEST_TOTAL.change_replicas.inc();

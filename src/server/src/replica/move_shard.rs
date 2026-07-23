@@ -55,7 +55,10 @@ impl Replica {
 
         let _acl_guard = self.take_read_acl_guard().await;
         self.check_moving_shard_request_early(shard_id)?;
+        self.delete_chunks_inner(shard_id, keys).await
+    }
 
+    async fn delete_chunks_inner(&self, shard_id: u64, keys: &[(Vec<u8>, u64)]) -> Result<()> {
         let mut wb = WriteBatch::default();
         for (key, version) in keys {
             self.group_engine.delete(&mut wb, shard_id, key, *version)?;

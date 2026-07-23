@@ -23,6 +23,7 @@ use sekas_client::{ClientOptions, NodeClient, SekasClient};
 use sekas_rock::fn_name;
 use sekas_server::diagnosis;
 
+use crate::helper::client::{ClusterClient, node_client_with_retry};
 use crate::helper::context::*;
 use crate::helper::init::setup_panic_hook;
 
@@ -64,6 +65,33 @@ async fn admin_balance_init_cluster() {
 }
 
 #[sekas_macro::test]
+async fn admin_update_database_and_table() {
+    let mut ctx = TestContext::new(fn_name!());
+    let nodes = ctx.bootstrap_servers(1).await;
+    let addrs = nodes.values().cloned().collect::<Vec<_>>();
+    let c = SekasClient::new(ClientOptions::default(), addrs).await.unwrap();
+
+    let db = c.create_database("update_db".into()).await.unwrap();
+    let updated_db = c.update_database(db.desc()).await.unwrap();
+    assert_eq!(updated_db.desc().id, db.desc().id);
+    assert_eq!(updated_db.desc().name, db.desc().name);
+
+    let mut table = updated_db.create_table("update_table".into()).await.unwrap();
+    table.properties.insert("owner".to_owned(), "admin_update_database_and_table".to_owned());
+    table.properties.insert("retention".to_owned(), "7d".to_owned());
+
+    let updated_table = updated_db.update_table(table.clone()).await.unwrap();
+    assert_eq!(updated_table.id, table.id);
+    assert_eq!(
+        updated_table.properties.get("owner").map(String::as_str),
+        Some("admin_update_database_and_table")
+    );
+
+    let reopened = updated_db.open_table("update_table".into()).await.unwrap();
+    assert_eq!(reopened.properties.get("retention").map(String::as_str), Some("7d"));
+}
+
+#[sekas_macro::test]
 async fn admin_delete() {
     let mut ctx = TestContext::new(fn_name!());
     ctx.mut_replica_testing_knobs().disable_scheduler_orphan_replica_detecting_intervals = true;
@@ -91,6 +119,66 @@ async fn admin_delete() {
         let od2 = c.open_database("test_db1".into()).await.unwrap();
         assert!(od2.list_table().await.unwrap().is_empty());
     }
+}
+
+#[sekas_macro::test]
+async fn admin_delete_purges_table_shards() {
+    let mut ctx = TestContext::new(fn_name!());
+    ctx.mut_replica_testing_knobs().disable_scheduler_orphan_replica_detecting_intervals = true;
+    let nodes = ctx.bootstrap_servers(1).await;
+    let c = ClusterClient::new(nodes.clone()).await;
+    let app = c.app_client().await;
+
+    let db = app.create_database("purge_db".into()).await.unwrap();
+    let table = db.create_table("purge_table".into()).await.unwrap();
+    db.put(table.id, b"key".to_vec(), b"value".to_vec()).await.unwrap();
+
+    let shard = c.get_shard_desc(table.id, b"key").await.expect("table shard exists");
+    let group =
+        c.find_router_group_state_by_key(table.id, b"key").await.expect("table group exists");
+    assert!(c.group_contains_shard(group.id, shard.id));
+
+    db.delete_table("purge_table".into()).await.unwrap();
+    assert!(db.open_table("purge_table".into()).await.is_err());
+    wait_shard_removed(&c, group.id, shard.id).await;
+
+    ctx.stop_server(0).await;
+    let restarted_addr = nodes.get(&0).unwrap().clone();
+    ctx.spawn_server(0, &restarted_addr, false, vec![restarted_addr.clone()]);
+    node_client_with_retry(&restarted_addr).await;
+    let restarted = ClusterClient::new(nodes.clone()).await;
+    wait_shard_removed(&restarted, group.id, shard.id).await;
+    let app = restarted.app_client().await;
+    let db = app.open_database("purge_db".into()).await.unwrap();
+
+    let recreated = db.create_table("purge_table".into()).await.unwrap();
+    assert_ne!(recreated.id, table.id);
+    assert!(db.get(recreated.id, b"key".to_vec()).await.unwrap().is_none());
+
+    let db2 = app.create_database("purge_db_all".into()).await.unwrap();
+    let table2 = db2.create_table("purge_table".into()).await.unwrap();
+    let table3 = db2.create_table("purge_table_extra".into()).await.unwrap();
+    db2.put(table2.id, b"key".to_vec(), b"value".to_vec()).await.unwrap();
+    db2.put(table3.id, b"key".to_vec(), b"value".to_vec()).await.unwrap();
+    let shard2 =
+        restarted.get_shard_desc(table2.id, b"key").await.expect("database table shard exists");
+    let group2 = restarted
+        .find_router_group_state_by_key(table2.id, b"key")
+        .await
+        .expect("database table group exists");
+    let shard3 = restarted
+        .get_shard_desc(table3.id, b"key")
+        .await
+        .expect("database extra table shard exists");
+    let group3 = restarted
+        .find_router_group_state_by_key(table3.id, b"key")
+        .await
+        .expect("database extra table group exists");
+
+    app.delete_database("purge_db_all".into()).await.unwrap();
+    assert!(app.open_database("purge_db_all".into()).await.is_err());
+    wait_shard_removed(&restarted, group2.id, shard2.id).await;
+    wait_shard_removed(&restarted, group3.id, shard3.id).await;
 }
 
 #[sekas_macro::test]
@@ -147,6 +235,16 @@ async fn admin_basic() {
     let d = m.databases.iter().find(|d| d.name == new_db_name).expect("created database not found");
     d.tables.iter().find(|c| c.name == new_table_name).expect("created table not found");
     assert!(m.nodes.len() == node_count);
+}
+
+async fn wait_shard_removed(c: &ClusterClient, group_id: u64, shard_id: u64) {
+    for _ in 0..10000 {
+        if !c.group_contains_shard(group_id, shard_id) {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("group {group_id} still contains shard {shard_id}");
 }
 
 fn table_key(database_id: u64, table_name: &str) -> Vec<u8> {

@@ -35,6 +35,7 @@ pub struct WriteStates {
     pub apply_state: Option<ApplyState>,
     pub descriptor: Option<GroupDesc>,
     pub move_shard_state: Option<MoveShardState>,
+    pub deleted_shards: Vec<ShardDesc>,
 }
 
 #[derive(Default)]
@@ -56,6 +57,7 @@ where
     cfg: EngineConfig,
     name: String,
     raw_db: Arc<RawDb>,
+    deleted_shards: super::DeletedShardRegistry,
     core: Arc<RwLock<GroupEngineCore>>,
 }
 
@@ -63,6 +65,7 @@ where
 struct GroupEngineCore {
     group_desc: GroupDesc,
     shard_descs: HashMap<u64, ShardDesc>,
+    deleted_shards: HashMap<u64, ShardDesc>,
     move_shard_state: Option<MoveShardState>,
 }
 
@@ -148,11 +151,13 @@ impl GroupEngine {
         let cf_handle = raw_db.cf_handle(&name).expect("cf must exists because it just created");
         let engine = GroupEngine {
             cfg: cfg.clone(),
+            deleted_shards: raw_db.deleted_shards_for_cf(&name),
             name,
             raw_db: raw_db.clone(),
             core: Arc::new(RwLock::new(GroupEngineCore {
                 group_desc: desc.clone(),
                 shard_descs: Default::default(),
+                deleted_shards: Default::default(),
                 move_shard_state: None,
             })),
         };
@@ -185,19 +190,30 @@ impl GroupEngine {
                 return Ok(None);
             }
         };
+        let deleted_shard_registry = raw_db.deleted_shards_for_cf(&name);
 
         let group_desc = internal::descriptor(&raw_db, &cf_handle)?;
         let move_shard_state = internal::move_shard_state(&raw_db, &cf_handle)?;
+        let deleted_shards = internal::deleted_shards(&raw_db, &cf_handle)?;
+        for shard in &deleted_shards {
+            deleted_shard_registry.add(shard);
+        }
         let mut shard_descs = internal::shard_descs(&group_desc);
         if let Some(shard_desc) = move_shard_state.as_ref().map(|m| m.get_shard_desc()) {
             shard_descs.entry(shard_desc.id).or_insert_with(|| shard_desc.clone());
         }
-        let core = GroupEngineCore { move_shard_state, group_desc, shard_descs };
+        for shard in &deleted_shards {
+            shard_descs.entry(shard.id).or_insert_with(|| shard.clone());
+        }
+        let deleted_shards =
+            deleted_shards.into_iter().map(|shard| (shard.id, shard)).collect::<HashMap<_, _>>();
+        let core = GroupEngineCore { move_shard_state, group_desc, shard_descs, deleted_shards };
 
         Ok(Some(GroupEngine {
             cfg: cfg.clone(),
             name,
             raw_db: raw_db.clone(),
+            deleted_shards: deleted_shard_registry,
             core: Arc::new(RwLock::new(core)),
         }))
     }
@@ -214,6 +230,35 @@ impl GroupEngine {
     #[inline]
     pub fn move_shard_state(&self) -> Option<MoveShardState> {
         self.core.read().unwrap().move_shard_state.clone()
+    }
+
+    pub fn deleted_shards(&self) -> Vec<ShardDesc> {
+        self.core.read().unwrap().deleted_shards.values().cloned().collect()
+    }
+
+    pub fn mark_deleted_shard(&self, shard: ShardDesc) {
+        {
+            let mut core = self.core.write().unwrap();
+            core.deleted_shards.insert(shard.id, shard.clone());
+            core.shard_descs.entry(shard.id).or_insert_with(|| shard.clone());
+        }
+        self.deleted_shards.add(&shard);
+    }
+
+    pub fn clear_deleted_shard(&self, shard_id: u64) -> Result<()> {
+        let cf_handle = self.cf_handle();
+        let mut wb = rocksdb::WriteBatch::default();
+        wb.delete_cf(&cf_handle, keys::deleted_shard(shard_id));
+        self.raw_db.write_opt(wb, &rocksdb::WriteOptions::default())?;
+        self.deleted_shards.remove(shard_id);
+        let mut core = self.core.write().unwrap();
+        core.deleted_shards.remove(&shard_id);
+        if core.group_desc.shard(shard_id).is_none()
+            && !core.move_shard_state.as_ref().is_some_and(|state| state.get_shard_id() == shard_id)
+        {
+            core.shard_descs.remove(&shard_id);
+        }
+        Ok(())
     }
 
     /// Return the group descriptor.
@@ -347,6 +392,9 @@ impl GroupEngine {
         if states.descriptor.is_some() || states.move_shard_state.is_some() {
             self.apply_core_states(states.descriptor, states.move_shard_state);
         }
+        for shard in states.deleted_shards {
+            self.mark_deleted_shard(shard);
+        }
 
         Ok(())
     }
@@ -406,7 +454,14 @@ impl GroupEngine {
 
         let group_desc = internal::descriptor(&self.raw_db, &cf_handle)?;
         let move_shard_state = internal::move_shard_state(&self.raw_db, &cf_handle)?;
+        let deleted_shards = internal::deleted_shards(&self.raw_db, &cf_handle)?;
+        for shard in &deleted_shards {
+            self.deleted_shards.add(shard);
+        }
         self.apply_core_states(Some(group_desc), move_shard_state);
+        for shard in deleted_shards {
+            self.mark_deleted_shard(shard);
+        }
 
         Ok(())
     }
@@ -450,13 +505,7 @@ impl GroupEngine {
         let (start, end) = self.shard_raw_boundary(shard_id)?;
         let estimated_split_keys =
             self.raw_db.estimate_split_keys_in_range(&self.cf_handle(), &start, &end)?;
-        if estimated_split_keys.is_empty() {
-            return Ok(None);
-        }
-        let num_split_keys = estimated_split_keys.len();
-        let split_point = num_split_keys / 2;
-        let split_key = &estimated_split_keys[split_point];
-        Ok(keys::may_revert_mvcc_key(split_key))
+        Ok(estimate_user_split_key(&estimated_split_keys))
     }
 
     /// return the desc of the specified shard.
@@ -830,7 +879,7 @@ pub(super) mod keys {
         if encoded_user_key.is_empty() || !encoded_user_key.len().is_multiple_of(9) {
             return None;
         }
-        for group in encoded_user_key.chunks_exact(9) {
+        for group in encoded_user_key.as_chunks::<9>().0 {
             let num_element = group[8].checked_sub(b'0')? as usize;
             if num_element == 0 || num_element > 9 {
                 return None;
@@ -864,6 +913,16 @@ pub(super) mod keys {
         let mut buf = Vec::with_capacity(core::mem::size_of::<u64>() + MIGRATE_STATE.len());
         buf.extend_from_slice(super::LOCAL_TABLE_ID.to_le_bytes().as_slice());
         buf.extend_from_slice(MIGRATE_STATE);
+        buf
+    }
+
+    #[inline]
+    pub fn deleted_shard(shard_id: u64) -> Vec<u8> {
+        const DELETED_SHARD: &[u8] = b"DELETED_SHARD";
+        let mut buf = Vec::with_capacity(core::mem::size_of::<u64>() * 2 + DELETED_SHARD.len());
+        buf.extend_from_slice(super::LOCAL_TABLE_ID.to_le_bytes().as_slice());
+        buf.extend_from_slice(DELETED_SHARD);
+        buf.extend_from_slice(shard_id.to_le_bytes().as_slice());
         buf
     }
 }
@@ -934,6 +993,9 @@ impl WriteStates {
                 wb.delete_cf(cf_handle, keys::move_shard_state());
             }
         }
+        for shard in &self.deleted_shards {
+            wb.put_cf(cf_handle, keys::deleted_shard(shard.id), shard.encode_to_vec());
+        }
     }
 }
 
@@ -984,6 +1046,31 @@ mod internal {
         }
     }
 
+    pub(super) fn deleted_shards(
+        db: &RawDb,
+        cf_handle: &impl rocksdb::AsColumnFamilyRef,
+    ) -> Result<Vec<ShardDesc>> {
+        use rocksdb::{Direction, IteratorMode, ReadOptions};
+
+        const DELETED_SHARD: &[u8] = b"DELETED_SHARD";
+        let mut prefix = Vec::with_capacity(core::mem::size_of::<u64>() + DELETED_SHARD.len());
+        prefix.extend_from_slice(super::LOCAL_TABLE_ID.to_le_bytes().as_slice());
+        prefix.extend_from_slice(DELETED_SHARD);
+
+        let opts = ReadOptions::default();
+        let iter =
+            db.iterator_cf_opt(cf_handle, opts, IteratorMode::From(&prefix, Direction::Forward));
+        let mut shards = vec![];
+        for entry in iter {
+            let (key, value) = entry?;
+            if !key.starts_with(&prefix) {
+                break;
+            }
+            shards.push(ShardDesc::decode(value.as_ref())?);
+        }
+        Ok(shards)
+    }
+
     pub(super) fn flushed_apply_state(
         db: &RawDb,
         cf_handle: &impl rocksdb::AsColumnFamilyRef,
@@ -1015,6 +1102,34 @@ fn next_message<T: prost::Message + Default>(
         Some(Err(err)) => Err(err.into()),
         None => Err(Error::InvalidData("no such key exists".into())),
     }
+}
+
+fn estimate_user_split_key(estimated_split_keys: &[Vec<u8>]) -> Option<Vec<u8>> {
+    if estimated_split_keys.is_empty() {
+        return None;
+    }
+
+    let split_point = estimated_split_keys.len() / 2;
+    let right = keys::may_revert_mvcc_key(&estimated_split_keys[split_point])?;
+    for key in estimated_split_keys[..split_point].iter().rev() {
+        let left = keys::may_revert_mvcc_key(key)?;
+        if left < right {
+            return Some(shortest_separator_prefix(&left, &right));
+        }
+    }
+
+    Some(right)
+}
+
+fn shortest_separator_prefix(left: &[u8], right: &[u8]) -> Vec<u8> {
+    debug_assert!(left < right);
+
+    let mut pos = 0;
+    while pos < left.len() && pos < right.len() && left[pos] == right[pos] {
+        pos += 1;
+    }
+
+    right[..=pos].to_vec()
 }
 
 #[cfg(test)]
@@ -1136,6 +1251,50 @@ mod tests {
                 .await
                 .unwrap();
         assert!(engine.is_none());
+    }
+
+    #[sekas_macro::test]
+    async fn deleted_shard_compaction_filter_is_scoped_to_group_cf() {
+        let dir = TempDir::new(fn_name!()).unwrap();
+        let db_dir = dir.path().join("db");
+        let raw_db = Arc::new(crate::bootstrap::open_engine_with_default_config(db_dir).unwrap());
+        let source =
+            GroupEngine::create(&EngineConfig::default(), raw_db.clone(), 11, 1001).await.unwrap();
+        let target =
+            GroupEngine::create(&EngineConfig::default(), raw_db.clone(), 12, 1002).await.unwrap();
+        for engine in [&source, &target] {
+            engine
+                .commit(
+                    WriteBatch::default(),
+                    WriteStates {
+                        descriptor: Some(GroupDesc {
+                            id: engine.descriptor().id,
+                            shards: vec![ShardDesc::whole(101, 1)],
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    },
+                    false,
+                )
+                .unwrap();
+        }
+
+        let mut wb = WriteBatch::default();
+        source.put(&mut wb, 101, b"k", b"source", 100).unwrap();
+        source.commit(wb, WriteStates::default(), false).unwrap();
+        let mut wb = WriteBatch::default();
+        target.put(&mut wb, 101, b"k", b"target", 100).unwrap();
+        target.commit(wb, WriteStates::default(), false).unwrap();
+
+        source.mark_deleted_shard(ShardDesc::whole(101, 1));
+        source.raw_db.flush_cf(&source.cf_handle()).unwrap();
+        target.raw_db.flush_cf(&target.cf_handle()).unwrap();
+        source.raw_db.db.compact_range_cf(&source.cf_handle(), None::<&[u8]>, None::<&[u8]>);
+        target.raw_db.db.compact_range_cf(&target.cf_handle(), None::<&[u8]>, None::<&[u8]>);
+
+        assert!(source.get(101, b"k").await.unwrap().is_none());
+        let value = target.get(101, b"k").await.unwrap().expect("target value must survive");
+        assert_eq!(value.content.as_deref(), Some(b"target".as_slice()));
     }
 
     #[sekas_macro::test]
@@ -1646,6 +1805,60 @@ mod tests {
         assert_eq!(parsed.version, 123);
     }
 
+    #[test]
+    fn estimate_user_split_key_returns_short_separator_prefix() {
+        let estimated_split_keys = vec![
+            keys::mvcc_key(1, b"user/00001234", 20),
+            keys::mvcc_key(1, b"user/00001234", 10),
+            keys::mvcc_key(1, b"user/00005678", 20),
+            keys::mvcc_key(1, b"user/00009999", 20),
+        ];
+
+        let split_key = estimate_user_split_key(&estimated_split_keys).unwrap();
+        assert_eq!(split_key, b"user/00005");
+        assert!(b"user/00001234".as_slice() < split_key.as_slice());
+        assert!(split_key.as_slice() <= b"user/00005678".as_slice());
+    }
+
+    #[test]
+    fn estimate_user_split_key_keeps_raw_sample_midpoint() {
+        let estimated_split_keys = vec![
+            keys::mvcc_key(1, b"user/00001000", 20),
+            keys::mvcc_key(1, b"user/00001000", 10),
+            keys::mvcc_key(1, b"user/00001000", 5),
+            keys::mvcc_key(1, b"user/00002000", 20),
+            keys::mvcc_key(1, b"user/00009000", 20),
+        ];
+
+        let split_key = estimate_user_split_key(&estimated_split_keys).unwrap();
+        assert_eq!(split_key, b"user/00001000");
+    }
+
+    #[test]
+    fn estimate_user_split_key_falls_back_to_single_user_key() {
+        let estimated_split_keys =
+            vec![keys::mvcc_key(1, b"user/00001234", 20), keys::mvcc_key(1, b"user/00001234", 10)];
+
+        let split_key = estimate_user_split_key(&estimated_split_keys).unwrap();
+        assert_eq!(split_key, b"user/00001234");
+    }
+
+    #[test]
+    fn shortest_separator_prefix_handles_prefix_relation() {
+        let split_key = shortest_separator_prefix(b"abc", b"abcd");
+        assert_eq!(split_key, b"abcd");
+        assert!(b"abc".as_slice() < split_key.as_slice());
+        assert!(split_key.as_slice() <= b"abcd".as_slice());
+    }
+
+    #[test]
+    fn shortest_separator_prefix_handles_binary_keys() {
+        let split_key = shortest_separator_prefix(b"a\xff\xff", b"b\x00");
+        assert_eq!(split_key, b"b");
+        assert!(b"a\xff\xff".as_slice() < split_key.as_slice());
+        assert!(split_key.as_slice() <= b"b\x00".as_slice());
+    }
+
     #[sekas_macro::test]
     async fn estimate_split_key_of_all_range() {
         let dir = TempDir::new(fn_name!()).unwrap();
@@ -1673,6 +1886,33 @@ mod tests {
 
         let split_key = engine.estimate_split_key(shard_id).unwrap();
         assert!(split_key.is_some());
+    }
+
+    #[sekas_macro::test]
+    async fn estimate_split_key_uses_short_separator_prefix() {
+        let dir = TempDir::new(fn_name!()).unwrap();
+        let (group_id, shard_id) = (1, 1);
+        let engine = create_engine(group_id, shard_id, dir.path().join("1").as_path()).await;
+
+        let mut wb = WriteBatch::default();
+        let n = 5000;
+        for i in 0..n {
+            engine
+                .put(
+                    &mut wb,
+                    shard_id,
+                    format!("user/0000{i:04}").as_bytes(),
+                    format!("value-{i}").as_bytes(),
+                    i,
+                )
+                .unwrap();
+        }
+        engine.commit(wb, WriteStates::default(), false).unwrap();
+        engine.raw_db.flush_cf(&engine.cf_handle()).unwrap();
+
+        let split_key = engine.estimate_split_key(shard_id).unwrap().unwrap();
+        assert_eq!(split_key, b"user/00003");
+        assert!(split_key.len() < b"user/00002048".len());
     }
 
     #[sekas_macro::test]

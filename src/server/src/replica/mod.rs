@@ -405,6 +405,16 @@ impl Replica {
                 let resp = CreateShardResponse {};
                 (eval_result, Response::CreateShard(resp))
             }
+            Request::DeleteShard(req) => match self.group_engine.shard_desc(req.shard_id) {
+                Ok(_) => (
+                    Some(eval::delete_shard(req.shard_id)),
+                    Response::DeleteShard(DeleteShardResponse {}),
+                ),
+                Err(Error::ShardNotFound(_)) => {
+                    (None, Response::DeleteShard(DeleteShardResponse {}))
+                }
+                Err(err) => return Err(err),
+            },
             Request::ChangeReplicas(req) => {
                 if let Some(change) = &req.change_replicas {
                     self.raft_group.change_config(change.clone()).await?;
@@ -594,6 +604,7 @@ fn is_change_meta_request(request: &Request) -> bool {
     match request {
         Request::ChangeReplicas(_)
         | Request::CreateShard(_)
+        | Request::DeleteShard(_)
         | Request::AcceptShard(_)
         | Request::MoveReplicas(_)
         | Request::Transfer(_)

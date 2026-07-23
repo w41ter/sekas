@@ -124,6 +124,13 @@ impl Client {
             .ok_or_else(|| ClientError::Internal("The database is not set".to_owned().into()))
     }
 
+    pub async fn update_database(&self, database: DatabaseDesc) -> Result<DatabaseDesc> {
+        let resp = self.admin(AdminRequestBuilder::update_database(database)).await?;
+        let resp = extract_admin_response!(resp.response, Response::UpdateDatabase);
+        resp.database
+            .ok_or_else(|| ClientError::Internal("The database is not set".to_owned().into()))
+    }
+
     pub async fn delete_database(&self, name: String) -> Result<()> {
         let resp = self.admin(AdminRequestBuilder::delete_database(name)).await?;
         extract_admin_response!(resp.response, Response::DeleteDatabase);
@@ -145,6 +152,12 @@ impl Client {
     pub async fn create_table(&self, db_desc: DatabaseDesc, name: String) -> Result<TableDesc> {
         let resp = self.admin(AdminRequestBuilder::create_table(db_desc, name)).await?;
         let resp = extract_admin_response!(resp.response, Response::CreateTable);
+        resp.table.ok_or_else(|| ClientError::Internal("The table is not set".to_owned().into()))
+    }
+
+    pub async fn update_table(&self, table: TableDesc) -> Result<TableDesc> {
+        let resp = self.admin(AdminRequestBuilder::update_table(table)).await?;
+        let resp = extract_admin_response!(resp.response, Response::UpdateTable);
         resp.table.ok_or_else(|| ClientError::Internal("The table is not set".to_owned().into()))
     }
 
@@ -406,6 +419,14 @@ impl AdminRequestBuilder {
         AdminRequest { request: Some(Request::CreateDatabase(CreateDatabaseRequest { name })) }
     }
 
+    pub fn update_database(database: DatabaseDesc) -> AdminRequest {
+        AdminRequest {
+            request: Some(Request::UpdateDatabase(UpdateDatabaseRequest {
+                database: Some(database),
+            })),
+        }
+    }
+
     pub fn delete_database(name: String) -> AdminRequest {
         AdminRequest { request: Some(Request::DeleteDatabase(DeleteDatabaseRequest { name })) }
     }
@@ -424,6 +445,12 @@ impl AdminRequestBuilder {
                 name: co_name,
                 database: Some(database),
             })),
+        }
+    }
+
+    pub fn update_table(table: TableDesc) -> AdminRequest {
+        AdminRequest {
+            request: Some(Request::UpdateTable(UpdateTableRequest { table: Some(table) })),
         }
     }
 

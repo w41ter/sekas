@@ -125,6 +125,7 @@ where
         Request::Scan(_)
         | Request::Get(_)
         | Request::CreateShard(_)
+        | Request::DeleteShard(_)
         | Request::ChangeReplicas(_)
         | Request::AcceptShard(_)
         | Request::Transfer(_)

@@ -171,9 +171,9 @@ message CreateDatabaseRequest {
 
 message CreateDatabaseResponse { DatabaseDesc database = 1; }
 
-message UpdateDatabaseRequest {}
+message UpdateDatabaseRequest { DatabaseDesc database = 1; }
 
-message UpdateDatabaseResponse {}
+message UpdateDatabaseResponse { DatabaseDesc database = 1; }
 
 message DeleteDatabaseRequest {
     // Required. The name of the database.
@@ -204,9 +204,9 @@ message CreateTableRequest {
 
 message CreateTableResponse { TableDesc table = 1; }
 
-message UpdateTableRequest {}
+message UpdateTableRequest { TableDesc table = 1; }
 
-message UpdateTableResponse {}
+message UpdateTableResponse { TableDesc table = 1; }
 
 message DeleteTableRequest {
     // Required. The name of the table.

@@ -16,6 +16,8 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use sekas_api::server::v1::DatabaseDesc;
+
 use crate::discovery::StaticServiceDiscovery;
 use crate::rpc::{ConnManager, RootClient, Router};
 use crate::{AppError, AppResult, Database};
@@ -69,6 +71,12 @@ impl SekasClient {
     /// Create a new database if it not exists.
     pub async fn create_database(&self, name: String) -> AppResult<Database> {
         let db_desc = self.inner.root_client.create_database(name).await?;
+        Ok(Database::new(self.clone(), db_desc))
+    }
+
+    /// Update a database descriptor.
+    pub async fn update_database(&self, desc: DatabaseDesc) -> AppResult<Database> {
+        let db_desc = self.inner.root_client.update_database(desc).await?;
         Ok(Database::new(self.clone(), db_desc))
     }
 

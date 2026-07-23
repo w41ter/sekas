@@ -303,6 +303,25 @@ async fn move_shard_basic() {
 }
 
 #[sekas_macro::test]
+async fn move_shard_round_trip_same_range() {
+    let mut ctx = TestContext::new(fn_name!());
+    let nodes = ctx.bootstrap_servers(3).await;
+    let node_ids = nodes.keys().cloned().collect::<Vec<_>>();
+    let c = ClusterClient::new(nodes).await;
+    let (group_id_1, group_id_2, shard_desc) = create_two_groups(&c, node_ids, 128).await;
+    let shard_id = shard_desc.id;
+
+    move_shard(&c, &shard_desc, group_id_2, group_id_1).await;
+    validate(&c, group_id_2, shard_id, 0..128).await;
+    insert(&c, group_id_2, shard_id, 128..160).await;
+
+    move_shard(&c, &shard_desc, group_id_1, group_id_2).await;
+    validate(&c, group_id_1, shard_id, 0..160).await;
+    insert(&c, group_id_1, shard_id, 160..192).await;
+    validate(&c, group_id_1, shard_id, 0..192).await;
+}
+
+#[sekas_macro::test]
 async fn move_shard_abort() {
     let mut ctx = TestContext::new(fn_name!());
     let nodes = ctx.bootstrap_servers(3).await;

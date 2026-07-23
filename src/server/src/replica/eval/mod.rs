@@ -44,3 +44,9 @@ pub fn add_shard(shard: ShardDesc) -> EvalResult {
 
     EvalResult { op: Some(SyncOp::add_shard(shard)), ..Default::default() }
 }
+
+pub fn delete_shard(shard_id: u64) -> EvalResult {
+    use crate::serverpb::v1::SyncOp;
+
+    EvalResult { op: Some(SyncOp::delete_shard(shard_id)), ..Default::default() }
+}

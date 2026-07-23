@@ -112,8 +112,9 @@ impl Server {
                 let res = self.handle_create_database(req).await?;
                 Response::CreateDatabase(res)
             }
-            Request::UpdateDatabase(_req) => {
-                todo!()
+            Request::UpdateDatabase(req) => {
+                let res = self.handle_update_database(req).await?;
+                Response::UpdateDatabase(res)
             }
             Request::DeleteDatabase(req) => {
                 let res = self.handle_delete_database(req).await?;
@@ -131,8 +132,9 @@ impl Server {
                 let res = self.handle_create_table(req).await?;
                 Response::CreateTable(res)
             }
-            Request::UpdateTable(_req) => {
-                todo!()
+            Request::UpdateTable(req) => {
+                let res = self.handle_update_table(req).await?;
+                Response::UpdateTable(res)
             }
             Request::DeleteTable(req) => {
                 let res = self.handle_delete_table(req).await?;
@@ -162,6 +164,17 @@ impl Server {
         Ok(CreateDatabaseResponse { database: Some(desc) })
     }
 
+    async fn handle_update_database(
+        &self,
+        req: UpdateDatabaseRequest,
+    ) -> Result<UpdateDatabaseResponse> {
+        let database = req.database.ok_or_else(|| {
+            Error::InvalidArgument("UpdateDatabaseRequest::database is required".to_owned())
+        })?;
+        let database = self.root.update_database(database).await?;
+        Ok(UpdateDatabaseResponse { database: Some(database) })
+    }
+
     async fn handle_delete_database(
         &self,
         req: DeleteDatabaseRequest,
@@ -189,6 +202,14 @@ impl Server {
             .ok_or_else(|| Error::InvalidArgument("CreateTableRequest::database".to_owned()))?;
         let desc = self.root.create_table(req.name, database.name).await?;
         Ok(CreateTableResponse { table: Some(desc) })
+    }
+
+    async fn handle_update_table(&self, req: UpdateTableRequest) -> Result<UpdateTableResponse> {
+        let table = req.table.ok_or_else(|| {
+            Error::InvalidArgument("UpdateTableRequest::table is required".to_owned())
+        })?;
+        let table = self.root.update_table(table).await?;
+        Ok(UpdateTableResponse { table: Some(table) })
     }
 
     async fn handle_delete_table(&self, req: DeleteTableRequest) -> Result<DeleteTableResponse> {

@@ -39,6 +39,12 @@ impl Database {
         Ok(desc)
     }
 
+    /// Update a table descriptor.
+    pub async fn update_table(&self, desc: TableDesc) -> AppResult<TableDesc> {
+        let desc = self.client.root_client().update_table(desc).await?;
+        Ok(desc)
+    }
+
     /// Delete a specified table.
     pub async fn delete_table(&self, name: String) -> AppResult<()> {
         self.client.root_client().delete_table(self.desc.clone(), name).await?;

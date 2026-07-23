@@ -164,6 +164,7 @@ fn is_executable(descriptor: &GroupDesc, request: &Request) -> bool {
             Request::WatchKey(req) => is_target_shard_exists(descriptor, req.shard_id, &req.key),
             Request::AcceptShard(_)
             | Request::CreateShard(_)
+            | Request::DeleteShard(_)
             | Request::ChangeReplicas(_)
             | Request::Transfer(_)
             | Request::MoveReplicas(_)

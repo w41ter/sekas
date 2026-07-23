@@ -112,6 +112,7 @@ impl Jobs {
         &self,
         database_id: u64,
         database_name: String,
+        wait_result: bool,
     ) -> Result<()> {
         self.submit(
             BackgroundJob {
@@ -122,7 +123,7 @@ impl Jobs {
                 })),
                 ..Default::default()
             },
-            false,
+            wait_result,
         )
         .await
     }
@@ -151,7 +152,12 @@ impl Jobs {
     }
 
     /// Submit pruge table job.
-    pub async fn submit_purge_table_job(&self, db: &DatabaseDesc, table: &TableDesc) -> Result<()> {
+    pub async fn submit_purge_table_job(
+        &self,
+        db: &DatabaseDesc,
+        table: &TableDesc,
+        wait_result: bool,
+    ) -> Result<()> {
         let table_id = table.id;
         let database_name = db.name.to_owned();
         let table_name = table.name.to_owned();
@@ -166,7 +172,7 @@ impl Jobs {
                 })),
                 ..Default::default()
             },
-            false,
+            wait_result,
         )
         .await
     }
@@ -275,7 +281,16 @@ impl Jobs {
             if shard.is_none() {
                 break;
             }
-            let _ = shard; // TODO: delete shard.
+            let shard = shard.unwrap();
+            if let Err(err) = self.try_remove_shard(None, shard.id).await {
+                error!(
+                    "rollback temp shard of new table fail and retry later: {err:?}. shard={}",
+                    shard.id
+                );
+                create_table.wait_cleanup.push(shard);
+                self.save_create_table(job_id, create_table).await?;
+                return Err(err);
+            }
             self.save_create_table(job_id, create_table).await?;
         }
         create_table.status = CreateTableJobStatus::Abort as i32;
@@ -544,16 +559,17 @@ impl Jobs {
         job: &BackgroundJob,
         purge_table: &PurgeTableJob,
     ) -> Result<()> {
-        let schema = self.core.root_shared.schema()?;
-        let mut group_shards = schema.get_table_shards(purge_table.table_id).await?;
-        loop {
-            if let Some((group, shard)) = group_shards.pop() {
-                self.try_remove_shard(group, shard.id).await?;
-                continue;
-            }
-            break;
-        }
+        self.purge_table_shards(purge_table.table_id).await?;
         self.core.finish(job.to_owned()).await?;
+        Ok(())
+    }
+
+    async fn purge_table_shards(&self, table_id: u64) -> Result<()> {
+        let schema = self.core.root_shared.schema()?;
+        let mut group_shards = schema.get_table_shards(table_id).await?;
+        while let Some((group, shard)) = group_shards.pop() {
+            self.try_remove_shard(Some(group), shard.id).await?;
+        }
         Ok(())
     }
 
@@ -566,21 +582,14 @@ impl Jobs {
         let mut tables = schema.list_database_tables(purge_database.database_id).await?;
         loop {
             if let Some(co) = tables.pop() {
-                let job = BackgroundJob {
-                    job: Some(Job::PurgeTable(PurgeTableJob {
-                        database_id: co.db,
-                        table_id: co.id,
-                        database_name: "".to_owned(),
-                        table_name: co.name.to_owned(),
-                        created_time: format!("{:?}", Instant::now()),
-                    })),
-                    ..Default::default()
+                let purge_table = PurgeTableJob {
+                    database_id: co.db,
+                    table_id: co.id,
+                    database_name: "".to_owned(),
+                    table_name: co.name.to_owned(),
+                    created_time: format!("{:?}", Instant::now()),
                 };
-                match self.submit(job, false).await {
-                    Ok(_) => {}
-                    Err(crate::Error::AlreadyExists(_)) => {}
-                    Err(err) => return Err(err),
-                };
+                self.purge_table_shards(purge_table.table_id).await?;
                 schema.delete_table(co).await?;
                 continue;
             }
@@ -636,9 +645,29 @@ impl Jobs {
         Ok(())
     }
 
-    async fn try_remove_shard(&self, _group: u64, _shard: u64) -> Result<()> {
-        // TODO: impl remove shard.
-        Ok(())
+    async fn try_remove_shard(&self, group: Option<u64>, shard: u64) -> Result<()> {
+        let group = if let Some(group) = group {
+            group
+        } else {
+            let schema = self.core.root_shared.schema()?;
+            let groups = schema.list_group().await?;
+            match groups.into_iter().find(|group| group.shards.iter().any(|s| s.id == shard)) {
+                Some(group) => group.id,
+                None => return Ok(()),
+            }
+        };
+        let mut group_client = self.core.root_shared.transport_manager.lazy_group_client(group);
+        let mut retry_state = RetryState::new(Duration::from_secs(10));
+        loop {
+            match group_client.delete_shard(shard).await {
+                Ok(()) => {
+                    return Ok(());
+                }
+                Err(err) => {
+                    retry_state.retry(err).await?;
+                }
+            }
+        }
     }
 }
 
@@ -812,7 +841,7 @@ impl JobCore {
                     _ => unreachable!(),
                 }
             }
-            _ => unreachable!(),
+            background_job::Job::PurgeTable(_) | background_job::Job::PurgeDatabase(_) => Ok(()),
         }
     }
 

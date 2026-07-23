@@ -15,7 +15,9 @@
 mod destory_replica;
 mod mvcc_gc;
 mod report_state;
+mod shard_purge;
 
 pub(crate) use destory_replica::setup as setup_destory_replica;
 pub(crate) use mvcc_gc::setup as setup_mvcc_gc;
 pub(crate) use report_state::{StateChannel, setup as setup_report_state};
+pub(crate) use shard_purge::setup as setup_shard_purge;

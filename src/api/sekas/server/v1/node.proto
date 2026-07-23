@@ -59,6 +59,8 @@ message GroupRequestUnion {
 
         // Add a new shard to an existing group.
         CreateShardRequest create_shard = 20;
+        // Remove a shard from an existing group.
+        DeleteShardRequest delete_shard = 27;
 
         // Change replicas of an existing group.
         ChangeReplicasRequest change_replicas = 21;
@@ -96,6 +98,7 @@ message GroupResponseUnion {
         ClearIntentResponse clear_intent = 12;
 
         CreateShardResponse create_shard = 20;
+        DeleteShardResponse delete_shard = 27;
         ChangeReplicasResponse change_replicas = 21;
         AcceptShardResponse accept_shard = 22;
         TransferResponse transfer = 23;
@@ -241,6 +244,10 @@ message RemoveReplicaResponse {}
 message CreateShardRequest { ShardDesc shard = 1; }
 
 message CreateShardResponse {}
+
+message DeleteShardRequest { uint64 shard_id = 1; }
+
+message DeleteShardResponse {}
 
 message ChangeReplicasRequest { ChangeReplicas change_replicas = 1; }
 

@@ -110,7 +110,7 @@ impl Node {
         let raft_mgr = Arc::new(
             RaftManager::open(cfg.raft.clone(), engines.log(), snap_mgr, trans_mgr).await?,
         );
-        let migrate_ctrl = MoveShardController::new(cfg.node.clone(), transport_manager.clone());
+        let migrate_ctrl = MoveShardController::new(transport_manager.clone());
         let state_engine = engines.state();
         Ok(Node {
             cfg: cfg.node,
@@ -348,9 +348,10 @@ impl Node {
         );
         task_group.add_task(scheduler_handle);
 
-        if let Some(mvcc_gc_handle) = self::job::setup_mvcc_gc(self.cfg.clone(), replica) {
+        if let Some(mvcc_gc_handle) = self::job::setup_mvcc_gc(self.cfg.clone(), replica.clone()) {
             task_group.add_task(mvcc_gc_handle);
         }
+        task_group.add_task(self::job::setup_shard_purge(self.cfg.clone(), replica.clone()));
 
         // Now that all initialization work is done, the replica is ready to serve, mark
         // it as normal state.
