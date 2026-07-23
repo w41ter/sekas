@@ -53,6 +53,13 @@ fn eval_condition(cond: &WriteCondition, value: Option<&Value>) -> Result<bool> 
             WriteConditionType::ExpectEndsWith => {
                 Ok(value.content.as_ref().map(|v| v.ends_with(&cond.value)).unwrap_or_default())
             }
+            WriteConditionType::ExpectContains => Ok(value
+                .content
+                .as_ref()
+                .map(|v| {
+                    cond.value.is_empty() || v.windows(cond.value.len()).any(|w| w == cond.value)
+                })
+                .unwrap_or_default()),
             WriteConditionType::ExpectSlice => {
                 let idx = cond.begin as usize;
                 Ok(value

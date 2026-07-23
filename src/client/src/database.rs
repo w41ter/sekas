@@ -39,7 +39,11 @@ impl Database {
         Ok(desc)
     }
 
-    /// Update a table descriptor.
+    /// Update non-key fields of a table descriptor.
+    ///
+    /// The table is located by `desc.db` and `desc.name`, and `desc.id` must
+    /// match the existing descriptor. Moving or renaming a table is not
+    /// supported by this API.
     pub async fn update_table(&self, desc: TableDesc) -> AppResult<TableDesc> {
         let desc = self.client.root_client().update_table(desc).await?;
         Ok(desc)

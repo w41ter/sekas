@@ -171,7 +171,12 @@ message CreateDatabaseRequest {
 
 message CreateDatabaseResponse { DatabaseDesc database = 1; }
 
-message UpdateDatabaseRequest { DatabaseDesc database = 1; }
+message UpdateDatabaseRequest {
+    // Required. The database is located by database.name and database.id must
+    // match the existing descriptor. Renaming is not supported by this API; use
+    // it only to update non-key descriptor fields.
+    DatabaseDesc database = 1;
+}
 
 message UpdateDatabaseResponse { DatabaseDesc database = 1; }
 
@@ -204,7 +209,12 @@ message CreateTableRequest {
 
 message CreateTableResponse { TableDesc table = 1; }
 
-message UpdateTableRequest { TableDesc table = 1; }
+message UpdateTableRequest {
+    // Required. The table is located by table.db and table.name, and table.id
+    // must match the existing descriptor. Moving or renaming a table is not
+    // supported by this API; use it only to update non-key descriptor fields.
+    TableDesc table = 1;
+}
 
 message UpdateTableResponse { TableDesc table = 1; }
 

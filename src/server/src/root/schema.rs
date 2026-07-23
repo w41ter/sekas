@@ -94,6 +94,9 @@ impl Schema {
     }
 
     pub async fn update_database(&self, desc: DatabaseDesc) -> Result<DatabaseDesc> {
+        // Databases are keyed by name in the root schema. This API therefore
+        // updates only non-key descriptor fields and intentionally does not
+        // express rename.
         let current = self
             .get_database(&desc.name)
             .await?
@@ -162,10 +165,15 @@ impl Schema {
     }
 
     pub async fn update_table(&self, desc: TableDesc) -> Result<TableDesc> {
-        let current = self
-            .get_table(desc.db, &desc.name)
-            .await?
-            .ok_or_else(|| Error::InvalidArgument(format!("table {} not found", desc.name)))?;
+        // Tables are keyed by (db, name) in the root schema. This API therefore
+        // updates only non-key descriptor fields and intentionally does not
+        // express rename or moving between databases.
+        let current = self.get_table(desc.db, &desc.name).await?.ok_or_else(|| {
+            Error::InvalidArgument(format!(
+                "table {} not found in database {}; update_table does not support rename or move",
+                desc.name, desc.db
+            ))
+        })?;
         if current.id != desc.id {
             return Err(Error::InvalidArgument(format!(
                 "table id mismatch, expected {}, got {}",

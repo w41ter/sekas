@@ -74,7 +74,10 @@ impl SekasClient {
         Ok(Database::new(self.clone(), db_desc))
     }
 
-    /// Update a database descriptor.
+    /// Update non-key fields of a database descriptor.
+    ///
+    /// The database is located by `desc.name`, and `desc.id` must match the
+    /// existing descriptor. Renaming is not supported by this API.
     pub async fn update_database(&self, desc: DatabaseDesc) -> AppResult<Database> {
         let db_desc = self.inner.root_client.update_database(desc).await?;
         Ok(Database::new(self.clone(), db_desc))
