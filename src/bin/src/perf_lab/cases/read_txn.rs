@@ -196,8 +196,18 @@ impl PerfCase for ValueSizeMatrix {
             tokio::time::sleep(Duration::from_secs(lab.config.workload.duration_secs)).await;
             lab.mark(format!("value_size_{size}_end")).await?;
             let report = workload.stop().await;
+            let payload_bytes = report.successes as f64 * size as f64;
+            let duration_secs = (report.duration_ms as f64 / 1000.0).max(0.001);
+            let kib = (size as f64 / 1024.0).max(1.0 / 1024.0);
             derived.insert(format!("value_size_{size}.qps"), report.qps);
             derived.insert(format!("value_size_{size}.p99_us"), report.latency.p99_us as f64);
+            derived
+                .insert(format!("value_size_{size}.bytes_per_sec"), payload_bytes / duration_secs);
+            derived.insert(
+                format!("value_size_{size}.p99_us_per_kib"),
+                report.latency.p99_us as f64 / kib,
+            );
+            derived.insert(format!("value_size_{size}.qps_per_kib"), report.qps / kib);
             reports.push(report);
         }
         Ok(case_report(lab, self.name(), reports, derived))
