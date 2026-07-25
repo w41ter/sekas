@@ -141,6 +141,8 @@ message SyncOp {
     SplitShard split_shard = 4;
     // Merge shard.
     MergeShard merge_shard = 5;
+    // Advance the local group GC version.
+    AdvanceGcVersion advance_gc_version = 7;
 
     // A trick, force prost box the `SyncOp`, because `SyncOp` message is too
     // large.
@@ -150,6 +152,8 @@ message SyncOp {
 message AddShard { sekas.server.v1.ShardDesc shard = 1; }
 
 message DeleteShard { uint64 shard_id = 1; }
+
+message AdvanceGcVersion { uint64 version = 1; }
 
 // PurgeOrphanReplica is used by the replica leader. When the replica leader
 // finds an orphan replica, it can propose a command. After the command is

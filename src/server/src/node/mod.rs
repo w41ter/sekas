@@ -630,6 +630,34 @@ impl Node {
         resp
     }
 
+    pub async fn sync_group_gc_version(
+        &self,
+        req: &SyncGroupGcVersionRequest,
+    ) -> SyncGroupGcVersionResponse {
+        let mut proposed = 0;
+        let mut skipped = 0;
+        for version in &req.versions {
+            let Some(replica) = self.replica_route_table.find(version.group_id) else {
+                skipped += 1;
+                continue;
+            };
+            match replica.advance_gc_version(version.gc_version).await {
+                Ok(true) => proposed += 1,
+                Ok(false) => skipped += 1,
+                Err(err) => {
+                    skipped += 1;
+                    warn!(
+                        "group {} replica {} sync gc version {}: {err}",
+                        replica.replica_info().group_id,
+                        replica.replica_info().replica_id,
+                        version.gc_version
+                    );
+                }
+            }
+        }
+        SyncGroupGcVersionResponse { proposed, skipped }
+    }
+
     /// Forward scan request to dest group.
     ///
     /// Unlike other requests, scan request needs to scan both source and target

@@ -243,6 +243,21 @@ impl Replica {
         self.lease_state.lock().unwrap().descriptor.clone()
     }
 
+    pub async fn advance_gc_version(&self, version: u64) -> Result<bool> {
+        if self.descriptor().gc_version >= version {
+            return Ok(false);
+        }
+        if self.on_leader("advance gc version", true).await?.is_none() {
+            return Ok(false);
+        }
+        let op = Box::new(SyncOp {
+            advance_gc_version: Some(AdvanceGcVersion { version }),
+            ..Default::default()
+        });
+        self.raft_group.propose(EvalResult { op: Some(op), ..Default::default() }).await?;
+        Ok(true)
+    }
+
     #[inline]
     pub fn replica_state(&self) -> ReplicaState {
         self.lease_state.lock().unwrap().replica_state.clone()

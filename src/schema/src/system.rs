@@ -53,6 +53,7 @@ pub fn root_group() -> GroupDesc {
     GroupDesc {
         id: crate::ROOT_GROUP_ID,
         epoch: crate::INITIAL_EPOCH,
+        gc_version: 0,
         shards: unity_table_shards(),
         replicas: vec![ReplicaDesc {
             id: crate::FIRST_REPLICA_ID,
@@ -67,6 +68,7 @@ pub fn init_group() -> GroupDesc {
     GroupDesc {
         id: crate::FIRST_GROUP_ID,
         epoch: crate::INITIAL_EPOCH,
+        gc_version: 0,
         shards: vec![],
         replicas: vec![ReplicaDesc {
             id: crate::INIT_USER_REPLICA_ID,

@@ -26,6 +26,7 @@ use tokio::time::Instant;
 use super::{HeartbeatTask, Root, Schema};
 use crate::Result;
 use crate::constants::ROOT_GROUP_ID;
+use crate::engine::mvcc_gc::min_allowed_version_from_retention;
 use crate::root::metrics;
 use crate::root::schema::ReplicaNodes;
 
@@ -69,7 +70,24 @@ impl Root {
                 info: Some(piggyback_request::Info::CollectScheduleState(
                     CollectScheduleStateRequest {},
                 )),
-            })
+            });
+            if self.cfg.mvcc_gc_retention_ms > 0 {
+                let gc_version = min_allowed_version_from_retention(self.cfg.mvcc_gc_retention_ms);
+                let versions = schema
+                    .list_group()
+                    .await?
+                    .into_iter()
+                    .filter(|group| group.gc_version < gc_version)
+                    .map(|group| GroupGcVersion { group_id: group.id, gc_version })
+                    .collect::<Vec<_>>();
+                if !versions.is_empty() {
+                    piggybacks.push(PiggybackRequest {
+                        info: Some(piggyback_request::Info::SyncGroupGcVersion(
+                            SyncGroupGcVersionRequest { versions },
+                        )),
+                    });
+                }
+            }
         }
 
         let resps = {
@@ -112,7 +130,8 @@ impl Root {
                     for resp in &res.piggybacks {
                         match resp.info.as_ref().unwrap() {
                             piggyback_response::Info::SyncRoot(_)
-                            | piggyback_response::Info::CollectMovingShardState(_) => {}
+                            | piggyback_response::Info::CollectMovingShardState(_)
+                            | piggyback_response::Info::SyncGroupGcVersion(_) => {}
                             piggyback_response::Info::CollectStats(resp) => {
                                 self.handle_collect_stats(&schema, resp, n.to_owned()).await?
                             }
@@ -189,8 +208,10 @@ impl Root {
             if let Some(ex) = groups.iter().find(|g| g.id == desc.id) {
                 if desc.epoch == ex.epoch {
                     Self::check_group_desc_consistency(ex, desc);
-                }
-                if desc.epoch <= ex.epoch {
+                    if desc.gc_version <= ex.gc_version {
+                        continue;
+                    }
+                } else if desc.epoch < ex.epoch {
                     continue;
                 }
             }

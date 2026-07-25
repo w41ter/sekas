@@ -50,6 +50,11 @@ impl ReplicaRouteTable {
         core.replicas.get(&group_id).cloned()
     }
 
+    pub fn replicas(&self) -> Vec<Arc<Replica>> {
+        let core = self.core.read().unwrap();
+        core.replicas.values().cloned().collect()
+    }
+
     pub fn current_root_replica(&self, waker: Option<Waker>) -> Option<Arc<Replica>> {
         let mut core = self.core.write().unwrap();
         if let Some(replica) = core.replicas.get(&ROOT_GROUP_ID) {

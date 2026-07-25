@@ -37,6 +37,14 @@ pub mod v1 {
         }
 
         #[inline]
+        pub fn advance_gc_version(version: u64) -> Box<Self> {
+            Box::new(SyncOp {
+                advance_gc_version: Some(AdvanceGcVersion { version }),
+                ..Default::default()
+            })
+        }
+
+        #[inline]
         pub fn purge_replica(orphan_replica_id: u64) -> Box<Self> {
             Box::new(SyncOp {
                 purge_replica: Some(PurgeOrphanReplica { replica_id: orphan_replica_id }),

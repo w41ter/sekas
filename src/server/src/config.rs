@@ -256,6 +256,10 @@ pub struct RootConfig {
     ///
     /// Default: 3s.
     pub schedule_interval_sec: u64,
+    /// MVCC versions older than this retention are safe to GC, in millis.
+    ///
+    /// Default: 0.
+    pub mvcc_gc_retention_ms: u64,
     pub max_create_group_retry_before_rollback: u64,
 }
 
@@ -386,6 +390,7 @@ impl Default for RootConfig {
             liveness_threshold_sec: 30,
             heartbeat_timeout_sec: 4,
             schedule_interval_sec: 3,
+            mvcc_gc_retention_ms: 0,
             max_create_group_retry_before_rollback: 10,
         }
     }

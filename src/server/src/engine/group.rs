@@ -145,8 +145,13 @@ impl GroupEngine {
         debug_assert!(raw_db.cf_handle(&name).is_none());
         raw_db.create_cf(&name)?;
 
-        let desc =
-            GroupDesc { id: group_id, epoch: INITIAL_EPOCH, shards: vec![], replicas: vec![] };
+        let desc = GroupDesc {
+            id: group_id,
+            epoch: INITIAL_EPOCH,
+            gc_version: 0,
+            shards: vec![],
+            replicas: vec![],
+        };
 
         let cf_handle = raw_db.cf_handle(&name).expect("cf must exists because it just created");
         let engine = GroupEngine {

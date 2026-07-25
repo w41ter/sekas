@@ -413,7 +413,13 @@ impl Jobs {
                 role: ReplicaRole::Voter.into(),
             });
         }
-        let group_desc = GroupDesc { id: group_id, epoch: INITIAL_EPOCH, shards: vec![], replicas };
+        let group_desc = GroupDesc {
+            id: group_id,
+            epoch: INITIAL_EPOCH,
+            gc_version: 0,
+            shards: vec![],
+            replicas,
+        };
         create_group.group_desc = Some(group_desc);
         create_group.wait_create = nodes;
         create_group.status = CreateOneGroupStatus::Creating as i32;

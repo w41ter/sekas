@@ -51,6 +51,7 @@ liveness_threshold_sec = 30
 max_create_group_retry_before_rollback = 10
 replicas_per_group = 3
 schedule_interval_sec = 1
+mvcc_gc_retention_ms = 0
 
 [executor]
 event_interval = 31

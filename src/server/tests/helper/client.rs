@@ -297,6 +297,7 @@ impl ClusterClient {
         for resp in &resp.piggybacks {
             match resp.info.as_ref().unwrap() {
                 piggyback_response::Info::SyncRoot(_)
+                | piggyback_response::Info::SyncGroupGcVersion(_)
                 | piggyback_response::Info::CollectStats(_)
                 | piggyback_response::Info::CollectScheduleState(_)
                 | piggyback_response::Info::CollectGroupDetail(_) => {}
@@ -329,6 +330,7 @@ impl ClusterClient {
         for resp in &resp.piggybacks {
             match resp.info.as_ref().unwrap() {
                 piggyback_response::Info::SyncRoot(_)
+                | piggyback_response::Info::SyncGroupGcVersion(_)
                 | piggyback_response::Info::CollectStats(_)
                 | piggyback_response::Info::CollectScheduleState(_)
                 | piggyback_response::Info::CollectMovingShardState(_) => {}

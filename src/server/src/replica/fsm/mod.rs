@@ -230,6 +230,12 @@ impl GroupStateMachine {
             if let Some(merge_shard) = op.merge_shard {
                 self.apply_merge_shard(merge_shard, &mut desc)?;
             }
+            if let Some(advance_gc_version) = op.advance_gc_version {
+                if desc.gc_version < advance_gc_version.version {
+                    desc.gc_version = advance_gc_version.version;
+                    self.desc_updated = true;
+                }
+            }
 
             // Any sync_op will update group desc.
             self.plugged_write_states.descriptor = Some(desc);

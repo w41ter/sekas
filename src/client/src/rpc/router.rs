@@ -330,7 +330,7 @@ mod tests {
     }
 
     fn descriptor(id: u64, epoch: u64) -> GroupDesc {
-        GroupDesc { id, epoch, shards: vec![], replicas: vec![] }
+        GroupDesc { id, epoch, gc_version: 0, shards: vec![], replicas: vec![] }
     }
 
     #[test]

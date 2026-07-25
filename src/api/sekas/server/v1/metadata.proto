@@ -72,6 +72,8 @@ message GroupDesc {
 	uint64 epoch = 2;
 	repeated ShardDesc shards = 3;
 	repeated ReplicaDesc replicas = 4;
+	// Versions less than this value may be garbage collected locally by replicas.
+	uint64 gc_version = 5;
 }
 
 enum ReplicaRole {

@@ -19,7 +19,6 @@ use log::{debug, warn};
 use sekas_runtime::JoinHandle;
 use sekas_schema::system::txn::TXN_INTENT_VERSION;
 
-use crate::engine::mvcc_gc::min_allowed_version_from_retention;
 use crate::engine::{GroupEngine, SnapshotMode};
 use crate::node::NodeConfig;
 use crate::node::metrics::NODE_MVCC_GC_DELETE_VERSIONS_TOTAL;
@@ -27,7 +26,7 @@ use crate::replica::Replica;
 use crate::{Error, Result};
 
 pub(crate) fn setup(cfg: NodeConfig, replica: Arc<Replica>) -> Option<JoinHandle<()>> {
-    if cfg.mvcc_gc_interval_ms == 0 || cfg.mvcc_gc_retention_ms == 0 || cfg.mvcc_gc_keys == 0 {
+    if cfg.mvcc_gc_interval_ms == 0 || cfg.mvcc_gc_keys == 0 {
         return None;
     }
 
@@ -47,11 +46,6 @@ pub(crate) fn setup(cfg: NodeConfig, replica: Arc<Replica>) -> Option<JoinHandle
 }
 
 async fn gc_replica(cfg: &NodeConfig, replica: &Arc<Replica>) -> Result<()> {
-    match replica.on_leader("mvcc gc", true).await? {
-        Some(_) => {}
-        None => return Ok(()),
-    }
-
     if replica.move_shard_state().is_some() {
         debug!(
             "group {} replica {} skip mvcc gc because shard is moving",
@@ -61,7 +55,10 @@ async fn gc_replica(cfg: &NodeConfig, replica: &Arc<Replica>) -> Result<()> {
         return Ok(());
     }
 
-    let min_allowed_version = min_allowed_version_from_retention(cfg.mvcc_gc_retention_ms);
+    let min_allowed_version = replica.descriptor().gc_version;
+    if min_allowed_version == 0 {
+        return Ok(());
+    }
     let group_engine = replica.group_engine();
     for shard in replica.descriptor().shards {
         gc_shard(replica, &group_engine, shard.id, min_allowed_version, cfg.mvcc_gc_keys).await?;

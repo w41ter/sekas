@@ -309,6 +309,9 @@ impl Server {
                 Request::CollectScheduleState(req) => {
                     Response::CollectScheduleState(self.node.collect_schedule_state(&req).await)
                 }
+                Request::SyncGroupGcVersion(req) => {
+                    Response::SyncGroupGcVersion(self.node.sync_group_gc_version(&req).await)
+                }
             };
             piggybacks_resps.push(PiggybackResponse { info: Some(resp) });
         }

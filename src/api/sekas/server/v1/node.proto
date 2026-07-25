@@ -342,6 +342,7 @@ message PiggybackRequest {
         CollectGroupDetailRequest collect_group_detail = 3;
         CollectScheduleStateRequest collect_schedule_state = 4;
         CollectMovingShardStateRequest collect_moving_shard_state = 5;
+        SyncGroupGcVersionRequest sync_group_gc_version = 6;
     }
 }
 
@@ -352,12 +353,25 @@ message PiggybackResponse {
         CollectGroupDetailResponse collect_group_detail = 3;
         CollectScheduleStateResponse collect_schedule_state = 4;
         CollectMovingShardStateResponse collect_moving_shard_state = 5;
+        SyncGroupGcVersionResponse sync_group_gc_version = 6;
     }
 }
 
 message SyncRootRequest { RootDesc root = 1; }
 
 message SyncRootResponse {}
+
+message GroupGcVersion {
+    uint64 group_id = 1;
+    uint64 gc_version = 2;
+}
+
+message SyncGroupGcVersionRequest { repeated GroupGcVersion versions = 1; }
+
+message SyncGroupGcVersionResponse {
+    uint64 proposed = 1;
+    uint64 skipped = 2;
+}
 
 message CollectStatsRequest { google.protobuf.FieldMask field_mask = 1; }
 
