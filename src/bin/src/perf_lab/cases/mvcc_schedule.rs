@@ -139,19 +139,38 @@ impl PerfCase for AutoSplitMerge {
         tokio::time::sleep(Duration::from_secs(lab.config.workload.warmup_secs)).await;
         lab.mark("before_split").await?;
         workload.phase("split").await;
-        let (split_duration, group_id, left_shard, right_shard) =
-            lab.split_shard_for_key(table.id, &key).await?;
+        let split = lab.split_shard_for_key(table.id, &key).await?;
         lab.mark("after_split").await?;
         workload.phase("merge").await;
-        let merge_duration = lab.merge_shards(group_id, left_shard, right_shard).await?;
+        let merge =
+            lab.merge_shards(split.group_id, split.left_shard_id, split.right_shard_id).await?;
         lab.mark("after_merge").await?;
         workload.phase("recovery").await;
         tokio::time::sleep(Duration::from_secs(lab.config.workload.cooldown_secs)).await;
         lab.mark("end").await?;
         let report = workload.stop().await;
         let mut derived = BTreeMap::new();
-        derived.insert("split_duration_ms".to_owned(), split_duration.as_secs_f64() * 1000.0);
-        derived.insert("merge_duration_ms".to_owned(), merge_duration.as_secs_f64() * 1000.0);
+        derived
+            .insert("split_rpc_duration_ms".to_owned(), split.rpc_duration.as_secs_f64() * 1000.0);
+        derived.insert(
+            "split_route_convergence_ms".to_owned(),
+            split.route_convergence.as_secs_f64() * 1000.0,
+        );
+        derived.insert(
+            "split_route_converged".to_owned(),
+            if split.route_converged { 1.0 } else { 0.0 },
+        );
+        derived
+            .insert("merge_rpc_duration_ms".to_owned(), merge.rpc_duration.as_secs_f64() * 1000.0);
+        derived.insert(
+            "merge_route_convergence_ms".to_owned(),
+            merge.route_convergence.as_secs_f64() * 1000.0,
+        );
+        derived.insert(
+            "merge_route_converged".to_owned(),
+            if merge.route_converged { 1.0 } else { 0.0 },
+        );
+        derived.insert("merge_attempts".to_owned(), merge.attempts as f64);
         Ok(case_report(lab, self.name(), vec![report], derived))
     }
 }

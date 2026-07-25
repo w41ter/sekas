@@ -566,13 +566,24 @@ impl LabContext {
         &self,
         table_id: u64,
         key: &[u8],
-    ) -> Result<(Duration, u64, u64, u64)> {
+    ) -> Result<SplitShardResult> {
         let (group_id, shard) = self.group_for_key(table_id, key).await?;
+        let before_epoch = self.router.find_group(group_id)?.epoch;
         let new_shard_id = shard.id + 10_000_000;
         let started = Instant::now();
         let mut group = self.group(group_id);
         group.split_shard(shard.id, new_shard_id, Some(key.to_vec())).await?;
-        Ok((started.elapsed(), group_id, shard.id, new_shard_id))
+        let rpc_duration = started.elapsed();
+        let route_started = Instant::now();
+        let route_converged = self.wait_group_epoch_advance(group_id, before_epoch).await?;
+        Ok(SplitShardResult {
+            rpc_duration,
+            route_convergence: route_started.elapsed(),
+            route_converged,
+            group_id,
+            left_shard_id: shard.id,
+            right_shard_id: new_shard_id,
+        })
     }
 
     pub(crate) async fn merge_shards(
@@ -580,13 +591,27 @@ impl LabContext {
         group_id: u64,
         left_shard_id: u64,
         right_shard_id: u64,
-    ) -> Result<Duration> {
+    ) -> Result<MergeShardResult> {
+        let before_epoch = self.router.find_group(group_id)?.epoch;
         let started = Instant::now();
         let mut last_err = None;
+        let mut attempts = 0_u64;
         for _ in 0..20 {
+            attempts += 1;
             let mut group = self.group(group_id);
             match group.merge_shard(left_shard_id, right_shard_id).await {
-                Ok(()) => return Ok(started.elapsed()),
+                Ok(()) => {
+                    let rpc_duration = started.elapsed();
+                    let route_started = Instant::now();
+                    let route_converged =
+                        self.wait_group_epoch_advance(group_id, before_epoch).await?;
+                    return Ok(MergeShardResult {
+                        rpc_duration,
+                        route_convergence: route_started.elapsed(),
+                        route_converged,
+                        attempts,
+                    });
+                }
                 Err(err) => {
                     last_err = Some(err);
                     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -596,7 +621,19 @@ impl LabContext {
         if let Some(err) = last_err {
             return Err(err.into());
         }
-        Ok(started.elapsed())
+        bail!("merge shard did not run")
+    }
+
+    async fn wait_group_epoch_advance(&self, group_id: u64, before_epoch: u64) -> Result<bool> {
+        for _ in 0..200 {
+            if let Ok(group) = self.router.find_group(group_id)
+                && group.epoch > before_epoch
+            {
+                return Ok(true);
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        Ok(false)
     }
 
     async fn find_group_without_shard(&self, src_group: u64) -> Result<Option<u64>> {
@@ -631,6 +668,22 @@ pub(crate) struct ReplicaRemoveResult {
     pub(crate) duration: Duration,
     pub(crate) converged: bool,
     pub(crate) final_voters: usize,
+}
+
+pub(crate) struct SplitShardResult {
+    pub(crate) rpc_duration: Duration,
+    pub(crate) route_convergence: Duration,
+    pub(crate) route_converged: bool,
+    pub(crate) group_id: u64,
+    pub(crate) left_shard_id: u64,
+    pub(crate) right_shard_id: u64,
+}
+
+pub(crate) struct MergeShardResult {
+    pub(crate) rpc_duration: Duration,
+    pub(crate) route_convergence: Duration,
+    pub(crate) route_converged: bool,
+    pub(crate) attempts: u64,
 }
 
 async fn node_client_with_retry(addr: &str) -> Result<NodeClient> {
