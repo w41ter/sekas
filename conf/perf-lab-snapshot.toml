@@ -1,0 +1,69 @@
+runner_threads = 4
+
+[environment]
+root_dir = "/tmp/sekas-perf-lab-snapshot"
+cleanup = true
+disk_pools = []
+
+[cluster]
+nodes = 3
+cpus_per_node = 2
+enable_proxy_service = false
+
+[cluster.root]
+enable_group_balance = true
+enable_replica_balance = true
+enable_leader_balance = false
+enable_shard_balance = false
+enable_auto_shard_split = false
+enable_auto_shard_merge = false
+heartbeat_timeout_sec = 1
+liveness_threshold_sec = 3
+max_create_group_retry_before_rollback = 10
+replicas_per_group = 3
+schedule_interval_sec = 1
+
+[cluster.raft]
+election_tick = 3
+enable_log_recycle = false
+max_inflight_msgs = 10000
+max_inflight_requests = 102400
+max_io_batch_size = 65535
+max_size_per_msg = 67108864
+tick_interval_ms = 100
+
+[cluster.node]
+shard_chunk_size = 67108864
+shard_gc_keys = 256
+mvcc_gc_keys = 256
+mvcc_gc_interval_ms = 0
+mvcc_gc_retention_ms = 0
+
+[cluster.node.replica]
+snap_file_size = 68719476736
+
+[cluster.node.engine]
+engine_slow_io_threshold_ms = 1000
+
+[cluster.db]
+max_background_jobs = 2
+max_sub_compactions = 1
+mvcc_gc_retention_ms = 0
+
+[workload]
+database = "perf_lab_snapshot"
+table = "t1"
+second_table = "t2"
+concurrency = 4
+duration_secs = 5
+warmup_secs = 2
+cooldown_secs = 5
+value_size = 4096
+key_space = 4096
+report_interval_secs = 1
+
+[report]
+out_dir = "target/perf-lab-snapshot"
+fail_on_regression = false
+max_qps_drop_percent = 5.0
+max_latency_increase_percent = 10.0

@@ -197,11 +197,13 @@ impl PerfCase for SnapshotUnderWrite {
     async fn run(&self, lab: &mut LabContext) -> Result<CaseReport> {
         let db = lab.database().await?;
         let table = lab.table(&db, &lab.config.workload.table).await?;
-        for i in 0..lab.config.workload.key_space {
+        let seed_value_size = lab.config.workload.value_size.max(1024);
+        let seed_keys = lab.config.workload.key_space.max(512);
+        for i in 0..seed_keys {
             db.put(
                 table.id,
                 format!("snapshot-seed-{i:020}").into_bytes(),
-                vec![b's'; lab.config.workload.value_size],
+                vec![b's'; seed_value_size],
             )
             .await?;
         }
@@ -227,9 +229,26 @@ impl PerfCase for SnapshotUnderWrite {
         tokio::time::sleep(Duration::from_secs(lab.config.workload.cooldown_secs)).await;
         lab.mark("end").await?;
         let report = workload.stop().await;
-        let mut derived = BTreeMap::new();
-        derived
+        let mut case = case_report(lab, self.name(), vec![report], BTreeMap::new());
+        let send_total = case.counter_delta_contains("raftgroup_send_snapshot_total");
+        let send_bytes = case.counter_delta_contains("raftgroup_send_snapshot_bytes_total");
+        let download_total = case.counter_delta_contains("raftgroup_download_snapshot_total");
+        let download_bytes = case.counter_delta_contains("raftgroup_download_snapshot_bytes_total");
+        case.derived.insert("snapshot_seed_keys".to_owned(), seed_keys as f64);
+        case.derived.insert(
+            "snapshot_seed_bytes".to_owned(),
+            (seed_keys as usize * seed_value_size) as f64,
+        );
+        case.derived.insert("snapshot_send_total".to_owned(), send_total);
+        case.derived.insert("snapshot_send_bytes_total".to_owned(), send_bytes);
+        case.derived.insert("snapshot_download_total".to_owned(), download_total);
+        case.derived.insert("snapshot_download_bytes_total".to_owned(), download_bytes);
+        case.derived.insert(
+            "snapshot_activity_observed".to_owned(),
+            if send_total + send_bytes + download_total + download_bytes > 0.0 { 1.0 } else { 0.0 },
+        );
+        case.derived
             .insert("snapshot_replica_add_duration_ms".to_owned(), duration.as_secs_f64() * 1000.0);
-        Ok(case_report(lab, self.name(), vec![report], derived))
+        Ok(case)
     }
 }
