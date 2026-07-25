@@ -16,8 +16,7 @@ use std::collections::HashMap;
 
 use sekas_api::server::v1::group_request_union::Request;
 use sekas_api::server::v1::{
-    BatchWriteIntentRequest, ShardKey, ShardWriteRequest, TxnIntent, TxnState, Value, WriteRequest,
-    batch_write_intent,
+    ShardKey, ShardWriteRequest, TxnIntent, TxnState, Value, WriteIntentRequest, write_intent,
 };
 
 use crate::{Error, Result};
@@ -115,28 +114,9 @@ where
             .into_iter()
             .map(|user_key| ShardKey { shard_id: req.shard_id, user_key })
             .collect::<Vec<_>>(),
-        Request::WriteIntent(req) => {
-            let Some(write) = req.write.as_ref() else {
-                return Ok(None);
-            };
-            match write {
-                WriteRequest::Put(put) => {
-                    vec![ShardKey { shard_id: req.shard_id, user_key: put.key.clone() }]
-                }
-                WriteRequest::Delete(delete) => {
-                    vec![ShardKey { shard_id: req.shard_id, user_key: delete.key.clone() }]
-                }
-            }
-        }
-        Request::BatchWriteIntent(req) => collect_batch_write_intent_keys(req)?,
-        Request::CommitIntent(req) => {
-            vec![ShardKey { shard_id: req.shard_id, user_key: req.user_key.clone() }]
-        }
-        Request::BatchCommitIntent(req) => req.shard_keys.clone(),
-        Request::ClearIntent(req) => {
-            vec![ShardKey { shard_id: req.shard_id, user_key: req.user_key.clone() }]
-        }
-        Request::BatchClearIntent(req) => req.shard_keys.clone(),
+        Request::WriteIntent(req) => collect_write_intent_keys(req)?,
+        Request::CommitIntent(req) => req.shard_keys.clone(),
+        Request::ClearIntent(req) => req.shard_keys.clone(),
         Request::Scan(_)
         | Request::Get(_)
         | Request::CreateShard(_)
@@ -158,6 +138,7 @@ where
     shard_keys.sort_unstable_by(|a, b| {
         a.shard_id.cmp(&b.shard_id).then_with(|| a.user_key.cmp(&b.user_key))
     });
+    shard_keys.dedup_by(|a, b| a.shard_id == b.shard_id && a.user_key == b.user_key);
 
     let mut latches = HashMap::with_capacity(shard_keys.len());
     for shard_key in shard_keys {
@@ -178,20 +159,21 @@ fn collect_shard_write_keys(req: &ShardWriteRequest) -> Result<Vec<Vec<u8>>> {
     Ok(keys)
 }
 
-fn collect_batch_write_intent_keys(req: &BatchWriteIntentRequest) -> Result<Vec<ShardKey>> {
+fn collect_write_intent_keys(req: &WriteIntentRequest) -> Result<Vec<ShardKey>> {
     let mut keys = Vec::with_capacity(req.writes.len());
     for write in &req.writes {
-        match write.write.as_ref() {
-            Some(batch_write_intent::Write::Put(put)) => {
-                keys.push(ShardKey { shard_id: write.shard_id, user_key: put.key.clone() });
-            }
-            Some(batch_write_intent::Write::Delete(delete)) => {
-                keys.push(ShardKey { shard_id: write.shard_id, user_key: delete.key.clone() });
-            }
-            None => {}
+        if let Some(user_key) = write.write.as_ref().map(write_intent_user_key) {
+            keys.push(ShardKey { shard_id: write.shard_id, user_key: user_key.to_vec() });
         }
     }
     Ok(keys)
+}
+
+fn write_intent_user_key(write: &write_intent::Write) -> &[u8] {
+    match write {
+        write_intent::Write::Put(put) => &put.key,
+        write_intent::Write::Delete(delete) => &delete.key,
+    }
 }
 
 pub mod remote {

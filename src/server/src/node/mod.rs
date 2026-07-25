@@ -407,6 +407,10 @@ impl Node {
         };
 
         match execute(&replica, exec_ctx, request).await {
+            Err(Error::PartialForward(partial)) => {
+                let resp = self.complete_partial_forward(partial).await?;
+                Ok(GroupResponse::new(resp))
+            }
             Err(Error::Forward(forward_ctx)) => {
                 let request = request
                     .request
@@ -427,6 +431,30 @@ impl Node {
             Ok(resp) => Ok(resp),
             Err(err) => Err(err),
         }
+    }
+
+    async fn complete_partial_forward(
+        &self,
+        mut partial: crate::replica::PartialForward,
+    ) -> Result<Response> {
+        let mut handles = Vec::with_capacity(partial.parts.len());
+        for part in partial.parts {
+            let ctrl = self.move_shard_ctrl.clone();
+            let handle = sekas_runtime::spawn(async move {
+                let result = ctrl.forward(part.forward_ctx, &part.request).await;
+                (part.indexes, result)
+            });
+            handles.push(handle);
+        }
+
+        for handle in handles {
+            let (indexes, result) = handle.await?;
+            match result {
+                Ok(resp) => merge_partial_forward_response(&mut partial.response, indexes, resp)?,
+                Err(err) => fill_partial_forward_error(&mut partial.response, indexes, err.into())?,
+            }
+        }
+        Ok(partial.response)
     }
 
     pub async fn forward(&self, request: ForwardRequest) -> Result<ForwardResponse> {
@@ -693,6 +721,75 @@ impl Node {
         let node_state = self.node_state.lock().await;
         node_state.serving_groups.iter().cloned().collect()
     }
+}
+
+fn merge_partial_forward_response(
+    response: &mut Response,
+    indexes: Vec<usize>,
+    forward_response: Response,
+) -> Result<()> {
+    match (response, forward_response) {
+        (Response::WriteIntent(response), Response::WriteIntent(forward_response)) => {
+            if indexes.len() != forward_response.writes.len() {
+                return Err(Error::InvalidData("invalid WriteIntent forward response".into()));
+            }
+            for (index, result) in indexes.into_iter().zip(forward_response.writes) {
+                response.writes[index] = result;
+            }
+        }
+        (Response::CommitIntent(response), Response::CommitIntent(forward_response)) => {
+            if indexes.len() != forward_response.shard_keys.len() {
+                return Err(Error::InvalidData("invalid CommitIntent forward response".into()));
+            }
+            for (index, result) in indexes.into_iter().zip(forward_response.shard_keys) {
+                response.shard_keys[index] = result;
+            }
+        }
+        (Response::ClearIntent(response), Response::ClearIntent(forward_response)) => {
+            if indexes.len() != forward_response.shard_keys.len() {
+                return Err(Error::InvalidData("invalid ClearIntent forward response".into()));
+            }
+            for (index, result) in indexes.into_iter().zip(forward_response.shard_keys) {
+                response.shard_keys[index] = result;
+            }
+        }
+        (_, other) => {
+            return Err(Error::InvalidData(format!(
+                "unexpected partial forward response {other:?}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn fill_partial_forward_error(
+    response: &mut Response,
+    indexes: Vec<usize>,
+    error: sekas_api::server::v1::Error,
+) -> Result<()> {
+    match response {
+        Response::WriteIntent(response) => {
+            for index in indexes {
+                response.writes[index] = WriteIntentResult::err(error.clone());
+            }
+        }
+        Response::CommitIntent(response) => {
+            for index in indexes {
+                response.shard_keys[index] = IntentResult::err(error.clone());
+            }
+        }
+        Response::ClearIntent(response) => {
+            for index in indexes {
+                response.shard_keys[index] = IntentResult::err(error.clone());
+            }
+        }
+        other => {
+            return Err(Error::InvalidData(format!(
+                "unexpected partial forward base response {other:?}"
+            )));
+        }
+    }
+    Ok(())
 }
 
 impl NodeState {
@@ -1100,14 +1197,16 @@ mod tests {
     fn build_prepare_request(start_version: u64, key: &[u8], value: &[u8]) -> Request {
         Request::WriteIntent(WriteIntentRequest {
             start_version,
-            shard_id: SHARD_ID,
-            write: Some(WriteRequest::Put(PutRequest {
-                put_type: PutType::None.into(),
-                key: key.to_vec(),
-                value: value.to_vec(),
-                take_prev_value: true,
-                ..Default::default()
-            })),
+            writes: vec![WriteIntent {
+                shard_id: SHARD_ID,
+                write: Some(write_intent::Write::Put(PutRequest {
+                    put_type: PutType::None.into(),
+                    key: key.to_vec(),
+                    value: value.to_vec(),
+                    take_prev_value: true,
+                    ..Default::default()
+                })),
+            }],
         })
     }
 
@@ -1122,17 +1221,16 @@ mod tests {
         let response = execute_on_leader(replica, write_req).await;
         assert!(matches!(response, Response::WriteIntent(_)));
         let Response::WriteIntent(response) = response else { unreachable!() };
-        assert!(response.write.is_some());
-        let write = response.write.unwrap();
+        assert_eq!(response.writes.len(), 1);
+        let write = response.writes.into_iter().next().unwrap().into_result().unwrap();
         write.prev_value.clone()
     }
 
     fn build_commit_request(start_version: u64, commit_version: u64, key: &[u8]) -> Request {
         Request::CommitIntent(CommitIntentRequest {
-            shard_id: SHARD_ID,
             start_version,
             commit_version,
-            user_key: key.to_vec(),
+            shard_keys: vec![ShardKey { shard_id: SHARD_ID, user_key: key.to_vec() }],
         })
     }
 
@@ -1149,9 +1247,8 @@ mod tests {
 
     fn build_abort_request(start_version: u64, key: &[u8]) -> Request {
         Request::ClearIntent(ClearIntentRequest {
-            shard_id: SHARD_ID,
             start_version,
-            user_key: key.to_vec(),
+            shard_keys: vec![ShardKey { shard_id: SHARD_ID, user_key: key.to_vec() }],
         })
     }
 

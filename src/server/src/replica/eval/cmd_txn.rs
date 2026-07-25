@@ -14,6 +14,7 @@
 
 use log::{debug, trace};
 use prost::Message;
+use sekas_api::server::v1::group_request_union::Request;
 use sekas_api::server::v1::*;
 use sekas_rock::num::decode_i64;
 use sekas_schema::system::txn::TXN_INTENT_VERSION;
@@ -23,7 +24,7 @@ use super::cas::eval_conditions;
 use super::latch::DeferSignalLatchGuard;
 use crate::engine::{GroupEngine, SnapshotMode, WriteBatch};
 use crate::node::move_shard::ForwardCtx;
-use crate::replica::ExecCtx;
+use crate::replica::{ExecCtx, ForwardPart};
 use crate::serverpb::v1::EvalResult;
 use crate::{Error, Result};
 
@@ -32,19 +33,94 @@ pub(crate) async fn write_intent<T: LatchGuard>(
     group_engine: &GroupEngine,
     latch_guard: &mut DeferSignalLatchGuard<T>,
     req: &WriteIntentRequest,
-) -> Result<(Option<EvalResult>, WriteIntentResponse)> {
+) -> Result<(Option<EvalResult>, WriteIntentResponse, Vec<ForwardPart>)> {
     let mut wb = WriteBatch::default();
-    let resp = write_intent_inner(exec_ctx, group_engine, latch_guard, req, &mut wb).await?;
+    let mut responses = vec![retry_write_result("intent entry is not executed"); req.writes.len()];
+    let mut forwards = Vec::new();
+    let mut local_indexes = Vec::new();
+    for (index, write) in req.writes.iter().enumerate() {
+        if let Some(forward_part) =
+            write_intent_forward_part(exec_ctx, group_engine, req, index, write).await?
+        {
+            forwards.push(forward_part);
+            continue;
+        }
+
+        let resp = write_intent_inner(
+            exec_ctx,
+            group_engine,
+            latch_guard,
+            req.start_version,
+            write,
+            &mut wb,
+        )
+        .await
+        .map_err(|err| match err {
+            Error::CasFailed(_, cond_index, prev_value) => {
+                Error::CasFailed(index as u64, cond_index, prev_value)
+            }
+            err => err,
+        });
+        match resp {
+            Ok(resp) => {
+                responses[index] = WriteIntentResult::ok(resp);
+                local_indexes.push(index);
+            }
+            Err(err @ (Error::CasFailed(..) | Error::TxnConflict)) => {
+                for local_index in local_indexes {
+                    responses[local_index] = retry_write_result("intent entry is not executed");
+                }
+                responses[index] = WriteIntentResult::err(err.into());
+                return Ok((None, WriteIntentResponse { writes: responses }, Vec::new()));
+            }
+            Err(err) => return Err(err),
+        }
+    }
     let eval_result =
         if !wb.is_empty() { Some(EvalResult::with_batch(wb.data().to_owned())) } else { None };
-    Ok((eval_result, WriteIntentResponse { write: Some(resp) }))
+    Ok((eval_result, WriteIntentResponse { writes: responses }, forwards))
+}
+
+async fn write_intent_forward_part(
+    exec_ctx: &ExecCtx,
+    group_engine: &GroupEngine,
+    req: &WriteIntentRequest,
+    index: usize,
+    write: &WriteIntent,
+) -> Result<Option<ForwardPart>> {
+    let Some(desc) = exec_ctx.move_shard_desc.as_ref() else {
+        return Ok(None);
+    };
+    let shard_id = desc.shard_desc.as_ref().unwrap().id;
+    if shard_id != write.shard_id {
+        return Ok(None);
+    }
+
+    let Some(write_req) = write.write.as_ref() else {
+        return Ok(None);
+    };
+    let payload = group_engine.get_all_versions(write.shard_id, write_req.user_key()).await?;
+    let request = Request::WriteIntent(WriteIntentRequest {
+        start_version: req.start_version,
+        writes: vec![write.clone()],
+    });
+    Ok(Some(ForwardPart {
+        indexes: vec![index],
+        request,
+        forward_ctx: ForwardCtx {
+            shard_id,
+            dest_group_id: desc.dest_group_id,
+            payloads: vec![payload],
+        },
+    }))
 }
 
 async fn write_intent_inner<T: LatchGuard>(
-    exec_ctx: &ExecCtx,
+    _exec_ctx: &ExecCtx,
     group_engine: &GroupEngine,
     latch_guard: &mut DeferSignalLatchGuard<T>,
-    req: &WriteIntentRequest,
+    start_version: u64,
+    req: &WriteIntent,
     wb: &mut WriteBatch,
 ) -> Result<WriteResponse> {
     // TODO(walter) txn for internal shards is not supported.
@@ -54,29 +130,13 @@ async fn write_intent_inner<T: LatchGuard>(
         .ok_or_else(|| Error::InvalidArgument("`write` is required".to_string()))?;
 
     let user_key = write.user_key();
-    // Maybe we can extract the forwarding logic to a common place before writing.
-    if let Some(desc) = exec_ctx.move_shard_desc.as_ref() {
-        let shard_id = desc.shard_desc.as_ref().unwrap().id;
-        if shard_id == req.shard_id {
-            let payload = group_engine.get_all_versions(req.shard_id, user_key).await?;
-            let forward_ctx =
-                ForwardCtx { shard_id, dest_group_id: desc.dest_group_id, payloads: vec![payload] };
-            return Err(Error::Forward(forward_ctx));
-        }
-    }
-
-    let (skip_write, prev_value) = read_first_non_intent_key(
-        latch_guard,
-        group_engine,
-        req.start_version,
-        req.shard_id,
-        user_key,
-    )
-    .await?;
+    let (skip_write, prev_value) =
+        read_first_non_intent_key(latch_guard, group_engine, start_version, req.shard_id, user_key)
+            .await?;
 
     if let Some(value) = prev_value.as_ref() {
-        if value.version > req.start_version && !is_atomic_operation(write) {
-            trace!("txn {} are conflict with committed value {}", req.start_version, value.version);
+        if value.version > start_version && !is_atomic_operation(write) {
+            trace!("txn {} are conflict with committed value {}", start_version, value.version);
             return Err(Error::TxnConflict);
         }
     }
@@ -87,7 +147,7 @@ async fn write_intent_inner<T: LatchGuard>(
                 if let Some(cond_idx) = eval_conditions(prev_value.as_ref(), &del.conditions)? {
                     return Err(Error::CasFailed(0, cond_idx as u64, prev_value));
                 }
-                let txn_intent = TxnIntent::tombstone(req.start_version).encode_to_vec();
+                let txn_intent = TxnIntent::tombstone(start_version).encode_to_vec();
                 group_engine.put(
                     &mut *wb,
                     req.shard_id,
@@ -106,8 +166,7 @@ async fn write_intent_inner<T: LatchGuard>(
                 }
                 let apply_value =
                     apply_put_op(put.put_type(), prev_value.as_ref(), put.value.clone())?;
-                let txn_intent =
-                    TxnIntent::with_put(req.start_version, apply_value).encode_to_vec();
+                let txn_intent = TxnIntent::with_put(start_version, apply_value).encode_to_vec();
                 group_engine.put(
                     &mut *wb,
                     req.shard_id,
@@ -123,138 +182,117 @@ async fn write_intent_inner<T: LatchGuard>(
     Ok(WriteResponse { prev_value })
 }
 
-pub(crate) async fn batch_write_intent<T: LatchGuard>(
-    exec_ctx: &ExecCtx,
-    group_engine: &GroupEngine,
-    latch_guard: &mut DeferSignalLatchGuard<T>,
-    req: &BatchWriteIntentRequest,
-) -> Result<(Option<EvalResult>, BatchWriteIntentResponse)> {
-    let mut wb = WriteBatch::default();
-    let mut responses = Vec::with_capacity(req.writes.len());
-    for (index, write) in req.writes.iter().enumerate() {
-        let shard_id = write.shard_id;
-        let write = write.write.clone().ok_or_else(|| {
-            Error::InvalidArgument("`write` is required in batch write intent".to_string())
-        })?;
-        let request = WriteIntentRequest {
-            shard_id,
-            start_version: req.start_version,
-            write: Some(match write {
-                batch_write_intent::Write::Delete(delete) => WriteRequest::Delete(delete),
-                batch_write_intent::Write::Put(put) => WriteRequest::Put(put),
-            }),
-        };
-        let resp = write_intent_inner(exec_ctx, group_engine, latch_guard, &request, &mut wb)
-            .await
-            .map_err(|err| match err {
-                Error::CasFailed(_, cond_index, prev_value) => {
-                    Error::CasFailed(index as u64, cond_index, prev_value)
-                }
-                err => err,
-            })?;
-        responses.push(resp);
-    }
-    let eval_result =
-        if !wb.is_empty() { Some(EvalResult::with_batch(wb.data().to_owned())) } else { None };
-    Ok((eval_result, BatchWriteIntentResponse { writes: responses }))
-}
-
 pub(crate) async fn commit_intent<T: LatchGuard>(
     exec_ctx: &ExecCtx,
     group_engine: &GroupEngine,
     latch_guard: &mut DeferSignalLatchGuard<T>,
     req: &CommitIntentRequest,
-) -> Result<Option<EvalResult>> {
+) -> Result<(Option<EvalResult>, CommitIntentResponse, Vec<ForwardPart>)> {
     let mut wb = WriteBatch::default();
-    commit_intent_inner(exec_ctx, group_engine, latch_guard, req, &mut wb).await?;
-    Ok(if wb.is_empty() { None } else { Some(EvalResult::with_batch(wb.data().to_owned())) })
+    let mut responses =
+        vec![retry_intent_result("intent entry is not executed"); req.shard_keys.len()];
+    let mut forwards = Vec::new();
+    for (index, shard_key) in req.shard_keys.iter().enumerate() {
+        if let Some(forward_part) = intent_key_forward_part(
+            exec_ctx,
+            group_engine,
+            req.start_version,
+            RequestKind::Commit(req.commit_version),
+            index,
+            shard_key,
+        )
+        .await?
+        {
+            forwards.push(forward_part);
+            continue;
+        }
+        commit_intent_inner(
+            exec_ctx,
+            group_engine,
+            latch_guard,
+            req.start_version,
+            req.commit_version,
+            shard_key,
+            &mut wb,
+        )
+        .await?;
+        responses[index] = IntentResult::ok();
+    }
+    let eval_result =
+        if wb.is_empty() { None } else { Some(EvalResult::with_batch(wb.data().to_owned())) };
+    Ok((eval_result, CommitIntentResponse { shard_keys: responses }, forwards))
 }
 
 async fn commit_intent_inner<T: LatchGuard>(
     exec_ctx: &ExecCtx,
     group_engine: &GroupEngine,
     latch_guard: &mut DeferSignalLatchGuard<T>,
-    req: &CommitIntentRequest,
+    start_version: u64,
+    commit_version: u64,
+    shard_key: &ShardKey,
     wb: &mut WriteBatch,
 ) -> Result<()> {
     trace!(
         "group {} commit txn {} intent with version {}",
-        exec_ctx.group_id, req.start_version, req.commit_version
+        exec_ctx.group_id, start_version, commit_version
     );
 
-    if let Some(desc) = exec_ctx.move_shard_desc.as_ref() {
-        let shard_id = desc.shard_desc.as_ref().unwrap().id;
-        if shard_id == req.shard_id {
-            let payload = group_engine.get_all_versions(req.shard_id, &req.user_key).await?;
-            let forward_ctx =
-                ForwardCtx { shard_id, dest_group_id: desc.dest_group_id, payloads: vec![payload] };
-            return Err(Error::Forward(forward_ctx));
-        }
-    }
-
     let Some(intent) =
-        read_target_intent(group_engine, req.start_version, req.shard_id, &req.user_key).await?
+        read_target_intent(group_engine, start_version, shard_key.shard_id, &shard_key.user_key)
+            .await?
     else {
-        trace!("txn {} intent not exists exists", req.start_version);
+        trace!("txn {} intent not exists exists", start_version);
         return Ok(());
     };
 
-    group_engine.delete(&mut *wb, req.shard_id, &req.user_key, TXN_INTENT_VERSION)?;
+    group_engine.delete(&mut *wb, shard_key.shard_id, &shard_key.user_key, TXN_INTENT_VERSION)?;
     if intent.is_delete {
         trace!(
             "group {} commit txn {} intents, shard id {}, version {}, delete kv {}",
             exec_ctx.group_id,
-            req.start_version,
-            req.shard_id,
-            req.commit_version,
-            sekas_rock::ascii::escape_bytes(&req.user_key),
+            start_version,
+            shard_key.shard_id,
+            commit_version,
+            sekas_rock::ascii::escape_bytes(&shard_key.user_key),
         );
-        group_engine.tombstone(&mut *wb, req.shard_id, &req.user_key, req.commit_version)?;
+        group_engine.tombstone(
+            &mut *wb,
+            shard_key.shard_id,
+            &shard_key.user_key,
+            commit_version,
+        )?;
     } else if let Some(value) = intent.value {
         trace!(
             "group {} commit txn {} intents, shard id {}, version {}, put kv {} => {}",
             exec_ctx.group_id,
-            req.start_version,
-            req.shard_id,
-            req.commit_version,
-            sekas_rock::ascii::escape_bytes(&req.user_key),
+            start_version,
+            shard_key.shard_id,
+            commit_version,
+            sekas_rock::ascii::escape_bytes(&shard_key.user_key),
             sekas_rock::ascii::escape_bytes(&value),
         );
-        group_engine.put(&mut *wb, req.shard_id, &req.user_key, &value, req.commit_version)?;
+        group_engine.put(
+            &mut *wb,
+            shard_key.shard_id,
+            &shard_key.user_key,
+            &value,
+            commit_version,
+        )?;
     }
 
     trace!(
         "group {} commit txn {} intent with version {}, try signal all",
-        exec_ctx.group_id, req.start_version, req.commit_version
+        exec_ctx.group_id, start_version, commit_version
     );
 
-    latch_guard.signal_all(TxnState::Committed, Some(req.commit_version));
+    latch_guard.signal_all(TxnState::Committed, Some(commit_version));
 
     trace!(
         "group {} commit txn {} intent with version {}, after signal all",
-        exec_ctx.group_id, req.start_version, req.commit_version
+        exec_ctx.group_id, start_version, commit_version
     );
 
     Ok(())
-}
-
-pub(crate) async fn batch_commit_intent<T: LatchGuard>(
-    exec_ctx: &ExecCtx,
-    group_engine: &GroupEngine,
-    latch_guard: &mut DeferSignalLatchGuard<T>,
-    req: &BatchCommitIntentRequest,
-) -> Result<Option<EvalResult>> {
-    let mut wb = WriteBatch::default();
-    for shard_key in &req.shard_keys {
-        let request = CommitIntentRequest {
-            shard_id: shard_key.shard_id,
-            start_version: req.start_version,
-            commit_version: req.commit_version,
-            user_key: shard_key.user_key.clone(),
-        };
-        commit_intent_inner(exec_ctx, group_engine, latch_guard, &request, &mut wb).await?;
-    }
-    Ok(if wb.is_empty() { None } else { Some(EvalResult::with_batch(wb.data().to_owned())) })
 }
 
 pub(crate) async fn clear_intent<T: LatchGuard>(
@@ -262,59 +300,116 @@ pub(crate) async fn clear_intent<T: LatchGuard>(
     group_engine: &GroupEngine,
     latch_guard: &mut DeferSignalLatchGuard<T>,
     req: &ClearIntentRequest,
-) -> Result<Option<EvalResult>> {
+) -> Result<(Option<EvalResult>, ClearIntentResponse, Vec<ForwardPart>)> {
     let mut wb = WriteBatch::default();
-    clear_intent_inner(exec_ctx, group_engine, latch_guard, req, &mut wb).await?;
-    Ok(if wb.is_empty() { None } else { Some(EvalResult::with_batch(wb.data().to_owned())) })
+    let mut responses =
+        vec![retry_intent_result("intent entry is not executed"); req.shard_keys.len()];
+    let mut forwards = Vec::new();
+    for (index, shard_key) in req.shard_keys.iter().enumerate() {
+        if let Some(forward_part) = intent_key_forward_part(
+            exec_ctx,
+            group_engine,
+            req.start_version,
+            RequestKind::Clear,
+            index,
+            shard_key,
+        )
+        .await?
+        {
+            forwards.push(forward_part);
+            continue;
+        }
+        clear_intent_inner(
+            exec_ctx,
+            group_engine,
+            latch_guard,
+            req.start_version,
+            shard_key,
+            &mut wb,
+        )
+        .await?;
+        responses[index] = IntentResult::ok();
+    }
+    let eval_result =
+        if wb.is_empty() { None } else { Some(EvalResult::with_batch(wb.data().to_owned())) };
+    Ok((eval_result, ClearIntentResponse { shard_keys: responses }, forwards))
 }
 
 async fn clear_intent_inner<T: LatchGuard>(
-    exec_ctx: &ExecCtx,
+    _exec_ctx: &ExecCtx,
     group_engine: &GroupEngine,
     latch_guard: &mut DeferSignalLatchGuard<T>,
-    req: &ClearIntentRequest,
+    start_version: u64,
+    shard_key: &ShardKey,
     wb: &mut WriteBatch,
 ) -> Result<()> {
-    if let Some(desc) = exec_ctx.move_shard_desc.as_ref() {
-        let shard_id = desc.shard_desc.as_ref().unwrap().id;
-        if shard_id == req.shard_id {
-            let payload = group_engine.get_all_versions(req.shard_id, &req.user_key).await?;
-            let forward_ctx =
-                ForwardCtx { shard_id, dest_group_id: desc.dest_group_id, payloads: vec![payload] };
-            return Err(Error::Forward(forward_ctx));
-        }
-    }
-
-    if read_target_intent(group_engine, req.start_version, req.shard_id, &req.user_key)
+    if read_target_intent(group_engine, start_version, shard_key.shard_id, &shard_key.user_key)
         .await?
         .is_none()
     {
         return Ok(());
     }
 
-    group_engine.delete(&mut *wb, req.shard_id, &req.user_key, TXN_INTENT_VERSION)?;
+    group_engine.delete(&mut *wb, shard_key.shard_id, &shard_key.user_key, TXN_INTENT_VERSION)?;
 
     latch_guard.signal_all(TxnState::Aborted, None);
 
     Ok(())
 }
 
-pub(crate) async fn batch_clear_intent<T: LatchGuard>(
+#[derive(Clone, Copy)]
+enum RequestKind {
+    Commit(u64),
+    Clear,
+}
+
+async fn intent_key_forward_part(
     exec_ctx: &ExecCtx,
     group_engine: &GroupEngine,
-    latch_guard: &mut DeferSignalLatchGuard<T>,
-    req: &BatchClearIntentRequest,
-) -> Result<Option<EvalResult>> {
-    let mut wb = WriteBatch::default();
-    for shard_key in &req.shard_keys {
-        let request = ClearIntentRequest {
-            shard_id: shard_key.shard_id,
-            start_version: req.start_version,
-            user_key: shard_key.user_key.clone(),
-        };
-        clear_intent_inner(exec_ctx, group_engine, latch_guard, &request, &mut wb).await?;
+    start_version: u64,
+    kind: RequestKind,
+    index: usize,
+    shard_key: &ShardKey,
+) -> Result<Option<ForwardPart>> {
+    let Some(desc) = exec_ctx.move_shard_desc.as_ref() else {
+        return Ok(None);
+    };
+    let shard_id = desc.shard_desc.as_ref().unwrap().id;
+    if shard_id != shard_key.shard_id {
+        return Ok(None);
     }
-    Ok(if wb.is_empty() { None } else { Some(EvalResult::with_batch(wb.data().to_owned())) })
+    let payload = group_engine.get_all_versions(shard_key.shard_id, &shard_key.user_key).await?;
+    let request = match kind {
+        RequestKind::Commit(commit_version) => Request::CommitIntent(CommitIntentRequest {
+            start_version,
+            commit_version,
+            shard_keys: vec![shard_key.clone()],
+        }),
+        RequestKind::Clear => Request::ClearIntent(ClearIntentRequest {
+            start_version,
+            shard_keys: vec![shard_key.clone()],
+        }),
+    };
+    Ok(Some(ForwardPart {
+        indexes: vec![index],
+        request,
+        forward_ctx: ForwardCtx {
+            shard_id,
+            dest_group_id: desc.dest_group_id,
+            payloads: vec![payload],
+        },
+    }))
+}
+
+fn retry_write_result(message: &'static str) -> WriteIntentResult {
+    WriteIntentResult::err(sekas_api::server::v1::Error::status(
+        tonic::Code::NotFound.into(),
+        message,
+    ))
+}
+
+fn retry_intent_result(message: &'static str) -> IntentResult {
+    IntentResult::err(sekas_api::server::v1::Error::status(tonic::Code::NotFound.into(), message))
 }
 
 fn apply_put_op(
@@ -508,6 +603,11 @@ mod tests {
         }
     }
 
+    fn unwrap_single_write_error(resp: WriteIntentResponse) -> Error {
+        let err = resp.writes.into_iter().next().unwrap().into_result().unwrap_err();
+        err.into()
+    }
+
     #[sekas_macro::test]
     async fn load_recent_keys() {
         struct TestCase {
@@ -569,14 +669,16 @@ mod tests {
     ) -> WriteIntentRequest {
         WriteIntentRequest {
             start_version,
-            shard_id: 1,
-            write: Some(WriteRequest::Put(PutRequest {
-                put_type: PutType::None.into(),
-                key,
-                value,
-                take_prev_value: true,
-                ..Default::default()
-            })),
+            writes: vec![WriteIntent {
+                shard_id: 1,
+                write: Some(write_intent::Write::Put(PutRequest {
+                    put_type: PutType::None.into(),
+                    key,
+                    value,
+                    take_prev_value: true,
+                    ..Default::default()
+                })),
+            }],
         }
     }
 
@@ -589,33 +691,34 @@ mod tests {
         let key = b"123321".to_vec();
         let start_version = 9394;
         let req = write_intent_request(start_version, key.clone());
-        let (eval_result, _resp) =
+        let (eval_result, _resp, forwards) =
             write_intent(&ExecCtx::default(), &engine, &mut latch_guard, &req).await.unwrap();
+        assert!(forwards.is_empty());
         assert!(eval_result.is_some());
         let wb = WriteBatch::new(&eval_result.unwrap().batch.unwrap().data);
         engine.commit(wb, WriteStates::default(), false).unwrap();
 
         let req = CommitIntentRequest {
-            shard_id: 1,
             start_version,
             commit_version: start_version + 1,
-            user_key: key.clone(),
+            shard_keys: vec![ShardKey { shard_id: 1, user_key: key.clone() }],
         };
-        let eval_result =
+        let (eval_result, _resp, forwards) =
             commit_intent(&ExecCtx::default(), &engine, &mut latch_guard, &req).await.unwrap();
+        assert!(forwards.is_empty());
         assert!(eval_result.is_some());
         let wb = WriteBatch::new(&eval_result.unwrap().batch.unwrap().data);
         engine.commit(wb, WriteStates::default(), false).unwrap();
 
         // commit intent is idempotent
         let req = CommitIntentRequest {
-            shard_id: 1,
             start_version,
             commit_version: start_version + 1,
-            user_key: key.clone(),
+            shard_keys: vec![ShardKey { shard_id: 1, user_key: key.clone() }],
         };
-        let eval_result =
+        let (eval_result, _resp, forwards) =
             commit_intent(&ExecCtx::default(), &engine, &mut latch_guard, &req).await.unwrap();
+        assert!(forwards.is_empty());
         assert!(eval_result.is_none());
     }
 
@@ -628,23 +731,32 @@ mod tests {
         let key = b"123321".to_vec();
         let start_version = 9394;
         let req = write_intent_request(start_version, key.clone());
-        let (eval_result, _resp) =
+        let (eval_result, _resp, forwards) =
             write_intent(&ExecCtx::default(), &engine, &mut latch_guard, &req).await.unwrap();
+        assert!(forwards.is_empty());
         assert!(eval_result.is_some());
         let wb = WriteBatch::new(&eval_result.unwrap().batch.unwrap().data);
         engine.commit(wb, WriteStates::default(), false).unwrap();
 
-        let req = ClearIntentRequest { shard_id: 1, start_version, user_key: key.clone() };
-        let eval_result =
+        let req = ClearIntentRequest {
+            start_version,
+            shard_keys: vec![ShardKey { shard_id: 1, user_key: key.clone() }],
+        };
+        let (eval_result, _resp, forwards) =
             clear_intent(&ExecCtx::default(), &engine, &mut latch_guard, &req).await.unwrap();
+        assert!(forwards.is_empty());
         assert!(eval_result.is_some());
         let wb = WriteBatch::new(&eval_result.unwrap().batch.unwrap().data);
         engine.commit(wb, WriteStates::default(), false).unwrap();
 
         // clear intent is idempotent
-        let req = ClearIntentRequest { shard_id: 1, start_version, user_key: key.clone() };
-        let eval_result =
+        let req = ClearIntentRequest {
+            start_version,
+            shard_keys: vec![ShardKey { shard_id: 1, user_key: key.clone() }],
+        };
+        let (eval_result, _resp, forwards) =
             clear_intent(&ExecCtx::default(), &engine, &mut latch_guard, &req).await.unwrap();
+        assert!(forwards.is_empty());
         assert!(eval_result.is_none());
     }
 
@@ -657,19 +769,21 @@ mod tests {
         let key = b"123321".to_vec();
         let start_version = 9394;
         let req = write_intent_request(start_version, key.clone());
-        let (eval_result, _resp) =
+        let (eval_result, _resp, forwards) =
             write_intent(&ExecCtx::default(), &engine, &mut latch_guard, &req).await.unwrap();
+        assert!(forwards.is_empty());
         assert!(eval_result.is_some());
         let wb = WriteBatch::new(&eval_result.unwrap().batch.unwrap().data);
         engine.commit(wb, WriteStates::default(), false).unwrap();
 
         let req = write_intent_request(start_version, key);
-        let (eval_result, resp) =
+        let (eval_result, resp, forwards) =
             write_intent(&ExecCtx::default(), &engine, &mut latch_guard, &req).await.unwrap();
+        assert!(forwards.is_empty());
         assert!(eval_result.is_none());
 
         // Take the prev value.
-        let write = resp.write.unwrap();
+        let write = resp.writes.into_iter().next().unwrap().into_result().unwrap();
         assert!(write.prev_value.is_none());
     }
 
@@ -685,40 +799,55 @@ mod tests {
         // 1. put exists failed.
         let req = WriteIntentRequest {
             start_version,
-            shard_id: 1,
-            write: Some(WriteRequest::Put(
-                WriteBuilder::new(key.clone()).expect_exists().ensure_put(b"value".to_vec()),
-            )),
+            writes: vec![WriteIntent {
+                shard_id: 1,
+                write: Some(write_intent::Write::Put(
+                    WriteBuilder::new(key.clone()).expect_exists().ensure_put(b"value".to_vec()),
+                )),
+            }],
         };
-        let r = write_intent(&ExecCtx::default(), &engine, &mut latch_guard, &req).await;
-        assert!(matches!(r, Err(Error::CasFailed(0, 0, _))), "{r:?}");
+        let (eval_result, resp, forwards) =
+            write_intent(&ExecCtx::default(), &engine, &mut latch_guard, &req).await.unwrap();
+        assert!(eval_result.is_none());
+        assert!(forwards.is_empty());
+        assert!(matches!(unwrap_single_write_error(resp), Error::CasFailed(0, 0, _)));
 
         // 2. delete exists failed.
         let req = WriteIntentRequest {
             start_version,
-            shard_id: 1,
-            write: Some(WriteRequest::Delete(
-                WriteBuilder::new(key.clone()).expect_exists().ensure_delete(),
-            )),
+            writes: vec![WriteIntent {
+                shard_id: 1,
+                write: Some(write_intent::Write::Delete(
+                    WriteBuilder::new(key.clone()).expect_exists().ensure_delete(),
+                )),
+            }],
         };
-        let r = write_intent(&ExecCtx::default(), &engine, &mut latch_guard, &req).await;
-        assert!(matches!(r, Err(Error::CasFailed(0, 0, _))), "{r:?}");
+        let (eval_result, resp, forwards) =
+            write_intent(&ExecCtx::default(), &engine, &mut latch_guard, &req).await.unwrap();
+        assert!(eval_result.is_none());
+        assert!(forwards.is_empty());
+        assert!(matches!(unwrap_single_write_error(resp), Error::CasFailed(0, 0, _)));
 
         commit_values(&engine, &key, &[Value::with_value(b"value".to_vec(), start_version - 100)]);
 
         // 3. put exists success
         let req = WriteIntentRequest {
             start_version,
-            shard_id: 1,
-            write: Some(WriteRequest::Put(
-                WriteBuilder::new(key.clone())
-                    .expect_exists()
-                    .take_prev_value()
-                    .ensure_put(b"value".to_vec()),
-            )),
+            writes: vec![WriteIntent {
+                shard_id: 1,
+                write: Some(write_intent::Write::Put(
+                    WriteBuilder::new(key.clone())
+                        .expect_exists()
+                        .take_prev_value()
+                        .ensure_put(b"value".to_vec()),
+                )),
+            }],
         };
-        let r = write_intent(&ExecCtx::default(), &engine, &mut latch_guard, &req).await;
-        assert!(r.is_ok());
+        let (eval_result, resp, forwards) =
+            write_intent(&ExecCtx::default(), &engine, &mut latch_guard, &req).await.unwrap();
+        assert!(eval_result.is_some());
+        assert!(forwards.is_empty());
+        assert!(resp.writes.into_iter().next().unwrap().into_result().is_ok());
     }
 
     #[test]
@@ -816,20 +945,23 @@ mod tests {
                 let start_version =
                     version_allocator_clone.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 let req = WriteIntentRequest {
-                    shard_id: 1,
                     start_version,
-                    write: Some(WriteRequest::Put(
-                        WriteBuilder::new(key_clone.clone()).ensure_add(1),
-                    )),
+                    writes: vec![WriteIntent {
+                        shard_id: 1,
+                        write: Some(write_intent::Write::Put(
+                            WriteBuilder::new(key_clone.clone()).ensure_add(1),
+                        )),
+                    }],
                 };
                 let mut latch_guard = DeferSignalLatchGuard::with_single(
                     &ShardKey { shard_id, user_key: key_clone.to_vec() },
                     latch_mgr_clone.acquire(shard_id, &key_clone).await.unwrap(),
                 );
-                let (eval_result, _) =
+                let (eval_result, _, forwards) =
                     write_intent(&ExecCtx::default(), &engine_clone, &mut latch_guard, &req)
                         .await
                         .unwrap();
+                assert!(forwards.is_empty());
                 commit_eval_result(&engine_clone, eval_result);
                 drop(latch_guard);
 
@@ -844,15 +976,15 @@ mod tests {
                 let commit_version =
                     version_allocator_clone.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 let req = CommitIntentRequest {
-                    shard_id,
                     start_version,
                     commit_version,
-                    user_key: key_clone,
+                    shard_keys: vec![ShardKey { shard_id, user_key: key_clone }],
                 };
-                let eval_result =
+                let (eval_result, _, forwards) =
                     commit_intent(&ExecCtx::default(), &engine_clone, &mut latch_guard, &req)
                         .await
                         .unwrap();
+                assert!(forwards.is_empty());
                 commit_eval_result(&engine_clone, eval_result);
 
                 info!(

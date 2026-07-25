@@ -18,6 +18,7 @@ use std::time::Duration;
 
 use log::info;
 use sekas_api::server::v1::group_request_union::Request;
+use sekas_api::server::v1::group_response_union::Response;
 use sekas_api::server::v1::{TxnState, *};
 use sekas_client::{AppError, ClientOptions, Error, TxnReadOptions, WriteBuilder};
 use sekas_rock::fn_name;
@@ -164,13 +165,15 @@ async fn txn_read_resolves_committed_orphan_intent() {
     group_client
         .request(&Request::WriteIntent(WriteIntentRequest {
             start_version,
-            shard_id: shard.id,
-            write: Some(WriteRequest::Put(
-                WriteBuilder::new(key.clone()).ensure_put(value.clone()),
-            )),
+            writes: vec![WriteIntent {
+                shard_id: shard.id,
+                write: Some(write_intent::Write::Put(
+                    WriteBuilder::new(key.clone()).ensure_put(value.clone()),
+                )),
+            }],
         }))
         .await
-        .unwrap();
+        .expect("write intent with partial forward should succeed");
 
     let txn_table = sekas_client::TxnStateTable::new(app.clone(), Some(Duration::from_secs(5)));
     txn_table.begin_txn(start_version).await.unwrap();
@@ -221,4 +224,298 @@ async fn txn_abort_and_clear_intents_after_prepare_failure() {
 
     db.put(co.id, prepared_key.clone(), b"after_abort".to_vec()).await.unwrap();
     assert_eq!(db.get(co.id, prepared_key).await.unwrap(), Some(b"after_abort".to_vec()));
+}
+
+#[sekas_macro::test]
+async fn txn_prepare_partial_success_reports_per_entry_results() {
+    let mut ctx = TestContext::new(fn_name!());
+    let nodes = ctx.bootstrap_servers(3).await;
+    let c = ClusterClient::new(nodes).await;
+    let app = c.app_client().await;
+
+    let db = app.create_database("test_db".to_string()).await.unwrap();
+    let co = db.create_table("test_co".to_string()).await.unwrap();
+    c.assert_table_ready(co.id).await;
+
+    let prepared_key = b"partial_prepared_key".to_vec();
+    let conflict_key = b"partial_conflict_key".to_vec();
+    db.put(co.id, conflict_key.clone(), b"initial".to_vec()).await.unwrap();
+
+    let txn = db.begin_txn();
+    let start_version = txn.start_version().await.unwrap();
+    drop(txn);
+
+    let prepared_shard = c.get_shard_desc(co.id, &prepared_key).await.unwrap();
+    let conflict_shard = c.get_shard_desc(co.id, &conflict_key).await.unwrap();
+    let group_state = c.find_router_group_state_by_key(co.id, &prepared_key).await.unwrap();
+    assert_eq!(
+        group_state.id,
+        c.find_router_group_state_by_key(co.id, &conflict_key).await.unwrap().id
+    );
+
+    let mut group_client = sekas_client::GroupClient::new(group_state, app.clone());
+    let resp = group_client
+        .request(&Request::WriteIntent(WriteIntentRequest {
+            start_version,
+            writes: vec![
+                WriteIntent {
+                    shard_id: prepared_shard.id,
+                    write: Some(write_intent::Write::Put(
+                        WriteBuilder::new(prepared_key.clone()).ensure_put(b"prepared".to_vec()),
+                    )),
+                },
+                WriteIntent {
+                    shard_id: conflict_shard.id,
+                    write: Some(write_intent::Write::Put(
+                        WriteBuilder::new(conflict_key.clone())
+                            .expect_not_exists()
+                            .ensure_put(b"should_not_commit".to_vec()),
+                    )),
+                },
+            ],
+        }))
+        .await
+        .unwrap();
+
+    let Response::WriteIntent(resp) = resp else { panic!("WriteIntentResponse is required") };
+    assert_eq!(resp.writes.len(), 2);
+    assert!(matches!(
+        Error::from(resp.writes[0].clone().into_result().unwrap_err()),
+        Error::NotFound(_)
+    ));
+    assert!(matches!(
+        Error::from(resp.writes[1].clone().into_result().unwrap_err()),
+        Error::CasFailed(1, 0, _)
+    ));
+
+    assert!(db.get(co.id, prepared_key).await.unwrap().is_none());
+    assert_eq!(db.get(co.id, conflict_key).await.unwrap(), Some(b"initial".to_vec()));
+}
+
+#[sekas_macro::test]
+async fn txn_write_intent_batch_deduplicates_same_key_latches() {
+    let mut ctx = TestContext::new(fn_name!());
+    let nodes = ctx.bootstrap_servers(3).await;
+    let c = ClusterClient::new(nodes).await;
+    let app = c.app_client().await;
+
+    let db = app.create_database("test_db".to_string()).await.unwrap();
+    let co = db.create_table("test_co".to_string()).await.unwrap();
+    c.assert_table_ready(co.id).await;
+
+    let key = b"same_key_put_delete".to_vec();
+    let txn = db.begin_txn();
+    let start_version = txn.start_version().await.unwrap();
+    drop(txn);
+
+    let shard = c.get_shard_desc(co.id, &key).await.unwrap();
+    let group_state = c.find_router_group_state_by_key(co.id, &key).await.unwrap();
+    let mut group_client = sekas_client::GroupClient::new(group_state, app.clone());
+    let request = Request::WriteIntent(WriteIntentRequest {
+        start_version,
+        writes: vec![
+            WriteIntent {
+                shard_id: shard.id,
+                write: Some(write_intent::Write::Put(
+                    WriteBuilder::new(key.clone()).ensure_put(b"value".to_vec()),
+                )),
+            },
+            WriteIntent {
+                shard_id: shard.id,
+                write: Some(write_intent::Write::Delete(
+                    WriteBuilder::new(key.clone()).ensure_delete(),
+                )),
+            },
+        ],
+    });
+
+    let resp = tokio::time::timeout(Duration::from_secs(5), group_client.request(&request))
+        .await
+        .expect("duplicated latch acquisition should not block")
+        .unwrap();
+    let Response::WriteIntent(resp) = resp else { panic!("WriteIntentResponse is required") };
+    assert_eq!(resp.writes.len(), 2);
+    assert!(resp.writes[0].clone().into_result().is_ok());
+    assert!(resp.writes[1].clone().into_result().is_ok());
+}
+
+#[sekas_macro::test]
+async fn txn_intent_batch_partially_forwards_moving_shard() {
+    use collect_moving_shard_state_response::State;
+
+    let mut ctx = TestContext::new(fn_name!());
+    ctx.disable_all_node_scheduler();
+    let nodes = ctx.bootstrap_servers(2).await;
+    let c = ClusterClient::new(nodes).await;
+    let app = c.app_client().await;
+
+    let src_group_id = 100000;
+    let dest_group_id = 100001;
+    let moving_shard_id = 10000000;
+    let local_shard_id = 10000001;
+    let table_id = 424242;
+    let moving_shard = ShardDesc::with_range(moving_shard_id, table_id, vec![], b"m".to_vec());
+    let local_shard = ShardDesc::with_range(local_shard_id, table_id, b"m".to_vec(), vec![]);
+
+    create_txn_test_group(
+        &c,
+        src_group_id,
+        vec![0],
+        vec![moving_shard.clone(), local_shard.clone()],
+    )
+    .await;
+    create_txn_test_group(&c, dest_group_id, vec![1], vec![moving_shard.clone()]).await;
+    c.assert_group_leader(src_group_id).await;
+    c.assert_group_leader(dest_group_id).await;
+
+    let src_epoch = c.must_group_epoch(src_group_id).await;
+    let dest_epoch = c.must_group_epoch(dest_group_id).await;
+    let desc = MoveShardDesc {
+        shard_desc: Some(moving_shard.clone()),
+        src_group_id,
+        src_group_epoch: src_epoch,
+        dest_group_id,
+        dest_group_epoch: dest_epoch,
+    };
+    c.group(src_group_id).acquire_shard(&desc).await.unwrap();
+    wait_moving_shard_state(&c, src_group_id, &[State::Prepare, State::Moving]).await;
+
+    let db = app.create_database("manual_txn_db".to_string()).await.unwrap();
+    let txn = db.begin_txn();
+    let start_version = txn.start_version().await.unwrap();
+    drop(txn);
+    let moving_key_a = b"b_moving_key_a".to_vec();
+    let moving_key_b = b"c_moving_key_b".to_vec();
+    let local_key = b"z_local_key".to_vec();
+
+    let mut group_client = sekas_client::GroupClient::new(
+        c.get_router_group_state(src_group_id).await.unwrap(),
+        app.clone(),
+    );
+    let resp = group_client
+        .request(&Request::WriteIntent(WriteIntentRequest {
+            start_version,
+            writes: vec![
+                WriteIntent {
+                    shard_id: moving_shard_id,
+                    write: Some(write_intent::Write::Put(
+                        WriteBuilder::new(moving_key_a.clone()).ensure_put(b"moving-a".to_vec()),
+                    )),
+                },
+                WriteIntent {
+                    shard_id: moving_shard_id,
+                    write: Some(write_intent::Write::Put(
+                        WriteBuilder::new(moving_key_b.clone()).ensure_put(b"moving-b".to_vec()),
+                    )),
+                },
+                WriteIntent {
+                    shard_id: local_shard_id,
+                    write: Some(write_intent::Write::Put(
+                        WriteBuilder::new(local_key.clone()).ensure_put(b"local".to_vec()),
+                    )),
+                },
+            ],
+        }))
+        .await
+        .unwrap();
+
+    let Response::WriteIntent(resp) = resp else { panic!("WriteIntentResponse is required") };
+    assert_eq!(resp.writes.len(), 3);
+    assert!(resp.writes[0].clone().into_result().is_ok());
+    assert!(resp.writes[1].clone().into_result().is_ok());
+    assert!(resp.writes[2].clone().into_result().is_ok());
+
+    let txn_table = sekas_client::TxnStateTable::new(app.clone(), Some(Duration::from_secs(5)));
+    txn_table.begin_txn(start_version).await.unwrap();
+    let commit_version = start_version + 1;
+    txn_table.commit_txn(start_version, commit_version).await.unwrap();
+
+    let resp = group_client
+        .request(&Request::CommitIntent(CommitIntentRequest {
+            start_version,
+            commit_version,
+            shard_keys: vec![
+                ShardKey { shard_id: moving_shard_id, user_key: moving_key_a.clone() },
+                ShardKey { shard_id: moving_shard_id, user_key: moving_key_b.clone() },
+                ShardKey { shard_id: local_shard_id, user_key: local_key.clone() },
+            ],
+        }))
+        .await
+        .unwrap();
+    let Response::CommitIntent(resp) = resp else { panic!("CommitIntentResponse is required") };
+    assert_eq!(resp.shard_keys.len(), 3);
+    assert!(resp.shard_keys[0].clone().into_result().is_ok());
+    assert!(resp.shard_keys[1].clone().into_result().is_ok());
+    assert!(resp.shard_keys[2].clone().into_result().is_ok());
+
+    let mut dest_client = c.group(dest_group_id);
+    assert_eq!(
+        get_from_group(&mut dest_client, moving_shard_id, moving_key_a).await,
+        Some(b"moving-a".to_vec())
+    );
+    assert_eq!(
+        get_from_group(&mut dest_client, moving_shard_id, moving_key_b).await,
+        Some(b"moving-b".to_vec())
+    );
+    let mut src_client = c.group(src_group_id);
+    assert_eq!(
+        get_from_group(&mut src_client, local_shard_id, local_key).await,
+        Some(b"local".to_vec())
+    );
+}
+
+async fn create_txn_test_group(
+    c: &ClusterClient,
+    group_id: u64,
+    nodes: Vec<u64>,
+    shards: Vec<ShardDesc>,
+) {
+    let replicas = nodes
+        .iter()
+        .cloned()
+        .map(|node_id| ReplicaDesc {
+            id: group_id * 10 + node_id,
+            node_id,
+            role: ReplicaRole::Voter as i32,
+        })
+        .collect::<Vec<_>>();
+    let group_desc =
+        GroupDesc { id: group_id, shards, replicas: replicas.clone(), ..Default::default() };
+    for replica in replicas {
+        c.create_replica(replica.node_id, replica.id, group_desc.clone()).await;
+    }
+}
+
+async fn wait_moving_shard_state(
+    c: &ClusterClient,
+    group_id: u64,
+    expect: &[collect_moving_shard_state_response::State],
+) {
+    for _ in 0..1000 {
+        if let Some(node_id) = c.get_group_leader_node_id(group_id).await
+            && let Ok(resp) = c.collect_moving_shard_state(group_id, node_id).await
+            && expect.iter().any(|state| resp.state == *state as i32)
+        {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("group {group_id} did not enter expected moving shard state");
+}
+
+async fn get_from_group(
+    client: &mut sekas_client::GroupClient,
+    shard_id: u64,
+    key: Vec<u8>,
+) -> Option<Vec<u8>> {
+    let resp = client
+        .request(&Request::Get(ShardGetRequest {
+            shard_id,
+            start_version: u64::MAX,
+            user_key: key,
+        }))
+        .await
+        .unwrap();
+    let Response::Get(resp) = resp else { panic!("ShardGetResponse is required") };
+    resp.value.and_then(|value| value.content)
 }

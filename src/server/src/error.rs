@@ -79,6 +79,9 @@ pub enum Error {
     #[error("forward request to dest group")]
     Forward(crate::node::move_shard::ForwardCtx),
 
+    #[error("forward parts of request to dest group")]
+    PartialForward(crate::replica::PartialForward),
+
     #[error("group epoch not match")]
     EpochNotMatch(GroupDesc),
 
@@ -185,6 +188,7 @@ impl From<Error> for tonic::Status {
             ),
 
             Error::Forward(_) => panic!("Forward only used inside node"),
+            Error::PartialForward(_) => panic!("PartialForward only used inside node"),
             Error::ServiceIsBusy(_) => panic!("ServiceIsBusy only used inside node"),
             Error::GroupNotReady(_) => panic!("GroupNotReady only used inside node"),
 
@@ -245,6 +249,7 @@ impl From<Error> for sekas_api::server::v1::Error {
             Error::TxnConflict => v1::Error::txn_conflict(),
 
             Error::Forward(_) => panic!("Forward only used inside node"),
+            Error::PartialForward(_) => panic!("PartialForward only used inside node"),
             Error::ServiceIsBusy(_) => panic!("ServiceIsBusy only used inside node"),
             Error::GroupNotReady(_) => panic!("GroupNotReady only used inside node"),
             Error::AbortScheduleTask(_) => panic!("AbortScheduleTask only used inside node"),

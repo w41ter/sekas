@@ -647,38 +647,20 @@ fn is_executable(descriptor: &GroupDesc, request: &Request) -> bool {
         Request::Write(req) => {
             is_all_target_shard_exists(descriptor, req.shard_id, &req.deletes, &req.puts)
         }
-        Request::WriteIntent(WriteIntentRequest { write: Some(write), shard_id, .. }) => {
-            match write {
-                write_intent_request::Write::Delete(delete) => {
-                    is_target_shard_exists(descriptor, *shard_id, &delete.key)
-                }
-                write_intent_request::Write::Put(put) => {
-                    is_target_shard_exists(descriptor, *shard_id, &put.key)
-                }
+        Request::WriteIntent(req) => req.writes.iter().all(|write| match write.write.as_ref() {
+            Some(write_intent::Write::Delete(delete)) => {
+                is_target_shard_exists(descriptor, write.shard_id, &delete.key)
             }
-        }
-        Request::BatchWriteIntent(req) => {
-            req.writes.iter().all(|write| match write.write.as_ref() {
-                Some(batch_write_intent::Write::Delete(delete)) => {
-                    is_target_shard_exists(descriptor, write.shard_id, &delete.key)
-                }
-                Some(batch_write_intent::Write::Put(put)) => {
-                    is_target_shard_exists(descriptor, write.shard_id, &put.key)
-                }
-                None => true,
-            })
-        }
-        Request::CommitIntent(req) => {
-            is_target_shard_exists(descriptor, req.shard_id, &req.user_key)
-        }
-        Request::BatchCommitIntent(req) => req
+            Some(write_intent::Write::Put(put)) => {
+                is_target_shard_exists(descriptor, write.shard_id, &put.key)
+            }
+            None => true,
+        }),
+        Request::CommitIntent(req) => req
             .shard_keys
             .iter()
             .all(|key| is_target_shard_exists(descriptor, key.shard_id, &key.user_key)),
-        Request::ClearIntent(req) => {
-            is_target_shard_exists(descriptor, req.shard_id, &req.user_key)
-        }
-        Request::BatchClearIntent(req) => req
+        Request::ClearIntent(req) => req
             .shard_keys
             .iter()
             .all(|key| is_target_shard_exists(descriptor, key.shard_id, &key.user_key)),

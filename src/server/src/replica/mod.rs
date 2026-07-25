@@ -82,6 +82,19 @@ pub struct ExecCtx {
     move_shard_desc: Option<MoveShardDesc>,
 }
 
+#[derive(Debug)]
+pub struct PartialForward {
+    pub response: Response,
+    pub parts: Vec<ForwardPart>,
+}
+
+#[derive(Debug)]
+pub struct ForwardPart {
+    pub indexes: Vec<usize>,
+    pub request: Request,
+    pub forward_ctx: crate::node::move_shard::ForwardCtx,
+}
+
 type WatchEventSender = mpsc::UnboundedSender<WatchEvent>;
 type WatcherSender = std::sync::mpsc::Sender<((u64, Box<[u8]>), WatchEventSender)>;
 
@@ -367,64 +380,61 @@ impl Replica {
                 (eval_result, Response::Write(resp))
             }
             Request::WriteIntent(req) => {
-                let (eval_result, resp) = eval::write_intent(
+                let (eval_result, resp, forwards) = eval::write_intent(
                     exec_ctx,
                     &self.group_engine,
                     latches.as_mut().expect("write intent request must hold latches"),
                     req,
                 )
                 .await?;
-                (eval_result, Response::WriteIntent(resp))
-            }
-            Request::BatchWriteIntent(req) => {
-                let (eval_result, resp) = eval::batch_write_intent(
-                    exec_ctx,
-                    &self.group_engine,
-                    latches.as_mut().expect("batch write intent request must hold latches"),
-                    req,
-                )
-                .await?;
-                (eval_result, Response::BatchWriteIntent(resp))
+                if let Some(eval_result) = eval_result {
+                    self.raft_group.propose(eval_result).await?;
+                }
+                if !forwards.is_empty() {
+                    return Err(Error::PartialForward(PartialForward {
+                        response: Response::WriteIntent(resp),
+                        parts: forwards,
+                    }));
+                }
+                (None, Response::WriteIntent(resp))
             }
             Request::CommitIntent(req) => {
-                let eval_result = eval::commit_intent(
+                let (eval_result, resp, forwards) = eval::commit_intent(
                     exec_ctx,
                     &self.group_engine,
                     latches.as_mut().expect("commit intent request must hold latches"),
                     req,
                 )
                 .await?;
-                (eval_result, Response::CommitIntent(CommitIntentResponse::default()))
-            }
-            Request::BatchCommitIntent(req) => {
-                let eval_result = eval::batch_commit_intent(
-                    exec_ctx,
-                    &self.group_engine,
-                    latches.as_mut().expect("batch commit intent request must hold latches"),
-                    req,
-                )
-                .await?;
-                (eval_result, Response::BatchCommitIntent(BatchCommitIntentResponse::default()))
+                if let Some(eval_result) = eval_result {
+                    self.raft_group.propose(eval_result).await?;
+                }
+                if !forwards.is_empty() {
+                    return Err(Error::PartialForward(PartialForward {
+                        response: Response::CommitIntent(resp),
+                        parts: forwards,
+                    }));
+                }
+                (None, Response::CommitIntent(resp))
             }
             Request::ClearIntent(req) => {
-                let eval_result = eval::clear_intent(
+                let (eval_result, resp, forwards) = eval::clear_intent(
                     exec_ctx,
                     &self.group_engine,
                     latches.as_mut().expect("clear intent request must hold latches"),
                     req,
                 )
                 .await?;
-                (eval_result, Response::ClearIntent(ClearIntentResponse::default()))
-            }
-            Request::BatchClearIntent(req) => {
-                let eval_result = eval::batch_clear_intent(
-                    exec_ctx,
-                    &self.group_engine,
-                    latches.as_mut().expect("batch clear intent request must hold latches"),
-                    req,
-                )
-                .await?;
-                (eval_result, Response::BatchClearIntent(BatchClearIntentResponse::default()))
+                if let Some(eval_result) = eval_result {
+                    self.raft_group.propose(eval_result).await?;
+                }
+                if !forwards.is_empty() {
+                    return Err(Error::PartialForward(PartialForward {
+                        response: Response::ClearIntent(resp),
+                        parts: forwards,
+                    }));
+                }
+                (None, Response::ClearIntent(resp))
             }
             Request::Scan(req) => {
                 let eval_result =
@@ -659,11 +669,8 @@ fn is_change_meta_request(request: &Request) -> bool {
         | Request::Write(_)
         | Request::Scan(_)
         | Request::WriteIntent(_)
-        | Request::BatchWriteIntent(_)
         | Request::CommitIntent(_)
-        | Request::BatchCommitIntent(_)
         | Request::ClearIntent(_)
-        | Request::BatchClearIntent(_)
         | Request::WatchKey(_) => false,
     }
 }

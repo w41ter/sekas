@@ -141,15 +141,15 @@ pub fn take_group_request_metrics(
             GROUP_CLIENT_GROUP_REQUEST_TOTAL.write.inc();
             Some(&GROUP_CLIENT_GROUP_REQUEST_DURATION_SECONDS.write)
         }
-        Request::WriteIntent(_) | Request::BatchWriteIntent(_) => {
+        Request::WriteIntent(_) => {
             GROUP_CLIENT_GROUP_REQUEST_TOTAL.prepare_intent.inc();
             Some(&GROUP_CLIENT_GROUP_REQUEST_DURATION_SECONDS.prepare_intent)
         }
-        Request::CommitIntent(_) | Request::BatchCommitIntent(_) => {
+        Request::CommitIntent(_) => {
             GROUP_CLIENT_GROUP_REQUEST_TOTAL.commit_intent.inc();
             Some(&GROUP_CLIENT_GROUP_REQUEST_DURATION_SECONDS.commit_intent)
         }
-        Request::ClearIntent(_) | Request::BatchClearIntent(_) => {
+        Request::ClearIntent(_) => {
             GROUP_CLIENT_GROUP_REQUEST_TOTAL.clear_intent.inc();
             Some(&GROUP_CLIENT_GROUP_REQUEST_DURATION_SECONDS.clear_intent)
         }

@@ -146,37 +146,22 @@ fn is_executable(descriptor: &GroupDesc, request: &Request) -> bool {
                 }
                 true
             }
-            Request::WriteIntent(req) => match req.write.as_ref() {
-                Some(WriteRequest::Put(put)) => {
-                    is_target_shard_exists(descriptor, req.shard_id, &put.key)
-                }
-                Some(WriteRequest::Delete(delete)) => {
-                    is_target_shard_exists(descriptor, req.shard_id, &delete.key)
-                }
-                None => false,
-            },
-            Request::BatchWriteIntent(req) => {
+            Request::WriteIntent(req) => {
                 req.writes.iter().all(|write| match write.write.as_ref() {
-                    Some(batch_write_intent::Write::Put(put)) => {
+                    Some(write_intent::Write::Put(put)) => {
                         is_target_shard_exists(descriptor, write.shard_id, &put.key)
                     }
-                    Some(batch_write_intent::Write::Delete(delete)) => {
+                    Some(write_intent::Write::Delete(delete)) => {
                         is_target_shard_exists(descriptor, write.shard_id, &delete.key)
                     }
                     None => false,
                 })
             }
-            Request::CommitIntent(req) => {
-                is_target_shard_exists(descriptor, req.shard_id, &req.user_key)
-            }
-            Request::BatchCommitIntent(req) => req
+            Request::CommitIntent(req) => req
                 .shard_keys
                 .iter()
                 .all(|key| is_target_shard_exists(descriptor, key.shard_id, &key.user_key)),
-            Request::ClearIntent(req) => {
-                is_target_shard_exists(descriptor, req.shard_id, &req.user_key)
-            }
-            Request::BatchClearIntent(req) => req
+            Request::ClearIntent(req) => req
                 .shard_keys
                 .iter()
                 .all(|key| is_target_shard_exists(descriptor, key.shard_id, &key.user_key)),

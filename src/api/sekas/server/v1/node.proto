@@ -56,9 +56,6 @@ message GroupRequestUnion {
         WriteIntentRequest write_intent = 11;
         CommitIntentRequest commit_intent = 12;
         ClearIntentRequest clear_intent = 13;
-        BatchWriteIntentRequest batch_write_intent = 14;
-        BatchCommitIntentRequest batch_commit_intent = 15;
-        BatchClearIntentRequest batch_clear_intent = 16;
 
         // Add a new shard to an existing group.
         CreateShardRequest create_shard = 20;
@@ -99,9 +96,6 @@ message GroupResponseUnion {
         WriteIntentResponse write_intent = 10;
         CommitIntentResponse commit_intent = 11;
         ClearIntentResponse clear_intent = 12;
-        BatchWriteIntentResponse batch_write_intent = 13;
-        BatchCommitIntentResponse batch_commit_intent = 14;
-        BatchClearIntentResponse batch_clear_intent = 15;
 
         CreateShardResponse create_shard = 20;
         DeleteShardResponse delete_shard = 27;
@@ -174,30 +168,22 @@ message ShardScanResponse {
 }
 
 message WriteIntentRequest {
-    uint64 shard_id = 1;
-    uint64 start_version = 2;
-
-    // The write request.
-    oneof write {
-        DeleteRequest delete = 3;
-        PutRequest put = 4;
-    }
+    uint64 start_version = 1;
+    repeated WriteIntent writes = 2;
 }
 
 message WriteIntentResponse {
-    WriteResponse write = 1;
+    repeated WriteIntentResult writes = 1;
 }
 
-message BatchWriteIntentRequest {
-    uint64 start_version = 1;
-    repeated BatchWriteIntent writes = 2;
+message WriteIntentResult {
+    oneof result {
+        WriteResponse response = 1;
+        Error error = 2;
+    }
 }
 
-message BatchWriteIntentResponse {
-    repeated WriteResponse writes = 1;
-}
-
-message BatchWriteIntent {
+message WriteIntent {
     uint64 shard_id = 1;
     oneof write {
         DeleteRequest delete = 2;
@@ -206,36 +192,32 @@ message BatchWriteIntent {
 }
 
 message CommitIntentRequest {
-    uint64 shard_id = 1;
-    uint64 start_version = 2;
-    uint64 commit_version = 3;
-    bytes user_key = 4;
-}
-
-message CommitIntentResponse {}
-
-message BatchCommitIntentRequest {
     uint64 start_version = 1;
     uint64 commit_version = 2;
     repeated ShardKey shard_keys = 3;
 }
 
-message BatchCommitIntentResponse {}
-
-message ClearIntentRequest {
-    uint64 shard_id = 1;
-    uint64 start_version = 2;
-    bytes user_key = 3;
+message CommitIntentResponse {
+    repeated IntentResult shard_keys = 1;
 }
 
-message ClearIntentResponse {}
-
-message BatchClearIntentRequest {
+message ClearIntentRequest {
     uint64 start_version = 1;
     repeated ShardKey shard_keys = 2;
 }
 
-message BatchClearIntentResponse {}
+message ClearIntentResponse {
+    repeated IntentResult shard_keys = 1;
+}
+
+message IntentResult {
+    oneof result {
+        IntentSuccess success = 1;
+        Error error = 2;
+    }
+}
+
+message IntentSuccess {}
 
 message NodeAdminRequest {
     oneof request {

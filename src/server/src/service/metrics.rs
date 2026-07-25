@@ -119,15 +119,15 @@ pub fn take_group_request_metrics(request: &GroupRequest) -> Option<&'static His
             NODE_SERVICE_GROUP_REQUEST_TOTAL.move_replicas.inc();
             Some(&NODE_SERVICE_GROUP_REQUEST_DURATION_SECONDS.move_replicas)
         }
-        Some(Request::WriteIntent(_)) | Some(Request::BatchWriteIntent(_)) => {
+        Some(Request::WriteIntent(_)) => {
             NODE_SERVICE_GROUP_REQUEST_TOTAL.write_intent.inc();
             Some(&NODE_SERVICE_GROUP_REQUEST_DURATION_SECONDS.write_intent)
         }
-        Some(Request::CommitIntent(_)) | Some(Request::BatchCommitIntent(_)) => {
+        Some(Request::CommitIntent(_)) => {
             NODE_SERVICE_GROUP_REQUEST_TOTAL.commit_intent.inc();
             Some(&NODE_SERVICE_GROUP_REQUEST_DURATION_SECONDS.commit_intent)
         }
-        Some(Request::ClearIntent(_)) | Some(Request::BatchClearIntent(_)) => {
+        Some(Request::ClearIntent(_)) => {
             NODE_SERVICE_GROUP_REQUEST_TOTAL.clear_intent.inc();
             Some(&NODE_SERVICE_GROUP_REQUEST_DURATION_SECONDS.clear_intent)
         }

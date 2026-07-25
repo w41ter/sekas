@@ -27,7 +27,67 @@ pub mod server {
         tonic::include_proto!("sekas.server.v1");
 
         /// A helper enum to hold both [`PutRequest`] and [`DeleteRequest`].
-        pub type WriteRequest = write_intent_request::Write;
+        pub type WriteRequest = write_intent::Write;
+    }
+}
+
+impl server::v1::WriteIntentResult {
+    #[inline]
+    pub fn ok(response: server::v1::WriteResponse) -> Self {
+        use server::v1::write_intent_result::Result;
+
+        Self { result: Some(Result::Response(response)) }
+    }
+
+    #[inline]
+    pub fn err(error: server::v1::Error) -> Self {
+        use server::v1::write_intent_result::Result;
+
+        Self { result: Some(Result::Error(error)) }
+    }
+
+    #[inline]
+    pub fn into_result(self) -> std::result::Result<server::v1::WriteResponse, server::v1::Error> {
+        use server::v1::write_intent_result::Result;
+
+        match self.result {
+            Some(Result::Response(response)) => Ok(response),
+            Some(Result::Error(error)) => Err(error),
+            None => Err(server::v1::Error::status(
+                tonic::Code::Internal.into(),
+                "WriteIntentResult::result is None",
+            )),
+        }
+    }
+}
+
+impl server::v1::IntentResult {
+    #[inline]
+    pub fn ok() -> Self {
+        use server::v1::intent_result::Result;
+
+        Self { result: Some(Result::Success(server::v1::IntentSuccess {})) }
+    }
+
+    #[inline]
+    pub fn err(error: server::v1::Error) -> Self {
+        use server::v1::intent_result::Result;
+
+        Self { result: Some(Result::Error(error)) }
+    }
+
+    #[inline]
+    pub fn into_result(self) -> std::result::Result<(), server::v1::Error> {
+        use server::v1::intent_result::Result;
+
+        match self.result {
+            Some(Result::Success(_)) => Ok(()),
+            Some(Result::Error(error)) => Err(error),
+            None => Err(server::v1::Error::status(
+                tonic::Code::Internal.into(),
+                "IntentResult::result is None",
+            )),
+        }
     }
 }
 

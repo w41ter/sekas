@@ -98,7 +98,7 @@ struct WriteContext {
     done: bool,
 }
 
-struct PrepareIntentBatch {
+struct PrepareIntentGroup {
     group_state: RouterGroupState,
     entries: Vec<PrepareIntentEntry>,
 }
@@ -106,10 +106,10 @@ struct PrepareIntentBatch {
 struct PrepareIntentEntry {
     context_index: usize,
     write_index: u64,
-    write: BatchWriteIntent,
+    write: WriteIntent,
 }
 
-struct IntentKeyBatch {
+struct IntentKeyGroup {
     group_state: RouterGroupState,
     entries: Vec<IntentKeyEntry>,
 }
@@ -912,9 +912,9 @@ impl WriteBatchContext {
             .await
     }
 
-    fn prepare_intent_batches(&self) -> Result<Vec<PrepareIntentBatch>> {
+    fn prepare_intent_groups(&self) -> Result<Vec<PrepareIntentGroup>> {
         let router = self.client.router();
-        let mut batches: Vec<PrepareIntentBatch> = Vec::new();
+        let mut groups: Vec<PrepareIntentGroup> = Vec::new();
         for (context_index, write) in self.writes.iter().enumerate() {
             if write.done {
                 continue;
@@ -929,28 +929,28 @@ impl WriteBatchContext {
             let entry = PrepareIntentEntry {
                 context_index,
                 write_index: write.index as u64,
-                write: BatchWriteIntent {
+                write: WriteIntent {
                     shard_id: shard_desc.id,
                     write: Some(match write.request.clone() {
-                        WriteRequest::Delete(delete) => batch_write_intent::Write::Delete(delete),
-                        WriteRequest::Put(put) => batch_write_intent::Write::Put(put),
+                        WriteRequest::Delete(delete) => write_intent::Write::Delete(delete),
+                        WriteRequest::Put(put) => write_intent::Write::Put(put),
                     }),
                 },
             };
-            if let Some(batch) =
-                batches.iter_mut().find(|batch| batch.group_state.id == group_state.id)
+            if let Some(group) =
+                groups.iter_mut().find(|group| group.group_state.id == group_state.id)
             {
-                batch.entries.push(entry);
+                group.entries.push(entry);
             } else {
-                batches.push(PrepareIntentBatch { group_state, entries: vec![entry] });
+                groups.push(PrepareIntentGroup { group_state, entries: vec![entry] });
             }
         }
-        Ok(batches)
+        Ok(groups)
     }
 
-    fn intent_key_batches(&self, target_done: bool) -> Result<Vec<IntentKeyBatch>> {
+    fn intent_key_groups(&self, target_done: bool) -> Result<Vec<IntentKeyGroup>> {
         let router = self.client.router();
-        let mut batches: Vec<IntentKeyBatch> = Vec::new();
+        let mut groups: Vec<IntentKeyGroup> = Vec::new();
         for (context_index, write) in self.writes.iter().enumerate() {
             if write.done != target_done {
                 continue;
@@ -961,15 +961,15 @@ impl WriteBatchContext {
                 context_index,
                 shard_key: ShardKey { shard_id: shard_desc.id, user_key: user_key.to_vec() },
             };
-            if let Some(batch) =
-                batches.iter_mut().find(|batch| batch.group_state.id == group_state.id)
+            if let Some(group) =
+                groups.iter_mut().find(|group| group.group_state.id == group_state.id)
             {
-                batch.entries.push(entry);
+                group.entries.push(entry);
             } else {
-                batches.push(IntentKeyBatch { group_state, entries: vec![entry] });
+                groups.push(IntentKeyGroup { group_state, entries: vec![entry] });
             }
         }
-        Ok(batches)
+        Ok(groups)
     }
 
     async fn prepare_intents(&mut self) -> Result<()> {
@@ -983,15 +983,15 @@ impl WriteBatchContext {
 
     async fn prepare_intents_inner(&mut self) -> Result<bool> {
         trace!("txn prepare intents, version: {}", self.start_version);
-        let batches = self.prepare_intent_batches()?;
-        let mut handles = Vec::with_capacity(batches.len());
-        for batch in batches {
-            let mut client = GroupClient::new(batch.group_state, self.client.clone());
-            let req = Request::BatchWriteIntent(BatchWriteIntentRequest {
+        let groups = self.prepare_intent_groups()?;
+        let mut handles = Vec::with_capacity(groups.len());
+        for intent_group in groups {
+            let mut client = GroupClient::new(intent_group.group_state, self.client.clone());
+            let req = Request::WriteIntent(WriteIntentRequest {
                 start_version: self.start_version,
-                writes: batch.entries.iter().map(|entry| entry.write.clone()).collect(),
+                writes: intent_group.entries.iter().map(|entry| entry.write.clone()).collect(),
             });
-            let index_map = batch
+            let index_map = intent_group
                 .entries
                 .iter()
                 .map(|entry| (entry.context_index, entry.write_index))
@@ -1010,12 +1010,11 @@ impl WriteBatchContext {
                     }
                     err => err,
                 })? {
-                    Response::BatchWriteIntent(BatchWriteIntentResponse { writes }) => {
+                    Response::WriteIntent(WriteIntentResponse { writes }) => {
                         Ok((writes, index_map))
                     }
                     other => Err(Error::Internal(
-                        format!("invalid response {other:?}, `BatchWriteIntent` is required")
-                            .into(),
+                        format!("invalid response {other:?}, `WriteIntent` is required").into(),
                     )),
                 }
             });
@@ -1025,12 +1024,40 @@ impl WriteBatchContext {
         for handle in handles {
             match handle.await? {
                 Ok((responses, index_map)) => {
-                    for (resp, (index, _)) in responses.into_iter().zip(index_map) {
-                        self.num_doing_writes =
-                            self.num_doing_writes.checked_sub(1).expect("out of range");
-                        let write = &mut self.writes[index];
-                        write.done = true;
-                        write.response = Some(resp);
+                    if responses.len() != index_map.len() {
+                        return Err(Error::Internal(
+                            format!(
+                                "invalid WriteIntentResponse length {}, expect {}",
+                                responses.len(),
+                                index_map.len()
+                            )
+                            .into(),
+                        ));
+                    }
+                    for (result, (index, write_index)) in responses.into_iter().zip(index_map) {
+                        match result.into_result() {
+                            Ok(resp) => {
+                                self.num_doing_writes =
+                                    self.num_doing_writes.checked_sub(1).expect("out of range");
+                                let write = &mut self.writes[index];
+                                write.done = true;
+                                write.response = Some(resp);
+                            }
+                            Err(err) => {
+                                let err = Error::from(err);
+                                if let Error::CasFailed(_, cond_index, prev_value) = err {
+                                    return Err(Error::CasFailed(
+                                        write_index,
+                                        cond_index,
+                                        prev_value,
+                                    ));
+                                }
+                                trace!("txn {} write intent: {err:?}", self.start_version);
+                                if !self.retry_state.is_retryable(&err) {
+                                    return Err(err);
+                                }
+                            }
+                        }
                     }
                 }
                 Err(err) => {
@@ -1086,24 +1113,23 @@ impl WriteBatchContext {
     }
 
     async fn commit_intents_inner(&mut self, timeout: Option<Duration>) -> Result<bool> {
-        let batches = self.intent_key_batches(false)?;
-        let mut handles = Vec::with_capacity(batches.len());
-        for batch in batches {
-            let mut client = GroupClient::new(batch.group_state, self.client.clone());
+        let groups = self.intent_key_groups(false)?;
+        let mut handles = Vec::with_capacity(groups.len());
+        for intent_group in groups {
+            let mut client = GroupClient::new(intent_group.group_state, self.client.clone());
             client.set_timeout_opt(timeout);
             let index_map =
-                batch.entries.iter().map(|entry| entry.context_index).collect::<Vec<_>>();
-            let req = BatchCommitIntentRequest {
+                intent_group.entries.iter().map(|entry| entry.context_index).collect::<Vec<_>>();
+            let req = CommitIntentRequest {
                 start_version: self.start_version,
                 commit_version: self.commit_version,
-                shard_keys: batch.entries.into_iter().map(|entry| entry.shard_key).collect(),
+                shard_keys: intent_group.entries.into_iter().map(|entry| entry.shard_key).collect(),
             };
             let handle = tokio::spawn(async move {
-                match client.request(&Request::BatchCommitIntent(req)).await {
-                    Ok(Response::BatchCommitIntent(_)) => Ok(index_map),
+                match client.request(&Request::CommitIntent(req)).await {
+                    Ok(Response::CommitIntent(resp)) => Ok((resp.shard_keys, index_map)),
                     Ok(other) => Err(Error::Internal(
-                        format!("invalid response {other:?}, `BatchCommitIntent` is required")
-                            .into(),
+                        format!("invalid response {other:?}, `CommitIntent` is required").into(),
                     )),
                     Err(err) => Err(err),
                 }
@@ -1112,11 +1138,31 @@ impl WriteBatchContext {
         }
         for handle in handles {
             match handle.await? {
-                Ok(indexes) => {
-                    for index in indexes {
-                        self.writes[index].done = true;
-                        self.num_doing_writes =
-                            self.num_doing_writes.checked_sub(1).expect("out of range");
+                Ok((results, indexes)) => {
+                    if results.len() != indexes.len() {
+                        return Err(Error::Internal(
+                            format!(
+                                "invalid CommitIntentResponse length {}, expect {}",
+                                results.len(),
+                                indexes.len()
+                            )
+                            .into(),
+                        ));
+                    }
+                    for (result, index) in results.into_iter().zip(indexes) {
+                        match result.into_result() {
+                            Ok(()) => {
+                                self.writes[index].done = true;
+                                self.num_doing_writes =
+                                    self.num_doing_writes.checked_sub(1).expect("out of range");
+                            }
+                            Err(err) => {
+                                let err = Error::from(err);
+                                if !self.retry_state.is_retryable(&err) {
+                                    return Err(err);
+                                }
+                            }
+                        }
                     }
                 }
                 Err(err) => {
@@ -1142,23 +1188,22 @@ impl WriteBatchContext {
     }
 
     async fn clear_intents_inner(&mut self, timeout: Option<Duration>) -> Result<bool> {
-        let batches = self.intent_key_batches(true)?;
-        let mut handles = Vec::with_capacity(batches.len());
-        for batch in batches {
-            let mut client = GroupClient::new(batch.group_state, self.client.clone());
+        let groups = self.intent_key_groups(true)?;
+        let mut handles = Vec::with_capacity(groups.len());
+        for intent_group in groups {
+            let mut client = GroupClient::new(intent_group.group_state, self.client.clone());
             client.set_timeout_opt(timeout);
             let index_map =
-                batch.entries.iter().map(|entry| entry.context_index).collect::<Vec<_>>();
-            let req = BatchClearIntentRequest {
+                intent_group.entries.iter().map(|entry| entry.context_index).collect::<Vec<_>>();
+            let req = ClearIntentRequest {
                 start_version: self.start_version,
-                shard_keys: batch.entries.into_iter().map(|entry| entry.shard_key).collect(),
+                shard_keys: intent_group.entries.into_iter().map(|entry| entry.shard_key).collect(),
             };
             let handle = tokio::spawn(async move {
-                match client.request(&Request::BatchClearIntent(req)).await {
-                    Ok(Response::BatchClearIntent(_)) => Ok(index_map),
+                match client.request(&Request::ClearIntent(req)).await {
+                    Ok(Response::ClearIntent(resp)) => Ok((resp.shard_keys, index_map)),
                     Ok(other) => Err(Error::Internal(
-                        format!("invalid response {other:?}, `BatchClearIntent` is required")
-                            .into(),
+                        format!("invalid response {other:?}, `ClearIntent` is required").into(),
                     )),
                     Err(err) => Err(err),
                 }
@@ -1168,9 +1213,29 @@ impl WriteBatchContext {
 
         for handle in handles {
             match handle.await? {
-                Ok(indexes) => {
-                    for index in indexes {
-                        self.writes[index].done = false;
+                Ok((results, indexes)) => {
+                    if results.len() != indexes.len() {
+                        return Err(Error::Internal(
+                            format!(
+                                "invalid ClearIntentResponse length {}, expect {}",
+                                results.len(),
+                                indexes.len()
+                            )
+                            .into(),
+                        ));
+                    }
+                    for (result, index) in results.into_iter().zip(indexes) {
+                        match result.into_result() {
+                            Ok(()) => {
+                                self.writes[index].done = false;
+                            }
+                            Err(err) => {
+                                let err = Error::from(err);
+                                if !self.retry_state.is_retryable(&err) {
+                                    return Err(err);
+                                }
+                            }
+                        }
                     }
                 }
                 Err(err) => {
