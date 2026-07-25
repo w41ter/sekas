@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 
 use rand::prelude::*;
 use rand::rngs::SmallRng;
-use sekas_client::{Database, Range, RangeRequest, WriteBuilder};
+use sekas_client::{AppError, Database, Range, RangeRequest, WriteBuilder};
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
@@ -35,6 +35,7 @@ pub(crate) struct WorkloadReport {
     pub(crate) duration_ms: u128,
     pub(crate) qps: f64,
     pub(crate) latency: HistogramSummary,
+    pub(crate) errors: BTreeMap<String, u64>,
     pub(crate) phase_summaries: Vec<PhaseWorkloadSummary>,
 }
 
@@ -42,8 +43,12 @@ pub(crate) struct WorkloadReport {
 pub(crate) struct PhaseWorkloadSummary {
     name: String,
     operations: u64,
+    successes: u64,
+    failures: u64,
+    duration_ms: u128,
     qps: f64,
     latency: HistogramSummary,
+    errors: BTreeMap<String, u64>,
 }
 
 pub(crate) struct WorkloadHandle {
@@ -78,41 +83,47 @@ struct WorkloadStats {
     successes: u64,
     failures: u64,
     latencies: Vec<u64>,
-    phases: BTreeMap<String, Vec<u64>>,
+    errors: BTreeMap<String, u64>,
+    phases: BTreeMap<String, PhaseStats>,
 }
 
 impl WorkloadStats {
     fn new(name: &str) -> Self {
-        WorkloadStats { name: name.to_owned(), phase: "main".to_owned(), ..Default::default() }
+        let mut stats =
+            WorkloadStats { name: name.to_owned(), phase: "main".to_owned(), ..Default::default() };
+        stats.phases.insert("main".to_owned(), PhaseStats::new());
+        stats
     }
 
     fn phase(&mut self, phase: String) {
+        if let Some(current) = self.phases.get_mut(&self.phase) {
+            current.finish();
+        }
+        self.phases.entry(phase.clone()).or_insert_with(PhaseStats::new);
         self.phase = phase;
     }
 
-    fn observe(&mut self, latency_us: u64, success: bool) {
+    fn observe(&mut self, latency_us: u64, error: Option<String>) {
         self.operations += 1;
+        let success = error.is_none();
         if success {
             self.successes += 1;
         } else {
             self.failures += 1;
         }
+        if let Some(error) = error.as_ref() {
+            *self.errors.entry(error.clone()).or_default() += 1;
+        }
         self.latencies.push(latency_us);
-        self.phases.entry(self.phase.clone()).or_default().push(latency_us);
+        self.phases
+            .entry(self.phase.clone())
+            .or_insert_with(PhaseStats::new)
+            .observe(latency_us, error.as_ref());
     }
 
     fn report(&self, elapsed: Duration) -> WorkloadReport {
         let seconds = elapsed.as_secs_f64().max(0.001);
-        let phase_summaries = self
-            .phases
-            .iter()
-            .map(|(name, latencies)| PhaseWorkloadSummary {
-                name: name.clone(),
-                operations: latencies.len() as u64,
-                qps: latencies.len() as f64 / seconds,
-                latency: HistogramSummary::from_latencies(latencies),
-            })
-            .collect();
+        let phase_summaries = self.phases.iter().map(|(name, phase)| phase.report(name)).collect();
         WorkloadReport {
             name: self.name.clone(),
             operations: self.operations,
@@ -121,7 +132,66 @@ impl WorkloadStats {
             duration_ms: elapsed.as_millis(),
             qps: self.operations as f64 / seconds,
             latency: HistogramSummary::from_latencies(&self.latencies),
+            errors: self.errors.clone(),
             phase_summaries,
+        }
+    }
+}
+
+struct PhaseStats {
+    started: Instant,
+    finished: Option<Instant>,
+    operations: u64,
+    successes: u64,
+    failures: u64,
+    latencies: Vec<u64>,
+    errors: BTreeMap<String, u64>,
+}
+
+impl PhaseStats {
+    fn new() -> Self {
+        PhaseStats {
+            started: Instant::now(),
+            finished: None,
+            operations: 0,
+            successes: 0,
+            failures: 0,
+            latencies: Vec::new(),
+            errors: BTreeMap::new(),
+        }
+    }
+
+    fn finish(&mut self) {
+        self.finished.get_or_insert_with(Instant::now);
+    }
+
+    fn duration(&self) -> Duration {
+        self.finished.unwrap_or_else(Instant::now).saturating_duration_since(self.started)
+    }
+
+    fn observe(&mut self, latency_us: u64, error: Option<&String>) {
+        self.operations += 1;
+        if let Some(error) = error {
+            self.failures += 1;
+            *self.errors.entry(error.clone()).or_default() += 1;
+        } else {
+            self.successes += 1;
+        }
+        self.latencies.push(latency_us);
+    }
+
+    fn report(&self, name: &str) -> PhaseWorkloadSummary {
+        let duration = self.duration();
+        let seconds = duration.as_secs_f64().max(0.001);
+        PhaseWorkloadSummary {
+            name: name.to_owned(),
+            operations: self.operations,
+            successes: self.successes,
+            failures: self.failures,
+            duration_ms: duration.as_millis(),
+            qps: self.operations as f64 / seconds,
+            latency: HistogramSummary::from_latencies(&self.latencies),
+            errors: self.errors.clone(),
         }
     }
 }
@@ -227,11 +297,30 @@ pub(crate) fn spawn_workload(
                     }
                 };
                 let latency = start.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;
-                stats.lock().await.observe(latency, result.is_ok());
+                stats.lock().await.observe(latency, result.err().map(classify_app_error));
             }
         }));
     }
     WorkloadHandle { stats, tasks, started }
+}
+
+fn classify_app_error(err: AppError) -> String {
+    match err {
+        AppError::NotFound(_) => "not_found",
+        AppError::AlreadyExists(_) => "already_exists",
+        AppError::InvalidArgument(_) => "invalid_argument",
+        AppError::DeadlineExceeded(_) => "deadline_exceeded",
+        AppError::CasFailed(..) => "cas_failed",
+        AppError::TxnConflict => "txn_conflict",
+        AppError::Network(status) => match status.code().description() {
+            "unavailable" => "network_unavailable",
+            "unknown" => "network_unknown",
+            "deadline exceeded" => "network_deadline_exceeded",
+            _ => "network_other",
+        },
+        AppError::Internal(_) => "internal",
+    }
+    .to_owned()
 }
 
 async fn scan_prefix(

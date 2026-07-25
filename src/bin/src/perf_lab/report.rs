@@ -272,6 +272,9 @@ pub(crate) fn case_report(
         derived.insert(format!("{}.qps", workload.name), workload.qps);
         derived.insert(format!("{}.p99_us", workload.name), workload.latency.p99_us as f64);
         derived.insert(format!("{}.failure_rate", workload.name), failure_rate(workload));
+        for (kind, count) in &workload.errors {
+            derived.insert(format!("{}.errors.{kind}", workload.name), *count as f64);
+        }
     }
     CaseReport {
         case: name.to_owned(),
