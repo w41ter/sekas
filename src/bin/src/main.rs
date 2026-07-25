@@ -16,6 +16,7 @@
 #![allow(clippy::result_large_err)]
 
 mod bench;
+mod perf_lab;
 mod shell;
 
 use clap::{Parser, Subcommand};
@@ -34,6 +35,7 @@ struct Command {
 enum SubCommand {
     Start(StartCommand),
     Bench(bench::BenchCommand),
+    PerfLab(perf_lab::Command),
     Shell(shell::ShellCommand),
 }
 
@@ -127,6 +129,7 @@ fn main() -> Result<()> {
             cmd.run();
             Ok(())
         }
+        SubCommand::PerfLab(cmd) => cmd.run().map_err(|err| Error::InvalidData(err.to_string())),
         SubCommand::Shell(cmd) => {
             cmd.run();
             Ok(())

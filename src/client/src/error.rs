@@ -174,8 +174,7 @@ impl From<Error> for AppError {
             Error::Internal(v) => AppError::Internal(v),
 
             Error::Transport(status) => AppError::Network(status),
-            Error::Connect(status) => panic!("do not expose connect error {status:?} to user"),
-            Error::Rpc(status) => panic!("unknown error: {status:?}"),
+            Error::Connect(status) | Error::Rpc(status) => AppError::Network(status),
 
             Error::EpochNotMatch(_)
             | Error::ResourceExhausted(_)
