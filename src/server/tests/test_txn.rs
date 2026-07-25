@@ -35,7 +35,31 @@ fn init() {
 
 #[sekas_macro::test]
 async fn txn_write_batch_basic() {
-    // TODO(walter) add two table and write in batch.
+    let mut ctx = TestContext::new(fn_name!());
+    let nodes = ctx.bootstrap_servers(3).await;
+    let c = ClusterClient::new(nodes).await;
+    let app = c.app_client().await;
+
+    let db = app.create_database("test_db".to_string()).await.unwrap();
+    let table_a = db.create_table("test_table_a".to_string()).await.unwrap();
+    let table_b = db.create_table("test_table_b".to_string()).await.unwrap();
+    c.assert_table_ready(table_a.id).await;
+    c.assert_table_ready(table_b.id).await;
+
+    let key_a = b"batch_key_a".to_vec();
+    let key_b = b"batch_key_b".to_vec();
+    let key_c = b"batch_key_c".to_vec();
+
+    let mut txn = db.begin_txn();
+    txn.put(table_a.id, WriteBuilder::new(key_a.clone()).ensure_put(b"a".to_vec()));
+    txn.put(table_b.id, WriteBuilder::new(key_b.clone()).ensure_put(b"b".to_vec()));
+    txn.put(table_a.id, WriteBuilder::new(key_c.clone()).ensure_add(7));
+    let resp = txn.commit().await.unwrap();
+    assert!(resp.version > 0);
+
+    assert_eq!(db.get(table_a.id, key_a).await.unwrap(), Some(b"a".to_vec()));
+    assert_eq!(db.get(table_b.id, key_b).await.unwrap(), Some(b"b".to_vec()));
+    assert_eq!(db.get(table_a.id, key_c).await.unwrap(), Some(7_i64.to_be_bytes().to_vec()));
 }
 
 #[sekas_macro::test]

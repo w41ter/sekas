@@ -361,6 +361,16 @@ impl Replica {
                 .await?;
                 (eval_result, Response::WriteIntent(resp))
             }
+            Request::BatchWriteIntent(req) => {
+                let (eval_result, resp) = eval::batch_write_intent(
+                    exec_ctx,
+                    &self.group_engine,
+                    latches.as_mut().expect("batch write intent request must hold latches"),
+                    req,
+                )
+                .await?;
+                (eval_result, Response::BatchWriteIntent(resp))
+            }
             Request::CommitIntent(req) => {
                 let eval_result = eval::commit_intent(
                     exec_ctx,
@@ -371,6 +381,16 @@ impl Replica {
                 .await?;
                 (eval_result, Response::CommitIntent(CommitIntentResponse::default()))
             }
+            Request::BatchCommitIntent(req) => {
+                let eval_result = eval::batch_commit_intent(
+                    exec_ctx,
+                    &self.group_engine,
+                    latches.as_mut().expect("batch commit intent request must hold latches"),
+                    req,
+                )
+                .await?;
+                (eval_result, Response::BatchCommitIntent(BatchCommitIntentResponse::default()))
+            }
             Request::ClearIntent(req) => {
                 let eval_result = eval::clear_intent(
                     exec_ctx,
@@ -380,6 +400,16 @@ impl Replica {
                 )
                 .await?;
                 (eval_result, Response::ClearIntent(ClearIntentResponse::default()))
+            }
+            Request::BatchClearIntent(req) => {
+                let eval_result = eval::batch_clear_intent(
+                    exec_ctx,
+                    &self.group_engine,
+                    latches.as_mut().expect("batch clear intent request must hold latches"),
+                    req,
+                )
+                .await?;
+                (eval_result, Response::BatchClearIntent(BatchClearIntentResponse::default()))
             }
             Request::Scan(req) => {
                 let eval_result =
@@ -614,8 +644,11 @@ fn is_change_meta_request(request: &Request) -> bool {
         | Request::Write(_)
         | Request::Scan(_)
         | Request::WriteIntent(_)
+        | Request::BatchWriteIntent(_)
         | Request::CommitIntent(_)
+        | Request::BatchCommitIntent(_)
         | Request::ClearIntent(_)
+        | Request::BatchClearIntent(_)
         | Request::WatchKey(_) => false,
     }
 }

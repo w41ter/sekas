@@ -56,6 +56,9 @@ message GroupRequestUnion {
         WriteIntentRequest write_intent = 11;
         CommitIntentRequest commit_intent = 12;
         ClearIntentRequest clear_intent = 13;
+        BatchWriteIntentRequest batch_write_intent = 14;
+        BatchCommitIntentRequest batch_commit_intent = 15;
+        BatchClearIntentRequest batch_clear_intent = 16;
 
         // Add a new shard to an existing group.
         CreateShardRequest create_shard = 20;
@@ -96,6 +99,9 @@ message GroupResponseUnion {
         WriteIntentResponse write_intent = 10;
         CommitIntentResponse commit_intent = 11;
         ClearIntentResponse clear_intent = 12;
+        BatchWriteIntentResponse batch_write_intent = 13;
+        BatchCommitIntentResponse batch_commit_intent = 14;
+        BatchClearIntentResponse batch_clear_intent = 15;
 
         CreateShardResponse create_shard = 20;
         DeleteShardResponse delete_shard = 27;
@@ -182,6 +188,23 @@ message WriteIntentResponse {
     WriteResponse write = 1;
 }
 
+message BatchWriteIntentRequest {
+    uint64 start_version = 1;
+    repeated BatchWriteIntent writes = 2;
+}
+
+message BatchWriteIntentResponse {
+    repeated WriteResponse writes = 1;
+}
+
+message BatchWriteIntent {
+    uint64 shard_id = 1;
+    oneof write {
+        DeleteRequest delete = 2;
+        PutRequest put = 3;
+    }
+}
+
 message CommitIntentRequest {
     uint64 shard_id = 1;
     uint64 start_version = 2;
@@ -191,6 +214,14 @@ message CommitIntentRequest {
 
 message CommitIntentResponse {}
 
+message BatchCommitIntentRequest {
+    uint64 start_version = 1;
+    uint64 commit_version = 2;
+    repeated ShardKey shard_keys = 3;
+}
+
+message BatchCommitIntentResponse {}
+
 message ClearIntentRequest {
     uint64 shard_id = 1;
     uint64 start_version = 2;
@@ -198,6 +229,13 @@ message ClearIntentRequest {
 }
 
 message ClearIntentResponse {}
+
+message BatchClearIntentRequest {
+    uint64 start_version = 1;
+    repeated ShardKey shard_keys = 2;
+}
+
+message BatchClearIntentResponse {}
 
 message NodeAdminRequest {
     oneof request {

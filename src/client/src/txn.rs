@@ -28,6 +28,7 @@ use crate::group_client::GroupClient;
 use crate::metrics::*;
 use crate::range::RangeStream;
 use crate::retry::RetryState;
+use crate::rpc::RouterGroupState;
 use crate::{
     AppResult, Database, Error, RangeRequest, Result, SekasClient, TxnStateTable, record_latency,
 };
@@ -95,6 +96,27 @@ struct WriteContext {
     index: usize,
     /// Is this request has been accepted.
     done: bool,
+}
+
+struct PrepareIntentBatch {
+    group_state: RouterGroupState,
+    entries: Vec<PrepareIntentEntry>,
+}
+
+struct PrepareIntentEntry {
+    context_index: usize,
+    write_index: u64,
+    write: BatchWriteIntent,
+}
+
+struct IntentKeyBatch {
+    group_state: RouterGroupState,
+    entries: Vec<IntentKeyEntry>,
+}
+
+struct IntentKeyEntry {
+    context_index: usize,
+    shard_key: ShardKey,
 }
 
 /// A structure to hold the context about a write batch request.
@@ -890,6 +912,66 @@ impl WriteBatchContext {
             .await
     }
 
+    fn prepare_intent_batches(&self) -> Result<Vec<PrepareIntentBatch>> {
+        let router = self.client.router();
+        let mut batches: Vec<PrepareIntentBatch> = Vec::new();
+        for (context_index, write) in self.writes.iter().enumerate() {
+            if write.done {
+                continue;
+            }
+            let (group_state, shard_desc) = router.find_shard(write.table_id, write.user_key())?;
+            debug_assert!(
+                sekas_schema::shard::belong_to(&shard_desc, write.user_key()),
+                "shard desc {:?}, user key {:?}",
+                shard_desc,
+                write.user_key()
+            );
+            let entry = PrepareIntentEntry {
+                context_index,
+                write_index: write.index as u64,
+                write: BatchWriteIntent {
+                    shard_id: shard_desc.id,
+                    write: Some(match write.request.clone() {
+                        WriteRequest::Delete(delete) => batch_write_intent::Write::Delete(delete),
+                        WriteRequest::Put(put) => batch_write_intent::Write::Put(put),
+                    }),
+                },
+            };
+            if let Some(batch) =
+                batches.iter_mut().find(|batch| batch.group_state.id == group_state.id)
+            {
+                batch.entries.push(entry);
+            } else {
+                batches.push(PrepareIntentBatch { group_state, entries: vec![entry] });
+            }
+        }
+        Ok(batches)
+    }
+
+    fn intent_key_batches(&self, target_done: bool) -> Result<Vec<IntentKeyBatch>> {
+        let router = self.client.router();
+        let mut batches: Vec<IntentKeyBatch> = Vec::new();
+        for (context_index, write) in self.writes.iter().enumerate() {
+            if write.done != target_done {
+                continue;
+            }
+            let user_key = write.user_key();
+            let (group_state, shard_desc) = router.find_shard(write.table_id, user_key)?;
+            let entry = IntentKeyEntry {
+                context_index,
+                shard_key: ShardKey { shard_id: shard_desc.id, user_key: user_key.to_vec() },
+            };
+            if let Some(batch) =
+                batches.iter_mut().find(|batch| batch.group_state.id == group_state.id)
+            {
+                batch.entries.push(entry);
+            } else {
+                batches.push(IntentKeyBatch { group_state, entries: vec![entry] });
+            }
+        }
+        Ok(batches)
+    }
+
     async fn prepare_intents(&mut self) -> Result<()> {
         loop {
             if !self.prepare_intents_inner().await? {
@@ -901,42 +983,39 @@ impl WriteBatchContext {
 
     async fn prepare_intents_inner(&mut self) -> Result<bool> {
         trace!("txn prepare intents, version: {}", self.start_version);
-        let router = self.client.router();
-        let mut handles = Vec::with_capacity(self.writes.len());
-        for (index, write) in self.writes.iter().enumerate() {
-            if write.done {
-                continue;
-            }
-            let (group_state, shard_desc) = router.find_shard(write.table_id, write.user_key())?;
-            debug_assert!(
-                sekas_schema::shard::belong_to(&shard_desc, write.user_key()),
-                "shard desc {:?}, user key {:?}",
-                shard_desc,
-                write.user_key()
-            );
-
-            let mut client = GroupClient::new(group_state, self.client.clone());
-            let req = Request::WriteIntent(WriteIntentRequest {
+        let batches = self.prepare_intent_batches()?;
+        let mut handles = Vec::with_capacity(batches.len());
+        for batch in batches {
+            let mut client = GroupClient::new(batch.group_state, self.client.clone());
+            let req = Request::BatchWriteIntent(BatchWriteIntentRequest {
                 start_version: self.start_version,
-                shard_id: shard_desc.id,
-                write: Some(write.request.clone()),
+                writes: batch.entries.iter().map(|entry| entry.write.clone()).collect(),
             });
-            let write_index = write.index as u64;
+            let index_map = batch
+                .entries
+                .iter()
+                .map(|entry| (entry.context_index, entry.write_index))
+                .collect::<Vec<_>>();
             if let Some(duration) = self.retry_state.timeout() {
                 client.set_timeout(duration);
             }
             let handle = tokio::spawn(async move {
                 match client.request(&req).await.map_err(|err| match err {
-                    Error::CasFailed(_, cond_index, prev_value) => {
+                    Error::CasFailed(batch_index, cond_index, prev_value) => {
+                        let write_index = index_map
+                            .get(batch_index as usize)
+                            .map(|(_, write_index)| *write_index)
+                            .unwrap_or(batch_index);
                         Error::CasFailed(write_index, cond_index, prev_value)
                     }
                     err => err,
                 })? {
-                    Response::WriteIntent(WriteIntentResponse { write: Some(resp) }) => {
-                        Ok((resp, index))
+                    Response::BatchWriteIntent(BatchWriteIntentResponse { writes }) => {
+                        Ok((writes, index_map))
                     }
-                    _ => Err(Error::Internal(
-                        "invalid response type, Get is required".to_string().into(),
+                    other => Err(Error::Internal(
+                        format!("invalid response {other:?}, `BatchWriteIntent` is required")
+                            .into(),
                     )),
                 }
             });
@@ -945,12 +1024,14 @@ impl WriteBatchContext {
 
         for handle in handles {
             match handle.await? {
-                Ok((resp, index)) => {
-                    self.num_doing_writes =
-                        self.num_doing_writes.checked_sub(1).expect("out of range");
-                    let write = &mut self.writes[index];
-                    write.done = true;
-                    write.response = Some(resp);
+                Ok((responses, index_map)) => {
+                    for (resp, (index, _)) in responses.into_iter().zip(index_map) {
+                        self.num_doing_writes =
+                            self.num_doing_writes.checked_sub(1).expect("out of range");
+                        let write = &mut self.writes[index];
+                        write.done = true;
+                        write.response = Some(resp);
+                    }
                 }
                 Err(err) => {
                     trace!("txn {} write intent: {err:?}", self.start_version);
@@ -1005,29 +1086,24 @@ impl WriteBatchContext {
     }
 
     async fn commit_intents_inner(&mut self, timeout: Option<Duration>) -> Result<bool> {
-        let router = self.client.router();
-
-        let mut handles = Vec::with_capacity(self.writes.len());
-        for (index, write) in self.writes.iter().enumerate() {
-            if write.done {
-                continue;
-            }
-
-            let user_key = write.user_key();
-            let (group_state, shard_desc) = router.find_shard(write.table_id, user_key)?;
-            let req = CommitIntentRequest {
-                shard_id: shard_desc.id,
+        let batches = self.intent_key_batches(false)?;
+        let mut handles = Vec::with_capacity(batches.len());
+        for batch in batches {
+            let mut client = GroupClient::new(batch.group_state, self.client.clone());
+            client.set_timeout_opt(timeout);
+            let index_map =
+                batch.entries.iter().map(|entry| entry.context_index).collect::<Vec<_>>();
+            let req = BatchCommitIntentRequest {
                 start_version: self.start_version,
                 commit_version: self.commit_version,
-                user_key: user_key.to_vec(),
+                shard_keys: batch.entries.into_iter().map(|entry| entry.shard_key).collect(),
             };
-            let mut client = GroupClient::new(group_state, self.client.clone());
-            client.set_timeout_opt(timeout);
             let handle = tokio::spawn(async move {
-                match client.request(&Request::CommitIntent(req)).await {
-                    Ok(Response::CommitIntent(_)) => Ok(index),
+                match client.request(&Request::BatchCommitIntent(req)).await {
+                    Ok(Response::BatchCommitIntent(_)) => Ok(index_map),
                     Ok(other) => Err(Error::Internal(
-                        format!("invalid response {other:?}, `CommitIntent` is required").into(),
+                        format!("invalid response {other:?}, `BatchCommitIntent` is required")
+                            .into(),
                     )),
                     Err(err) => Err(err),
                 }
@@ -1036,10 +1112,12 @@ impl WriteBatchContext {
         }
         for handle in handles {
             match handle.await? {
-                Ok(index) => {
-                    self.writes[index].done = true;
-                    self.num_doing_writes =
-                        self.num_doing_writes.checked_sub(1).expect("out of range");
+                Ok(indexes) => {
+                    for index in indexes {
+                        self.writes[index].done = true;
+                        self.num_doing_writes =
+                            self.num_doing_writes.checked_sub(1).expect("out of range");
+                    }
                 }
                 Err(err) => {
                     if !self.retry_state.is_retryable(&err) {
@@ -1064,27 +1142,23 @@ impl WriteBatchContext {
     }
 
     async fn clear_intents_inner(&mut self, timeout: Option<Duration>) -> Result<bool> {
-        let router = self.client.router();
-        let mut handles = Vec::with_capacity(self.writes.len());
-        for (index, write) in self.writes.iter().enumerate() {
-            if !write.done {
-                continue;
-            }
-
-            let user_key = write.user_key();
-            let (group_state, shard_desc) = router.find_shard(write.table_id, user_key)?;
-            let req = ClearIntentRequest {
-                shard_id: shard_desc.id,
-                start_version: self.start_version,
-                user_key: user_key.to_vec(),
-            };
-            let mut client = GroupClient::new(group_state, self.client.clone());
+        let batches = self.intent_key_batches(true)?;
+        let mut handles = Vec::with_capacity(batches.len());
+        for batch in batches {
+            let mut client = GroupClient::new(batch.group_state, self.client.clone());
             client.set_timeout_opt(timeout);
+            let index_map =
+                batch.entries.iter().map(|entry| entry.context_index).collect::<Vec<_>>();
+            let req = BatchClearIntentRequest {
+                start_version: self.start_version,
+                shard_keys: batch.entries.into_iter().map(|entry| entry.shard_key).collect(),
+            };
             let handle = tokio::spawn(async move {
-                match client.request(&Request::ClearIntent(req)).await {
-                    Ok(Response::ClearIntent(_)) => Ok(index),
+                match client.request(&Request::BatchClearIntent(req)).await {
+                    Ok(Response::BatchClearIntent(_)) => Ok(index_map),
                     Ok(other) => Err(Error::Internal(
-                        format!("invalid response {other:?}, `ClearIntent` is required").into(),
+                        format!("invalid response {other:?}, `BatchClearIntent` is required")
+                            .into(),
                     )),
                     Err(err) => Err(err),
                 }
@@ -1094,8 +1168,10 @@ impl WriteBatchContext {
 
         for handle in handles {
             match handle.await? {
-                Ok(index) => {
-                    self.writes[index].done = false;
+                Ok(indexes) => {
+                    for index in indexes {
+                        self.writes[index].done = false;
+                    }
                 }
                 Err(err) => {
                     if !self.retry_state.is_retryable(&err) {

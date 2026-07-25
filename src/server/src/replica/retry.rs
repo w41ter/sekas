@@ -155,12 +155,31 @@ fn is_executable(descriptor: &GroupDesc, request: &Request) -> bool {
                 }
                 None => false,
             },
+            Request::BatchWriteIntent(req) => {
+                req.writes.iter().all(|write| match write.write.as_ref() {
+                    Some(batch_write_intent::Write::Put(put)) => {
+                        is_target_shard_exists(descriptor, write.shard_id, &put.key)
+                    }
+                    Some(batch_write_intent::Write::Delete(delete)) => {
+                        is_target_shard_exists(descriptor, write.shard_id, &delete.key)
+                    }
+                    None => false,
+                })
+            }
             Request::CommitIntent(req) => {
                 is_target_shard_exists(descriptor, req.shard_id, &req.user_key)
             }
+            Request::BatchCommitIntent(req) => req
+                .shard_keys
+                .iter()
+                .all(|key| is_target_shard_exists(descriptor, key.shard_id, &key.user_key)),
             Request::ClearIntent(req) => {
                 is_target_shard_exists(descriptor, req.shard_id, &req.user_key)
             }
+            Request::BatchClearIntent(req) => req
+                .shard_keys
+                .iter()
+                .all(|key| is_target_shard_exists(descriptor, key.shard_id, &key.user_key)),
             Request::WatchKey(req) => is_target_shard_exists(descriptor, req.shard_id, &req.key),
             Request::AcceptShard(_)
             | Request::CreateShard(_)

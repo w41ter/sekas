@@ -33,6 +33,20 @@ pub(crate) async fn write_intent<T: LatchGuard>(
     latch_guard: &mut DeferSignalLatchGuard<T>,
     req: &WriteIntentRequest,
 ) -> Result<(Option<EvalResult>, WriteIntentResponse)> {
+    let mut wb = WriteBatch::default();
+    let resp = write_intent_inner(exec_ctx, group_engine, latch_guard, req, &mut wb).await?;
+    let eval_result =
+        if !wb.is_empty() { Some(EvalResult::with_batch(wb.data().to_owned())) } else { None };
+    Ok((eval_result, WriteIntentResponse { write: Some(resp) }))
+}
+
+async fn write_intent_inner<T: LatchGuard>(
+    exec_ctx: &ExecCtx,
+    group_engine: &GroupEngine,
+    latch_guard: &mut DeferSignalLatchGuard<T>,
+    req: &WriteIntentRequest,
+    wb: &mut WriteBatch,
+) -> Result<WriteResponse> {
     // TODO(walter) txn for internal shards is not supported.
     let write = req
         .write
@@ -67,7 +81,6 @@ pub(crate) async fn write_intent<T: LatchGuard>(
         }
     }
 
-    let mut wb = WriteBatch::default();
     let prev_value = match write {
         WriteRequest::Delete(del) => {
             if !skip_write {
@@ -76,7 +89,7 @@ pub(crate) async fn write_intent<T: LatchGuard>(
                 }
                 let txn_intent = TxnIntent::tombstone(req.start_version).encode_to_vec();
                 group_engine.put(
-                    &mut wb,
+                    &mut *wb,
                     req.shard_id,
                     &del.key,
                     &txn_intent,
@@ -96,7 +109,7 @@ pub(crate) async fn write_intent<T: LatchGuard>(
                 let txn_intent =
                     TxnIntent::with_put(req.start_version, apply_value).encode_to_vec();
                 group_engine.put(
-                    &mut wb,
+                    &mut *wb,
                     req.shard_id,
                     &put.key,
                     &txn_intent,
@@ -107,10 +120,43 @@ pub(crate) async fn write_intent<T: LatchGuard>(
         }
     };
 
-    let resp = WriteResponse { prev_value };
+    Ok(WriteResponse { prev_value })
+}
+
+pub(crate) async fn batch_write_intent<T: LatchGuard>(
+    exec_ctx: &ExecCtx,
+    group_engine: &GroupEngine,
+    latch_guard: &mut DeferSignalLatchGuard<T>,
+    req: &BatchWriteIntentRequest,
+) -> Result<(Option<EvalResult>, BatchWriteIntentResponse)> {
+    let mut wb = WriteBatch::default();
+    let mut responses = Vec::with_capacity(req.writes.len());
+    for (index, write) in req.writes.iter().enumerate() {
+        let shard_id = write.shard_id;
+        let write = write.write.clone().ok_or_else(|| {
+            Error::InvalidArgument("`write` is required in batch write intent".to_string())
+        })?;
+        let request = WriteIntentRequest {
+            shard_id,
+            start_version: req.start_version,
+            write: Some(match write {
+                batch_write_intent::Write::Delete(delete) => WriteRequest::Delete(delete),
+                batch_write_intent::Write::Put(put) => WriteRequest::Put(put),
+            }),
+        };
+        let resp = write_intent_inner(exec_ctx, group_engine, latch_guard, &request, &mut wb)
+            .await
+            .map_err(|err| match err {
+                Error::CasFailed(_, cond_index, prev_value) => {
+                    Error::CasFailed(index as u64, cond_index, prev_value)
+                }
+                err => err,
+            })?;
+        responses.push(resp);
+    }
     let eval_result =
         if !wb.is_empty() { Some(EvalResult::with_batch(wb.data().to_owned())) } else { None };
-    Ok((eval_result, WriteIntentResponse { write: Some(resp) }))
+    Ok((eval_result, BatchWriteIntentResponse { writes: responses }))
 }
 
 pub(crate) async fn commit_intent<T: LatchGuard>(
@@ -119,6 +165,18 @@ pub(crate) async fn commit_intent<T: LatchGuard>(
     latch_guard: &mut DeferSignalLatchGuard<T>,
     req: &CommitIntentRequest,
 ) -> Result<Option<EvalResult>> {
+    let mut wb = WriteBatch::default();
+    commit_intent_inner(exec_ctx, group_engine, latch_guard, req, &mut wb).await?;
+    Ok(if wb.is_empty() { None } else { Some(EvalResult::with_batch(wb.data().to_owned())) })
+}
+
+async fn commit_intent_inner<T: LatchGuard>(
+    exec_ctx: &ExecCtx,
+    group_engine: &GroupEngine,
+    latch_guard: &mut DeferSignalLatchGuard<T>,
+    req: &CommitIntentRequest,
+    wb: &mut WriteBatch,
+) -> Result<()> {
     trace!(
         "group {} commit txn {} intent with version {}",
         exec_ctx.group_id, req.start_version, req.commit_version
@@ -138,11 +196,10 @@ pub(crate) async fn commit_intent<T: LatchGuard>(
         read_target_intent(group_engine, req.start_version, req.shard_id, &req.user_key).await?
     else {
         trace!("txn {} intent not exists exists", req.start_version);
-        return Ok(None);
+        return Ok(());
     };
 
-    let mut wb = WriteBatch::default();
-    group_engine.delete(&mut wb, req.shard_id, &req.user_key, TXN_INTENT_VERSION)?;
+    group_engine.delete(&mut *wb, req.shard_id, &req.user_key, TXN_INTENT_VERSION)?;
     if intent.is_delete {
         trace!(
             "group {} commit txn {} intents, shard id {}, version {}, delete kv {}",
@@ -152,7 +209,7 @@ pub(crate) async fn commit_intent<T: LatchGuard>(
             req.commit_version,
             sekas_rock::ascii::escape_bytes(&req.user_key),
         );
-        group_engine.tombstone(&mut wb, req.shard_id, &req.user_key, req.commit_version)?;
+        group_engine.tombstone(&mut *wb, req.shard_id, &req.user_key, req.commit_version)?;
     } else if let Some(value) = intent.value {
         trace!(
             "group {} commit txn {} intents, shard id {}, version {}, put kv {} => {}",
@@ -163,7 +220,7 @@ pub(crate) async fn commit_intent<T: LatchGuard>(
             sekas_rock::ascii::escape_bytes(&req.user_key),
             sekas_rock::ascii::escape_bytes(&value),
         );
-        group_engine.put(&mut wb, req.shard_id, &req.user_key, &value, req.commit_version)?;
+        group_engine.put(&mut *wb, req.shard_id, &req.user_key, &value, req.commit_version)?;
     }
 
     trace!(
@@ -178,6 +235,25 @@ pub(crate) async fn commit_intent<T: LatchGuard>(
         exec_ctx.group_id, req.start_version, req.commit_version
     );
 
+    Ok(())
+}
+
+pub(crate) async fn batch_commit_intent<T: LatchGuard>(
+    exec_ctx: &ExecCtx,
+    group_engine: &GroupEngine,
+    latch_guard: &mut DeferSignalLatchGuard<T>,
+    req: &BatchCommitIntentRequest,
+) -> Result<Option<EvalResult>> {
+    let mut wb = WriteBatch::default();
+    for shard_key in &req.shard_keys {
+        let request = CommitIntentRequest {
+            shard_id: shard_key.shard_id,
+            start_version: req.start_version,
+            commit_version: req.commit_version,
+            user_key: shard_key.user_key.clone(),
+        };
+        commit_intent_inner(exec_ctx, group_engine, latch_guard, &request, &mut wb).await?;
+    }
     Ok(if wb.is_empty() { None } else { Some(EvalResult::with_batch(wb.data().to_owned())) })
 }
 
@@ -187,6 +263,18 @@ pub(crate) async fn clear_intent<T: LatchGuard>(
     latch_guard: &mut DeferSignalLatchGuard<T>,
     req: &ClearIntentRequest,
 ) -> Result<Option<EvalResult>> {
+    let mut wb = WriteBatch::default();
+    clear_intent_inner(exec_ctx, group_engine, latch_guard, req, &mut wb).await?;
+    Ok(if wb.is_empty() { None } else { Some(EvalResult::with_batch(wb.data().to_owned())) })
+}
+
+async fn clear_intent_inner<T: LatchGuard>(
+    exec_ctx: &ExecCtx,
+    group_engine: &GroupEngine,
+    latch_guard: &mut DeferSignalLatchGuard<T>,
+    req: &ClearIntentRequest,
+    wb: &mut WriteBatch,
+) -> Result<()> {
     if let Some(desc) = exec_ctx.move_shard_desc.as_ref() {
         let shard_id = desc.shard_desc.as_ref().unwrap().id;
         if shard_id == req.shard_id {
@@ -201,14 +289,31 @@ pub(crate) async fn clear_intent<T: LatchGuard>(
         .await?
         .is_none()
     {
-        return Ok(None);
+        return Ok(());
     }
 
-    let mut wb = WriteBatch::default();
-    group_engine.delete(&mut wb, req.shard_id, &req.user_key, TXN_INTENT_VERSION)?;
+    group_engine.delete(&mut *wb, req.shard_id, &req.user_key, TXN_INTENT_VERSION)?;
 
     latch_guard.signal_all(TxnState::Aborted, None);
 
+    Ok(())
+}
+
+pub(crate) async fn batch_clear_intent<T: LatchGuard>(
+    exec_ctx: &ExecCtx,
+    group_engine: &GroupEngine,
+    latch_guard: &mut DeferSignalLatchGuard<T>,
+    req: &BatchClearIntentRequest,
+) -> Result<Option<EvalResult>> {
+    let mut wb = WriteBatch::default();
+    for shard_key in &req.shard_keys {
+        let request = ClearIntentRequest {
+            shard_id: shard_key.shard_id,
+            start_version: req.start_version,
+            user_key: shard_key.user_key.clone(),
+        };
+        clear_intent_inner(exec_ctx, group_engine, latch_guard, &request, &mut wb).await?;
+    }
     Ok(if wb.is_empty() { None } else { Some(EvalResult::with_batch(wb.data().to_owned())) })
 }
 
