@@ -21,7 +21,8 @@ mod read_txn;
 
 pub(super) use basic::{BatchTxnCommit, SingleKeyUpdate};
 pub(super) use diagnostics::{
-    HotspotUpdateDiagnostics, MultiKeyTxnMatrix, RootFailoverMatrix, SchemaChurnScale,
+    HotspotDirectWriteDiagnostics, HotspotUpdateDiagnostics, MultiKeyTxnMatrix, RootFailoverMatrix,
+    SchemaChurnScale,
 };
 pub(super) use disturbance::{
     NodeOfflineUnderWrite, ShardMigrationUnderWrite, TransferLeaderUnderWrite,

@@ -37,12 +37,13 @@ use sekas_runtime::{ExecutorOwner, ShutdownNotifier};
 use sekas_server::{Config, NodeConfig, ReplicaConfig, ReplicaTestingKnobs};
 
 use self::cases::{
-    AutoShardBalance, AutoSplitMerge, BatchTxnCommit, HotspotUpdateDiagnostics, MixedReadWrite,
-    MultiKeyTxn, MultiKeyTxnMatrix, MvccGcImpact, MvccVersionAccumulation, NodeJoinScaleOut,
-    NodeOfflineUnderWrite, PointRead, PrefixScan, ReplicaChangeUnderWrite, ReplicaRemoveUnderWrite,
-    RootFailoverMatrix, RootLeaderFailover, SchemaChurn, SchemaChurnScale,
-    ShardMigrationUnderWrite, SingleKeyUpdate, SnapshotForcedDiagnostics, SnapshotUnderWrite,
-    TransferLeaderUnderWrite, TxnConflict, ValueSizeMatrix,
+    AutoShardBalance, AutoSplitMerge, BatchTxnCommit, HotspotDirectWriteDiagnostics,
+    HotspotUpdateDiagnostics, MixedReadWrite, MultiKeyTxn, MultiKeyTxnMatrix, MvccGcImpact,
+    MvccVersionAccumulation, NodeJoinScaleOut, NodeOfflineUnderWrite, PointRead, PrefixScan,
+    ReplicaChangeUnderWrite, ReplicaRemoveUnderWrite, RootFailoverMatrix, RootLeaderFailover,
+    SchemaChurn, SchemaChurnScale, ShardMigrationUnderWrite, SingleKeyUpdate,
+    SnapshotForcedDiagnostics, SnapshotUnderWrite, TransferLeaderUnderWrite, TxnConflict,
+    ValueSizeMatrix,
 };
 use self::config::LabConfig;
 use self::report::{CaseReport, MetricsRecorder, compare_with_baseline};
@@ -77,6 +78,7 @@ enum CaseKind {
     SingleKeyUpdate,
     BatchTxnCommit,
     HotspotUpdateDiagnostics,
+    HotspotDirectWriteDiagnostics,
     PointRead,
     MixedReadWrite,
     PrefixScan,
@@ -118,6 +120,9 @@ impl Command {
                 CaseKind::BatchTxnCommit => BatchTxnCommit.run(&mut lab).await?,
                 CaseKind::HotspotUpdateDiagnostics => {
                     HotspotUpdateDiagnostics.run(&mut lab).await?
+                }
+                CaseKind::HotspotDirectWriteDiagnostics => {
+                    HotspotDirectWriteDiagnostics.run(&mut lab).await?
                 }
                 CaseKind::PointRead => PointRead.run(&mut lab).await?,
                 CaseKind::MixedReadWrite => MixedReadWrite.run(&mut lab).await?,
@@ -421,6 +426,24 @@ impl LabContext {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         bail!("no group for key {:?}", key);
+    }
+
+    pub(crate) async fn direct_put(
+        &self,
+        table_id: u64,
+        key: Vec<u8>,
+        value: Vec<u8>,
+    ) -> Result<()> {
+        let (group_id, shard) = self.group_for_key(table_id, &key).await?;
+        let mut group = self.group(group_id);
+        group
+            .request(&group_request_union::Request::Write(ShardWriteRequest {
+                shard_id: shard.id,
+                puts: vec![PutRequest { key, value, ..Default::default() }],
+                ..Default::default()
+            }))
+            .await?;
+        Ok(())
     }
 
     pub(crate) async fn group_leader(&self, group_id: u64) -> Result<u64> {

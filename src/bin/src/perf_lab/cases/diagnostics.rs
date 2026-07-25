@@ -17,11 +17,12 @@ use std::time::Duration;
 
 use anyhow::Result;
 
-use crate::perf_lab::report::{CaseReport, case_report};
+use crate::perf_lab::report::{CaseReport, HistogramSummary, case_report};
 use crate::perf_lab::workload::{WorkloadKind, WorkloadReport, spawn_workload};
 use crate::perf_lab::{LabContext, PerfCase};
 
 pub(crate) struct HotspotUpdateDiagnostics;
+pub(crate) struct HotspotDirectWriteDiagnostics;
 pub(crate) struct MultiKeyTxnMatrix;
 pub(crate) struct RootFailoverMatrix;
 pub(crate) struct SchemaChurnScale;
@@ -55,6 +56,53 @@ impl PerfCase for HotspotUpdateDiagnostics {
             reports.push(report);
         }
         Ok(case_report(lab, self.name(), reports, derived))
+    }
+}
+
+impl PerfCase for HotspotDirectWriteDiagnostics {
+    fn name(&self) -> &'static str {
+        "hotspot-direct-write-diagnostics"
+    }
+
+    async fn run(&self, lab: &mut LabContext) -> Result<CaseReport> {
+        let db = lab.database().await?;
+        let table = lab.table(&db, &lab.config.workload.table).await?;
+        let mut reports = Vec::new();
+        for (name, key_space) in
+            [("single_key", 1_u64), ("small_hotset", 16), ("wide_hotset", 1024)]
+        {
+            lab.mark(format!("{name}_start")).await?;
+            let started = std::time::Instant::now();
+            let mut latencies = Vec::new();
+            let mut successes = 0_u64;
+            let mut failures = 0_u64;
+            while started.elapsed() < Duration::from_secs(lab.config.workload.duration_secs) {
+                let key =
+                    format!("direct-hotspot-{name}-{:020}", successes % key_space).into_bytes();
+                let value = successes.to_be_bytes().to_vec();
+                let op_started = std::time::Instant::now();
+                match lab.direct_put(table.id, key, value).await {
+                    Ok(()) => successes += 1,
+                    Err(_) => failures += 1,
+                }
+                latencies.push(op_started.elapsed().as_micros() as u64);
+            }
+            lab.mark(format!("{name}_end")).await?;
+            let duration = started.elapsed();
+            let operations = successes + failures;
+            reports.push(WorkloadReport {
+                name: format!("direct_hotspot_{name}"),
+                operations,
+                successes,
+                failures,
+                duration_ms: duration.as_millis(),
+                qps: operations as f64 / duration.as_secs_f64().max(0.001),
+                latency: HistogramSummary::from_latencies(&latencies),
+                errors: BTreeMap::new(),
+                phase_summaries: Vec::new(),
+            });
+        }
+        Ok(case_report(lab, self.name(), reports, BTreeMap::new()))
     }
 }
 
