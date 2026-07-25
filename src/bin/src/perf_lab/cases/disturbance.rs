@@ -47,14 +47,28 @@ impl PerfCase for TransferLeaderUnderWrite {
         tokio::time::sleep(Duration::from_secs(lab.config.workload.warmup_secs)).await;
         lab.mark("before_transfer").await?;
         workload.phase("disturbance").await;
-        lab.transfer_group_leader(group_id).await?;
+        let transfer = lab.transfer_group_leader(group_id).await?;
         let _ = lab.group_leader(group_id).await?;
         lab.mark("after_transfer").await?;
         workload.phase("recovery").await;
         tokio::time::sleep(Duration::from_secs(lab.config.workload.cooldown_secs)).await;
         lab.mark("end").await?;
         let report = workload.stop().await;
-        Ok(case_report(lab, self.name(), vec![report], BTreeMap::new()))
+        let mut derived = BTreeMap::new();
+        derived.insert(
+            "transfer_rpc_duration_ms".to_owned(),
+            transfer.rpc_duration.as_secs_f64() * 1000.0,
+        );
+        derived.insert(
+            "transfer_route_convergence_ms".to_owned(),
+            transfer.route_convergence.as_secs_f64() * 1000.0,
+        );
+        derived.insert(
+            "transfer_route_converged".to_owned(),
+            if transfer.route_converged { 1.0 } else { 0.0 },
+        );
+        derived.insert("transfer_target_replica".to_owned(), transfer.target_replica as f64);
+        Ok(case_report(lab, self.name(), vec![report], derived))
     }
 }
 
@@ -129,7 +143,7 @@ impl PerfCase for ShardMigrationUnderWrite {
         tokio::time::sleep(Duration::from_secs(lab.config.workload.warmup_secs)).await;
         lab.mark("before_migration").await?;
         workload.phase("disturbance").await;
-        let migration_duration = lab.migrate_shard_to_new_group(table.id, &key).await?;
+        let migration = lab.migrate_shard_to_new_group(table.id, &key).await?;
         lab.mark("after_migration").await?;
         workload.phase("recovery").await;
         tokio::time::sleep(Duration::from_secs(lab.config.workload.cooldown_secs)).await;
@@ -138,8 +152,19 @@ impl PerfCase for ShardMigrationUnderWrite {
         let mut derived = BTreeMap::new();
         derived.insert(
             "shard_migration_duration_ms".to_owned(),
-            migration_duration.as_secs_f64() * 1000.0,
+            migration.duration.as_secs_f64() * 1000.0,
         );
+        derived.insert(
+            "shard_migration_route_convergence_ms".to_owned(),
+            migration.route_convergence.as_secs_f64() * 1000.0,
+        );
+        derived.insert(
+            "shard_migration_route_converged".to_owned(),
+            if migration.route_converged { 1.0 } else { 0.0 },
+        );
+        derived.insert("shard_migration_src_group".to_owned(), migration.src_group as f64);
+        derived.insert("shard_migration_dest_group".to_owned(), migration.dest_group as f64);
+        derived.insert("shard_migration_shard_id".to_owned(), migration.shard_id as f64);
         Ok(case_report(lab, self.name(), vec![report], derived))
     }
 }

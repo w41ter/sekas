@@ -431,7 +431,10 @@ impl LabContext {
             .ok_or_else(|| anyhow!("group {group_id} leader replica {leader} has no node"))
     }
 
-    pub(crate) async fn transfer_group_leader(&self, group_id: u64) -> Result<()> {
+    pub(crate) async fn transfer_group_leader(
+        &self,
+        group_id: u64,
+    ) -> Result<LeaderTransferResult> {
         self.ensure_group_voters(group_id, 2).await?;
         let group = self.router.find_group(group_id)?;
         let leader = group.leader_state.map(|v| v.0);
@@ -441,8 +444,17 @@ impl LabContext {
             .find(|replica| Some(replica.id) != leader && replica.role == ReplicaRole::Voter as i32)
             .ok_or_else(|| anyhow!("group {group_id} has no follower voter"))?;
         let mut client = self.group(group_id);
+        let started = Instant::now();
         client.transfer_leader(target.id).await?;
-        Ok(())
+        let rpc_duration = started.elapsed();
+        let route_started = Instant::now();
+        let converged = self.wait_group_leader(group_id, target.id).await?;
+        Ok(LeaderTransferResult {
+            rpc_duration,
+            route_convergence: route_started.elapsed(),
+            route_converged: converged,
+            target_replica: target.id,
+        })
     }
 
     pub(crate) async fn ensure_group_voters(&self, group_id: u64, voters: usize) -> Result<()> {
@@ -528,7 +540,7 @@ impl LabContext {
         &self,
         table_id: u64,
         key: &[u8],
-    ) -> Result<Duration> {
+    ) -> Result<ShardMigrationResult> {
         let (src_group, shard) = self.group_for_key(table_id, key).await?;
         let dest_group = self
             .find_group_without_shard(src_group)
@@ -538,7 +550,14 @@ impl LabContext {
         for _ in 0..16 {
             let src_epoch = self.router.find_group(src_group)?.epoch;
             if self.group_contains_shard(dest_group, shard.id) {
-                return Ok(started.elapsed());
+                return Ok(ShardMigrationResult {
+                    duration: started.elapsed(),
+                    route_convergence: Duration::ZERO,
+                    route_converged: true,
+                    src_group,
+                    dest_group,
+                    shard_id: shard.id,
+                });
             }
             let mut group = self.group(dest_group);
             match group.accept_shard(src_group, src_epoch, &shard).await {
@@ -552,9 +571,17 @@ impl LabContext {
                     continue;
                 }
             }
+            let route_started = Instant::now();
             for _ in 0..1000 {
                 if self.group_contains_shard(dest_group, shard.id) {
-                    return Ok(started.elapsed());
+                    return Ok(ShardMigrationResult {
+                        duration: started.elapsed(),
+                        route_convergence: route_started.elapsed(),
+                        route_converged: true,
+                        src_group,
+                        dest_group,
+                        shard_id: shard.id,
+                    });
                 }
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
@@ -636,6 +663,18 @@ impl LabContext {
         Ok(false)
     }
 
+    async fn wait_group_leader(&self, group_id: u64, expected_leader: u64) -> Result<bool> {
+        for _ in 0..200 {
+            if let Ok(group) = self.router.find_group(group_id)
+                && group.leader_state.map(|leader| leader.0) == Some(expected_leader)
+            {
+                return Ok(true);
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        Ok(false)
+    }
+
     async fn find_group_without_shard(&self, src_group: u64) -> Result<Option<u64>> {
         for group_id in 1..10000 {
             if let Ok(group) = self.router.find_group(group_id)
@@ -668,6 +707,22 @@ pub(crate) struct ReplicaRemoveResult {
     pub(crate) duration: Duration,
     pub(crate) converged: bool,
     pub(crate) final_voters: usize,
+}
+
+pub(crate) struct LeaderTransferResult {
+    pub(crate) rpc_duration: Duration,
+    pub(crate) route_convergence: Duration,
+    pub(crate) route_converged: bool,
+    pub(crate) target_replica: u64,
+}
+
+pub(crate) struct ShardMigrationResult {
+    pub(crate) duration: Duration,
+    pub(crate) route_convergence: Duration,
+    pub(crate) route_converged: bool,
+    pub(crate) src_group: u64,
+    pub(crate) dest_group: u64,
+    pub(crate) shard_id: u64,
 }
 
 pub(crate) struct SplitShardResult {

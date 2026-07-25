@@ -185,6 +185,7 @@ impl PerfCase for RootLeaderFailover {
             "root_failover_recovery_ms".to_owned(),
             started.elapsed().as_secs_f64() * 1000.0,
         );
+        derived.insert("root_route_converged".to_owned(), 1.0);
         Ok(case_report(lab, self.name(), vec![report], derived))
     }
 }
