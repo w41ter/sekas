@@ -18,6 +18,18 @@ use prometheus_static_metric::make_static_metric;
 use sekas_api::server::v1::*;
 
 make_static_metric! {
+    pub struct RetryTotal: IntCounter {
+        "reason" => {
+            not_found,
+            epoch_not_match,
+            group_not_accessable,
+            not_leader,
+            not_root_leader,
+            group_not_found,
+            connect,
+            other,
+        }
+    }
     pub struct GroupRequestTotal: IntCounter {
         "type" => {
             get,
@@ -85,6 +97,30 @@ lazy_static! {
     pub static ref GROUP_CLIENT_RETRY_TOTAL: IntCounter =
         register_int_counter!("group_client_retry_total", "The total retries of group client",)
             .unwrap();
+    pub static ref GROUP_CLIENT_RETRY_REASON_TOTAL_VEC: IntCounterVec = register_int_counter_vec!(
+        "group_client_retry_reason_total",
+        "The total retries of group client by reason",
+        &["reason"],
+    )
+    .unwrap();
+    pub static ref GROUP_CLIENT_RETRY_REASON_TOTAL: RetryTotal =
+        RetryTotal::from(&GROUP_CLIENT_RETRY_REASON_TOTAL_VEC);
+}
+
+pub fn record_retry_reason(err: &crate::Error) {
+    use crate::Error;
+
+    GROUP_CLIENT_RETRY_TOTAL.inc();
+    match err {
+        Error::NotFound(_) => GROUP_CLIENT_RETRY_REASON_TOTAL.not_found.inc(),
+        Error::EpochNotMatch(_) => GROUP_CLIENT_RETRY_REASON_TOTAL.epoch_not_match.inc(),
+        Error::GroupNotAccessable(_) => GROUP_CLIENT_RETRY_REASON_TOTAL.group_not_accessable.inc(),
+        Error::NotLeader(..) => GROUP_CLIENT_RETRY_REASON_TOTAL.not_leader.inc(),
+        Error::NotRootLeader(..) => GROUP_CLIENT_RETRY_REASON_TOTAL.not_root_leader.inc(),
+        Error::GroupNotFound(_) => GROUP_CLIENT_RETRY_REASON_TOTAL.group_not_found.inc(),
+        Error::Connect(_) => GROUP_CLIENT_RETRY_REASON_TOTAL.connect.inc(),
+        _ => GROUP_CLIENT_RETRY_REASON_TOTAL.other.inc(),
+    }
 }
 
 pub fn take_group_request_metrics(

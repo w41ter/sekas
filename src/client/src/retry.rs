@@ -15,6 +15,7 @@
 
 use std::time::{Duration, Instant};
 
+use crate::metrics::record_retry_reason;
 use crate::{Error, Result};
 
 const MIN_INTERVAL_MS: u64 = 8;
@@ -86,6 +87,7 @@ impl RetryState {
             return Err(err);
         }
 
+        record_retry_reason(&err);
         self.force_retry().await
     }
 
