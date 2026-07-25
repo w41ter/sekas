@@ -25,6 +25,7 @@ pub(crate) struct ReplicaChangeUnderWrite;
 pub(crate) struct ReplicaRemoveUnderWrite;
 pub(crate) struct NodeJoinScaleOut;
 pub(crate) struct RootLeaderFailover;
+pub(crate) struct SnapshotForcedDiagnostics;
 pub(crate) struct SnapshotUnderWrite;
 
 impl PerfCase for ReplicaChangeUnderWrite {
@@ -250,6 +251,80 @@ impl PerfCase for SnapshotUnderWrite {
         );
         case.derived
             .insert("snapshot_replica_add_duration_ms".to_owned(), duration.as_secs_f64() * 1000.0);
+        Ok(case)
+    }
+}
+
+impl PerfCase for SnapshotForcedDiagnostics {
+    fn name(&self) -> &'static str {
+        "snapshot-forced-diagnostics"
+    }
+
+    async fn run(&self, lab: &mut LabContext) -> Result<CaseReport> {
+        let db = lab.database().await?;
+        let table = lab.table(&db, &lab.config.workload.table).await?;
+        let seed_value_size = lab.config.workload.value_size.max(4096);
+        let seed_keys = lab.config.workload.key_space.max(4096);
+        let prepare_started = std::time::Instant::now();
+        for i in 0..seed_keys {
+            db.put(
+                table.id,
+                format!("snapshot-forced-seed-{i:020}").into_bytes(),
+                vec![b'f'; seed_value_size],
+            )
+            .await?;
+        }
+        let prepare_duration = prepare_started.elapsed();
+        let key = b"snapshot-forced-hot-key".to_vec();
+        let (group_id, _) = lab.group_for_key(table.id, &key).await?;
+        let new_node = lab.add_server().await?;
+        let workload = spawn_workload(
+            db,
+            "write_during_forced_snapshot",
+            WorkloadKind::RandomPut {
+                table: table.id,
+                prefix: "snapshot-forced-write-".to_owned(),
+            },
+            lab.config.workload.concurrency,
+            lab.config.workload.value_size,
+            lab.config.workload.key_space,
+        );
+        lab.mark("baseline_start").await?;
+        workload.phase("baseline").await;
+        tokio::time::sleep(Duration::from_secs(lab.config.workload.warmup_secs)).await;
+        lab.mark("before_snapshot_pressure").await?;
+        workload.phase("snapshot_pressure").await;
+        let duration = lab.add_group_replica(group_id, new_node).await?;
+        tokio::time::sleep(Duration::from_secs(lab.config.workload.cooldown_secs.max(5))).await;
+        lab.mark("after_snapshot_pressure").await?;
+        workload.phase("recovery").await;
+        tokio::time::sleep(Duration::from_secs(lab.config.workload.cooldown_secs)).await;
+        lab.mark("end").await?;
+        let report = workload.stop().await;
+        let mut case = case_report(lab, self.name(), vec![report], BTreeMap::new());
+        let send_total = case.counter_delta_contains("raftgroup_send_snapshot_total");
+        let send_bytes = case.counter_delta_contains("raftgroup_send_snapshot_bytes_total");
+        let download_total = case.counter_delta_contains("raftgroup_download_snapshot_total");
+        let download_bytes = case.counter_delta_contains("raftgroup_download_snapshot_bytes_total");
+        case.derived.insert(
+            "snapshot_prepare_duration_ms".to_owned(),
+            prepare_duration.as_secs_f64() * 1000.0,
+        );
+        case.derived.insert("snapshot_seed_keys".to_owned(), seed_keys as f64);
+        case.derived.insert(
+            "snapshot_seed_bytes".to_owned(),
+            (seed_keys as usize * seed_value_size) as f64,
+        );
+        case.derived
+            .insert("snapshot_replica_add_duration_ms".to_owned(), duration.as_secs_f64() * 1000.0);
+        case.derived.insert("snapshot_send_total".to_owned(), send_total);
+        case.derived.insert("snapshot_send_bytes_total".to_owned(), send_bytes);
+        case.derived.insert("snapshot_download_total".to_owned(), download_total);
+        case.derived.insert("snapshot_download_bytes_total".to_owned(), download_bytes);
+        case.derived.insert(
+            "snapshot_activity_observed".to_owned(),
+            if send_total + send_bytes + download_total + download_bytes > 0.0 { 1.0 } else { 0.0 },
+        );
         Ok(case)
     }
 }

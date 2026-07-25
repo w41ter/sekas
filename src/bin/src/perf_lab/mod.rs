@@ -41,8 +41,8 @@ use self::cases::{
     MultiKeyTxn, MultiKeyTxnMatrix, MvccGcImpact, MvccVersionAccumulation, NodeJoinScaleOut,
     NodeOfflineUnderWrite, PointRead, PrefixScan, ReplicaChangeUnderWrite, ReplicaRemoveUnderWrite,
     RootFailoverMatrix, RootLeaderFailover, SchemaChurn, SchemaChurnScale,
-    ShardMigrationUnderWrite, SingleKeyUpdate, SnapshotUnderWrite, TransferLeaderUnderWrite,
-    TxnConflict, ValueSizeMatrix,
+    ShardMigrationUnderWrite, SingleKeyUpdate, SnapshotForcedDiagnostics, SnapshotUnderWrite,
+    TransferLeaderUnderWrite, TxnConflict, ValueSizeMatrix,
 };
 use self::config::LabConfig;
 use self::report::{CaseReport, MetricsRecorder, compare_with_baseline};
@@ -90,6 +90,7 @@ enum CaseKind {
     RootLeaderFailover,
     RootFailoverMatrix,
     SnapshotUnderWrite,
+    SnapshotForcedDiagnostics,
     MvccVersionAccumulation,
     MvccGcImpact,
     AutoShardBalance,
@@ -131,6 +132,9 @@ impl Command {
                 CaseKind::RootLeaderFailover => RootLeaderFailover.run(&mut lab).await?,
                 CaseKind::RootFailoverMatrix => RootFailoverMatrix.run(&mut lab).await?,
                 CaseKind::SnapshotUnderWrite => SnapshotUnderWrite.run(&mut lab).await?,
+                CaseKind::SnapshotForcedDiagnostics => {
+                    SnapshotForcedDiagnostics.run(&mut lab).await?
+                }
                 CaseKind::MvccVersionAccumulation => MvccVersionAccumulation.run(&mut lab).await?,
                 CaseKind::MvccGcImpact => MvccGcImpact.run(&mut lab).await?,
                 CaseKind::AutoShardBalance => AutoShardBalance.run(&mut lab).await?,
