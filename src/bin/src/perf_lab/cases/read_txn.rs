@@ -38,8 +38,13 @@ impl PerfCase for PointRead {
     async fn run(&self, lab: &mut LabContext) -> Result<CaseReport> {
         let db = lab.database().await?;
         let table = lab.table(&db, &lab.config.workload.table).await?;
-        seed_table(&db, table.id, lab.config.workload.key_space, lab.config.workload.value_size)
-            .await?;
+        let prepare = seed_table(
+            &db,
+            table.id,
+            lab.config.workload.key_space,
+            lab.config.workload.value_size,
+        )
+        .await?;
         lab.mark("start").await?;
         let workload = spawn_workload(
             db,
@@ -52,7 +57,9 @@ impl PerfCase for PointRead {
         tokio::time::sleep(Duration::from_secs(lab.config.workload.duration_secs)).await;
         lab.mark("end").await?;
         let report = workload.stop().await;
-        Ok(case_report(lab, self.name(), vec![report], BTreeMap::new()))
+        let mut derived = BTreeMap::new();
+        prepare.insert_into(&mut derived);
+        Ok(case_report(lab, self.name(), vec![report], derived))
     }
 }
 
@@ -64,8 +71,13 @@ impl PerfCase for MixedReadWrite {
     async fn run(&self, lab: &mut LabContext) -> Result<CaseReport> {
         let db = lab.database().await?;
         let table = lab.table(&db, &lab.config.workload.table).await?;
-        seed_table(&db, table.id, lab.config.workload.key_space, lab.config.workload.value_size)
-            .await?;
+        let prepare = seed_table(
+            &db,
+            table.id,
+            lab.config.workload.key_space,
+            lab.config.workload.value_size,
+        )
+        .await?;
         lab.mark("start").await?;
         let workload = spawn_workload(
             db,
@@ -82,7 +94,9 @@ impl PerfCase for MixedReadWrite {
         tokio::time::sleep(Duration::from_secs(lab.config.workload.duration_secs)).await;
         lab.mark("end").await?;
         let report = workload.stop().await;
-        Ok(case_report(lab, self.name(), vec![report], BTreeMap::new()))
+        let mut derived = BTreeMap::new();
+        prepare.insert_into(&mut derived);
+        Ok(case_report(lab, self.name(), vec![report], derived))
     }
 }
 
@@ -94,8 +108,13 @@ impl PerfCase for PrefixScan {
     async fn run(&self, lab: &mut LabContext) -> Result<CaseReport> {
         let db = lab.database().await?;
         let table = lab.table(&db, &lab.config.workload.table).await?;
-        seed_table(&db, table.id, lab.config.workload.key_space, lab.config.workload.value_size)
-            .await?;
+        let prepare = seed_table(
+            &db,
+            table.id,
+            lab.config.workload.key_space,
+            lab.config.workload.value_size,
+        )
+        .await?;
         lab.mark("start").await?;
         let workload = spawn_workload(
             db,
@@ -112,7 +131,9 @@ impl PerfCase for PrefixScan {
         tokio::time::sleep(Duration::from_secs(lab.config.workload.duration_secs)).await;
         lab.mark("end").await?;
         let report = workload.stop().await;
-        Ok(case_report(lab, self.name(), vec![report], BTreeMap::new()))
+        let mut derived = BTreeMap::new();
+        prepare.insert_into(&mut derived);
+        Ok(case_report(lab, self.name(), vec![report], derived))
     }
 }
 
@@ -214,15 +235,34 @@ impl PerfCase for ValueSizeMatrix {
     }
 }
 
+struct PrepareStats {
+    duration: Duration,
+    keys: u64,
+    bytes: u64,
+}
+
+impl PrepareStats {
+    fn insert_into(&self, derived: &mut BTreeMap<String, f64>) {
+        derived.insert("prepare_duration_ms".to_owned(), self.duration.as_secs_f64() * 1000.0);
+        derived.insert("prepare_seed_keys".to_owned(), self.keys as f64);
+        derived.insert("prepare_seed_bytes".to_owned(), self.bytes as f64);
+    }
+}
+
 async fn seed_table(
     db: &sekas_client::Database,
     table: u64,
     keys: u64,
     value_size: usize,
-) -> Result<()> {
+) -> Result<PrepareStats> {
+    let started = std::time::Instant::now();
     let value = vec![b'x'; value_size];
     for i in 0..keys {
         db.put(table, format!("{PREFIX}{i:020}").into_bytes(), value.clone()).await?;
     }
-    Ok(())
+    Ok(PrepareStats {
+        duration: started.elapsed(),
+        keys,
+        bytes: keys.saturating_mul(value_size as u64),
+    })
 }
