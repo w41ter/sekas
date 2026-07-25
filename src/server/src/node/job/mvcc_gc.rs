@@ -22,6 +22,7 @@ use sekas_schema::system::txn::TXN_INTENT_VERSION;
 use crate::engine::mvcc_gc::min_allowed_version_from_retention;
 use crate::engine::{GroupEngine, SnapshotMode};
 use crate::node::NodeConfig;
+use crate::node::metrics::NODE_MVCC_GC_DELETE_VERSIONS_TOTAL;
 use crate::replica::Replica;
 use crate::{Error, Result};
 
@@ -100,6 +101,7 @@ async fn flush_gc_keys(
     if gc_keys.is_empty() {
         return Ok(());
     }
+    NODE_MVCC_GC_DELETE_VERSIONS_TOTAL.inc_by(gc_keys.len() as u64);
     match replica.delete_chunks(shard_id, &gc_keys).await {
         Ok(()) | Err(Error::ShardNotFound(_)) => Ok(()),
         Err(err) => Err(err),

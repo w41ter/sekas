@@ -85,7 +85,14 @@ impl PerfCase for MvccGcImpact {
         tokio::time::sleep(Duration::from_secs(lab.config.workload.cooldown_secs.max(1))).await;
         lab.mark("gc_window_end").await?;
         let report = workload.stop().await;
-        Ok(case_report(lab, self.name(), vec![report], BTreeMap::new()))
+        let mut case = case_report(lab, self.name(), vec![report], BTreeMap::new());
+        let deleted_versions = case.counter_delta_contains("node_mvcc_gc_delete_versions_total");
+        case.derived.insert("mvcc_gc_deleted_versions_total".to_owned(), deleted_versions);
+        case.derived.insert(
+            "mvcc_gc_activity_observed".to_owned(),
+            if deleted_versions > 0.0 { 1.0 } else { 0.0 },
+        );
+        Ok(case)
     }
 }
 
@@ -97,6 +104,9 @@ impl PerfCase for AutoShardBalance {
     async fn run(&self, lab: &mut LabContext) -> Result<CaseReport> {
         let db = lab.database().await?;
         let table = lab.table(&db, &lab.config.workload.table).await?;
+        for i in 0..8_u64 {
+            let _ = lab.table(&db, &format!("auto_balance_extra_{i}")).await?;
+        }
         let workload = spawn_workload(
             db,
             "write_during_auto_shard_balance",
@@ -110,10 +120,28 @@ impl PerfCase for AutoShardBalance {
         tokio::time::sleep(Duration::from_secs(lab.config.workload.warmup_secs)).await;
         lab.mark("before_balance_window").await?;
         workload.phase("balance_window").await;
-        tokio::time::sleep(Duration::from_secs(lab.config.workload.cooldown_secs.max(1))).await;
+        let started = std::time::Instant::now();
+        let _ = lab.add_server().await?;
+        tokio::time::sleep(Duration::from_secs(lab.config.workload.cooldown_secs.max(5))).await;
         lab.mark("after_balance_window").await?;
         let report = workload.stop().await;
-        Ok(case_report(lab, self.name(), vec![report], BTreeMap::new()))
+        let mut case = case_report(lab, self.name(), vec![report], BTreeMap::new());
+        let root_migrate_tasks = case.counter_delta_contains(
+            "root_reconcile_scheduler_task_handle_total{type=migrate_shard}",
+        );
+        let node_migrate_requests =
+            case.counter_delta_contains("node_service_migrate_request_total");
+        case.derived.insert(
+            "balance_window_duration_ms".to_owned(),
+            started.elapsed().as_secs_f64() * 1000.0,
+        );
+        case.derived.insert("root_migrate_shard_tasks_total".to_owned(), root_migrate_tasks);
+        case.derived.insert("node_migrate_requests_total".to_owned(), node_migrate_requests);
+        case.derived.insert(
+            "shard_balance_activity_observed".to_owned(),
+            if root_migrate_tasks + node_migrate_requests > 0.0 { 1.0 } else { 0.0 },
+        );
+        Ok(case)
     }
 }
 

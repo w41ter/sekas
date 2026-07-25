@@ -251,6 +251,17 @@ pub(crate) struct CaseReport {
     pub(crate) metric_intervals: Vec<MetricInterval>,
 }
 
+impl CaseReport {
+    pub(crate) fn counter_delta_contains(&self, name: &str) -> f64 {
+        self.metric_intervals
+            .iter()
+            .flat_map(|interval| interval.counters.iter())
+            .filter(|(key, _)| key.contains(name))
+            .map(|(_, value)| *value)
+            .sum()
+    }
+}
+
 pub(crate) fn case_report(
     lab: &LabContext,
     name: &str,

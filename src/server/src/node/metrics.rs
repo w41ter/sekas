@@ -46,6 +46,11 @@ lazy_static! {
     pub static ref NODE_INGEST_CHUNK_TOTAL: IntCounter =
         register_int_counter!("node_ingest_chunk_total", "The total of ingest chunks of node")
             .unwrap();
+    pub static ref NODE_MVCC_GC_DELETE_VERSIONS_TOTAL: IntCounter = register_int_counter!(
+        "node_mvcc_gc_delete_versions_total",
+        "The total MVCC versions deleted by node background GC"
+    )
+    .unwrap();
 }
 
 pub fn take_destory_replica_metrics() -> &'static Histogram {

@@ -14,7 +14,7 @@ enable_proxy_service = false
 enable_group_balance = true
 enable_replica_balance = true
 enable_leader_balance = false
-enable_shard_balance = false
+enable_shard_balance = true
 enable_auto_shard_split = false
 enable_auto_shard_merge = false
 heartbeat_timeout_sec = 1
@@ -36,8 +36,8 @@ tick_interval_ms = 100
 shard_chunk_size = 67108864
 shard_gc_keys = 256
 mvcc_gc_keys = 256
-mvcc_gc_interval_ms = 0
-mvcc_gc_retention_ms = 0
+mvcc_gc_interval_ms = 100
+mvcc_gc_retention_ms = 1
 
 [cluster.node.replica]
 snap_file_size = 68719476736
@@ -48,6 +48,7 @@ engine_slow_io_threshold_ms = 1000
 [cluster.db]
 max_background_jobs = 2
 max_sub_compactions = 1
+mvcc_gc_retention_ms = 1
 
 [workload]
 database = "perf_lab_smoke"
