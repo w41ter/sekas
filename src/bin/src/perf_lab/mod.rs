@@ -39,8 +39,9 @@ use sekas_server::{Config, NodeConfig, ReplicaConfig, ReplicaTestingKnobs};
 use self::cases::{
     AutoShardBalance, AutoSplitMerge, BatchTxnCommit, MixedReadWrite, MultiKeyTxn, MvccGcImpact,
     MvccVersionAccumulation, NodeJoinScaleOut, NodeOfflineUnderWrite, PointRead, PrefixScan,
-    ReplicaChangeUnderWrite, RootLeaderFailover, SchemaChurn, ShardMigrationUnderWrite,
-    SingleKeyUpdate, SnapshotUnderWrite, TransferLeaderUnderWrite, TxnConflict, ValueSizeMatrix,
+    ReplicaChangeUnderWrite, ReplicaRemoveUnderWrite, RootLeaderFailover, SchemaChurn,
+    ShardMigrationUnderWrite, SingleKeyUpdate, SnapshotUnderWrite, TransferLeaderUnderWrite,
+    TxnConflict, ValueSizeMatrix,
 };
 use self::config::LabConfig;
 use self::report::{CaseReport, MetricsRecorder, compare_with_baseline};
@@ -81,6 +82,7 @@ enum CaseKind {
     MultiKeyTxn,
     ValueSizeMatrix,
     ReplicaChangeUnderWrite,
+    ReplicaRemoveUnderWrite,
     NodeJoinScaleOut,
     RootLeaderFailover,
     SnapshotUnderWrite,
@@ -115,6 +117,7 @@ impl Command {
                 CaseKind::MultiKeyTxn => MultiKeyTxn.run(&mut lab).await?,
                 CaseKind::ValueSizeMatrix => ValueSizeMatrix.run(&mut lab).await?,
                 CaseKind::ReplicaChangeUnderWrite => ReplicaChangeUnderWrite.run(&mut lab).await?,
+                CaseKind::ReplicaRemoveUnderWrite => ReplicaRemoveUnderWrite.run(&mut lab).await?,
                 CaseKind::NodeJoinScaleOut => NodeJoinScaleOut.run(&mut lab).await?,
                 CaseKind::RootLeaderFailover => RootLeaderFailover.run(&mut lab).await?,
                 CaseKind::SnapshotUnderWrite => SnapshotUnderWrite.run(&mut lab).await?,
@@ -468,6 +471,47 @@ impl LabContext {
         Ok(started.elapsed())
     }
 
+    pub(crate) async fn remove_group_replica_on_node(
+        &self,
+        group_id: u64,
+        node_id: u64,
+        wait: Duration,
+    ) -> Result<ReplicaRemoveResult> {
+        let started = Instant::now();
+        let group = self.router.find_group(group_id)?;
+        let replica = group
+            .replicas
+            .values()
+            .find(|replica| replica.node_id == node_id)
+            .ok_or_else(|| anyhow!("group {group_id} has no replica on node {node_id}"))?;
+        let mut client = self.group(group_id);
+        client.remove_group_replica(replica.id).await?;
+        let deadline = Instant::now() + wait;
+        let mut converged = false;
+        while Instant::now() < deadline {
+            if let Ok(group) = self.router.find_group(group_id)
+                && !group.replicas.values().any(|replica| replica.node_id == node_id)
+            {
+                converged = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        let final_voters = self
+            .router
+            .find_group(group_id)
+            .ok()
+            .map(|group| {
+                group
+                    .replicas
+                    .values()
+                    .filter(|replica| replica.role == ReplicaRole::Voter as i32)
+                    .count()
+            })
+            .unwrap_or_default();
+        Ok(ReplicaRemoveResult { duration: started.elapsed(), converged, final_voters })
+    }
+
     async fn wait_group_contains_node(&self, group_id: u64, node_id: u64) -> Result<()> {
         for _ in 0..400 {
             if let Ok(group) = self.router.find_group(group_id)
@@ -581,6 +625,12 @@ impl Drop for LabContext {
     fn drop(&mut self) {
         self.shutdown();
     }
+}
+
+pub(crate) struct ReplicaRemoveResult {
+    pub(crate) duration: Duration,
+    pub(crate) converged: bool,
+    pub(crate) final_voters: usize,
 }
 
 async fn node_client_with_retry(addr: &str) -> Result<NodeClient> {

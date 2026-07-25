@@ -22,6 +22,7 @@ use crate::perf_lab::workload::{WorkloadKind, spawn_workload};
 use crate::perf_lab::{LabContext, PerfCase};
 
 pub(crate) struct ReplicaChangeUnderWrite;
+pub(crate) struct ReplicaRemoveUnderWrite;
 pub(crate) struct NodeJoinScaleOut;
 pub(crate) struct RootLeaderFailover;
 pub(crate) struct SnapshotUnderWrite;
@@ -58,6 +59,58 @@ impl PerfCase for ReplicaChangeUnderWrite {
         let report = workload.stop().await;
         let mut derived = BTreeMap::new();
         derived.insert("replica_add_duration_ms".to_owned(), add_duration.as_secs_f64() * 1000.0);
+        Ok(case_report(lab, self.name(), vec![report], derived))
+    }
+}
+
+impl PerfCase for ReplicaRemoveUnderWrite {
+    fn name(&self) -> &'static str {
+        "replica-remove-under-write"
+    }
+
+    async fn run(&self, lab: &mut LabContext) -> Result<CaseReport> {
+        let db = lab.database().await?;
+        let table = lab.table(&db, &lab.config.workload.table).await?;
+        let key = b"replica-remove-key".to_vec();
+        let (group_id, _) = lab.group_for_key(table.id, &key).await?;
+        let new_node = lab.add_server().await?;
+        let add_duration = lab.add_group_replica(group_id, new_node).await?;
+        let workload = spawn_workload(
+            db,
+            "write_during_replica_remove",
+            WorkloadKind::FixedKeyPut { table: table.id, key },
+            lab.config.workload.concurrency,
+            lab.config.workload.value_size,
+            lab.config.workload.key_space,
+        );
+        lab.mark("baseline_start").await?;
+        workload.phase("baseline").await;
+        tokio::time::sleep(Duration::from_secs(lab.config.workload.warmup_secs)).await;
+        lab.mark("before_replica_remove").await?;
+        workload.phase("replica_remove").await;
+        let remove = lab
+            .remove_group_replica_on_node(
+                group_id,
+                new_node,
+                Duration::from_secs(lab.config.workload.cooldown_secs.max(1)),
+            )
+            .await?;
+        lab.mark("after_replica_remove").await?;
+        workload.phase("recovery").await;
+        tokio::time::sleep(Duration::from_secs(lab.config.workload.cooldown_secs)).await;
+        lab.mark("end").await?;
+        let report = workload.stop().await;
+        let mut derived = BTreeMap::new();
+        derived.insert("replica_add_duration_ms".to_owned(), add_duration.as_secs_f64() * 1000.0);
+        derived.insert(
+            "replica_remove_duration_ms".to_owned(),
+            remove.duration.as_secs_f64() * 1000.0,
+        );
+        derived.insert(
+            "replica_remove_converged".to_owned(),
+            if remove.converged { 1.0 } else { 0.0 },
+        );
+        derived.insert("replica_remove_final_voters".to_owned(), remove.final_voters as f64);
         Ok(case_report(lab, self.name(), vec![report], derived))
     }
 }

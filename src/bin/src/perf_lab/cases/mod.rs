@@ -23,7 +23,8 @@ pub(super) use disturbance::{
     NodeOfflineUnderWrite, ShardMigrationUnderWrite, TransferLeaderUnderWrite,
 };
 pub(super) use elasticity::{
-    NodeJoinScaleOut, ReplicaChangeUnderWrite, RootLeaderFailover, SnapshotUnderWrite,
+    NodeJoinScaleOut, ReplicaChangeUnderWrite, ReplicaRemoveUnderWrite, RootLeaderFailover,
+    SnapshotUnderWrite,
 };
 pub(super) use mvcc_schedule::{
     AutoShardBalance, AutoSplitMerge, MvccGcImpact, MvccVersionAccumulation, SchemaChurn,
