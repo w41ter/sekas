@@ -13,12 +13,16 @@
 // limitations under the License.
 
 mod basic;
+mod diagnostics;
 mod disturbance;
 mod elasticity;
 mod mvcc_schedule;
 mod read_txn;
 
 pub(super) use basic::{BatchTxnCommit, SingleKeyUpdate};
+pub(super) use diagnostics::{
+    HotspotUpdateDiagnostics, MultiKeyTxnMatrix, RootFailoverMatrix, SchemaChurnScale,
+};
 pub(super) use disturbance::{
     NodeOfflineUnderWrite, ShardMigrationUnderWrite, TransferLeaderUnderWrite,
 };

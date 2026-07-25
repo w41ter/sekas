@@ -37,9 +37,10 @@ use sekas_runtime::{ExecutorOwner, ShutdownNotifier};
 use sekas_server::{Config, NodeConfig, ReplicaConfig, ReplicaTestingKnobs};
 
 use self::cases::{
-    AutoShardBalance, AutoSplitMerge, BatchTxnCommit, MixedReadWrite, MultiKeyTxn, MvccGcImpact,
-    MvccVersionAccumulation, NodeJoinScaleOut, NodeOfflineUnderWrite, PointRead, PrefixScan,
-    ReplicaChangeUnderWrite, ReplicaRemoveUnderWrite, RootLeaderFailover, SchemaChurn,
+    AutoShardBalance, AutoSplitMerge, BatchTxnCommit, HotspotUpdateDiagnostics, MixedReadWrite,
+    MultiKeyTxn, MultiKeyTxnMatrix, MvccGcImpact, MvccVersionAccumulation, NodeJoinScaleOut,
+    NodeOfflineUnderWrite, PointRead, PrefixScan, ReplicaChangeUnderWrite, ReplicaRemoveUnderWrite,
+    RootFailoverMatrix, RootLeaderFailover, SchemaChurn, SchemaChurnScale,
     ShardMigrationUnderWrite, SingleKeyUpdate, SnapshotUnderWrite, TransferLeaderUnderWrite,
     TxnConflict, ValueSizeMatrix,
 };
@@ -75,22 +76,26 @@ pub struct Command {
 enum CaseKind {
     SingleKeyUpdate,
     BatchTxnCommit,
+    HotspotUpdateDiagnostics,
     PointRead,
     MixedReadWrite,
     PrefixScan,
     TxnConflict,
     MultiKeyTxn,
+    MultiKeyTxnMatrix,
     ValueSizeMatrix,
     ReplicaChangeUnderWrite,
     ReplicaRemoveUnderWrite,
     NodeJoinScaleOut,
     RootLeaderFailover,
+    RootFailoverMatrix,
     SnapshotUnderWrite,
     MvccVersionAccumulation,
     MvccGcImpact,
     AutoShardBalance,
     AutoSplitMerge,
     SchemaChurn,
+    SchemaChurnScale,
     TransferLeaderUnderWrite,
     NodeOfflineUnderWrite,
     ShardMigrationUnderWrite,
@@ -110,22 +115,28 @@ impl Command {
             let result = match self.case {
                 CaseKind::SingleKeyUpdate => SingleKeyUpdate.run(&mut lab).await?,
                 CaseKind::BatchTxnCommit => BatchTxnCommit.run(&mut lab).await?,
+                CaseKind::HotspotUpdateDiagnostics => {
+                    HotspotUpdateDiagnostics.run(&mut lab).await?
+                }
                 CaseKind::PointRead => PointRead.run(&mut lab).await?,
                 CaseKind::MixedReadWrite => MixedReadWrite.run(&mut lab).await?,
                 CaseKind::PrefixScan => PrefixScan.run(&mut lab).await?,
                 CaseKind::TxnConflict => TxnConflict.run(&mut lab).await?,
                 CaseKind::MultiKeyTxn => MultiKeyTxn.run(&mut lab).await?,
+                CaseKind::MultiKeyTxnMatrix => MultiKeyTxnMatrix.run(&mut lab).await?,
                 CaseKind::ValueSizeMatrix => ValueSizeMatrix.run(&mut lab).await?,
                 CaseKind::ReplicaChangeUnderWrite => ReplicaChangeUnderWrite.run(&mut lab).await?,
                 CaseKind::ReplicaRemoveUnderWrite => ReplicaRemoveUnderWrite.run(&mut lab).await?,
                 CaseKind::NodeJoinScaleOut => NodeJoinScaleOut.run(&mut lab).await?,
                 CaseKind::RootLeaderFailover => RootLeaderFailover.run(&mut lab).await?,
+                CaseKind::RootFailoverMatrix => RootFailoverMatrix.run(&mut lab).await?,
                 CaseKind::SnapshotUnderWrite => SnapshotUnderWrite.run(&mut lab).await?,
                 CaseKind::MvccVersionAccumulation => MvccVersionAccumulation.run(&mut lab).await?,
                 CaseKind::MvccGcImpact => MvccGcImpact.run(&mut lab).await?,
                 CaseKind::AutoShardBalance => AutoShardBalance.run(&mut lab).await?,
                 CaseKind::AutoSplitMerge => AutoSplitMerge.run(&mut lab).await?,
                 CaseKind::SchemaChurn => SchemaChurn.run(&mut lab).await?,
+                CaseKind::SchemaChurnScale => SchemaChurnScale.run(&mut lab).await?,
                 CaseKind::TransferLeaderUnderWrite => {
                     TransferLeaderUnderWrite.run(&mut lab).await?
                 }
