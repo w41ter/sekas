@@ -1092,7 +1092,13 @@ mod root_test {
         node.bootstrap(&ident).await.unwrap();
         node.create_replica(
             3,
-            GroupDesc { id: ROOT_GROUP_ID, epoch: INITIAL_EPOCH, shards: vec![], replicas: vec![] },
+            GroupDesc {
+                id: ROOT_GROUP_ID,
+                epoch: INITIAL_EPOCH,
+                shards: vec![],
+                replicas: vec![],
+                ..Default::default()
+            },
         )
         .await
         .unwrap();

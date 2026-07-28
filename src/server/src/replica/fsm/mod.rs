@@ -209,7 +209,7 @@ impl GroupStateMachine {
                 desc.shards.push(shard);
             }
             if let Some(DeleteShard { shard_id }) = op.delete_shard {
-                let shard = desc.shard(shard_id).cloned().ok_or(Error::ShardNotFound(shard_id))?;
+                desc.shard(shard_id).ok_or(Error::ShardNotFound(shard_id))?;
                 info!(
                     "group {} delete shard {} at epoch {}",
                     self.info.group_id,
@@ -218,11 +218,16 @@ impl GroupStateMachine {
                 );
                 self.desc_updated = true;
                 desc.epoch = apply_shard_delta(desc.epoch);
+                if let Some(delete) = self
+                    .group_engine
+                    .delete_shard_data(shard_id, self.cfg.delete_shard_range_threshold)?
+                {
+                    self.plugged_write_batches.push(delete);
+                }
                 desc.drop_shard(shard_id);
-                self.plugged_write_states.deleted_shards.push(shard);
             }
             if let Some(m) = op.move_shard {
-                self.apply_move_shard_event(m, &mut desc);
+                self.apply_move_shard_event(m, &mut desc)?;
             }
             if let Some(split_shard) = op.split_shard {
                 self.apply_split_shard(split_shard, &mut desc)?;
@@ -244,7 +249,11 @@ impl GroupStateMachine {
         Ok(())
     }
 
-    fn apply_move_shard_event(&mut self, move_shard: MoveShard, group_desc: &mut GroupDesc) {
+    fn apply_move_shard_event(
+        &mut self,
+        move_shard: MoveShard,
+        group_desc: &mut GroupDesc,
+    ) -> Result<()> {
         let event = MoveShardEvent::from_i32(move_shard.event).expect("unknown moving shard event");
         if let Some(desc) = move_shard.desc.as_ref() {
             info!(
@@ -260,7 +269,7 @@ impl GroupStateMachine {
                         "MovingShard::desc is None. replica={}, group={}",
                         self.info.replica_id, self.info.group_id
                     );
-                    return;
+                    return Ok(());
                 }
 
                 let state = MoveShardState {
@@ -302,7 +311,7 @@ impl GroupStateMachine {
                 debug_assert!(state.step == MoveShardStep::Moved as i32);
 
                 let desc = state.get_move_shard_desc();
-                self.apply_moving_shard(group_desc, desc);
+                self.apply_moving_shard(group_desc, desc)?;
 
                 state.step = MoveShardStep::Finished as i32;
                 self.plugged_write_states.move_shard_state = Some(state);
@@ -317,15 +326,26 @@ impl GroupStateMachine {
                 self.move_shard_state_updated = true;
             }
         }
+        Ok(())
     }
 
-    fn apply_moving_shard(&mut self, group_desc: &mut GroupDesc, desc: &MoveShardDesc) {
+    fn apply_moving_shard(
+        &mut self,
+        group_desc: &mut GroupDesc,
+        desc: &MoveShardDesc,
+    ) -> Result<()> {
         let shard_desc = desc.get_shard_desc();
 
         let inherited_epoch = std::cmp::max(desc.src_group_epoch, desc.dest_group_epoch);
         let inherited_epoch = std::cmp::max(group_desc.epoch, inherited_epoch);
         group_desc.epoch = apply_shard_delta(inherited_epoch);
         let msg = if desc.src_group_id == group_desc.id {
+            if let Some(delete) = self
+                .group_engine
+                .delete_shard_data(shard_desc.id, self.cfg.delete_shard_range_threshold)?
+            {
+                self.plugged_write_batches.push(delete);
+            }
             self.move_out_shards.insert(shard_desc.id, shard_desc.clone());
             group_desc.shards.retain(|r| r.id != shard_desc.id);
             "shard migrated out"
@@ -342,6 +362,7 @@ impl GroupStateMachine {
             shard_desc.id
         );
         self.desc_updated = true;
+        Ok(())
     }
 
     fn apply_split_shard(
@@ -847,6 +868,7 @@ mod tests {
                 ReplicaDesc { id: 1, node_id: 1, role: ReplicaRole::Learner as i32 },
                 ReplicaDesc { id: 2, node_id: 2, role: ReplicaRole::Voter as i32 },
             ],
+            ..Default::default()
         };
 
         for Test { tips, change_type, replica_id, expects } in tests {
@@ -876,6 +898,7 @@ mod tests {
                 ReplicaDesc { id: 1, node_id: 1, role: ReplicaRole::Learner as i32 },
                 ReplicaDesc { id: 2, node_id: 2, role: ReplicaRole::Voter as i32 },
             ],
+            ..Default::default()
         };
 
         let tests = vec![
@@ -1004,8 +1027,13 @@ mod tests {
             },
         ];
         for test in tests {
-            let mut desc =
-                GroupDesc { id: 0, epoch: 0, shards: test.origin_shards, replicas: vec![] };
+            let mut desc = GroupDesc {
+                id: 0,
+                epoch: 0,
+                shards: test.origin_shards,
+                replicas: vec![],
+                ..Default::default()
+            };
             if let Some(expect_shards) = test.expect_shards {
                 apply_split_shard(&mut desc, test.split_shard).unwrap();
                 assert_eq!(desc.epoch, apply_shard_delta(0));
@@ -1088,8 +1116,13 @@ mod tests {
             },
         ];
         for test in tests {
-            let mut desc =
-                GroupDesc { id: 0, epoch: 0, shards: test.origin_shards, replicas: vec![] };
+            let mut desc = GroupDesc {
+                id: 0,
+                epoch: 0,
+                shards: test.origin_shards,
+                replicas: vec![],
+                ..Default::default()
+            };
             if let Some(expect_shards) = test.expect_shards {
                 apply_merge_shard(&mut desc, test.merge_shard).unwrap();
                 assert_eq!(desc.epoch, apply_shard_delta(0));

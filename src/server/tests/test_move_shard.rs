@@ -52,6 +52,23 @@ async fn is_not_in_shard_moving(c: &ClusterClient, dest_group_id: u64) -> bool {
     false
 }
 
+async fn wait_moving_shard_state(
+    c: &ClusterClient,
+    group_id: u64,
+    expect: &[collect_moving_shard_state_response::State],
+) {
+    for _ in 0..1000 {
+        if let Some(node_id) = c.get_group_leader_node_id(group_id).await
+            && let Ok(resp) = c.collect_moving_shard_state(group_id, node_id).await
+            && expect.iter().any(|state| resp.state == *state as i32)
+        {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("group {group_id} did not enter expected moving shard state");
+}
+
 async fn move_shard(
     c: &ClusterClient,
     shard_desc: &ShardDesc,
@@ -138,6 +155,28 @@ async fn insert(c: &ClusterClient, group_id: u64, shard_id: u64, range: std::ops
                 Err(err) => {
                     retry_state.retry(err).await.unwrap();
                 }
+            }
+        }
+    }
+}
+
+async fn put_with_retry(
+    c: &ClusterClient,
+    group_id: u64,
+    shard_id: u64,
+    key: Vec<u8>,
+    value: Vec<u8>,
+) {
+    let mut c = c.group(group_id);
+    let put = PutRequest { key, value, ..Default::default() };
+    let req = Request::Write(ShardWriteRequest { shard_id, puts: vec![put], ..Default::default() });
+
+    let mut retry_state = RetryState::default();
+    loop {
+        match c.request(&req).await {
+            Ok(_) => break,
+            Err(err) => {
+                retry_state.retry(err).await.unwrap();
             }
         }
     }
@@ -319,6 +358,197 @@ async fn move_shard_round_trip_same_range() {
     validate(&c, group_id_1, shard_id, 0..160).await;
     insert(&c, group_id_1, shard_id, 160..192).await;
     validate(&c, group_id_1, shard_id, 0..192).await;
+}
+
+#[sekas_macro::test]
+async fn move_shard_round_trip_before_source_purge_finishes() {
+    let mut ctx = TestContext::new(fn_name!());
+    ctx.disable_all_node_scheduler();
+    let nodes = ctx.bootstrap_servers(3).await;
+    let node_ids = nodes.keys().cloned().collect::<Vec<_>>();
+    let c = ClusterClient::new(nodes).await;
+    let (group_id_1, group_id_2, shard_desc) = create_two_groups(&c, node_ids, 1024).await;
+    let shard_id = shard_desc.id;
+
+    move_shard(&c, &shard_desc, group_id_2, group_id_1).await;
+    validate(&c, group_id_2, shard_id, 0..1024).await;
+
+    move_shard(&c, &shard_desc, group_id_1, group_id_2).await;
+    validate(&c, group_id_1, shard_id, 0..1024).await;
+
+    insert(&c, group_id_1, shard_id, 1024..1056).await;
+    validate(&c, group_id_1, shard_id, 0..1056).await;
+}
+
+#[sekas_macro::test]
+async fn move_shard_round_trip_uses_delete_range_for_large_shard() {
+    let mut ctx = TestContext::new(fn_name!());
+    ctx.disable_all_node_scheduler();
+    ctx.mut_replica_testing_knobs().disable_scheduler_orphan_replica_detecting_intervals = true;
+    let nodes = ctx.bootstrap_servers(3).await;
+    let node_ids = nodes.keys().cloned().collect::<Vec<_>>();
+    let c = ClusterClient::new(nodes).await;
+    let (group_id_1, group_id_2, shard_desc) = create_two_groups(&c, node_ids, 256).await;
+    let shard_id = shard_desc.id;
+
+    move_shard(&c, &shard_desc, group_id_2, group_id_1).await;
+    validate(&c, group_id_2, shard_id, 0..256).await;
+    insert(&c, group_id_2, shard_id, 256..300).await;
+
+    move_shard(&c, &shard_desc, group_id_1, group_id_2).await;
+    validate(&c, group_id_1, shard_id, 0..300).await;
+}
+
+#[sekas_macro::test]
+async fn move_shard_with_leader_transfer_while_pulling() {
+    use collect_moving_shard_state_response::State;
+
+    let mut ctx = TestContext::new(fn_name!());
+    ctx.disable_all_node_scheduler();
+    let nodes = ctx.bootstrap_servers(3).await;
+    let node_ids = nodes.keys().cloned().collect::<Vec<_>>();
+    let c = ClusterClient::new(nodes).await;
+    let (group_id_1, group_id_2, shard_desc) = create_two_groups(&c, node_ids, 4096).await;
+    let shard_id = shard_desc.id;
+
+    let src_group_epoch = c.must_group_epoch(group_id_1).await;
+    let mut g = c.group(group_id_2);
+    g.accept_shard(group_id_1, src_group_epoch, &shard_desc).await.unwrap();
+    wait_moving_shard_state(&c, group_id_2, &[State::Moving, State::Moved]).await;
+
+    for _ in 0..8 {
+        if is_not_in_shard_moving(&c, group_id_2).await {
+            break;
+        }
+        c.transfer_group_leader_randomly(group_id_2).await.unwrap();
+        ctx.wait_election_timeout().await;
+    }
+
+    move_shard(&c, &shard_desc, group_id_2, group_id_1).await;
+    validate(&c, group_id_2, shard_id, 0..4096).await;
+}
+
+#[sekas_macro::test]
+async fn move_shard_recovers_when_source_leader_stops_during_move_out() {
+    use collect_moving_shard_state_response::State;
+
+    let mut ctx = TestContext::new(fn_name!());
+    ctx.disable_all_node_scheduler();
+    let nodes = ctx.bootstrap_servers(3).await;
+    let node_ids = nodes.keys().cloned().collect::<Vec<_>>();
+    let c = ClusterClient::new(nodes).await;
+    let (group_id_1, group_id_2, shard_desc) = create_two_groups(&c, node_ids, 2048).await;
+    let shard_id = shard_desc.id;
+
+    let src_group_epoch = c.must_group_epoch(group_id_1).await;
+    let mut g = c.group(group_id_2);
+    g.accept_shard(group_id_1, src_group_epoch, &shard_desc).await.unwrap();
+    wait_moving_shard_state(&c, group_id_2, &[State::Moving, State::Moved]).await;
+
+    if let Some(mut src_leader_node_id) = c.get_group_leader_node_id(group_id_1).await {
+        if src_leader_node_id == 0 {
+            c.transfer_group_leader_randomly(group_id_1).await.unwrap();
+            ctx.wait_election_timeout().await;
+            src_leader_node_id = c.get_group_leader_node_id(group_id_1).await.unwrap_or_default();
+        }
+        assert_ne!(src_leader_node_id, 0, "avoid stopping the root node in this test");
+        ctx.stop_server(src_leader_node_id).await;
+        ctx.wait_election_timeout().await;
+    }
+
+    move_shard(&c, &shard_desc, group_id_2, group_id_1).await;
+    validate(&c, group_id_2, shard_id, 0..2048).await;
+}
+
+#[sekas_macro::test]
+async fn move_shard_forwarded_write_wins_over_later_pull_same_key() {
+    use collect_moving_shard_state_response::State;
+
+    let mut ctx = TestContext::new(fn_name!());
+    ctx.disable_all_node_scheduler();
+    let nodes = ctx.bootstrap_servers(3).await;
+    let node_ids = nodes.keys().cloned().collect::<Vec<_>>();
+    let c = ClusterClient::new(nodes).await;
+    let (group_id_1, group_id_2, shard_desc) = create_two_groups(&c, node_ids, 256).await;
+    let shard_id = shard_desc.id;
+    let key = b"key-255".to_vec();
+    let forwarded_value = b"forwarded-value".to_vec();
+
+    let src_group_epoch = c.must_group_epoch(group_id_1).await;
+    c.group(group_id_2).accept_shard(group_id_1, src_group_epoch, &shard_desc).await.unwrap();
+    wait_moving_shard_state(&c, group_id_1, &[State::Prepare, State::Moving]).await;
+
+    // The write is issued to the source group while the shard is moving, so it
+    // must be forwarded to the target group. If the background pull later sees
+    // the original key on the source group, ingest must not overwrite this
+    // newer target-side value.
+    put_with_retry(&c, group_id_1, shard_id, key.clone(), forwarded_value.clone()).await;
+
+    move_shard(&c, &shard_desc, group_id_2, group_id_1).await;
+    let mut dest = c.group(group_id_2);
+    let resp = dest
+        .request(&Request::Get(ShardGetRequest {
+            shard_id,
+            start_version: u64::MAX,
+            user_key: key,
+        }))
+        .await
+        .unwrap();
+    let Response::Get(resp) = resp else { panic!("invalid response type, Get is required") };
+    assert!(
+        matches!(resp.value, Some(Value { content: Some(v), version: _ }) if v == forwarded_value)
+    );
+}
+
+#[sekas_macro::test]
+async fn move_shard_scan_limit_has_more_while_forwarding() {
+    use collect_moving_shard_state_response::State;
+
+    let mut ctx = TestContext::new(fn_name!());
+    ctx.disable_all_node_scheduler();
+    let nodes = ctx.bootstrap_servers(3).await;
+    let c = ClusterClient::new(nodes).await;
+    let group_id_1 = 100000;
+    let group_id_2 = 100001;
+    let shard_id = 10000000;
+    let shard_desc = ShardDesc::whole(shard_id, shard_id);
+
+    create_group(&c, group_id_1, vec![0], vec![shard_desc.clone()]).await;
+    create_group(&c, group_id_2, vec![1], vec![shard_desc.clone()]).await;
+    c.assert_group_leader(group_id_1).await;
+    c.assert_group_leader(group_id_2).await;
+
+    let shard_id = shard_desc.id;
+    insert(&c, group_id_1, shard_id, 0..16).await;
+
+    let src_group_epoch = c.must_group_epoch(group_id_1).await;
+    let dest_group_epoch = c.must_group_epoch(group_id_2).await;
+    let desc = MoveShardDesc {
+        shard_desc: Some(shard_desc.clone()),
+        src_group_id: group_id_1,
+        src_group_epoch,
+        dest_group_id: group_id_2,
+        dest_group_epoch,
+    };
+    c.group(group_id_1).acquire_shard(&desc).await.unwrap();
+    wait_moving_shard_state(&c, group_id_1, &[State::Prepare, State::Moving]).await;
+
+    put_with_retry(&c, group_id_1, shard_id, b"key-999".to_vec(), b"forwarded".to_vec()).await;
+
+    let mut src = c.group(group_id_1);
+    let resp = src
+        .request(&Request::Scan(ShardScanRequest {
+            shard_id,
+            start_version: u64::MAX,
+            limit: 2,
+            include_raw_data: false,
+            ..Default::default()
+        }))
+        .await
+        .unwrap();
+    let Response::Scan(resp) = resp else { panic!("invalid response type, Scan is required") };
+    assert_eq!(resp.data.len(), 2);
+    assert!(resp.has_more);
 }
 
 #[sekas_macro::test]

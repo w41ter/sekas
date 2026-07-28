@@ -14,6 +14,5 @@
 // limitations under the License.
 
 mod ctrl;
-pub(crate) mod gc;
 
 pub(crate) use self::ctrl::{ForwardCtx, MoveShardController};

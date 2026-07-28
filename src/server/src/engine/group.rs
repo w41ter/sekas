@@ -35,13 +35,12 @@ pub struct WriteStates {
     pub apply_state: Option<ApplyState>,
     pub descriptor: Option<GroupDesc>,
     pub move_shard_state: Option<MoveShardState>,
-    pub deleted_shards: Vec<ShardDesc>,
 }
 
 #[derive(Default)]
-#[repr(transparent)]
 pub struct WriteBatch {
     inner: rocksdb::WriteBatch,
+    delete_ranges: Vec<(Vec<u8>, Vec<u8>)>,
 }
 
 /// A structure supports grouped data, metadata saving and retriving.
@@ -57,7 +56,6 @@ where
     cfg: EngineConfig,
     name: String,
     raw_db: Arc<RawDb>,
-    deleted_shards: super::DeletedShardRegistry,
     core: Arc<RwLock<GroupEngineCore>>,
 }
 
@@ -65,7 +63,6 @@ where
 struct GroupEngineCore {
     group_desc: GroupDesc,
     shard_descs: HashMap<u64, ShardDesc>,
-    deleted_shards: HashMap<u64, ShardDesc>,
     move_shard_state: Option<MoveShardState>,
 }
 
@@ -156,13 +153,11 @@ impl GroupEngine {
         let cf_handle = raw_db.cf_handle(&name).expect("cf must exists because it just created");
         let engine = GroupEngine {
             cfg: cfg.clone(),
-            deleted_shards: raw_db.deleted_shards_for_cf(&name),
             name,
             raw_db: raw_db.clone(),
             core: Arc::new(RwLock::new(GroupEngineCore {
                 group_desc: desc.clone(),
                 shard_descs: Default::default(),
-                deleted_shards: Default::default(),
                 move_shard_state: None,
             })),
         };
@@ -195,30 +190,18 @@ impl GroupEngine {
                 return Ok(None);
             }
         };
-        let deleted_shard_registry = raw_db.deleted_shards_for_cf(&name);
-
         let group_desc = internal::descriptor(&raw_db, &cf_handle)?;
         let move_shard_state = internal::move_shard_state(&raw_db, &cf_handle)?;
-        let deleted_shards = internal::deleted_shards(&raw_db, &cf_handle)?;
-        for shard in &deleted_shards {
-            deleted_shard_registry.add(shard);
-        }
         let mut shard_descs = internal::shard_descs(&group_desc);
         if let Some(shard_desc) = move_shard_state.as_ref().map(|m| m.get_shard_desc()) {
             shard_descs.entry(shard_desc.id).or_insert_with(|| shard_desc.clone());
         }
-        for shard in &deleted_shards {
-            shard_descs.entry(shard.id).or_insert_with(|| shard.clone());
-        }
-        let deleted_shards =
-            deleted_shards.into_iter().map(|shard| (shard.id, shard)).collect::<HashMap<_, _>>();
-        let core = GroupEngineCore { move_shard_state, group_desc, shard_descs, deleted_shards };
+        let core = GroupEngineCore { move_shard_state, group_desc, shard_descs };
 
         Ok(Some(GroupEngine {
             cfg: cfg.clone(),
             name,
             raw_db: raw_db.clone(),
-            deleted_shards: deleted_shard_registry,
             core: Arc::new(RwLock::new(core)),
         }))
     }
@@ -235,35 +218,6 @@ impl GroupEngine {
     #[inline]
     pub fn move_shard_state(&self) -> Option<MoveShardState> {
         self.core.read().unwrap().move_shard_state.clone()
-    }
-
-    pub fn deleted_shards(&self) -> Vec<ShardDesc> {
-        self.core.read().unwrap().deleted_shards.values().cloned().collect()
-    }
-
-    pub fn mark_deleted_shard(&self, shard: ShardDesc) {
-        {
-            let mut core = self.core.write().unwrap();
-            core.deleted_shards.insert(shard.id, shard.clone());
-            core.shard_descs.entry(shard.id).or_insert_with(|| shard.clone());
-        }
-        self.deleted_shards.add(&shard);
-    }
-
-    pub fn clear_deleted_shard(&self, shard_id: u64) -> Result<()> {
-        let cf_handle = self.cf_handle();
-        let mut wb = rocksdb::WriteBatch::default();
-        wb.delete_cf(&cf_handle, keys::deleted_shard(shard_id));
-        self.raw_db.write_opt(wb, &rocksdb::WriteOptions::default())?;
-        self.deleted_shards.remove(shard_id);
-        let mut core = self.core.write().unwrap();
-        core.deleted_shards.remove(&shard_id);
-        if core.group_desc.shard(shard_id).is_none()
-            && !core.move_shard_state.as_ref().is_some_and(|state| state.get_shard_id() == shard_id)
-        {
-            core.shard_descs.remove(&shard_id);
-        }
-        Ok(())
     }
 
     /// Return the group descriptor.
@@ -360,6 +314,42 @@ impl GroupEngine {
         Ok(())
     }
 
+    pub fn delete_shard_data(
+        &self,
+        shard_id: u64,
+        delete_range_threshold: usize,
+    ) -> Result<Option<WriteBatch>> {
+        let mut entries = Vec::with_capacity(delete_range_threshold + 1);
+        let mut snapshot = self.snapshot(shard_id, SnapshotMode::default())?;
+        while let Some(mvcc_iter) = snapshot.next() {
+            for entry in mvcc_iter? {
+                let entry = entry?;
+                entries.push((entry.user_key().to_owned(), entry.version()));
+                if entries.len() > delete_range_threshold {
+                    break;
+                }
+            }
+            if entries.len() > delete_range_threshold {
+                break;
+            }
+        }
+
+        if entries.is_empty() {
+            return Ok(None);
+        }
+
+        let mut wb = WriteBatch::default();
+        if entries.len() <= delete_range_threshold {
+            for (user_key, version) in entries {
+                self.delete(&mut wb, shard_id, &user_key, version)?;
+            }
+        } else {
+            let (start, end) = self.shard_raw_boundary(shard_id)?;
+            wb.delete_range(start, end);
+        }
+        Ok(Some(wb))
+    }
+
     #[inline]
     pub fn commit(&self, wb: WriteBatch, states: WriteStates, persisted: bool) -> Result<()> {
         self.group_commit(&[wb], states, persisted)
@@ -375,10 +365,15 @@ impl GroupEngine {
 
         let cf_handle = self.cf_handle();
         let mut inner_wb = rocksdb::WriteBatch::default();
-        let mut decorator =
-            ColumnFamilyDecorator { cf_handle: cf_handle.clone(), wb: &mut inner_wb };
         for wb in wbs {
-            wb.inner.iterate(&mut decorator);
+            {
+                let mut decorator =
+                    ColumnFamilyDecorator { cf_handle: cf_handle.clone(), wb: &mut inner_wb };
+                wb.inner.iterate(&mut decorator);
+            }
+            for (start, end) in &wb.delete_ranges {
+                inner_wb.delete_range_cf(&cf_handle, start, end);
+            }
         }
         states.write(&mut inner_wb, &cf_handle);
 
@@ -396,9 +391,6 @@ impl GroupEngine {
 
         if states.descriptor.is_some() || states.move_shard_state.is_some() {
             self.apply_core_states(states.descriptor, states.move_shard_state);
-        }
-        for shard in states.deleted_shards {
-            self.mark_deleted_shard(shard);
         }
 
         Ok(())
@@ -459,14 +451,7 @@ impl GroupEngine {
 
         let group_desc = internal::descriptor(&self.raw_db, &cf_handle)?;
         let move_shard_state = internal::move_shard_state(&self.raw_db, &cf_handle)?;
-        let deleted_shards = internal::deleted_shards(&self.raw_db, &cf_handle)?;
-        for shard in &deleted_shards {
-            self.deleted_shards.add(shard);
-        }
         self.apply_core_states(Some(group_desc), move_shard_state);
-        for shard in deleted_shards {
-            self.mark_deleted_shard(shard);
-        }
 
         Ok(())
     }
@@ -920,16 +905,6 @@ pub(super) mod keys {
         buf.extend_from_slice(MIGRATE_STATE);
         buf
     }
-
-    #[inline]
-    pub fn deleted_shard(shard_id: u64) -> Vec<u8> {
-        const DELETED_SHARD: &[u8] = b"DELETED_SHARD";
-        let mut buf = Vec::with_capacity(core::mem::size_of::<u64>() * 2 + DELETED_SHARD.len());
-        buf.extend_from_slice(super::LOCAL_TABLE_ID.to_le_bytes().as_slice());
-        buf.extend_from_slice(DELETED_SHARD);
-        buf.extend_from_slice(shard_id.to_le_bytes().as_slice());
-        buf
-    }
 }
 
 mod values {
@@ -962,7 +937,12 @@ impl<'a, 'b> rocksdb::WriteBatchIterator for ColumnFamilyDecorator<'a, 'b> {
 impl WriteBatch {
     #[inline]
     pub fn new(content: &[u8]) -> Self {
-        WriteBatch { inner: rocksdb::WriteBatch::from_data(content) }
+        WriteBatch { inner: rocksdb::WriteBatch::from_data(content), delete_ranges: Vec::new() }
+    }
+
+    #[inline]
+    pub fn delete_range(&mut self, start: Vec<u8>, end: Vec<u8>) {
+        self.delete_ranges.push((start, end));
     }
 }
 
@@ -997,9 +977,6 @@ impl WriteStates {
             } else {
                 wb.delete_cf(cf_handle, keys::move_shard_state());
             }
-        }
-        for shard in &self.deleted_shards {
-            wb.put_cf(cf_handle, keys::deleted_shard(shard.id), shard.encode_to_vec());
         }
     }
 }
@@ -1049,31 +1026,6 @@ mod internal {
         } else {
             Ok(None)
         }
-    }
-
-    pub(super) fn deleted_shards(
-        db: &RawDb,
-        cf_handle: &impl rocksdb::AsColumnFamilyRef,
-    ) -> Result<Vec<ShardDesc>> {
-        use rocksdb::{Direction, IteratorMode, ReadOptions};
-
-        const DELETED_SHARD: &[u8] = b"DELETED_SHARD";
-        let mut prefix = Vec::with_capacity(core::mem::size_of::<u64>() + DELETED_SHARD.len());
-        prefix.extend_from_slice(super::LOCAL_TABLE_ID.to_le_bytes().as_slice());
-        prefix.extend_from_slice(DELETED_SHARD);
-
-        let opts = ReadOptions::default();
-        let iter =
-            db.iterator_cf_opt(cf_handle, opts, IteratorMode::From(&prefix, Direction::Forward));
-        let mut shards = vec![];
-        for entry in iter {
-            let (key, value) = entry?;
-            if !key.starts_with(&prefix) {
-                break;
-            }
-            shards.push(ShardDesc::decode(value.as_ref())?);
-        }
-        Ok(shards)
     }
 
     pub(super) fn flushed_apply_state(
@@ -1256,50 +1208,6 @@ mod tests {
                 .await
                 .unwrap();
         assert!(engine.is_none());
-    }
-
-    #[sekas_macro::test]
-    async fn deleted_shard_compaction_filter_is_scoped_to_group_cf() {
-        let dir = TempDir::new(fn_name!()).unwrap();
-        let db_dir = dir.path().join("db");
-        let raw_db = Arc::new(crate::bootstrap::open_engine_with_default_config(db_dir).unwrap());
-        let source =
-            GroupEngine::create(&EngineConfig::default(), raw_db.clone(), 11, 1001).await.unwrap();
-        let target =
-            GroupEngine::create(&EngineConfig::default(), raw_db.clone(), 12, 1002).await.unwrap();
-        for engine in [&source, &target] {
-            engine
-                .commit(
-                    WriteBatch::default(),
-                    WriteStates {
-                        descriptor: Some(GroupDesc {
-                            id: engine.descriptor().id,
-                            shards: vec![ShardDesc::whole(101, 1)],
-                            ..Default::default()
-                        }),
-                        ..Default::default()
-                    },
-                    false,
-                )
-                .unwrap();
-        }
-
-        let mut wb = WriteBatch::default();
-        source.put(&mut wb, 101, b"k", b"source", 100).unwrap();
-        source.commit(wb, WriteStates::default(), false).unwrap();
-        let mut wb = WriteBatch::default();
-        target.put(&mut wb, 101, b"k", b"target", 100).unwrap();
-        target.commit(wb, WriteStates::default(), false).unwrap();
-
-        source.mark_deleted_shard(ShardDesc::whole(101, 1));
-        source.raw_db.flush_cf(&source.cf_handle()).unwrap();
-        target.raw_db.flush_cf(&target.cf_handle()).unwrap();
-        source.raw_db.db.compact_range_cf(&source.cf_handle(), None::<&[u8]>, None::<&[u8]>);
-        target.raw_db.db.compact_range_cf(&target.cf_handle(), None::<&[u8]>, None::<&[u8]>);
-
-        assert!(source.get(101, b"k").await.unwrap().is_none());
-        let value = target.get(101, b"k").await.unwrap().expect("target value must survive");
-        assert_eq!(value.content.as_deref(), Some(b"target".as_slice()));
     }
 
     #[sekas_macro::test]

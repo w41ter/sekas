@@ -39,6 +39,7 @@ fn sim_boostrap_join_node_balance() {
             epoch: 0,
             shards: vec![],
             replicas: vec![ReplicaDesc { id: 1, node_id: 1, role: ReplicaRole::Voter.into() }],
+            ..Default::default()
         }]);
         p.set_nodes(vec![NodeDesc {
             id: 1,
@@ -88,6 +89,7 @@ fn sim_boostrap_join_node_balance() {
                 ReplicaDesc { id: 2, node_id: 2, role: ReplicaRole::Voter.into() },
                 ReplicaDesc { id: 3, node_id: 3, role: ReplicaRole::Voter.into() },
             ],
+            ..Default::default()
         }]);
         p.set_replica_states(vec![
             ReplicaState {
@@ -158,7 +160,13 @@ fn sim_boostrap_join_node_balance() {
                     }
                     groups.insert(
                         group_id_gen,
-                        GroupDesc { id: group_id_gen, epoch: 0, shards: vec![], replicas },
+                        GroupDesc {
+                            id: group_id_gen,
+                            epoch: 0,
+                            shards: vec![],
+                            replicas,
+                            ..Default::default()
+                        },
                     );
                     p.set_groups(groups.values().map(ToOwned::to_owned).collect());
                     p.set_replica_states(replica_states);
@@ -232,7 +240,13 @@ fn sim_boostrap_join_node_balance() {
                     }
                     groups.insert(
                         group_id_gen,
-                        GroupDesc { id: group_id_gen, epoch: 0, shards: vec![], replicas },
+                        GroupDesc {
+                            id: group_id_gen,
+                            epoch: 0,
+                            shards: vec![],
+                            replicas,
+                            ..Default::default()
+                        },
                     );
                     p.set_groups(groups.values().map(ToOwned::to_owned).collect());
                     p.set_replica_states(replica_states);

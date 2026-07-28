@@ -351,7 +351,6 @@ impl Node {
         if let Some(mvcc_gc_handle) = self::job::setup_mvcc_gc(self.cfg.clone(), replica.clone()) {
             task_group.add_task(mvcc_gc_handle);
         }
-        task_group.add_task(self::job::setup_shard_purge(self.cfg.clone(), replica.clone()));
 
         // Now that all initialization work is done, the replica is ready to serve, mark
         // it as normal state.
@@ -702,7 +701,8 @@ impl Node {
         req.allow_scan_moving_shard = true;
         let req_clone = req.clone();
         let execute_handle = sekas_runtime::spawn(async move {
-            replica.execute(&mut ExecCtx::default(), &Request::Scan(req_clone)).await
+            let epoch = replica.descriptor().epoch;
+            replica.execute(&mut ExecCtx::with_epoch(epoch), &Request::Scan(req_clone)).await
         });
         let target_resp =
             match self.move_shard_ctrl.forward(forward_ctx, &Request::Scan(req)).await? {
@@ -713,7 +713,7 @@ impl Node {
             Response::Scan(scan) => scan,
             _ => return Err(Error::InvalidData("ShardScanResponse is required".into())),
         };
-        Ok(merge_scan_response(target_resp, source_resp))
+        Ok(merge_scan_response(scan_request, target_resp, source_resp))
     }
 
     #[inline]
@@ -918,6 +918,7 @@ mod tests {
                 node_id: NODE_ID,
                 role: ReplicaRole::Voter.into(),
             }],
+            ..Default::default()
         }
     }
 

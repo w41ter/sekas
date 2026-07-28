@@ -25,6 +25,7 @@ use crate::{Error, Result};
 
 /// Merge two scan response of an moving shard.
 pub(crate) fn merge_scan_response(
+    req: &ShardScanRequest,
     target: ShardScanResponse,
     source: ShardScanResponse,
 ) -> ShardScanResponse {
@@ -69,7 +70,11 @@ pub(crate) fn merge_scan_response(
         };
     }
 
-    let has_more = target.has_more || source.has_more;
+    let mut has_more = target.has_more || source.has_more;
+    if req.limit != 0 && value_sets.len() > req.limit as usize {
+        value_sets.truncate(req.limit as usize);
+        has_more = true;
+    }
     ShardScanResponse { data: value_sets, has_more }
 }
 
@@ -343,6 +348,31 @@ mod tests {
 
         let resp = scan(&ExecCtx::default(), &engine, &latch_mgr, &scan_req).await.unwrap();
         assert!(!resp.has_more);
+    }
+
+    #[test]
+    fn merge_scan_response_respects_limit() {
+        let req = ShardScanRequest { limit: 2, ..Default::default() };
+        let target = ShardScanResponse {
+            data: vec![
+                ValueSet { user_key: b"a".to_vec(), values: vec![Value::with_value(vec![1], 1)] },
+                ValueSet { user_key: b"c".to_vec(), values: vec![Value::with_value(vec![3], 1)] },
+            ],
+            has_more: false,
+        };
+        let source = ShardScanResponse {
+            data: vec![
+                ValueSet { user_key: b"b".to_vec(), values: vec![Value::with_value(vec![2], 1)] },
+                ValueSet { user_key: b"d".to_vec(), values: vec![Value::with_value(vec![4], 1)] },
+            ],
+            has_more: false,
+        };
+
+        let resp = merge_scan_response(&req, target, source);
+        assert_eq!(resp.data.len(), 2);
+        assert_eq!(resp.data[0].user_key, b"a".to_vec());
+        assert_eq!(resp.data[1].user_key, b"b".to_vec());
+        assert!(resp.has_more);
     }
 
     #[sekas_macro::test]

@@ -259,9 +259,6 @@ impl MoveShardCoordinator {
     }
 
     async fn clean_orphan_shard(&self) {
-        let group_engine = self.replica.group_engine();
-        group_engine.mark_deleted_shard(self.desc.get_shard_desc().clone());
-
         self.clean_move_shard_state().await;
     }
 

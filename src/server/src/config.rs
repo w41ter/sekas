@@ -101,6 +101,12 @@ pub struct ReplicaConfig {
     /// Default: 64MB.
     pub snap_file_size: u64,
 
+    /// The max number of MVCC entries to delete one by one before falling back
+    /// to RocksDB delete-range when deleting a shard.
+    ///
+    /// Default: 128.
+    pub delete_shard_range_threshold: usize,
+
     #[serde(skip)]
     pub testing_knobs: ReplicaTestingKnobs,
 }
@@ -281,6 +287,7 @@ impl Default for ReplicaConfig {
     fn default() -> Self {
         ReplicaConfig {
             snap_file_size: 64 * 1024 * 1024 * 1024,
+            delete_shard_range_threshold: 128,
             testing_knobs: ReplicaTestingKnobs::default(),
         }
     }

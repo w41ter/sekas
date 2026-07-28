@@ -19,9 +19,9 @@ mod options;
 mod properties;
 mod state;
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 use log::info;
 use sekas_rock::fs::create_dir_all_if_not_exists;
@@ -30,7 +30,6 @@ pub(crate) use self::group::{
     GroupEngine, MvccEntry, MvccIterator, RawIterator, Snapshot, SnapshotMode, WriteBatch,
     WriteStates,
 };
-use self::group_filter::DeletedShardRegistry;
 pub(crate) use self::state::StateEngine;
 use crate::{DbConfig, Result};
 
@@ -44,21 +43,12 @@ type DbResult<T, E = rocksdb::Error> = Result<T, E>;
 pub(crate) struct RawDb {
     pub db: rocksdb::DB,
     db_cfg: DbConfig,
-    deleted_shards: RwLock<HashMap<String, DeletedShardRegistry>>,
 }
 
 impl RawDb {
     fn options_for_cf(&self, name: &str) -> rocksdb::Options {
-        options::to_rocksdb_options(&self.db_cfg, self.deleted_shards_for_cf(name))
-    }
-
-    pub fn deleted_shards_for_cf(&self, name: &str) -> DeletedShardRegistry {
-        self.deleted_shards
-            .write()
-            .expect("deleted shard registry map poisoned")
-            .entry(name.to_owned())
-            .or_default()
-            .clone()
+        let _ = name;
+        options::to_rocksdb_options(&self.db_cfg)
     }
 
     #[inline]
@@ -219,29 +209,21 @@ pub(crate) fn open_raw_db<P: AsRef<Path>>(cfg: &DbConfig, path: P) -> Result<Raw
     use rocksdb::DB;
 
     std::fs::create_dir_all(&path)?;
-    let deleted_shards = RwLock::new(HashMap::new());
-    let default_options = options::to_rocksdb_options(cfg, DeletedShardRegistry::default());
+    let default_options = options::to_rocksdb_options(cfg);
 
     // List column families and open database with column families.
     match DB::list_cf(&default_options, &path) {
         Ok(cfs) => {
             info!("open local db {} with {} column families", path.as_ref().display(), cfs.len());
-            let cf_options = cfs.into_iter().map(|name| {
-                let registry = DeletedShardRegistry::default();
-                deleted_shards
-                    .write()
-                    .expect("deleted shard registry map poisoned")
-                    .insert(name.clone(), registry.clone());
-                (name, options::to_rocksdb_options(cfg, registry))
-            });
+            let cf_options = cfs.into_iter().map(|name| (name, options::to_rocksdb_options(cfg)));
             let db = DB::open_cf_with_opts(&default_options, path, cf_options)?;
-            Ok(RawDb { db, db_cfg: cfg.clone(), deleted_shards })
+            Ok(RawDb { db, db_cfg: cfg.clone() })
         }
         Err(e) => {
             if e.as_ref().ends_with("CURRENT: No such file or directory") {
                 info!("create new local db: {}", path.as_ref().display());
                 let db = DB::open(&default_options, &path)?;
-                Ok(RawDb { db, db_cfg: cfg.clone(), deleted_shards })
+                Ok(RawDb { db, db_cfg: cfg.clone() })
             } else {
                 Err(e.into())
             }

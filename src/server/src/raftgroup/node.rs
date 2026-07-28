@@ -806,6 +806,7 @@ mod tests {
                         role: ReplicaRole::Voter as i32,
                         ..Default::default()
                     }],
+                    ..Default::default()
                 }
             }
 
