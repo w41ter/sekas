@@ -107,6 +107,29 @@ async fn move_shard(
     panic!("move shard is failed after 16 retries");
 }
 
+async fn accept_shard(
+    c: &ClusterClient,
+    shard_desc: &ShardDesc,
+    dest_group_id: u64,
+    src_group_id: u64,
+) {
+    for _ in 0..16 {
+        let src_group_epoch = c.must_group_epoch(src_group_id).await;
+        let mut g = c.group(dest_group_id);
+        match g.accept_shard(src_group_id, src_group_epoch, shard_desc).await {
+            Ok(()) => return,
+            Err(e) => {
+                warn!(
+                    "accept shard {} from {src_group_id} to {dest_group_id} with src epoch {src_group_epoch}: {e:?}",
+                    shard_desc.id
+                );
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }
+    }
+    panic!("accept shard is failed after 16 retries");
+}
+
 async fn validate(c: &ClusterClient, group_id: u64, shard_id: u64, range: std::ops::Range<u64>) {
     let mut c = c.group(group_id);
     for i in range {
@@ -411,9 +434,7 @@ async fn move_shard_with_leader_transfer_while_pulling() {
     let (group_id_1, group_id_2, shard_desc) = create_two_groups(&c, node_ids, 4096).await;
     let shard_id = shard_desc.id;
 
-    let src_group_epoch = c.must_group_epoch(group_id_1).await;
-    let mut g = c.group(group_id_2);
-    g.accept_shard(group_id_1, src_group_epoch, &shard_desc).await.unwrap();
+    accept_shard(&c, &shard_desc, group_id_2, group_id_1).await;
     wait_moving_shard_state(&c, group_id_2, &[State::Moving, State::Moved]).await;
 
     for _ in 0..8 {
@@ -440,9 +461,7 @@ async fn move_shard_recovers_when_source_leader_stops_during_move_out() {
     let (group_id_1, group_id_2, shard_desc) = create_two_groups(&c, node_ids, 2048).await;
     let shard_id = shard_desc.id;
 
-    let src_group_epoch = c.must_group_epoch(group_id_1).await;
-    let mut g = c.group(group_id_2);
-    g.accept_shard(group_id_1, src_group_epoch, &shard_desc).await.unwrap();
+    accept_shard(&c, &shard_desc, group_id_2, group_id_1).await;
     wait_moving_shard_state(&c, group_id_2, &[State::Moving, State::Moved]).await;
 
     if let Some(mut src_leader_node_id) = c.get_group_leader_node_id(group_id_1).await {
@@ -474,8 +493,7 @@ async fn move_shard_forwarded_write_wins_over_later_pull_same_key() {
     let key = b"key-255".to_vec();
     let forwarded_value = b"forwarded-value".to_vec();
 
-    let src_group_epoch = c.must_group_epoch(group_id_1).await;
-    c.group(group_id_2).accept_shard(group_id_1, src_group_epoch, &shard_desc).await.unwrap();
+    accept_shard(&c, &shard_desc, group_id_2, group_id_1).await;
     wait_moving_shard_state(&c, group_id_1, &[State::Prepare, State::Moving]).await;
 
     // The write is issued to the source group while the shard is moving, so it
@@ -617,10 +635,16 @@ async fn move_shard_source_group_receive_duplicate_accepting_shard_request() {
             dest_group_epoch: 1,
         };
         match g.acquire_shard(&desc).await {
-            Err(sekas_client::Error::EpochNotMatch(_)) => {
+            Ok(_) => {}
+            Err(
+                sekas_client::Error::EpochNotMatch(_)
+                | sekas_client::Error::NotLeader(..)
+                | sekas_client::Error::GroupNotAccessable(_)
+                | sekas_client::Error::NotFound(_),
+            ) => {
+                ctx.wait_election_timeout().await;
                 continue;
             }
-            Ok(_) => {}
             Err(e) => panic!("setup moving shard receive: {e:?}"),
         }
         // retry
