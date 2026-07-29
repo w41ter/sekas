@@ -35,6 +35,7 @@ use sekas_client::{
 };
 use sekas_runtime::{ExecutorOwner, ShutdownNotifier};
 use sekas_server::{Config, NodeConfig, ReplicaConfig, ReplicaTestingKnobs};
+use tracing_subscriber::EnvFilter;
 
 use self::cases::{
     AutoShardBalance, AutoSplitMerge, BatchTxnCommit, HotspotDirectWriteDiagnostics,
@@ -107,6 +108,8 @@ enum CaseKind {
 impl Command {
     pub fn run(self) -> Result<()> {
         let cfg = LabConfig::load(&self)?;
+        let run_id = run_id();
+        init_logging(&cfg, &run_id)?;
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .worker_threads(cfg.runner_threads)
@@ -114,7 +117,7 @@ impl Command {
             .context("build perf lab runtime")?;
 
         runtime.block_on(async move {
-            let mut lab = LabContext::start(cfg).await?;
+            let mut lab = LabContext::start(cfg, run_id).await?;
             let result = match self.case {
                 CaseKind::SingleKeyUpdate => SingleKeyUpdate.run(&mut lab).await?,
                 CaseKind::BatchTxnCommit => BatchTxnCommit.run(&mut lab).await?,
@@ -204,8 +207,7 @@ pub(crate) struct LabContext {
 }
 
 impl LabContext {
-    async fn start(config: LabConfig) -> Result<Self> {
-        let run_id = run_id();
+    async fn start(config: LabConfig, run_id: String) -> Result<Self> {
         let root_dir = config.environment.root_dir.join(&run_id);
         if config.environment.cleanup && root_dir.exists() {
             fs::remove_dir_all(&root_dir)
@@ -777,6 +779,34 @@ pub(crate) struct MergeShardResult {
     pub(crate) route_convergence: Duration,
     pub(crate) route_converged: bool,
     pub(crate) attempts: u64,
+}
+
+fn init_logging(config: &LabConfig, run_id: &str) -> Result<()> {
+    if !config.log.enabled {
+        return Ok(());
+    }
+
+    fs::create_dir_all(&config.log.dir)
+        .with_context(|| format!("create log dir {}", config.log.dir.display()))?;
+    let log_file = config.log.dir.join(format!("perf-lab-{run_id}.log"));
+    let file = fs::File::create(&log_file)
+        .with_context(|| format!("create log file {}", log_file.display()))?;
+    let writer = move || {
+        file.try_clone()
+            .expect("perf-lab log file should be cloneable after initialization")
+    };
+    let filter_layer = EnvFilter::try_from_default_env()
+        .or_else(|_| EnvFilter::try_new(&config.log.filter))
+        .with_context(|| format!("parse log filter {}", config.log.filter))?;
+
+    tracing_subscriber::fmt()
+        .with_env_filter(filter_layer)
+        .with_ansi(false)
+        .with_writer(writer)
+        .init();
+    println!("perf-lab log: {}", log_file.display());
+
+    Ok(())
 }
 
 async fn node_client_with_retry(addr: &str) -> Result<NodeClient> {

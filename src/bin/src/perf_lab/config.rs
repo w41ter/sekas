@@ -22,6 +22,7 @@ use serde::{Deserialize, Serialize};
 use super::Command;
 
 const DEFAULT_REPORT_DIR: &str = "target/perf-lab";
+const DEFAULT_LOG_DIR: &str = "log";
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
@@ -31,6 +32,7 @@ pub(crate) struct LabConfig {
     pub(crate) cluster: ClusterConfig,
     pub(crate) workload: WorkloadConfig,
     pub(crate) report: ReportConfig,
+    pub(crate) log: LogConfig,
 }
 
 impl Default for LabConfig {
@@ -41,6 +43,7 @@ impl Default for LabConfig {
             cluster: ClusterConfig::default(),
             workload: WorkloadConfig::default(),
             report: ReportConfig::default(),
+            log: LogConfig::default(),
         }
     }
 }
@@ -169,6 +172,24 @@ impl Default for ReportConfig {
             fail_on_regression: false,
             max_qps_drop_percent: 5.0,
             max_latency_increase_percent: 10.0,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub(crate) struct LogConfig {
+    pub(crate) enabled: bool,
+    pub(crate) dir: PathBuf,
+    pub(crate) filter: String,
+}
+
+impl Default for LogConfig {
+    fn default() -> Self {
+        LogConfig {
+            enabled: true,
+            dir: PathBuf::from(DEFAULT_LOG_DIR),
+            filter: "info".to_owned(),
         }
     }
 }

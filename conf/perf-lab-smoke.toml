@@ -68,3 +68,8 @@ out_dir = "target/perf-lab-smoke"
 fail_on_regression = false
 max_qps_drop_percent = 5.0
 max_latency_increase_percent = 10.0
+
+[log]
+enabled = true
+dir = "log"
+filter = "info"
