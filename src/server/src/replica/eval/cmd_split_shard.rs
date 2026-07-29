@@ -18,6 +18,19 @@ use sekas_api::server::v1::*;
 use crate::replica::{EvalResult, GroupEngine, SplitShard, SyncOp};
 use crate::{Error, Result};
 
+pub(crate) fn get_split_key(
+    engine: &GroupEngine,
+    req: &GetSplitKeyRequest,
+) -> Result<GetSplitKeyResponse> {
+    let split_key = match (req.split_start_key.as_deref(), req.split_target_size) {
+        (Some(start_key), Some(target_size)) => {
+            engine.estimate_split_key_after(req.shard_id, start_key, target_size)?
+        }
+        _ => engine.estimate_split_key(req.shard_id)?,
+    };
+    Ok(GetSplitKeyResponse { split_key })
+}
+
 /// Eval split shard request.
 pub(crate) fn split_shard(engine: &GroupEngine, req: &SplitShardRequest) -> Result<EvalResult> {
     let old_shard_id = req.old_shard_id;

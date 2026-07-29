@@ -498,6 +498,45 @@ impl GroupEngine {
         Ok(estimate_user_split_key(&estimated_split_keys))
     }
 
+    /// Estimate a split key after `split_start_key` whose approximate bytes
+    /// from the start key reaches `split_target_size`.
+    pub fn estimate_split_key_after(
+        &self,
+        shard_id: u64,
+        split_start_key: &[u8],
+        split_target_size: u64,
+    ) -> Result<Option<Vec<u8>>> {
+        let shard_desc = self.shard_desc(shard_id)?;
+        if !shard::belong_to(&shard_desc, split_start_key) {
+            return Err(Error::InvalidArgument(format!(
+                "split start key is not belong to shard {shard_id}"
+            )));
+        }
+
+        let (_, shard_end) = self.shard_raw_boundary(shard_id)?;
+        let split_start = keys::raw(shard_desc.table_id, split_start_key);
+        let estimated_split_keys = self.raw_db.estimate_split_keys_in_range(
+            &self.cf_handle(),
+            &split_start,
+            &shard_end,
+        )?;
+        let Some(split_key) = estimate_user_split_key_by_size(
+            &self.raw_db,
+            &self.cf_handle(),
+            &split_start,
+            &estimated_split_keys,
+            split_target_size,
+        )?
+        else {
+            return Ok(None);
+        };
+
+        if !shard::belong_to(&shard_desc, &split_key) || split_key.as_slice() <= split_start_key {
+            return Ok(None);
+        }
+        Ok(Some(split_key))
+    }
+
     /// return the desc of the specified shard.
     #[inline]
     pub fn shard_desc(&self, shard_id: u64) -> Result<ShardDesc> {
@@ -1076,6 +1115,41 @@ fn estimate_user_split_key(estimated_split_keys: &[Vec<u8>]) -> Option<Vec<u8>> 
     }
 
     Some(right)
+}
+
+fn estimate_user_split_key_by_size(
+    raw_db: &RawDb,
+    cf_handle: &impl rocksdb::AsColumnFamilyRef,
+    start: &[u8],
+    estimated_split_keys: &[Vec<u8>],
+    target_size: u64,
+) -> Result<Option<Vec<u8>>> {
+    if estimated_split_keys.is_empty() {
+        return Ok(None);
+    }
+
+    for (idx, key) in estimated_split_keys.iter().enumerate() {
+        let approximate_size = raw_db.get_approximate_size(cf_handle, start, key)?;
+        if approximate_size < target_size {
+            continue;
+        }
+
+        let Some(right) = keys::may_revert_mvcc_key(key) else {
+            return Ok(None);
+        };
+        for key in estimated_split_keys[..idx].iter().rev() {
+            let Some(left) = keys::may_revert_mvcc_key(key) else {
+                return Ok(None);
+            };
+            if left < right {
+                return Ok(Some(shortest_separator_prefix(&left, &right)));
+            }
+        }
+
+        return Ok(Some(right));
+    }
+
+    Ok(None)
 }
 
 fn shortest_separator_prefix(left: &[u8], right: &[u8]) -> Vec<u8> {
@@ -1862,5 +1936,38 @@ mod tests {
 
         let split_key = engine.estimate_split_key(shard_id).unwrap();
         assert!(split_key.is_some());
+    }
+
+    #[sekas_macro::test]
+    async fn estimate_split_key_after_start_key_and_target_size() {
+        let dir = TempDir::new(fn_name!()).unwrap();
+        let (group_id, shard_id) = (1, 1);
+        let engine = create_engine(group_id, shard_id, dir.path().join("1").as_path()).await;
+
+        let mut wb = WriteBatch::default();
+        let n = 5000;
+        for i in 0..n {
+            engine
+                .put(
+                    &mut wb,
+                    shard_id,
+                    format!("user/0000{i:04}").as_bytes(),
+                    format!("value-{i}").as_bytes(),
+                    i,
+                )
+                .unwrap();
+        }
+        engine.commit(wb, WriteStates::default(), false).unwrap();
+        engine.raw_db.flush_cf(&engine.cf_handle()).unwrap();
+
+        let start_key = b"user/00002000";
+        let split_key = engine
+            .estimate_split_key_after(shard_id, start_key, 1)
+            .unwrap()
+            .expect("split key after start");
+        assert!(start_key.as_slice() < split_key.as_slice());
+
+        let split_key = engine.estimate_split_key_after(shard_id, start_key, u64::MAX).unwrap();
+        assert!(split_key.is_none());
     }
 }

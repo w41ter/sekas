@@ -42,6 +42,8 @@ struct SchedStats {
     raw_group_delta: HashMap<u64 /* group */, GroupDelta>,
     node_view: HashMap<u64 /* node */, NodeDelta>,
     split_shards: HashSet<u64>,
+    moving_shards: HashMap<u64, u64 /* dest group */>,
+    merge_shards: HashSet<(u64, u64)>,
 }
 
 #[derive(Default)]
@@ -62,6 +64,18 @@ pub struct TableStats {
 
 impl ClusterStats {
     pub fn handle_group_stats(&self, group_stats: GroupStats) {
+        {
+            let mut sched_stats = self.sched_stats.lock().expect("poisoned");
+            for shard in &group_stats.shard_stats {
+                if sched_stats
+                    .moving_shards
+                    .get(&shard.shard_id)
+                    .is_some_and(|dest_group| *dest_group == group_stats.group_id)
+                {
+                    sched_stats.moving_shards.remove(&shard.shard_id);
+                }
+            }
+        }
         {
             let mut table_set = self.table_set_stats.lock().expect("poisoned");
             for shard in &group_stats.shard_stats {
@@ -106,6 +120,41 @@ impl ClusterStats {
         sched_stats.split_shards.remove(&shard_id);
     }
 
+    pub fn handle_move_shard(&self, shard_id: u64, dest_group_id: u64) {
+        let mut sched_stats = self.sched_stats.lock().expect("poisoned");
+        sched_stats.moving_shards.insert(shard_id, dest_group_id);
+    }
+
+    pub fn finish_move_shard(&self, shard_id: u64) {
+        let mut sched_stats = self.sched_stats.lock().expect("poisoned");
+        sched_stats.moving_shards.remove(&shard_id);
+    }
+
+    pub fn handle_merge_shard(&self, left_shard_id: u64, right_shard_id: u64) {
+        let mut sched_stats = self.sched_stats.lock().expect("poisoned");
+        sched_stats.merge_shards.insert((left_shard_id, right_shard_id));
+    }
+
+    pub fn finish_merge_shard(&self, left_shard_id: u64, right_shard_id: u64) {
+        let mut sched_stats = self.sched_stats.lock().expect("poisoned");
+        sched_stats.merge_shards.remove(&(left_shard_id, right_shard_id));
+    }
+
+    pub fn is_merging_shard(&self, left_shard_id: u64, right_shard_id: u64) -> bool {
+        let sched_stats = self.sched_stats.lock().expect("poisoned");
+        sched_stats.merge_shards.contains(&(left_shard_id, right_shard_id))
+    }
+
+    pub fn is_shard_scheduled(&self, shard_id: u64) -> bool {
+        let sched_stats = self.sched_stats.lock().expect("poisoned");
+        sched_stats.split_shards.contains(&shard_id)
+            || sched_stats.moving_shards.contains_key(&shard_id)
+            || sched_stats
+                .merge_shards
+                .iter()
+                .any(|(left, right)| *left == shard_id || *right == shard_id)
+    }
+
     pub fn get_node_delta(&self, node: u64) -> NodeDelta {
         let mut rs = NodeDelta::default();
         if let Some(sched_node_delta) = {
@@ -124,15 +173,17 @@ impl ClusterStats {
     }
 
     /// Get the large shards, return the group_id and shard_id.
-    pub fn get_large_shards(&self, limit: usize) -> Vec<(u64, u64)> {
-        const SPLIT_THRESHOLD: u64 = 64 * 1024 * 1024;
-        let in_spliting = { self.sched_stats.lock().expect("poisoned").split_shards.clone() };
+    pub fn get_large_shards(&self, limit: usize, split_threshold: u64) -> Vec<(u64, u64)> {
+        let scheduled_shards = {
+            let sched_stats = self.sched_stats.lock().expect("poisoned");
+            sched_stats.scheduled_shards()
+        };
         let table_set = self.table_set_stats.lock().expect("poisoned");
         let mut target_shards = Vec::with_capacity(limit);
         for table_stats in table_set.tables.values() {
             for shard_stats in table_stats.shards.values() {
-                if shard_stats.shard_size < SPLIT_THRESHOLD
-                    || in_spliting.contains(&shard_stats.shard_id)
+                if shard_stats.shard_size <= split_threshold
+                    || scheduled_shards.contains(&shard_stats.shard_id)
                 {
                     continue;
                 }
@@ -169,6 +220,8 @@ impl ClusterStats {
             inner.raw_group_delta.clear();
             inner.node_view.clear();
             inner.split_shards.clear();
+            inner.moving_shards.clear();
+            inner.merge_shards.clear();
         }
         {
             let mut inner = self.job_stats.lock().unwrap();
@@ -182,6 +235,16 @@ impl ClusterStats {
 }
 
 impl SchedStats {
+    fn scheduled_shards(&self) -> HashSet<u64> {
+        let mut shards = self.split_shards.clone();
+        shards.extend(self.moving_shards.keys().copied());
+        for (left, right) in &self.merge_shards {
+            shards.insert(*left);
+            shards.insert(*right);
+        }
+        shards
+    }
+
     fn replace_state(&mut self, updates: &[ScheduleState]) -> bool {
         let mut updated = false;
         for state in updates {

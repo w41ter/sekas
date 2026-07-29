@@ -246,6 +246,11 @@ pub struct RootConfig {
     ///
     /// Default: true
     pub enable_auto_shard_split: bool,
+    /// The max approximate bytes of a shard that can be moved directly.
+    /// Larger shards are split before moving.
+    ///
+    /// Default: 64MB.
+    pub move_shard_size_limit: u64,
     /// Enable merge shards by dynamic size in auto.
     ///
     /// Default: true
@@ -272,7 +277,7 @@ pub struct RootConfig {
 impl Default for NodeConfig {
     fn default() -> Self {
         NodeConfig {
-            shard_chunk_size: 64 * 1024 * 1024,
+            shard_chunk_size: 64 * 1024,
             shard_gc_keys: 256,
             mvcc_gc_keys: 256,
             mvcc_gc_interval_ms: 0,
@@ -393,6 +398,7 @@ impl Default for RootConfig {
             enable_shard_balance: true,
             enable_leader_balance: true,
             enable_auto_shard_split: true,
+            move_shard_size_limit: 64 * 1024 * 1024,
             enable_auto_shard_merge: true,
             liveness_threshold_sec: 30,
             heartbeat_timeout_sec: 4,

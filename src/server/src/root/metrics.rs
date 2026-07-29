@@ -49,6 +49,7 @@ make_static_metric! {
             shed_root_leader,
             create_group,
             split_shard,
+            merge_shard,
         }
     }
     pub struct ReconcileScheduleHandleTaskDuration: Histogram {
@@ -61,6 +62,7 @@ make_static_metric! {
             shed_group_leaders,
             shed_root_leader,
             split_shard,
+            merge_shard,
         }
     }
     pub struct ReconcileScheduleCreateGroupStepDuration: Histogram {

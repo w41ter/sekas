@@ -121,6 +121,7 @@ impl ReconcileScheduler {
 
     /// Schedule migrate shard task.
     pub async fn sched_migrate_shard_task(&self, action: ReallocateShard) {
+        self.ctx.cluster_stats.handle_move_shard(action.shard, action.target_group);
         self.setup_task(ReconcileTask {
             task: Some(reconcile_task::Task::MigrateShard(MigrateShardTask {
                 shard: action.shard,
@@ -136,13 +137,36 @@ impl ReconcileScheduler {
     /// Schedule split shard task.
     pub async fn sched_split_shard_task(&self, group_id: u64, shard_id: u64) {
         debug!("sched split shard task, group_id {group_id}, shard_id {shard_id}");
+        self.ctx.cluster_stats.handle_split_shard(shard_id);
         self.setup_task(ReconcileTask {
             task: Some(reconcile_task::Task::SplitShard(SplitShardTask { group_id, shard_id })),
             created_at: timestamp_millis(),
             fire_at: 0,
         })
         .await;
-        self.ctx.cluster_stats.handle_split_shard(shard_id);
+    }
+
+    /// Schedule merge shard task.
+    pub async fn sched_merge_shard_task(
+        &self,
+        group_id: u64,
+        left_shard_id: u64,
+        right_shard_id: u64,
+    ) {
+        debug!(
+            "sched merge shard task, group_id {group_id}, left {left_shard_id}, right {right_shard_id}"
+        );
+        self.ctx.cluster_stats.handle_merge_shard(left_shard_id, right_shard_id);
+        self.setup_task(ReconcileTask {
+            task: Some(reconcile_task::Task::MergeShard(MergeShardTask {
+                group_id,
+                left_shard_id,
+                right_shard_id,
+            })),
+            created_at: timestamp_millis(),
+            fire_at: 0,
+        })
+        .await;
     }
 }
 
@@ -197,8 +221,20 @@ impl ReconcileScheduler {
             }
         }
 
-        for (group_id, shard_id) in self.ctx.cluster_stats.get_large_shards(5) {
-            self.sched_split_shard_task(group_id, shard_id).await;
+        if self.ctx.cfg.enable_auto_shard_split {
+            for (group_id, shard_id) in
+                self.ctx.cluster_stats.get_large_shards(5, self.ctx.cfg.move_shard_size_limit)
+            {
+                self.sched_split_shard_task(group_id, shard_id).await;
+            }
+        }
+
+        if self.ctx.cfg.enable_auto_shard_merge {
+            for (group_id, left_shard_id, right_shard_id) in
+                self.ctx.merge_shard_candidates().await?
+            {
+                self.sched_merge_shard_task(group_id, left_shard_id, right_shard_id).await;
+            }
         }
 
         Ok(!self.is_empty().await)
@@ -294,6 +330,10 @@ impl ReconcileScheduler {
                 metrics::RECONCILE_HANDLE_TASK_TOTAL.split_shard.inc();
                 metrics::RECONCILE_HANDLE_TASK_DURATION_SECONDS.split_shard.start_timer()
             }
+            Task::MergeShard(_) => {
+                metrics::RECONCILE_HANDLE_TASK_TOTAL.merge_shard.inc();
+                metrics::RECONCILE_HANDLE_TASK_DURATION_SECONDS.merge_shard.start_timer()
+            }
         }
     }
 
@@ -309,6 +349,7 @@ impl ReconcileScheduler {
             Task::ShedLeader(_) => metrics::RECONCILE_RETRY_TASK_TOTAL.shed_group_leaders.inc(),
             Task::ShedRoot(_) => metrics::RECONCILE_RETRY_TASK_TOTAL.shed_root_leader.inc(),
             Task::SplitShard(_) => metrics::RECONCILE_RETRY_TASK_TOTAL.split_shard.inc(),
+            Task::MergeShard(_) => metrics::RECONCILE_RETRY_TASK_TOTAL.merge_shard.inc(),
         }
     }
 }
@@ -338,6 +379,58 @@ impl SchedResult {
     fn delay(duration: Duration) -> Self {
         SchedResult { ack: true, immediately_next: true, delay: Some(duration) }
     }
+
+    /// Keep current task and retry after a delay.
+    fn retry_after(duration: Duration) -> Self {
+        SchedResult { ack: false, immediately_next: false, delay: Some(duration) }
+    }
+}
+
+fn is_merge_candidate(
+    left: &ShardDesc,
+    right: &ShardDesc,
+    left_stats: &ShardStats,
+    right_stats: &ShardStats,
+    move_shard_size_limit: u64,
+    is_scheduled: bool,
+) -> bool {
+    if left.table_id != right.table_id || is_scheduled {
+        return false;
+    }
+    if left.table_id < sekas_schema::FIRST_USER_TABLE_ID {
+        return false;
+    }
+    let (Some(left_range), Some(right_range)) = (&left.range, &right.range) else {
+        return false;
+    };
+    if left_range.end != right_range.start {
+        return false;
+    }
+    left_stats.shard_size.saturating_add(right_stats.shard_size) <= move_shard_size_limit
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MigrateShardPrecheck {
+    Move,
+    Split,
+    WaitStats,
+}
+
+fn precheck_migrate_shard_stats(
+    cfg: &RootConfig,
+    stats: Option<&ShardStats>,
+) -> MigrateShardPrecheck {
+    if !cfg.enable_auto_shard_split {
+        return MigrateShardPrecheck::Move;
+    }
+    let Some(stats) = stats else {
+        return MigrateShardPrecheck::WaitStats;
+    };
+    if stats.shard_size > cfg.move_shard_size_limit {
+        MigrateShardPrecheck::Split
+    } else {
+        MigrateShardPrecheck::Move
+    }
 }
 
 impl ScheduleContext {
@@ -350,6 +443,56 @@ impl ScheduleContext {
         cfg: RootConfig,
     ) -> Self {
         ScheduleContext { shared, alloc, heartbeat_queue, cluster_stats, bg_jobs, cfg }
+    }
+
+    async fn merge_shard_candidates(&self) -> Result<Vec<(u64, u64, u64)>> {
+        const LIMIT: usize = 5;
+
+        let schema = self.shared.schema()?;
+        let mut candidates = Vec::with_capacity(LIMIT);
+        for group in schema.list_group().await? {
+            if group.id == ROOT_GROUP_ID {
+                continue;
+            }
+
+            let mut shards = group.shards.clone();
+            shards.sort_by(|a, b| {
+                a.table_id.cmp(&b.table_id).then_with(|| {
+                    sekas_schema::shard::start_key(a).cmp(&sekas_schema::shard::start_key(b))
+                })
+            });
+
+            for pair in shards.windows(2) {
+                let [left, right] = pair else { continue };
+                if !self.is_merge_candidate(left, right) {
+                    continue;
+                }
+                candidates.push((group.id, left.id, right.id));
+                if candidates.len() >= LIMIT {
+                    return Ok(candidates);
+                }
+            }
+        }
+        Ok(candidates)
+    }
+
+    fn is_merge_candidate(&self, left: &ShardDesc, right: &ShardDesc) -> bool {
+        let (Some(left_stats), Some(right_stats)) = (
+            self.cluster_stats.get_shard_stats(left.id),
+            self.cluster_stats.get_shard_stats(right.id),
+        ) else {
+            return false;
+        };
+        is_merge_candidate(
+            left,
+            right,
+            &left_stats,
+            &right_stats,
+            self.cfg.move_shard_size_limit,
+            self.cluster_stats.is_shard_scheduled(left.id)
+                || self.cluster_stats.is_shard_scheduled(right.id)
+                || self.cluster_stats.is_merging_shard(left.id, right.id),
+        )
     }
 
     async fn handle_task(&self, task: &mut ReconcileTask) -> Result<SchedResult> {
@@ -365,6 +508,7 @@ impl ScheduleContext {
             Task::ShedLeader(shed_leader) => self.handle_shed_leader(shed_leader).await,
             Task::ShedRoot(shed_root) => self.handle_shed_root(shed_root).await,
             Task::SplitShard(split_shard) => self.handle_split_shard(split_shard).await,
+            Task::MergeShard(merge_shard) => self.handle_merge_shard(merge_shard).await,
         }
     }
 
@@ -459,6 +603,26 @@ impl ScheduleContext {
             "start migrate shard. shard={}, src={}, dest={}",
             task.shard, task.src_group, task.dest_group
         );
+        match self.precheck_migrate_shard(task.shard) {
+            MigrateShardPrecheck::Move => {}
+            MigrateShardPrecheck::Split => {
+                info!(
+                    "split shard before migrating because it exceeds move size limit. shard={}, src={}, dest={}, limit={}",
+                    task.shard, task.src_group, task.dest_group, self.cfg.move_shard_size_limit
+                );
+                self.cluster_stats.finish_move_shard(task.shard);
+                let mut split_task =
+                    SplitShardTask { group_id: task.src_group, shard_id: task.shard };
+                return self.handle_split_shard(&mut split_task).await;
+            }
+            MigrateShardPrecheck::WaitStats => {
+                info!(
+                    "delay migrating shard until shard stats are collected. shard={}, src={}, dest={}",
+                    task.shard, task.src_group, task.dest_group
+                );
+                return Ok(SchedResult::retry_after(Duration::from_secs(1)));
+            }
+        }
         let r = self.try_migrate_shard(task.src_group, task.dest_group, task.shard).await;
         match r {
             Ok(_) => Ok(SchedResult::ack()),
@@ -467,6 +631,7 @@ impl ScheduleContext {
                     "abort migrate shard. shard={}, src={}, dest={}, reason={reason}",
                     task.shard, task.src_group, task.dest_group
                 );
+                self.cluster_stats.finish_move_shard(task.shard);
                 Ok(SchedResult::ack())
             }
             Err(err) => {
@@ -477,6 +642,13 @@ impl ScheduleContext {
                 Err(err)
             }
         }
+    }
+
+    fn precheck_migrate_shard(&self, shard_id: u64) -> MigrateShardPrecheck {
+        precheck_migrate_shard_stats(
+            &self.cfg,
+            self.cluster_stats.get_shard_stats(shard_id).as_ref(),
+        )
     }
 
     async fn handle_transfer_leader(
@@ -602,6 +774,7 @@ impl ScheduleContext {
 
     /// Handle the spliting shard shards and update the sched stats.
     async fn handle_split_shard(&self, task: &mut SplitShardTask) -> Result<SchedResult> {
+        self.cluster_stats.handle_split_shard(task.shard_id);
         let result = self.handle_split_shard_inner(task).await?;
         if result.ack {
             self.cluster_stats.finish_split_shard(task.shard_id);
@@ -619,8 +792,10 @@ impl ScheduleContext {
 
         let old_shard_id = task.shard_id;
         let new_shard_id = schema.next_shard_id().await?;
-        match self.try_split_shard(task.group_id, old_shard_id, new_shard_id).await {
-            Ok(_) => Ok(SchedResult::next()),
+        let split_policy = self.split_policy_for_moving(task.group_id, old_shard_id).await?;
+        match self.try_split_shard(task.group_id, old_shard_id, new_shard_id, split_policy).await {
+            Ok(true) => Ok(SchedResult::next()),
+            Ok(false) => Ok(SchedResult::retry_after(Duration::from_secs(30))),
             Err(crate::Error::EpochNotMatch(_)) => {
                 warn!(
                     "split shard meet epoch not match, abort split shard task. group={}, shard={}, new_shard={}",
@@ -637,6 +812,64 @@ impl ScheduleContext {
                 error!(
                     "split shard: {err:?}. group={}, shard={}, new_shard={}",
                     task.group_id, old_shard_id, new_shard_id
+                );
+                Err(err)
+            }
+        }
+    }
+
+    async fn split_policy_for_moving(
+        &self,
+        group_id: u64,
+        shard_id: u64,
+    ) -> Result<Option<(Vec<u8>, u64)>> {
+        let Some(stats) = self.cluster_stats.get_shard_stats(shard_id) else {
+            return Ok(None);
+        };
+        if stats.shard_size <= self.cfg.move_shard_size_limit {
+            return Ok(None);
+        }
+        let Some(group) = self.get_group_leader(group_id).await? else {
+            return Ok(None);
+        };
+        let Some(shard) = group.shards.iter().find(|shard| shard.id == shard_id) else {
+            return Ok(None);
+        };
+        let Some(range) = shard.range.as_ref() else {
+            return Ok(None);
+        };
+        Ok(Some((range.start.clone(), self.cfg.move_shard_size_limit)))
+    }
+
+    async fn handle_merge_shard(&self, task: &mut MergeShardTask) -> Result<SchedResult> {
+        let result = self.handle_merge_shard_inner(task).await?;
+        if result.ack {
+            self.cluster_stats.finish_merge_shard(task.left_shard_id, task.right_shard_id);
+        }
+        Ok(result)
+    }
+
+    async fn handle_merge_shard_inner(&self, task: &mut MergeShardTask) -> Result<SchedResult> {
+        match self.try_merge_shard(task.group_id, task.left_shard_id, task.right_shard_id).await {
+            Ok(()) => Ok(SchedResult::next()),
+            Err(crate::Error::EpochNotMatch(_)) => {
+                warn!(
+                    "merge shard meet epoch not match, abort merge shard task. group={}, left={}, right={}",
+                    task.group_id, task.left_shard_id, task.right_shard_id
+                );
+                Ok(SchedResult::next())
+            }
+            Err(crate::Error::InvalidData(msg)) if msg.contains("not mergeable") => {
+                warn!(
+                    "abort merge shard task because shards are not mergeable. group={}, left={}, right={}, reason={msg}",
+                    task.group_id, task.left_shard_id, task.right_shard_id
+                );
+                Ok(SchedResult::next())
+            }
+            Err(err) => {
+                warn!(
+                    "merge shard fail, retry later: {err:?}. group={}, left={}, right={}",
+                    task.group_id, task.left_shard_id, task.right_shard_id
                 );
                 Err(err)
             }
@@ -739,9 +972,32 @@ impl ScheduleContext {
         group_id: u64,
         old_shard_id: u64,
         new_shard_id: u64,
+        split_policy: Option<(Vec<u8>, u64)>,
+    ) -> Result<bool> {
+        let mut group_client = self.shared.transport_manager.lazy_group_client(group_id);
+        let split_key = if let Some((split_start_key, split_target_size)) = split_policy {
+            let Some(split_key) = group_client
+                .get_split_key(old_shard_id, Some(split_start_key), Some(split_target_size))
+                .await?
+            else {
+                return Ok(false);
+            };
+            Some(split_key)
+        } else {
+            None
+        };
+        group_client.split_shard(old_shard_id, new_shard_id, split_key).await?;
+        Ok(true)
+    }
+
+    async fn try_merge_shard(
+        &self,
+        group_id: u64,
+        left_shard_id: u64,
+        right_shard_id: u64,
     ) -> Result<()> {
         let mut group_client = self.shared.transport_manager.lazy_group_client(group_id);
-        group_client.split_shard(old_shard_id, new_shard_id, None).await?;
+        group_client.merge_shard(left_shard_id, right_shard_id).await?;
         Ok(())
     }
 
@@ -752,5 +1008,70 @@ impl ScheduleContext {
         }
         let (leader_repl, _) = group_router.leader_state.unwrap();
         Ok(group_router.replicas.iter().find(|(_, r)| r.id == leader_repl).map(|(_, r)| r.node_id))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use sekas_api::server::v1::{RangePartition, ShardDesc, ShardStats};
+
+    use super::{MigrateShardPrecheck, is_merge_candidate, precheck_migrate_shard_stats};
+    use crate::RootConfig;
+
+    #[test]
+    fn migrate_shard_precheck_uses_stats_and_size_limit() {
+        let cfg = RootConfig { move_shard_size_limit: 1024, ..Default::default() };
+
+        assert_eq!(precheck_migrate_shard_stats(&cfg, None), MigrateShardPrecheck::WaitStats);
+        assert_eq!(
+            precheck_migrate_shard_stats(
+                &cfg,
+                Some(&ShardStats { shard_id: 1, table_id: 2, shard_size: 1025 })
+            ),
+            MigrateShardPrecheck::Split
+        );
+        assert_eq!(
+            precheck_migrate_shard_stats(
+                &cfg,
+                Some(&ShardStats { shard_id: 1, table_id: 2, shard_size: 1024 })
+            ),
+            MigrateShardPrecheck::Move
+        );
+
+        let cfg = RootConfig { enable_auto_shard_split: false, ..cfg };
+        assert_eq!(precheck_migrate_shard_stats(&cfg, None), MigrateShardPrecheck::Move);
+    }
+
+    #[test]
+    fn merge_candidate_requires_adjacency_size_and_no_schedule_lock() {
+        let table_id = sekas_schema::FIRST_USER_TABLE_ID;
+        let left = ShardDesc::with_range(1, table_id, b"a".to_vec(), b"m".to_vec());
+        let right = ShardDesc::with_range(2, table_id, b"m".to_vec(), b"z".to_vec());
+        let left_stats = ShardStats { shard_id: 1, table_id, shard_size: 400 };
+        let right_stats = ShardStats { shard_id: 2, table_id, shard_size: 600 };
+
+        assert!(is_merge_candidate(&left, &right, &left_stats, &right_stats, 1000, false));
+        assert!(!is_merge_candidate(&left, &right, &left_stats, &right_stats, 999, false));
+        assert!(!is_merge_candidate(&left, &right, &left_stats, &right_stats, 1000, true));
+
+        let mut non_adjacent = right.clone();
+        non_adjacent.range = Some(RangePartition { start: b"n".to_vec(), end: b"z".to_vec() });
+        assert!(!is_merge_candidate(&left, &non_adjacent, &left_stats, &right_stats, 1000, false));
+
+        let other_table = ShardDesc::with_range(3, table_id + 1, b"m".to_vec(), b"z".to_vec());
+        assert!(!is_merge_candidate(&left, &other_table, &left_stats, &right_stats, 1000, false));
+
+        let system_left = ShardDesc::with_range(4, 2, b"a".to_vec(), b"m".to_vec());
+        let system_right = ShardDesc::with_range(5, 2, b"m".to_vec(), b"z".to_vec());
+        let system_left_stats = ShardStats { shard_id: 4, table_id: 2, shard_size: 400 };
+        let system_right_stats = ShardStats { shard_id: 5, table_id: 2, shard_size: 600 };
+        assert!(!is_merge_candidate(
+            &system_left,
+            &system_right,
+            &system_left_stats,
+            &system_right_stats,
+            1000,
+            false
+        ));
     }
 }

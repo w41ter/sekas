@@ -181,6 +181,7 @@ pub fn take_group_request_metrics(
             GROUP_CLIENT_GROUP_REQUEST_TOTAL.watch.inc();
             None
         }
+        Request::GetSplitKey(_) => Some(&GROUP_CLIENT_GROUP_REQUEST_DURATION_SECONDS.get),
         Request::SplitShard(_) => {
             GROUP_CLIENT_GROUP_REQUEST_TOTAL.split_shard.inc();
             Some(&GROUP_CLIENT_GROUP_REQUEST_DURATION_SECONDS.split_shard)

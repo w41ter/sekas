@@ -102,7 +102,15 @@ impl TransportManager {
     }
 
     #[inline]
-    pub(crate) fn build_move_shard_client(&self, group_id: u64) -> MoveShardClient {
-        MoveShardClient::new(group_id, self.build_client(ClientOptions::default()))
+    pub(crate) fn build_move_shard_client(
+        &self,
+        group_id: u64,
+        shard_chunk_size: usize,
+    ) -> MoveShardClient {
+        MoveShardClient::with_shard_chunk_size(
+            group_id,
+            self.build_client(ClientOptions::default()),
+            shard_chunk_size,
+        )
     }
 }

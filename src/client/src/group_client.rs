@@ -588,6 +588,33 @@ impl GroupClient {
         self.invoke_with_opt(op, opt).await
     }
 
+    pub async fn get_split_key(
+        &mut self,
+        shard_id: u64,
+        split_start_key: Option<Vec<u8>>,
+        split_target_size: Option<u64>,
+    ) -> Result<Option<Vec<u8>>> {
+        let op = |ctx: InvokeContext, client: NodeClient| {
+            let req = GroupRequest::get_split_key(
+                ctx.group_id,
+                ctx.epoch,
+                shard_id,
+                split_start_key.clone(),
+                split_target_size,
+            );
+            async move {
+                let resp = client.unary_group_request(req).await.and_then(Self::group_response)?;
+                match resp {
+                    Response::GetSplitKey(resp) => Ok(resp.split_key),
+                    _ => Err(Status::internal("invalid response type, GetSplitKey is required")),
+                }
+            }
+        };
+        let opt =
+            InvokeOpt { accurate_epoch: true, ignore_transport_error: true, ..Default::default() };
+        self.invoke_with_opt(op, opt).await
+    }
+
     pub async fn merge_shard(&mut self, left_shard_id: u64, right_shard_id: u64) -> Result<()> {
         let op = |ctx: InvokeContext, client: NodeClient| {
             let req =

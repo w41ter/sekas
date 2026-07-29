@@ -110,7 +110,7 @@ impl Node {
         let raft_mgr = Arc::new(
             RaftManager::open(cfg.raft.clone(), engines.log(), snap_mgr, trans_mgr).await?,
         );
-        let migrate_ctrl = MoveShardController::new(transport_manager.clone());
+        let migrate_ctrl = MoveShardController::new(transport_manager.clone(), cfg.node.clone());
         let state_engine = engines.state();
         Ok(Node {
             cfg: cfg.node,

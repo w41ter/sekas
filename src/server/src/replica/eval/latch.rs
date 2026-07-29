@@ -126,6 +126,7 @@ where
         | Request::Transfer(_)
         | Request::MoveReplicas(_)
         | Request::WatchKey(_)
+        | Request::GetSplitKey(_)
         | Request::SplitShard(_)
         | Request::MergeShard(_) => return Ok(None),
     };

@@ -83,6 +83,9 @@ message GroupRequestUnion {
 
         // Merge two shards.
         MergeShardRequest merge_shard = 26;
+
+        // Get a split key without changing group metadata.
+        GetSplitKeyRequest get_split_key = 28;
     }
 }
 
@@ -105,6 +108,7 @@ message GroupResponseUnion {
         MoveReplicasResponse move_replicas = 24;
         SplitShardResponse split_shard = 25;
         MergeShardResponse merge_shard = 26;
+        GetSplitKeyResponse get_split_key = 28;
     }
 }
 
@@ -514,6 +518,20 @@ message SplitShardRequest {
 
 // The split shard response.
 message SplitShardResponse {}
+
+// Get a split key for a shard.
+message GetSplitKeyRequest {
+    // The id of the shard.
+    uint64 shard_id = 1;
+    // Estimate the split key after this user key.
+    optional bytes split_start_key = 2;
+    // Estimate a split key whose approximate bytes after split_start_key reach this target.
+    optional uint64 split_target_size = 3;
+}
+
+message GetSplitKeyResponse {
+    optional bytes split_key = 1;
+}
 
 // The merge shard request.
 message MergeShardRequest {

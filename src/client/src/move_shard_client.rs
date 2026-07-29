@@ -26,11 +26,20 @@ use crate::{Result, SekasClient};
 pub struct MoveShardClient {
     group_id: u64,
     client: SekasClient,
+    shard_chunk_size: usize,
 }
 
 impl MoveShardClient {
     pub fn new(group_id: u64, client: SekasClient) -> Self {
-        MoveShardClient { group_id, client }
+        MoveShardClient { group_id, client, shard_chunk_size: 64 * 1024 }
+    }
+
+    pub fn with_shard_chunk_size(
+        group_id: u64,
+        client: SekasClient,
+        shard_chunk_size: usize,
+    ) -> Self {
+        MoveShardClient { group_id, client, shard_chunk_size }
     }
 
     pub async fn acquire_shard(&mut self, desc: &MoveShardDesc) -> Result<()> {
@@ -71,7 +80,7 @@ impl MoveShardClient {
 
         loop {
             let client = ShardClient::new(self.group_id, shard_id, self.client.clone());
-            match client.pull(last_key.clone()).await {
+            match client.pull(last_key.clone(), self.shard_chunk_size).await {
                 Ok(resp) => return Ok(resp),
                 Err(err) => {
                     retry_state.retry(err).await?;

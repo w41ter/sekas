@@ -33,7 +33,7 @@ pub(crate) use self::cmd_ingest::ingest_value_set;
 pub(crate) use self::cmd_merge_shard::merge_shard;
 pub(crate) use self::cmd_move_replicas::move_replicas;
 pub(crate) use self::cmd_scan::{merge_scan_response, scan};
-pub(crate) use self::cmd_split_shard::split_shard;
+pub(crate) use self::cmd_split_shard::{get_split_key, split_shard};
 pub(crate) use self::cmd_txn::{clear_intent, commit_intent, write_intent};
 pub(crate) use self::cmd_write::batch_write;
 pub(crate) use self::latch::{LatchGuard, LatchManager, acquire_row_latches, remote};

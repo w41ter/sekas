@@ -485,12 +485,13 @@ async fn move_shard_forwarded_write_wins_over_later_pull_same_key() {
 
     let mut ctx = TestContext::new(fn_name!());
     ctx.disable_all_node_scheduler();
+    ctx.set_shard_chunk_size(256);
     let nodes = ctx.bootstrap_servers(3).await;
     let node_ids = nodes.keys().cloned().collect::<Vec<_>>();
     let c = ClusterClient::new(nodes).await;
-    let (group_id_1, group_id_2, shard_desc) = create_two_groups(&c, node_ids, 256).await;
+    let (group_id_1, group_id_2, shard_desc) = create_two_groups(&c, node_ids, 4096).await;
     let shard_id = shard_desc.id;
-    let key = b"key-255".to_vec();
+    let key = b"key-4095".to_vec();
     let forwarded_value = b"forwarded-value".to_vec();
 
     accept_shard(&c, &shard_desc, group_id_2, group_id_1).await;

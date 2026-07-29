@@ -29,7 +29,7 @@ use crate::node::Replica;
 use crate::node::metrics::*;
 use crate::serverpb::v1::*;
 use crate::transport::TransportManager;
-use crate::{Result, record_latency};
+use crate::{NodeConfig, Result, record_latency};
 
 #[derive(Debug)]
 pub struct ForwardCtx {
@@ -55,11 +55,14 @@ pub struct MoveShardController {
 
 struct MoveShardControllerShared {
     transport_manager: TransportManager,
+    cfg: NodeConfig,
 }
 
 impl MoveShardController {
-    pub(crate) fn new(transport_manager: TransportManager) -> Self {
-        MoveShardController { shared: Arc::new(MoveShardControllerShared { transport_manager }) }
+    pub(crate) fn new(transport_manager: TransportManager, cfg: NodeConfig) -> Self {
+        MoveShardController {
+            shared: Arc::new(MoveShardControllerShared { transport_manager, cfg }),
+        }
     }
 
     /// Watch moving shard state and do the corresponding step.
@@ -87,8 +90,7 @@ impl MoveShardController {
                     } else {
                         desc.src_group_id
                     };
-                    let client =
-                        ctrl.shared.transport_manager.build_move_shard_client(target_group_id);
+                    let client = ctrl.shared.build_move_shard_client(target_group_id);
                     coord = Some(MoveShardCoordinator {
                         replica_id,
                         group_id,
@@ -111,7 +113,7 @@ impl MoveShardController {
         request: &Request,
     ) -> Result<Response> {
         let group_id = forward_ctx.dest_group_id;
-        let mut client = self.shared.transport_manager.build_move_shard_client(group_id);
+        let mut client = self.shared.build_move_shard_client(group_id);
         forward_ctx.payloads.retain(|f| !f.values.is_empty());
         let req = ForwardRequest {
             shard_id: forward_ctx.shard_id,
@@ -122,6 +124,12 @@ impl MoveShardController {
         let resp = client.forward(&req).await?;
         let resp = resp.response.and_then(|resp| resp.response);
         Ok(resp.unwrap())
+    }
+}
+
+impl MoveShardControllerShared {
+    fn build_move_shard_client(&self, group_id: u64) -> MoveShardClient {
+        self.transport_manager.build_move_shard_client(group_id, self.cfg.shard_chunk_size)
     }
 }
 
@@ -301,11 +309,8 @@ pub async fn pull_shard(
         } else {
             finished = true;
         }
-        for value_set in &shard_chunk {
-            replica.ingest_value_set(shard_id, value_set).await?;
-        }
         if let Some(value_set) = shard_chunk.last() {
-            replica.save_ingest_progress(shard_id, &value_set.user_key).await?
+            replica.ingest_value_sets(shard_id, &shard_chunk, &value_set.user_key).await?
         }
         NODE_INGEST_CHUNK_TOTAL.inc();
     }

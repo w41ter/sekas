@@ -18,7 +18,7 @@ pub struct ReconcileTask {
     pub created_at: u64,
     #[prost(uint64, tag = "129")]
     pub fire_at: u64,
-    #[prost(oneof = "reconcile_task::Task", tags = "1, 2, 3, 4, 5")]
+    #[prost(oneof = "reconcile_task::Task", tags = "1, 2, 3, 4, 5, 6, 7")]
     pub task: ::core::option::Option<reconcile_task::Task>,
 }
 
@@ -38,6 +38,8 @@ pub mod reconcile_task {
         ShedRoot(super::ShedRootLeaderTask),
         #[prost(message, tag = "6")]
         SplitShard(super::SplitShardTask),
+        #[prost(message, tag = "7")]
+        MergeShard(super::MergeShardTask),
     }
 }
 
@@ -95,6 +97,16 @@ pub struct SplitShardTask {
     pub shard_id: u64,
     #[prost(uint64, tag = "2")]
     pub group_id: u64,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct MergeShardTask {
+    #[prost(uint64, tag = "1")]
+    pub group_id: u64,
+    #[prost(uint64, tag = "2")]
+    pub left_shard_id: u64,
+    #[prost(uint64, tag = "3")]
+    pub right_shard_id: u64,
 }
 
 #[derive(Clone, PartialEq, ::prost::Message)]

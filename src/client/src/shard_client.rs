@@ -64,13 +64,17 @@ impl ShardClient {
         }
     }
 
-    pub async fn pull(&self, last_key: Option<Vec<u8>>) -> Result<Vec<ValueSet>> {
+    pub async fn pull(
+        &self,
+        last_key: Option<Vec<u8>>,
+        limit_bytes: usize,
+    ) -> Result<Vec<ValueSet>> {
         let req = Request::Scan(ShardScanRequest {
             shard_id: self.shard_id,
             start_version: sekas_schema::system::txn::TXN_INTENT_VERSION,
             prefix: None,
             limit: 0,
-            limit_bytes: 64 * 1024, // 64KB
+            limit_bytes: limit_bytes as u64,
             exclude_start_key: true,
             exclude_end_key: false,
             start_key: last_key,

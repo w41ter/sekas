@@ -511,6 +511,10 @@ impl Replica {
                 let eval_result = eval::split_shard(&self.group_engine, req)?;
                 (Some(eval_result), Response::SplitShard(SplitShardResponse {}))
             }
+            Request::GetSplitKey(req) => {
+                let resp = eval::get_split_key(&self.group_engine, req)?;
+                (None, Response::GetSplitKey(resp))
+            }
             Request::MergeShard(req) => {
                 let eval_result = eval::merge_shard(&self.group_engine, req)?;
                 (Some(eval_result), Response::MergeShard(MergeShardResponse {}))
@@ -671,6 +675,7 @@ fn is_change_meta_request(request: &Request) -> bool {
         | Request::WriteIntent(_)
         | Request::CommitIntent(_)
         | Request::ClearIntent(_)
+        | Request::GetSplitKey(_)
         | Request::WatchKey(_) => false,
     }
 }

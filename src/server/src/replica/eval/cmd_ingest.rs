@@ -15,36 +15,31 @@ use sekas_api::server::v1::ValueSet;
 
 use crate::Result;
 use crate::engine::{GroupEngine, WriteBatch};
-use crate::serverpb::v1::{EvalResult, WriteBatchRep};
 
 pub async fn ingest_value_set(
     engine: &GroupEngine,
     shard_id: u64,
     value_set: &ValueSet,
-) -> Result<Option<EvalResult>> {
+    wb: &mut WriteBatch,
+) -> Result<bool> {
     // TODO(walter) assert row lock is hold.
     if value_set.values.is_empty() {
-        return Ok(None);
+        return Ok(false);
     }
 
     if engine.get(shard_id, &value_set.user_key).await?.is_some() {
-        return Ok(None);
+        return Ok(false);
     };
 
-    let mut wb = WriteBatch::default();
     for value in &value_set.values {
         if let Some(content) = value.content.as_ref() {
-            engine.put(&mut wb, shard_id, &value_set.user_key, content, value.version)?;
+            engine.put(wb, shard_id, &value_set.user_key, content, value.version)?;
         } else {
-            engine.tombstone(&mut wb, shard_id, &value_set.user_key, value.version)?;
+            engine.tombstone(wb, shard_id, &value_set.user_key, value.version)?;
         }
     }
 
-    let eval_result = EvalResult {
-        batch: Some(WriteBatchRep { data: wb.data().to_vec() }),
-        ..Default::default()
-    };
-    Ok(Some(eval_result))
+    Ok(true)
 }
 
 #[cfg(test)]
@@ -64,15 +59,16 @@ mod tests {
         let engine = create_group_engine(dir.path(), 1, 1, 1).await;
 
         let value_set = ValueSet { user_key: vec![1, 2, 3, 4], values: vec![Value::tombstone(1)] };
-        let result = ingest_value_set(&engine, SHARD_ID, &value_set).await.unwrap();
-        assert!(result.is_some());
-        let eval_result = result.unwrap();
-        let wb = WriteBatch::new(&eval_result.batch.unwrap().data);
+        let mut wb = WriteBatch::default();
+        let ingested = ingest_value_set(&engine, SHARD_ID, &value_set, &mut wb).await.unwrap();
+        assert!(ingested);
+        let wb = WriteBatch::new(wb.data());
         engine.commit(wb, WriteStates::default(), false).unwrap();
 
         // Ignore if the user key already exists.
         let value_set = ValueSet { user_key: vec![1, 2, 3, 4], values: vec![Value::tombstone(1)] };
-        let result = ingest_value_set(&engine, SHARD_ID, &value_set).await.unwrap();
-        assert!(result.is_none());
+        let mut wb = WriteBatch::default();
+        let ingested = ingest_value_set(&engine, SHARD_ID, &value_set, &mut wb).await.unwrap();
+        assert!(!ingested);
     }
 }

@@ -25,15 +25,40 @@ use crate::{Error, Result};
 impl Replica {
     /// Ingest value set of a key if it not exists before.
     pub async fn ingest_value_set(&self, shard_id: u64, value_set: &ValueSet) -> Result<()> {
+        self.ingest_value_sets(shard_id, std::slice::from_ref(value_set), &value_set.user_key).await
+    }
+
+    /// Ingest a chunk of value sets and save the ingestion progress in one
+    /// proposal.
+    pub async fn ingest_value_sets(
+        &self,
+        shard_id: u64,
+        value_sets: &[ValueSet],
+        progress_key: &[u8],
+    ) -> Result<()> {
         let _acl_guard = self.take_read_acl_guard().await;
         self.check_moving_shard_request_early(shard_id)?;
 
-        let _latch_guard = self.latch_mgr.acquire(shard_id, &value_set.user_key).await?;
-        let eval_result = match ingest_value_set(&self.group_engine, shard_id, value_set).await? {
-            Some(eval_result) => eval_result,
-            None => return Ok(()),
+        let mut wb = WriteBatch::default();
+        let mut has_ingested = false;
+        let mut latch_guards = Vec::with_capacity(value_sets.len());
+        for value_set in value_sets {
+            let latch_guard = self.latch_mgr.acquire(shard_id, &value_set.user_key).await?;
+            has_ingested |=
+                ingest_value_set(&self.group_engine, shard_id, value_set, &mut wb).await?;
+            latch_guards.push(latch_guard);
+        }
+
+        let eval_result = EvalResult {
+            batch: if has_ingested {
+                Some(WriteBatchRep { data: wb.data().to_owned() })
+            } else {
+                None
+            },
+            op: Some(SyncOp::ingest(progress_key.to_vec())),
         };
         self.raft_group.propose(eval_result).await?;
+        drop(latch_guards);
 
         Ok(())
     }

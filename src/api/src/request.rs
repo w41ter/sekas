@@ -161,6 +161,26 @@ impl GroupRequest {
         }
     }
 
+    pub fn get_split_key(
+        group_id: u64,
+        epoch: u64,
+        shard_id: u64,
+        split_start_key: Option<Vec<u8>>,
+        split_target_size: Option<u64>,
+    ) -> Self {
+        GroupRequest {
+            group_id,
+            epoch,
+            request: Some(GroupRequestUnion {
+                request: Some(group_request_union::Request::GetSplitKey(GetSplitKeyRequest {
+                    shard_id,
+                    split_start_key,
+                    split_target_size,
+                })),
+            }),
+        }
+    }
+
     /// build merge shard request
     pub fn merge_shard(group_id: u64, epoch: u64, left_shard_id: u64, right_shard_id: u64) -> Self {
         GroupRequest {

@@ -31,6 +31,7 @@ pub struct TestContext {
     num_cpus: usize,
     root_dir: TempDir,
     root_cfg: RootConfig,
+    node_cfg: NodeConfig,
     replica_knobs: ReplicaTestingKnobs,
     raft_knobs: RaftTestingKnobs,
     disable_group_promoting: bool,
@@ -53,6 +54,7 @@ impl TestContext {
             replica_knobs: ReplicaTestingKnobs::default(),
             raft_knobs: RaftTestingKnobs::default(),
             root_cfg: RootConfig::default(),
+            node_cfg: NodeConfig::default(),
             tick_interval_ms: 500,
             notifiers: HashMap::default(),
             handles: HashMap::default(),
@@ -115,6 +117,22 @@ impl TestContext {
         self.root_cfg.enable_group_balance = true;
     }
 
+    pub fn enable_shard_balance(&mut self) {
+        self.root_cfg.enable_shard_balance = true;
+    }
+
+    pub fn set_move_shard_size_limit(&mut self, limit: u64) {
+        self.root_cfg.move_shard_size_limit = limit;
+    }
+
+    pub fn set_schedule_interval_sec(&mut self, secs: u64) {
+        self.root_cfg.schedule_interval_sec = secs;
+    }
+
+    pub fn set_shard_chunk_size(&mut self, size: usize) {
+        self.node_cfg.shard_chunk_size = size;
+    }
+
     pub fn disable_all_balance(&mut self) {
         self.disable_replica_balance();
         self.disable_leader_balance();
@@ -157,7 +175,7 @@ impl TestContext {
                     testing_knobs: self.replica_knobs.clone(),
                     ..Default::default()
                 },
-                ..Default::default()
+                ..self.node_cfg.clone()
             },
             raft: RaftConfig {
                 tick_interval_ms: self.tick_interval_ms,
