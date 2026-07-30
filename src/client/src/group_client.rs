@@ -674,14 +674,12 @@ fn is_executable(descriptor: &GroupDesc, request: &Request) -> bool {
         Request::Write(req) => {
             is_all_target_shard_exists(descriptor, req.shard_id, &req.deletes, &req.puts)
         }
-        Request::WriteIntent(req) => req
-            .writes
-            .iter()
-            .all(|write| is_all_target_shard_exists(descriptor, write.shard_id, &write.deletes, &write.puts)),
-        Request::LocalTxnWrite(req) => req
-            .writes
-            .iter()
-            .all(|write| is_all_target_shard_exists(descriptor, write.shard_id, &write.deletes, &write.puts)),
+        Request::WriteIntent(req) => req.writes.iter().all(|write| {
+            is_all_target_shard_exists(descriptor, write.shard_id, &write.deletes, &write.puts)
+        }),
+        Request::LocalTxnWrite(req) => req.writes.iter().all(|write| {
+            is_all_target_shard_exists(descriptor, write.shard_id, &write.deletes, &write.puts)
+        }),
         Request::CommitIntent(req) => req
             .shard_keys
             .iter()

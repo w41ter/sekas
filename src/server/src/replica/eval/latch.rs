@@ -165,9 +165,11 @@ fn collect_shard_write_keys(req: &ShardWriteRequest) -> Result<Vec<Vec<u8>>> {
 fn collect_write_intent_keys(req: &WriteIntentRequest) -> Result<Vec<ShardKey>> {
     let mut keys = Vec::with_capacity(req.writes.len());
     for write in &req.writes {
-        keys.extend(collect_shard_write_keys(write)?.into_iter().map(|user_key| {
-            ShardKey { shard_id: write.shard_id, user_key }
-        }));
+        keys.extend(
+            collect_shard_write_keys(write)?
+                .into_iter()
+                .map(|user_key| ShardKey { shard_id: write.shard_id, user_key }),
+        );
     }
     Ok(keys)
 }
@@ -175,9 +177,11 @@ fn collect_write_intent_keys(req: &WriteIntentRequest) -> Result<Vec<ShardKey>> 
 fn collect_local_txn_write_keys(req: &LocalTxnWriteRequest) -> Result<Vec<ShardKey>> {
     let mut keys = Vec::with_capacity(req.writes.len());
     for write in &req.writes {
-        keys.extend(collect_shard_write_keys(write)?.into_iter().map(|user_key| {
-            ShardKey { shard_id: write.shard_id, user_key }
-        }));
+        keys.extend(
+            collect_shard_write_keys(write)?
+                .into_iter()
+                .map(|user_key| ShardKey { shard_id: write.shard_id, user_key }),
+        );
     }
     Ok(keys)
 }

@@ -411,9 +411,7 @@ async fn txn_intent_batch_partially_forwards_moving_shard() {
                 },
                 ShardWriteRequest {
                     shard_id: local_shard_id,
-                    puts: vec![
-                        WriteBuilder::new(local_key.clone()).ensure_put(b"local".to_vec()),
-                    ],
+                    puts: vec![WriteBuilder::new(local_key.clone()).ensure_put(b"local".to_vec())],
                     deletes: Vec::new(),
                 },
             ],

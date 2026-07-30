@@ -824,9 +824,7 @@ mod tests {
             start_version,
             writes: vec![ShardWriteRequest {
                 shard_id: 1,
-                deletes: vec![
-                    WriteBuilder::new(key.clone()).expect_exists().ensure_delete(),
-                ],
+                deletes: vec![WriteBuilder::new(key.clone()).expect_exists().ensure_delete()],
                 puts: Vec::new(),
             }],
         };
@@ -957,9 +955,7 @@ mod tests {
                     start_version,
                     writes: vec![ShardWriteRequest {
                         shard_id: 1,
-                        puts: vec![
-                            WriteBuilder::new(key_clone.clone()).ensure_add(1),
-                        ],
+                        puts: vec![WriteBuilder::new(key_clone.clone()).ensure_add(1)],
                         deletes: Vec::new(),
                     }],
                 };

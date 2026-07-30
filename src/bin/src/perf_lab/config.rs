@@ -186,10 +186,6 @@ pub(crate) struct LogConfig {
 
 impl Default for LogConfig {
     fn default() -> Self {
-        LogConfig {
-            enabled: true,
-            dir: PathBuf::from(DEFAULT_LOG_DIR),
-            filter: "info".to_owned(),
-        }
+        LogConfig { enabled: true, dir: PathBuf::from(DEFAULT_LOG_DIR), filter: "info".to_owned() }
     }
 }

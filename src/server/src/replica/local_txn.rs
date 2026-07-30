@@ -71,10 +71,7 @@ impl LocalTxnManager {
         }
     }
 
-    pub async fn begin_commit(
-        &self,
-        candidate_commit_version: u64,
-    ) -> PendingLocalTxnGuard {
+    pub async fn begin_commit(&self, candidate_commit_version: u64) -> PendingLocalTxnGuard {
         let mut state = self.core.inner.lock().await;
         let id = PendingLocalTxnId(state.next_pending_id);
         state.next_pending_id += 1;
@@ -84,12 +81,7 @@ impl LocalTxnManager {
         state.last_assigned_commit_version = commit_version;
         state.pending_commits.push(PendingLocalTxn { id, commit_version });
 
-        PendingLocalTxnGuard {
-            manager: self.clone(),
-            id,
-            commit_version,
-            finished: false,
-        }
+        PendingLocalTxnGuard { manager: self.clone(), id, commit_version, finished: false }
     }
 
     async fn finish_pending(&self, id: PendingLocalTxnId) {
@@ -107,9 +99,7 @@ impl LocalTxnManager {
 
 impl LocalTxnState {
     fn has_pending_at_or_before(&self, read_version: u64) -> bool {
-        self.pending_commits
-            .iter()
-            .any(|pending| pending.commit_version <= read_version)
+        self.pending_commits.iter().any(|pending| pending.commit_version <= read_version)
     }
 
     fn remove_pending(&mut self, id: PendingLocalTxnId) {

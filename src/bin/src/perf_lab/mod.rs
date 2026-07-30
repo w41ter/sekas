@@ -792,8 +792,7 @@ fn init_logging(config: &LabConfig, run_id: &str) -> Result<()> {
     let file = fs::File::create(&log_file)
         .with_context(|| format!("create log file {}", log_file.display()))?;
     let writer = move || {
-        file.try_clone()
-            .expect("perf-lab log file should be cloneable after initialization")
+        file.try_clone().expect("perf-lab log file should be cloneable after initialization")
     };
     let filter_layer = EnvFilter::try_from_default_env()
         .or_else(|_| EnvFilter::try_new(&config.log.filter))

@@ -146,28 +146,24 @@ fn is_executable(descriptor: &GroupDesc, request: &Request) -> bool {
                 }
                 true
             }
-            Request::WriteIntent(req) => {
-                req.writes.iter().all(|write| {
-                    write
-                        .puts
-                        .iter()
-                        .all(|put| is_target_shard_exists(descriptor, write.shard_id, &put.key))
-                        && write.deletes.iter().all(|delete| {
-                            is_target_shard_exists(descriptor, write.shard_id, &delete.key)
-                        })
-                })
-            }
-            Request::LocalTxnWrite(req) => {
-                req.writes.iter().all(|write| {
-                    write
-                        .puts
-                        .iter()
-                        .all(|put| is_target_shard_exists(descriptor, write.shard_id, &put.key))
-                        && write.deletes.iter().all(|delete| {
-                            is_target_shard_exists(descriptor, write.shard_id, &delete.key)
-                        })
-                })
-            }
+            Request::WriteIntent(req) => req.writes.iter().all(|write| {
+                write
+                    .puts
+                    .iter()
+                    .all(|put| is_target_shard_exists(descriptor, write.shard_id, &put.key))
+                    && write.deletes.iter().all(|delete| {
+                        is_target_shard_exists(descriptor, write.shard_id, &delete.key)
+                    })
+            }),
+            Request::LocalTxnWrite(req) => req.writes.iter().all(|write| {
+                write
+                    .puts
+                    .iter()
+                    .all(|put| is_target_shard_exists(descriptor, write.shard_id, &put.key))
+                    && write.deletes.iter().all(|delete| {
+                        is_target_shard_exists(descriptor, write.shard_id, &delete.key)
+                    })
+            }),
             Request::CommitIntent(req) => req
                 .shard_keys
                 .iter()
