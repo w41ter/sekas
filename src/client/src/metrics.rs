@@ -141,6 +141,10 @@ pub fn take_group_request_metrics(
             GROUP_CLIENT_GROUP_REQUEST_TOTAL.write.inc();
             Some(&GROUP_CLIENT_GROUP_REQUEST_DURATION_SECONDS.write)
         }
+        Request::LocalTxnWrite(_) => {
+            GROUP_CLIENT_GROUP_REQUEST_TOTAL.write.inc();
+            Some(&GROUP_CLIENT_GROUP_REQUEST_DURATION_SECONDS.write)
+        }
         Request::WriteIntent(_) => {
             GROUP_CLIENT_GROUP_REQUEST_TOTAL.prepare_intent.inc();
             Some(&GROUP_CLIENT_GROUP_REQUEST_DURATION_SECONDS.prepare_intent)

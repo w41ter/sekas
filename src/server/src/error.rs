@@ -105,6 +105,9 @@ pub enum Error {
 
     #[error("the txn is conflict with others")]
     TxnConflict,
+
+    #[error("the local txn is not allowed")]
+    LocalTxnNotAllowed,
 }
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;
@@ -186,6 +189,11 @@ impl From<Error> for tonic::Status {
                 "the txn is conflict",
                 v1::Error::txn_conflict().encode_to_vec().into(),
             ),
+            Error::LocalTxnNotAllowed => Status::with_details(
+                Code::Unknown,
+                "the local txn is not allowed",
+                v1::Error::local_txn_not_allowed().encode_to_vec().into(),
+            ),
 
             Error::Forward(_) => panic!("Forward only used inside node"),
             Error::PartialForward(_) => panic!("PartialForward only used inside node"),
@@ -247,6 +255,7 @@ impl From<Error> for sekas_api::server::v1::Error {
                 v1::Error::cas_failed(index, cond_index, prev_value)
             }
             Error::TxnConflict => v1::Error::txn_conflict(),
+            Error::LocalTxnNotAllowed => v1::Error::local_txn_not_allowed(),
 
             Error::Forward(_) => panic!("Forward only used inside node"),
             Error::PartialForward(_) => panic!("PartialForward only used inside node"),
@@ -289,6 +298,7 @@ impl From<sekas_client::Error> for Error {
                 Error::CasFailed(index, cond_index, prev_value)
             }
             sekas_client::Error::TxnConflict => Error::TxnConflict,
+            sekas_client::Error::LocalTxnNotAllowed => Error::LocalTxnNotAllowed,
             sekas_client::Error::Rpc(err) => Error::Rpc(err),
             sekas_client::Error::Connect(err) => Error::Rpc(err),
             sekas_client::Error::Transport(err) => Error::Rpc(err),

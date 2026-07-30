@@ -27,7 +27,11 @@ pub mod server {
         tonic::include_proto!("sekas.server.v1");
 
         /// A helper enum to hold both [`PutRequest`] and [`DeleteRequest`].
-        pub type WriteRequest = write_intent::Write;
+        #[derive(Clone, Debug)]
+        pub enum WriteRequest {
+            Put(PutRequest),
+            Delete(DeleteRequest),
+        }
     }
 }
 

@@ -16,7 +16,8 @@ use std::collections::HashMap;
 
 use sekas_api::server::v1::group_request_union::Request;
 use sekas_api::server::v1::{
-    ShardKey, ShardWriteRequest, TxnIntent, TxnState, Value, WriteIntentRequest, write_intent,
+    LocalTxnWriteRequest, ShardKey, ShardWriteRequest, TxnIntent, TxnState, Value,
+    WriteIntentRequest,
 };
 
 use crate::{Error, Result};
@@ -117,6 +118,7 @@ where
         Request::WriteIntent(req) => collect_write_intent_keys(req)?,
         Request::CommitIntent(req) => req.shard_keys.clone(),
         Request::ClearIntent(req) => req.shard_keys.clone(),
+        Request::LocalTxnWrite(req) => collect_local_txn_write_keys(req)?,
         Request::Scan(_)
         | Request::Get(_)
         | Request::CreateShard(_)
@@ -163,18 +165,21 @@ fn collect_shard_write_keys(req: &ShardWriteRequest) -> Result<Vec<Vec<u8>>> {
 fn collect_write_intent_keys(req: &WriteIntentRequest) -> Result<Vec<ShardKey>> {
     let mut keys = Vec::with_capacity(req.writes.len());
     for write in &req.writes {
-        if let Some(user_key) = write.write.as_ref().map(write_intent_user_key) {
-            keys.push(ShardKey { shard_id: write.shard_id, user_key: user_key.to_vec() });
-        }
+        keys.extend(collect_shard_write_keys(write)?.into_iter().map(|user_key| {
+            ShardKey { shard_id: write.shard_id, user_key }
+        }));
     }
     Ok(keys)
 }
 
-fn write_intent_user_key(write: &write_intent::Write) -> &[u8] {
-    match write {
-        write_intent::Write::Put(put) => &put.key,
-        write_intent::Write::Delete(delete) => &delete.key,
+fn collect_local_txn_write_keys(req: &LocalTxnWriteRequest) -> Result<Vec<ShardKey>> {
+    let mut keys = Vec::with_capacity(req.writes.len());
+    for write in &req.writes {
+        keys.extend(collect_shard_write_keys(write)?.into_iter().map(|user_key| {
+            ShardKey { shard_id: write.shard_id, user_key }
+        }));
     }
+    Ok(keys)
 }
 
 pub mod remote {

@@ -1198,15 +1198,16 @@ mod tests {
     fn build_prepare_request(start_version: u64, key: &[u8], value: &[u8]) -> Request {
         Request::WriteIntent(WriteIntentRequest {
             start_version,
-            writes: vec![WriteIntent {
+            writes: vec![ShardWriteRequest {
                 shard_id: SHARD_ID,
-                write: Some(write_intent::Write::Put(PutRequest {
+                puts: vec![PutRequest {
                     put_type: PutType::None.into(),
                     key: key.to_vec(),
                     value: value.to_vec(),
                     take_prev_value: true,
                     ..Default::default()
-                })),
+                }],
+                deletes: Vec::new(),
             }],
         })
     }

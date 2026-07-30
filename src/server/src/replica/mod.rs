@@ -15,6 +15,7 @@
 
 mod eval;
 pub mod fsm;
+mod local_txn;
 mod move_shard;
 pub mod retry;
 mod state;
@@ -35,6 +36,7 @@ use self::eval::acquire_row_latches;
 pub(crate) use self::eval::merge_scan_response;
 use self::eval::remote::RemoteLatchManager;
 use self::fsm::WatchEvent;
+use self::local_txn::LocalTxnManager;
 pub use self::state::{LeaseState, LeaseStateObserver};
 use crate::engine::GroupEngine;
 use crate::error::BusyReason;
@@ -110,6 +112,7 @@ where
     move_replicas_provider: Arc<MoveReplicasProvider>,
     meta_acl: Arc<tokio::sync::RwLock<()>>,
     latch_mgr: RemoteLatchManager,
+    local_txn_mgr: LocalTxnManager,
 }
 
 impl Replica {
@@ -155,6 +158,7 @@ impl Replica {
             meta_acl: Arc::default(),
             // FIXME(walter) create latch manager if epoch changed.
             latch_mgr,
+            local_txn_mgr: LocalTxnManager::default(),
         }
     }
 
@@ -370,6 +374,7 @@ impl Replica {
         let mut latches = acquire_row_latches(&self.latch_mgr, request).await?;
         let (eval_result_opt, resp) = match &request {
             Request::Get(req) => {
+                self.local_txn_mgr.before_read(req.start_version).await;
                 let value = eval::get(exec_ctx, &self.group_engine, &self.latch_mgr, req).await?;
                 let resp = ShardGetResponse { value };
                 (None, Response::Get(resp))
@@ -378,6 +383,24 @@ impl Replica {
                 let (eval_result, resp) =
                     eval::batch_write(exec_ctx, &self.group_engine, req).await?;
                 (eval_result, Response::Write(resp))
+            }
+            Request::LocalTxnWrite(req) => {
+                let (pending, eval_result, resp) = eval::prepare_local_txn_write(
+                    exec_ctx,
+                    &self.group_engine,
+                    latches.as_mut().expect("local txn write request must hold latches"),
+                    &self.local_txn_mgr,
+                    req,
+                )
+                .await?;
+                if let Some(eval_result) = eval_result {
+                    if let Err(err) = self.raft_group.propose(eval_result).await {
+                        pending.abort().await;
+                        return Err(err);
+                    }
+                }
+                pending.finish().await;
+                return Ok(Response::LocalTxnWrite(resp));
             }
             Request::WriteIntent(req) => {
                 let (eval_result, resp, forwards) = eval::write_intent(
@@ -437,6 +460,7 @@ impl Replica {
                 (None, Response::ClearIntent(resp))
             }
             Request::Scan(req) => {
+                self.local_txn_mgr.before_read(req.start_version).await;
                 let eval_result =
                     eval::scan(exec_ctx, &self.group_engine, &self.latch_mgr, req).await?;
                 (None, Response::Scan(eval_result))
@@ -672,6 +696,7 @@ fn is_change_meta_request(request: &Request) -> bool {
         Request::Get(_)
         | Request::Write(_)
         | Request::Scan(_)
+        | Request::LocalTxnWrite(_)
         | Request::WriteIntent(_)
         | Request::CommitIntent(_)
         | Request::ClearIntent(_)

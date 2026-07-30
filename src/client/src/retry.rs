@@ -76,6 +76,7 @@ impl RetryState {
             | Error::AlreadyExists(_)
             | Error::CasFailed(_, _, _)
             | Error::TxnConflict
+            | Error::LocalTxnNotAllowed
             | Error::Rpc(_)
             | Error::Transport(_)
             | Error::Internal(_) => false,

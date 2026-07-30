@@ -165,11 +165,10 @@ async fn txn_read_resolves_committed_orphan_intent() {
     group_client
         .request(&Request::WriteIntent(WriteIntentRequest {
             start_version,
-            writes: vec![WriteIntent {
+            writes: vec![ShardWriteRequest {
                 shard_id: shard.id,
-                write: Some(write_intent::Write::Put(
-                    WriteBuilder::new(key.clone()).ensure_put(value.clone()),
-                )),
+                puts: vec![WriteBuilder::new(key.clone()).ensure_put(value.clone())],
+                deletes: Vec::new(),
             }],
         }))
         .await
@@ -258,19 +257,21 @@ async fn txn_prepare_partial_success_reports_per_entry_results() {
         .request(&Request::WriteIntent(WriteIntentRequest {
             start_version,
             writes: vec![
-                WriteIntent {
+                ShardWriteRequest {
                     shard_id: prepared_shard.id,
-                    write: Some(write_intent::Write::Put(
+                    puts: vec![
                         WriteBuilder::new(prepared_key.clone()).ensure_put(b"prepared".to_vec()),
-                    )),
+                    ],
+                    deletes: Vec::new(),
                 },
-                WriteIntent {
+                ShardWriteRequest {
                     shard_id: conflict_shard.id,
-                    write: Some(write_intent::Write::Put(
+                    puts: vec![
                         WriteBuilder::new(conflict_key.clone())
                             .expect_not_exists()
                             .ensure_put(b"should_not_commit".to_vec()),
-                    )),
+                    ],
+                    deletes: Vec::new(),
                 },
             ],
         }))
@@ -314,17 +315,15 @@ async fn txn_write_intent_batch_deduplicates_same_key_latches() {
     let request = Request::WriteIntent(WriteIntentRequest {
         start_version,
         writes: vec![
-            WriteIntent {
+            ShardWriteRequest {
                 shard_id: shard.id,
-                write: Some(write_intent::Write::Put(
-                    WriteBuilder::new(key.clone()).ensure_put(b"value".to_vec()),
-                )),
+                puts: vec![WriteBuilder::new(key.clone()).ensure_put(b"value".to_vec())],
+                deletes: Vec::new(),
             },
-            WriteIntent {
+            ShardWriteRequest {
                 shard_id: shard.id,
-                write: Some(write_intent::Write::Delete(
-                    WriteBuilder::new(key.clone()).ensure_delete(),
-                )),
+                deletes: vec![WriteBuilder::new(key.clone()).ensure_delete()],
+                puts: Vec::new(),
             },
         ],
     });
@@ -396,23 +395,26 @@ async fn txn_intent_batch_partially_forwards_moving_shard() {
         .request(&Request::WriteIntent(WriteIntentRequest {
             start_version,
             writes: vec![
-                WriteIntent {
+                ShardWriteRequest {
                     shard_id: moving_shard_id,
-                    write: Some(write_intent::Write::Put(
+                    puts: vec![
                         WriteBuilder::new(moving_key_a.clone()).ensure_put(b"moving-a".to_vec()),
-                    )),
+                    ],
+                    deletes: Vec::new(),
                 },
-                WriteIntent {
+                ShardWriteRequest {
                     shard_id: moving_shard_id,
-                    write: Some(write_intent::Write::Put(
+                    puts: vec![
                         WriteBuilder::new(moving_key_b.clone()).ensure_put(b"moving-b".to_vec()),
-                    )),
+                    ],
+                    deletes: Vec::new(),
                 },
-                WriteIntent {
+                ShardWriteRequest {
                     shard_id: local_shard_id,
-                    write: Some(write_intent::Write::Put(
+                    puts: vec![
                         WriteBuilder::new(local_key.clone()).ensure_put(b"local".to_vec()),
-                    )),
+                    ],
+                    deletes: Vec::new(),
                 },
             ],
         }))

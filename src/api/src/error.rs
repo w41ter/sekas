@@ -150,6 +150,11 @@ impl Error {
     pub fn txn_conflict() -> Self {
         Self::with_detail_value(error_detail_union::Value::TxnConflict(TxnConflict {}))
     }
+    
+    #[inline]
+    pub fn local_txn_not_allowed() -> Self {
+        Self::with_detail_value(error_detail_union::Value::LocalTxnNotAllowed(LocalTxnNotAllowed {}))
+    }
 
     #[inline]
     pub fn status(code: i32, msg: impl Into<String>) -> Self {

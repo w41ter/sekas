@@ -147,14 +147,25 @@ fn is_executable(descriptor: &GroupDesc, request: &Request) -> bool {
                 true
             }
             Request::WriteIntent(req) => {
-                req.writes.iter().all(|write| match write.write.as_ref() {
-                    Some(write_intent::Write::Put(put)) => {
-                        is_target_shard_exists(descriptor, write.shard_id, &put.key)
-                    }
-                    Some(write_intent::Write::Delete(delete)) => {
-                        is_target_shard_exists(descriptor, write.shard_id, &delete.key)
-                    }
-                    None => false,
+                req.writes.iter().all(|write| {
+                    write
+                        .puts
+                        .iter()
+                        .all(|put| is_target_shard_exists(descriptor, write.shard_id, &put.key))
+                        && write.deletes.iter().all(|delete| {
+                            is_target_shard_exists(descriptor, write.shard_id, &delete.key)
+                        })
+                })
+            }
+            Request::LocalTxnWrite(req) => {
+                req.writes.iter().all(|write| {
+                    write
+                        .puts
+                        .iter()
+                        .all(|put| is_target_shard_exists(descriptor, write.shard_id, &put.key))
+                        && write.deletes.iter().all(|delete| {
+                            is_target_shard_exists(descriptor, write.shard_id, &delete.key)
+                        })
                 })
             }
             Request::CommitIntent(req) => req

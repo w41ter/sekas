@@ -56,6 +56,7 @@ message GroupRequestUnion {
         WriteIntentRequest write_intent = 11;
         CommitIntentRequest commit_intent = 12;
         ClearIntentRequest clear_intent = 13;
+        LocalTxnWriteRequest local_txn_write = 14;
 
         // Add a new shard to an existing group.
         CreateShardRequest create_shard = 20;
@@ -99,6 +100,7 @@ message GroupResponseUnion {
         WriteIntentResponse write_intent = 10;
         CommitIntentResponse commit_intent = 11;
         ClearIntentResponse clear_intent = 12;
+        LocalTxnWriteResponse local_txn_write = 13;
 
         CreateShardResponse create_shard = 20;
         DeleteShardResponse delete_shard = 27;
@@ -133,6 +135,16 @@ message ShardGetRequest {
 
 message ShardGetResponse {
     optional Value value = 1;
+}
+
+message LocalTxnWriteRequest {
+    uint64 commit_version = 1;
+    repeated ShardWriteRequest writes = 2;
+}
+
+message LocalTxnWriteResponse {
+    uint64 commit_version = 1;
+    repeated WriteResponse writes = 2;
 }
 
 message ShardScanRequest {
@@ -173,7 +185,7 @@ message ShardScanResponse {
 
 message WriteIntentRequest {
     uint64 start_version = 1;
-    repeated WriteIntent writes = 2;
+    repeated ShardWriteRequest writes = 2;
 }
 
 message WriteIntentResponse {
@@ -184,14 +196,6 @@ message WriteIntentResult {
     oneof result {
         WriteResponse response = 1;
         Error error = 2;
-    }
-}
-
-message WriteIntent {
-    uint64 shard_id = 1;
-    oneof write {
-        DeleteRequest delete = 2;
-        PutRequest put = 3;
     }
 }
 

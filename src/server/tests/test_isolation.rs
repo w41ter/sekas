@@ -173,6 +173,32 @@ async fn test_lost_update_anomaly() {
     drop(ctx);
 }
 
+#[sekas_macro::test]
+async fn txn_read_then_write_skips_local_txn_and_detects_conflict() {
+    let (ctx, c, db, table_a, _table_b) = bootstrap_servers_and_tables(fn_name!()).await;
+    let table_id = table_a.id;
+    let key_a = b"read-key".to_vec();
+    let key_b = b"write-key".to_vec();
+
+    db.put(table_id, key_a.clone(), b"a0".to_vec()).await.unwrap();
+    db.put(table_id, key_b.clone(), b"b0".to_vec()).await.unwrap();
+
+    let mut txn_a = db.begin_txn();
+    assert_eq!(txn_a.get(table_id, key_a).await.unwrap(), Some(b"a0".to_vec()));
+
+    let mut txn_b = db.begin_txn();
+    txn_b.put(table_id, WriteBuilder::new(key_b.clone()).ensure_put(b"b1".to_vec()));
+    txn_b.commit().await.unwrap();
+
+    txn_a.put(table_id, WriteBuilder::new(key_b.clone()).ensure_put(b"b2".to_vec()));
+    assert!(matches!(txn_a.commit().await, Err(AppError::TxnConflict)));
+
+    assert_eq!(db.get(table_id, key_b).await.unwrap(), Some(b"b1".to_vec()));
+
+    drop(c);
+    drop(ctx);
+}
+
 // Snapshot isolation allows write skew. Cross-key invariants should be
 // protected with explicit guard keys or CAS conditions.
 #[ignore]

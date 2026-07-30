@@ -106,7 +106,7 @@ struct PrepareIntentGroup {
 struct PrepareIntentEntry {
     context_index: usize,
     write_index: u64,
-    write: WriteIntent,
+    write: ShardWriteRequest,
 }
 
 struct IntentKeyGroup {
@@ -117,6 +117,11 @@ struct IntentKeyGroup {
 struct IntentKeyEntry {
     context_index: usize,
     shard_key: ShardKey,
+}
+
+struct LocalTxnWriteGroup {
+    group_state: RouterGroupState,
+    request: LocalTxnWriteRequest,
 }
 
 /// A structure to hold the context about a write batch request.
@@ -390,16 +395,108 @@ impl Txn {
     }
 
     /// Commit this transaction.
-    pub async fn commit(self) -> AppResult<WriteBatchResponse> {
+    pub async fn commit(mut self) -> AppResult<WriteBatchResponse> {
+        if self.start_version.get().is_none()
+            && let Some(resp) = self.try_commit_local_txn().await?
+        {
+            return Ok(resp);
+        }
+
         let start_version = self.get_start_version().await?;
         let ctx = WriteBatchContext::new(
             start_version,
             self.deletes,
             self.puts,
-            self.db.client.clone(),
+            self.db.client,
             self.deadline,
         );
         Ok(ctx.commit().await?)
+    }
+
+    async fn try_commit_local_txn(&mut self) -> Result<Option<WriteBatchResponse>> {
+        let mut retry_state = RetryState::with_deadline_opt(self.deadline);
+        let response = loop {
+            let Some(mut group) = self.prepare_local_txn_group()? else {
+                return Ok(None);
+            };
+            group.request.commit_version =
+                self.db.client.root_client().alloc_txn_id(1, retry_state.timeout()).await?;
+
+            let mut client = GroupClient::new(group.group_state, self.db.client.clone());
+            client.set_timeout_opt(retry_state.timeout());
+            let request = Request::LocalTxnWrite(group.request);
+            match client.request(&request).await {
+                Ok(Response::LocalTxnWrite(resp)) => break resp,
+                Ok(other) => {
+                    return Err(Error::Internal(
+                        format!("invalid response {other:?}, `LocalTxnWrite` is required").into(),
+                    ));
+                }
+                Err(Error::LocalTxnNotAllowed) => {
+                    return Ok(None);
+                }
+                Err(err) if can_retry_local_txn(&err) => {
+                    trace!("retry local txn: {err:?}");
+                    retry_state.retry(err).await?;
+                }
+                Err(err) => return Err(err),
+            }
+        };
+
+        if response.writes.len() != self.deletes.len() + self.puts.len() {
+            return Err(Error::Internal(
+                format!(
+                    "invalid LocalTxnWriteResponse length {}, expect {}",
+                    response.writes.len(),
+                    self.deletes.len() + self.puts.len()
+                )
+                .into(),
+            ));
+        }
+
+        let mut writes = response.writes.into_iter();
+        let deletes = (0..self.deletes.len())
+            .map(|_| writes.next().and_then(|resp| resp.prev_value))
+            .collect();
+        let puts =
+            (0..self.puts.len()).map(|_| writes.next().and_then(|resp| resp.prev_value)).collect();
+        Ok(Some(WriteBatchResponse { version: response.commit_version, deletes, puts }))
+    }
+
+    fn prepare_local_txn_group(&self) -> Result<Option<LocalTxnWriteGroup>> {
+        let router = self.db.client.router();
+        let mut group_state: Option<RouterGroupState> = None;
+        let mut local_writes = Vec::with_capacity(self.deletes.len() + self.puts.len());
+        for (table_id, delete) in &self.deletes {
+            let (target_group, shard_desc) = router.find_shard(*table_id, &delete.key)?;
+            if !push_local_txn_group(&mut group_state, target_group) {
+                return Ok(None);
+            }
+            local_writes.push(ShardWriteRequest {
+                shard_id: shard_desc.id,
+                deletes: vec![delete.clone()],
+                puts: Vec::new(),
+            });
+        }
+        for (table_id, put) in &self.puts {
+            let (target_group, shard_desc) = router.find_shard(*table_id, &put.key)?;
+            if !push_local_txn_group(&mut group_state, target_group) {
+                return Ok(None);
+            }
+            local_writes.push(ShardWriteRequest {
+                shard_id: shard_desc.id,
+                deletes: Vec::new(),
+                puts: vec![put.clone()],
+            });
+        }
+
+        let Some(group_state) = group_state else {
+            return Ok(None);
+        };
+        Ok(Some(LocalTxnWriteGroup {
+            group_state,
+            request: LocalTxnWriteRequest { commit_version: 0, writes: local_writes },
+        }))
     }
 
     /// Return the transaction start version, allocating one if necessary.
@@ -731,6 +828,22 @@ impl WriteContext {
     }
 }
 
+fn can_retry_local_txn(err: &Error) -> bool {
+    matches!(err, Error::NotFound(_) | Error::EpochNotMatch(_))
+}
+
+fn push_local_txn_group(
+    group_state: &mut Option<RouterGroupState>,
+    target_group: RouterGroupState,
+) -> bool {
+    if let Some(group_state) = group_state.as_ref() {
+        group_state.id == target_group.id
+    } else {
+        *group_state = Some(target_group);
+        true
+    }
+}
+
 impl WriteBatchContext {
     fn new(
         start_version: u64,
@@ -929,12 +1042,16 @@ impl WriteBatchContext {
             let entry = PrepareIntentEntry {
                 context_index,
                 write_index: write.index as u64,
-                write: WriteIntent {
+                write: ShardWriteRequest {
                     shard_id: shard_desc.id,
-                    write: Some(match write.request.clone() {
-                        WriteRequest::Delete(delete) => write_intent::Write::Delete(delete),
-                        WriteRequest::Put(put) => write_intent::Write::Put(put),
-                    }),
+                    deletes: match write.request.clone() {
+                        WriteRequest::Delete(delete) => vec![delete],
+                        WriteRequest::Put(_) => Vec::new(),
+                    },
+                    puts: match write.request.clone() {
+                        WriteRequest::Put(put) => vec![put],
+                        WriteRequest::Delete(_) => Vec::new(),
+                    },
                 },
             };
             if let Some(group) =

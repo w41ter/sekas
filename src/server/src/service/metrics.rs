@@ -95,6 +95,10 @@ pub fn take_group_request_metrics(request: &GroupRequest) -> Option<&'static His
             NODE_SERVICE_GROUP_REQUEST_TOTAL.write.inc();
             Some(&NODE_SERVICE_GROUP_REQUEST_DURATION_SECONDS.write)
         }
+        Some(Request::LocalTxnWrite(_)) => {
+            NODE_SERVICE_GROUP_REQUEST_TOTAL.write.inc();
+            Some(&NODE_SERVICE_GROUP_REQUEST_DURATION_SECONDS.write)
+        }
         Some(Request::AcceptShard(_)) => {
             NODE_SERVICE_GROUP_REQUEST_TOTAL.accept_shard.inc();
             Some(&NODE_SERVICE_GROUP_REQUEST_DURATION_SECONDS.accept_shard)

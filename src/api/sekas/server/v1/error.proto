@@ -54,6 +54,7 @@ message ErrorDetailUnion {
         NotRoot not_root = 6;
         CasFailed cas_failed = 7;
         TxnConflict txn_conflict = 8;
+        LocalTxnNotAllowed local_txn_not_allowed = 9;
     }
 }
 
@@ -105,3 +106,6 @@ message CasFailed {
 
 // The txn is conflict with others.
 message TxnConflict {}
+
+// The local txn is not allowed.
+message LocalTxnNotAllowed {}

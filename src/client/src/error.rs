@@ -70,6 +70,9 @@ pub enum Error {
     #[error("the txn is conflict with others")]
     TxnConflict,
 
+    #[error("the local txn is not allowed")]
+    LocalTxnNotAllowed,
+
     #[error("group epoch not match")]
     EpochNotMatch(GroupDesc),
 
@@ -149,6 +152,7 @@ impl From<sekas_api::server::v1::Error> for Error {
             Some(Value::StatusCode(v)) => Status::new(v.into(), msg).into(),
             Some(Value::CasFailed(v)) => Error::CasFailed(v.index, v.cond_index, v.prev_value),
             Some(Value::TxnConflict(_)) => Error::TxnConflict,
+            Some(Value::LocalTxnNotAllowed(_)) => Error::LocalTxnNotAllowed,
             _ => Status::internal(format!("unknown error detail, msg: {msg}")).into(),
         }
     }
@@ -181,7 +185,8 @@ impl From<Error> for AppError {
             | Error::GroupNotFound(_)
             | Error::GroupNotAccessable(_)
             | Error::NotRootLeader(..)
-            | Error::NotLeader(..) => unreachable!("convert err {err:?} to `AppError`"),
+            | Error::NotLeader(..)
+            | Error::LocalTxnNotAllowed => unreachable!("convert err {err:?} to `AppError`"),
         }
     }
 }

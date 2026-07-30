@@ -86,7 +86,7 @@ async fn write_intent_forward_part(
     group_engine: &GroupEngine,
     req: &WriteIntentRequest,
     index: usize,
-    write: &WriteIntent,
+    write: &ShardWriteRequest,
 ) -> Result<Option<ForwardPart>> {
     let Some(desc) = exec_ctx.move_shard_desc.as_ref() else {
         return Ok(None);
@@ -96,9 +96,7 @@ async fn write_intent_forward_part(
         return Ok(None);
     }
 
-    let Some(write_req) = write.write.as_ref() else {
-        return Ok(None);
-    };
+    let write_req = single_write_request(write)?;
     let payload = group_engine.get_all_versions(write.shard_id, write_req.user_key()).await?;
     let request = Request::WriteIntent(WriteIntentRequest {
         start_version: req.start_version,
@@ -120,14 +118,11 @@ async fn write_intent_inner<T: LatchGuard>(
     group_engine: &GroupEngine,
     latch_guard: &mut DeferSignalLatchGuard<T>,
     start_version: u64,
-    req: &WriteIntent,
+    req: &ShardWriteRequest,
     wb: &mut WriteBatch,
 ) -> Result<WriteResponse> {
     // TODO(walter) txn for internal shards is not supported.
-    let write = req
-        .write
-        .as_ref()
-        .ok_or_else(|| Error::InvalidArgument("`write` is required".to_string()))?;
+    let write = single_write_request(req)?;
 
     let user_key = write.user_key();
     let (skip_write, prev_value) =
@@ -135,7 +130,7 @@ async fn write_intent_inner<T: LatchGuard>(
             .await?;
 
     if let Some(value) = prev_value.as_ref() {
-        if value.version > start_version && !is_atomic_operation(write) {
+        if value.version > start_version && !is_atomic_operation(&write) {
             trace!("txn {} are conflict with committed value {}", start_version, value.version);
             return Err(Error::TxnConflict);
         }
@@ -180,6 +175,16 @@ async fn write_intent_inner<T: LatchGuard>(
     };
 
     Ok(WriteResponse { prev_value })
+}
+
+fn single_write_request(req: &ShardWriteRequest) -> Result<WriteRequest> {
+    match (req.deletes.as_slice(), req.puts.as_slice()) {
+        ([delete], []) => Ok(WriteRequest::Delete(delete.clone())),
+        ([], [put]) => Ok(WriteRequest::Put(put.clone())),
+        _ => Err(Error::InvalidArgument(
+            "WriteIntent currently requires exactly one put or delete per ShardWriteRequest".into(),
+        )),
+    }
 }
 
 pub(crate) async fn commit_intent<T: LatchGuard>(
@@ -412,7 +417,7 @@ fn retry_intent_result(message: &'static str) -> IntentResult {
     IntentResult::err(sekas_api::server::v1::Error::status(tonic::Code::NotFound.into(), message))
 }
 
-fn apply_put_op(
+pub(super) fn apply_put_op(
     r#type: PutType,
     prev_value: Option<&Value>,
     value: Vec<u8>,
@@ -436,7 +441,7 @@ fn apply_put_op(
     }
 }
 
-async fn read_first_non_intent_key<T: LatchGuard>(
+pub(super) async fn read_first_non_intent_key<T: LatchGuard>(
     latch_guard: &mut DeferSignalLatchGuard<T>,
     engine: &GroupEngine,
     start_version: u64,
@@ -515,7 +520,7 @@ async fn read_target_intent(
 }
 
 // An atomic operation will not conflict with previous values.
-fn is_atomic_operation(write: &WriteRequest) -> bool {
+pub(super) fn is_atomic_operation(write: &WriteRequest) -> bool {
     matches!(
         write,
         WriteRequest::Put(put)
@@ -669,15 +674,16 @@ mod tests {
     ) -> WriteIntentRequest {
         WriteIntentRequest {
             start_version,
-            writes: vec![WriteIntent {
+            writes: vec![ShardWriteRequest {
                 shard_id: 1,
-                write: Some(write_intent::Write::Put(PutRequest {
+                puts: vec![PutRequest {
                     put_type: PutType::None.into(),
                     key,
                     value,
                     take_prev_value: true,
                     ..Default::default()
-                })),
+                }],
+                deletes: Vec::new(),
             }],
         }
     }
@@ -799,11 +805,12 @@ mod tests {
         // 1. put exists failed.
         let req = WriteIntentRequest {
             start_version,
-            writes: vec![WriteIntent {
+            writes: vec![ShardWriteRequest {
                 shard_id: 1,
-                write: Some(write_intent::Write::Put(
+                puts: vec![
                     WriteBuilder::new(key.clone()).expect_exists().ensure_put(b"value".to_vec()),
-                )),
+                ],
+                deletes: Vec::new(),
             }],
         };
         let (eval_result, resp, forwards) =
@@ -815,11 +822,12 @@ mod tests {
         // 2. delete exists failed.
         let req = WriteIntentRequest {
             start_version,
-            writes: vec![WriteIntent {
+            writes: vec![ShardWriteRequest {
                 shard_id: 1,
-                write: Some(write_intent::Write::Delete(
+                deletes: vec![
                     WriteBuilder::new(key.clone()).expect_exists().ensure_delete(),
-                )),
+                ],
+                puts: Vec::new(),
             }],
         };
         let (eval_result, resp, forwards) =
@@ -833,14 +841,15 @@ mod tests {
         // 3. put exists success
         let req = WriteIntentRequest {
             start_version,
-            writes: vec![WriteIntent {
+            writes: vec![ShardWriteRequest {
                 shard_id: 1,
-                write: Some(write_intent::Write::Put(
+                puts: vec![
                     WriteBuilder::new(key.clone())
                         .expect_exists()
                         .take_prev_value()
                         .ensure_put(b"value".to_vec()),
-                )),
+                ],
+                deletes: Vec::new(),
             }],
         };
         let (eval_result, resp, forwards) =
@@ -946,11 +955,12 @@ mod tests {
                     version_allocator_clone.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 let req = WriteIntentRequest {
                     start_version,
-                    writes: vec![WriteIntent {
+                    writes: vec![ShardWriteRequest {
                         shard_id: 1,
-                        write: Some(write_intent::Write::Put(
+                        puts: vec![
                             WriteBuilder::new(key_clone.clone()).ensure_add(1),
-                        )),
+                        ],
+                        deletes: Vec::new(),
                     }],
                 };
                 let mut latch_guard = DeferSignalLatchGuard::with_single(

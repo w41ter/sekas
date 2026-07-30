@@ -19,7 +19,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::{Arc, mpsc};
 
-use log::{info, trace, warn};
+use log::{debug, info, trace, warn};
 use sekas_api::server::v1::*;
 use sekas_api::{Epoch, apply_config_delta, apply_shard_delta};
 
@@ -289,6 +289,12 @@ impl GroupStateMachine {
                 if state.step == MoveShardStep::Prepare as i32 {
                     state.step = MoveShardStep::Moving as i32;
                     self.move_shard_state_updated = true;
+                } else if state.step != MoveShardStep::Moving as i32 {
+                    debug!(
+                        "ignore stale moving shard ingest event. replica={}, group={}, state={:?}",
+                        self.info.replica_id, self.info.group_id, state,
+                    );
+                    return Ok(());
                 }
 
                 debug_assert!(state.step == MoveShardStep::Moving as i32);
