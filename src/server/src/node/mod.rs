@@ -1209,6 +1209,7 @@ mod tests {
                 }],
                 deletes: Vec::new(),
             }],
+            check_write_conflict: false,
         })
     }
 

@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use futures::StreamExt;
@@ -78,6 +79,8 @@ pub struct Txn {
     deadline: Option<Instant>,
     /// The transaction start version.
     start_version: OnceCell<u64>,
+    /// Whether this transaction has observed a user snapshot.
+    has_snapshot_read: AtomicBool,
     /// The put request to submit.
     puts: Vec<(u64, PutRequest)>,
     /// The delete request to submit.
@@ -135,6 +138,7 @@ pub struct WriteBatchContext {
     num_deletes: usize,
 
     start_version: u64,
+    check_write_conflict: bool,
     commit_version: u64,
     txn_started: bool,
 
@@ -377,6 +381,7 @@ impl Txn {
             db,
             deadline,
             start_version: OnceCell::new(),
+            has_snapshot_read: AtomicBool::new(false),
             puts: Vec::default(),
             deletes: Vec::default(),
         }
@@ -395,6 +400,14 @@ impl Txn {
     }
 
     /// Commit this transaction.
+    ///
+    /// A transaction that has not observed a user snapshot through get, scan or
+    /// range is treated as a blind-write transaction. Blind writes may commit
+    /// through the local-txn fast path or the distributed-intent path without
+    /// checking for write-write conflicts against `start_version`; their writes
+    /// are ordered by the local commit version or the final intent commit
+    /// version. Once a user snapshot has been observed, the distributed-intent
+    /// path preserves SI by checking write conflicts during intent preparation.
     pub async fn commit(mut self) -> AppResult<WriteBatchResponse> {
         if self.start_version.get().is_none()
             && let Some(resp) = self.try_commit_local_txn().await?
@@ -409,6 +422,7 @@ impl Txn {
             self.puts,
             self.db.client,
             self.deadline,
+            self.has_snapshot_read.load(Ordering::Acquire),
         );
         Ok(ctx.commit().await?)
     }
@@ -576,6 +590,7 @@ impl Txn {
         user_key: &[u8],
         timeout: Option<Duration>,
     ) -> crate::Result<Option<Value>> {
+        self.has_snapshot_read.store(true, Ordering::Release);
         let start_version = self.get_read_version().await?;
         let router = self.db.client.router();
         let (group, shard) = router.find_shard(table_id, user_key)?;
@@ -656,6 +671,7 @@ impl Txn {
         request: &mut ShardScanRequest,
         timeout: Option<Duration>,
     ) -> crate::Result<ShardScanResponse> {
+        self.has_snapshot_read.store(true, Ordering::Release);
         request.start_version = self.get_read_version().await?;
         let router = self.db.client.router();
         let group_state = router.find_group_by_shard(request.shard_id)?;
@@ -673,6 +689,7 @@ impl Txn {
     /// NOTE: This request will be sent to node servers, and the put/delete
     /// requests already buffered in this TXN will be ignored.
     pub async fn range(&self, mut request: RangeRequest) -> AppResult<RangeStream> {
+        self.has_snapshot_read.store(true, Ordering::Release);
         if request.version.is_none() {
             request.version = Some(self.get_read_version().await?);
         }
@@ -851,6 +868,7 @@ impl WriteBatchContext {
         puts: Vec<(u64, PutRequest)>,
         client: SekasClient,
         deadline: Option<Instant>,
+        check_write_conflict: bool,
     ) -> Self {
         let num_deletes = deletes.len();
         let num_puts = puts.len();
@@ -870,6 +888,7 @@ impl WriteBatchContext {
             num_deletes,
             num_doing_writes,
             start_version,
+            check_write_conflict,
             commit_version: 0,
             txn_started: false,
             retry_state: RetryState::with_deadline_opt(deadline),
@@ -1107,6 +1126,7 @@ impl WriteBatchContext {
             let req = Request::WriteIntent(WriteIntentRequest {
                 start_version: self.start_version,
                 writes: intent_group.entries.iter().map(|entry| entry.write.clone()).collect(),
+                check_write_conflict: self.check_write_conflict,
             });
             let index_map = intent_group
                 .entries

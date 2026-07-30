@@ -56,6 +56,35 @@ async fn bootstrap_servers_and_tables(
     (ctx, c, db, table_a, table_b)
 }
 
+async fn move_key_shard_to_group(
+    c: &ClusterClient,
+    table_id: u64,
+    key: &[u8],
+    target_group_id: u64,
+) {
+    for _ in 0..16 {
+        let source_state = c.find_router_group_state_by_key(table_id, key).await.unwrap();
+        if source_state.id == target_group_id {
+            return;
+        }
+
+        let shard_desc = c.get_shard_desc(table_id, key).await.unwrap();
+        let mut target_group = c.group(target_group_id);
+        if target_group.accept_shard(source_state.id, source_state.epoch, &shard_desc).await.is_ok()
+        {
+            for _ in 0..1000 {
+                let group = c.find_router_group_state_by_key(table_id, key).await.unwrap();
+                if group.id == target_group_id {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("could not move key {key:?} shard to group {target_group_id}");
+}
+
 #[sekas_macro::test]
 async fn test_atomic_operation() {
     // The atomic operation should not count in conflict ranges, since it does not
@@ -91,6 +120,83 @@ async fn test_atomic_operation() {
     let txn = db.begin_txn();
     let value = read_i64(&txn, table_a, table_a.to_string().into_bytes()).await;
     assert_eq!(value, loop_times * 1001);
+
+    drop(c);
+    drop(ctx);
+}
+
+#[sekas_macro::test]
+async fn txn_blind_write_across_groups_does_not_conflict() {
+    let mut ctx = TestContext::new(fn_name!());
+    ctx.set_num_cpus(3);
+    ctx.enable_group_balance();
+
+    let nodes = ctx.bootstrap_servers(3).await;
+    let c = ClusterClient::new(nodes).await;
+    let app = c.app_client().await;
+    let db = app.create_database(DB.to_string()).await.unwrap();
+    let table_a = db.create_table(TABLE_A.to_string()).await.unwrap();
+    let table_b = db.create_table(TABLE_B.to_string()).await.unwrap();
+    c.assert_table_ready(table_a.id).await;
+    c.assert_table_ready(table_b.id).await;
+    c.assert_num_group_voters(1, 3).await;
+    c.assert_num_group_voters(2, 3).await;
+
+    let key_a = b"blind-write-key-a".to_vec();
+    let key_b = b"blind-write-key-b".to_vec();
+    move_key_shard_to_group(&c, table_a.id, &key_a, 1).await;
+    move_key_shard_to_group(&c, table_b.id, &key_b, 2).await;
+    let group_a = c.find_router_group_state_by_key(table_a.id, &key_a).await.unwrap();
+    let group_b = c.find_router_group_state_by_key(table_b.id, &key_b).await.unwrap();
+    assert_ne!(group_a.id, group_b.id);
+
+    let iterations = 20;
+    let table_a_id = table_a.id;
+    let table_b_id = table_b.id;
+    let db_clone = db.clone();
+    let key_a_clone = key_a.clone();
+    let key_b_clone = key_b.clone();
+    let writer_a = spawn(async move {
+        for i in 0..iterations {
+            let mut txn = db_clone.begin_txn();
+            txn.put(
+                table_a_id,
+                WriteBuilder::new(key_a_clone.clone()).ensure_put(format!("a-{i}").into_bytes()),
+            );
+            txn.put(
+                table_b_id,
+                WriteBuilder::new(key_b_clone.clone()).ensure_put(format!("a-{i}").into_bytes()),
+            );
+            match txn.commit().await {
+                Ok(_) => {}
+                Err(AppError::TxnConflict) => panic!("blind write txn should not conflict"),
+                Err(err) => panic!("commit blind write txn: {err:?}"),
+            }
+        }
+    });
+
+    let db_clone = db.clone();
+    let writer_b = spawn(async move {
+        for i in 0..iterations {
+            let mut txn = db_clone.begin_txn();
+            txn.put(
+                table_a_id,
+                WriteBuilder::new(key_a.clone()).ensure_put(format!("b-{i}").into_bytes()),
+            );
+            txn.put(
+                table_b_id,
+                WriteBuilder::new(key_b.clone()).ensure_put(format!("b-{i}").into_bytes()),
+            );
+            match txn.commit().await {
+                Ok(_) => {}
+                Err(AppError::TxnConflict) => panic!("blind write txn should not conflict"),
+                Err(err) => panic!("commit blind write txn: {err:?}"),
+            }
+        }
+    });
+
+    writer_a.await.unwrap();
+    writer_b.await.unwrap();
 
     drop(c);
     drop(ctx);

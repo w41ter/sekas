@@ -170,6 +170,7 @@ async fn txn_read_resolves_committed_orphan_intent() {
                 puts: vec![WriteBuilder::new(key.clone()).ensure_put(value.clone())],
                 deletes: Vec::new(),
             }],
+            check_write_conflict: false,
         }))
         .await
         .expect("write intent with partial forward should succeed");
@@ -274,6 +275,7 @@ async fn txn_prepare_partial_success_reports_per_entry_results() {
                     deletes: Vec::new(),
                 },
             ],
+            check_write_conflict: false,
         }))
         .await
         .unwrap();
@@ -326,6 +328,7 @@ async fn txn_write_intent_batch_deduplicates_same_key_latches() {
                 puts: Vec::new(),
             },
         ],
+        check_write_conflict: false,
     });
 
     let resp = tokio::time::timeout(Duration::from_secs(5), group_client.request(&request))
@@ -415,6 +418,7 @@ async fn txn_intent_batch_partially_forwards_moving_shard() {
                     deletes: Vec::new(),
                 },
             ],
+            check_write_conflict: false,
         }))
         .await
         .unwrap();

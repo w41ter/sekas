@@ -51,6 +51,7 @@ pub(crate) async fn write_intent<T: LatchGuard>(
             group_engine,
             latch_guard,
             req.start_version,
+            req.check_write_conflict,
             write,
             &mut wb,
         )
@@ -101,6 +102,7 @@ async fn write_intent_forward_part(
     let request = Request::WriteIntent(WriteIntentRequest {
         start_version: req.start_version,
         writes: vec![write.clone()],
+        check_write_conflict: req.check_write_conflict,
     });
     Ok(Some(ForwardPart {
         indexes: vec![index],
@@ -118,6 +120,7 @@ async fn write_intent_inner<T: LatchGuard>(
     group_engine: &GroupEngine,
     latch_guard: &mut DeferSignalLatchGuard<T>,
     start_version: u64,
+    check_write_conflict: bool,
     req: &ShardWriteRequest,
     wb: &mut WriteBatch,
 ) -> Result<WriteResponse> {
@@ -130,7 +133,7 @@ async fn write_intent_inner<T: LatchGuard>(
             .await?;
 
     if let Some(value) = prev_value.as_ref() {
-        if value.version > start_version && !is_atomic_operation(&write) {
+        if check_write_conflict && value.version > start_version && !is_atomic_operation(&write) {
             trace!("txn {} are conflict with committed value {}", start_version, value.version);
             return Err(Error::TxnConflict);
         }
@@ -685,6 +688,7 @@ mod tests {
                 }],
                 deletes: Vec::new(),
             }],
+            check_write_conflict: false,
         }
     }
 
@@ -812,6 +816,7 @@ mod tests {
                 ],
                 deletes: Vec::new(),
             }],
+            check_write_conflict: false,
         };
         let (eval_result, resp, forwards) =
             write_intent(&ExecCtx::default(), &engine, &mut latch_guard, &req).await.unwrap();
@@ -827,6 +832,7 @@ mod tests {
                 deletes: vec![WriteBuilder::new(key.clone()).expect_exists().ensure_delete()],
                 puts: Vec::new(),
             }],
+            check_write_conflict: false,
         };
         let (eval_result, resp, forwards) =
             write_intent(&ExecCtx::default(), &engine, &mut latch_guard, &req).await.unwrap();
@@ -849,7 +855,35 @@ mod tests {
                 ],
                 deletes: Vec::new(),
             }],
+            check_write_conflict: false,
         };
+        let (eval_result, resp, forwards) =
+            write_intent(&ExecCtx::default(), &engine, &mut latch_guard, &req).await.unwrap();
+        assert!(eval_result.is_some());
+        assert!(forwards.is_empty());
+        assert!(resp.writes.into_iter().next().unwrap().into_result().is_ok());
+    }
+
+    #[sekas_macro::test]
+    async fn write_intent_checks_conflict_only_when_requested() {
+        let dir = TempDir::new(fn_name!()).unwrap();
+        let engine = create_group_engine(dir.path(), 1, 1, 1).await;
+        let mut latch_guard = DeferSignalLatchGuard::<NotifyLatchGuard>::empty();
+
+        let key = b"conflict-check-key".to_vec();
+        let start_version = 10;
+        commit_values(&engine, &key, &[Value::with_value(b"newer".to_vec(), start_version + 1)]);
+
+        let mut req =
+            write_intent_request_with_value(start_version, key.clone(), b"overwrite".to_vec());
+        req.check_write_conflict = true;
+        let (eval_result, resp, forwards) =
+            write_intent(&ExecCtx::default(), &engine, &mut latch_guard, &req).await.unwrap();
+        assert!(eval_result.is_none());
+        assert!(forwards.is_empty());
+        assert!(matches!(unwrap_single_write_error(resp), Error::TxnConflict));
+
+        req.check_write_conflict = false;
         let (eval_result, resp, forwards) =
             write_intent(&ExecCtx::default(), &engine, &mut latch_guard, &req).await.unwrap();
         assert!(eval_result.is_some());
@@ -958,6 +992,7 @@ mod tests {
                         puts: vec![WriteBuilder::new(key_clone.clone()).ensure_add(1)],
                         deletes: Vec::new(),
                     }],
+                    check_write_conflict: false,
                 };
                 let mut latch_guard = DeferSignalLatchGuard::with_single(
                     &ShardKey { shard_id, user_key: key_clone.to_vec() },

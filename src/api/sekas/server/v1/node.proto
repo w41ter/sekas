@@ -186,6 +186,7 @@ message ShardScanResponse {
 message WriteIntentRequest {
     uint64 start_version = 1;
     repeated ShardWriteRequest writes = 2;
+    bool check_write_conflict = 3;
 }
 
 message WriteIntentResponse {
