@@ -62,6 +62,7 @@ cooldown_secs = 1
 value_size = 16
 key_space = 100
 report_interval_secs = 1
+meta_interval_secs = 1
 
 [report]
 out_dir = "target/perf-lab-smoke"

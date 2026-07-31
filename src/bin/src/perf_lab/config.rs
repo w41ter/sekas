@@ -54,7 +54,8 @@ impl LabConfig {
         if let Some(path) = &cmd.conf {
             let contents =
                 fs::read_to_string(path).with_context(|| format!("read config {path}"))?;
-            cfg = toml::from_str(&contents).with_context(|| format!("parse config {path}"))?;
+            cfg = toml::from_str(&contents)
+                .map_err(|err| anyhow::anyhow!("parse config {path}: {err}"))?;
         }
         if let Some(out_dir) = &cmd.out_dir {
             cfg.report.out_dir = PathBuf::from(out_dir);
@@ -135,6 +136,7 @@ pub(crate) struct WorkloadConfig {
     pub(crate) value_size: usize,
     pub(crate) key_space: u64,
     pub(crate) report_interval_secs: u64,
+    pub(crate) meta_interval_secs: u64,
 }
 
 impl Default for WorkloadConfig {
@@ -150,6 +152,7 @@ impl Default for WorkloadConfig {
             value_size: 128,
             key_space: 10_000,
             report_interval_secs: 5,
+            meta_interval_secs: 5,
         }
     }
 }

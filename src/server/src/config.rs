@@ -54,6 +54,7 @@ pub struct Config {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default)]
 pub struct NodeConfig {
     /// The limit bytes of each shard chunk during moving shard.
     ///
@@ -95,6 +96,7 @@ pub struct ReplicaTestingKnobs {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default)]
 pub struct ReplicaConfig {
     /// The limit size of each snapshot files.
     ///
@@ -176,6 +178,7 @@ pub struct RaftTestingKnobs {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default)]
 pub struct RaftConfig {
     /// The intervals of tick, in millis.
     ///
@@ -224,6 +227,7 @@ pub struct RaftConfig {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default)]
 pub struct RootConfig {
     pub replicas_per_group: usize,
     /// Enable balance groups to match desired groups.

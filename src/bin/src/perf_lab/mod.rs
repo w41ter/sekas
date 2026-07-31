@@ -42,9 +42,9 @@ use self::cases::{
     HotspotUpdateDiagnostics, MixedReadWrite, MultiKeyTxn, MultiKeyTxnMatrix, MvccGcImpact,
     MvccVersionAccumulation, NodeJoinScaleOut, NodeOfflineUnderWrite, PointRead, PrefixScan,
     ReplicaChangeUnderWrite, ReplicaRemoveUnderWrite, RootFailoverMatrix, RootLeaderFailover,
-    SchemaChurn, SchemaChurnScale, ShardMigrationUnderWrite, SingleKeyUpdate,
-    SnapshotForcedDiagnostics, SnapshotUnderWrite, TransferLeaderUnderWrite, TxnConflict,
-    ValueSizeMatrix,
+    SchemaChurn, SchemaChurnScale, ShardMetaChurnUnderRw, ShardMigrationUnderWrite,
+    SingleKeyUpdate, SnapshotForcedDiagnostics, SnapshotUnderWrite, TransferLeaderUnderWrite,
+    TxnConflict, ValueSizeMatrix,
 };
 use self::config::LabConfig;
 use self::report::{CaseReport, MetricsRecorder, compare_with_baseline};
@@ -103,6 +103,7 @@ enum CaseKind {
     TransferLeaderUnderWrite,
     NodeOfflineUnderWrite,
     ShardMigrationUnderWrite,
+    ShardMetaChurnUnderRw,
 }
 
 impl Command {
@@ -156,6 +157,7 @@ impl Command {
                 CaseKind::ShardMigrationUnderWrite => {
                     ShardMigrationUnderWrite.run(&mut lab).await?
                 }
+                CaseKind::ShardMetaChurnUnderRw => ShardMetaChurnUnderRw.run(&mut lab).await?,
             };
             lab.shutdown();
 
@@ -586,6 +588,26 @@ impl LabContext {
             .find_group_without_shard(src_group)
             .await?
             .ok_or_else(|| anyhow!("no destination group without shard {}", shard.id))?;
+        self.migrate_shard_to_group(table_id, key, dest_group).await
+    }
+
+    pub(crate) async fn migrate_shard_to_group(
+        &self,
+        table_id: u64,
+        key: &[u8],
+        dest_group: u64,
+    ) -> Result<ShardMigrationResult> {
+        let (src_group, shard) = self.group_for_key(table_id, key).await?;
+        if src_group == dest_group {
+            return Ok(ShardMigrationResult {
+                duration: Duration::ZERO,
+                route_convergence: Duration::ZERO,
+                route_converged: true,
+                src_group,
+                dest_group,
+                shard_id: shard.id,
+            });
+        }
         let started = Instant::now();
         for _ in 0..16 {
             let src_epoch = self.router.find_group(src_group)?.epoch;

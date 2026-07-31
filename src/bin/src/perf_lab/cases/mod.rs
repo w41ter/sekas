@@ -25,7 +25,8 @@ pub(super) use diagnostics::{
     SchemaChurnScale,
 };
 pub(super) use disturbance::{
-    NodeOfflineUnderWrite, ShardMigrationUnderWrite, TransferLeaderUnderWrite,
+    NodeOfflineUnderWrite, ShardMetaChurnUnderRw, ShardMigrationUnderWrite,
+    TransferLeaderUnderWrite,
 };
 pub(super) use elasticity::{
     NodeJoinScaleOut, ReplicaChangeUnderWrite, ReplicaRemoveUnderWrite, RootLeaderFailover,
