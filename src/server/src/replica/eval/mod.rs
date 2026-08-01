@@ -31,7 +31,7 @@ use sekas_api::server::v1::ShardDesc;
 pub(crate) use self::cmd_accept_shard::accept_shard;
 pub(crate) use self::cmd_get::get;
 pub(crate) use self::cmd_ingest::ingest_value_set;
-pub(crate) use self::cmd_local_txn::prepare_local_txn_write;
+pub(crate) use self::cmd_local_txn::{LocalTxnEval, prepare_local_txn_write_with_view};
 pub(crate) use self::cmd_merge_shard::merge_shard;
 pub(crate) use self::cmd_move_replicas::move_replicas;
 pub(crate) use self::cmd_scan::{merge_scan_response, scan};

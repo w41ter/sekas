@@ -32,7 +32,7 @@ use sekas_api::server::v1::*;
 use sekas_runtime::{JoinHandle, TaskGroup};
 
 pub use self::fsm::{ApplyEntry, SnapshotBuilder, StateMachine};
-pub use self::group::RaftGroup;
+pub use self::group::{ProposalReceiver, RaftGroup};
 use self::io::LogWriter;
 pub use self::io::{AddressResolver, ChannelManager, retrive_snapshot};
 pub use self::monitor::*;

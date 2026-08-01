@@ -24,6 +24,8 @@ use crate::error::BusyReason;
 use crate::serverpb::v1::{EvalResult, RaftMessage};
 use crate::{Result, record_latency};
 
+pub type ProposalReceiver = oneshot::Receiver<Result<()>>;
+
 /// `RaftGroup` wraps the operations of raft.
 #[derive(Clone)]
 pub struct RaftGroup
@@ -47,12 +49,20 @@ impl RaftGroup {
     ///
     /// TODO(walter) support return user defined error.
     pub async fn propose(&self, eval_result: EvalResult) -> Result<()> {
+        let (start_at, receiver) = self.propose_begin(eval_result)?;
+        take_propose_metrics(start_at, receiver.await?)
+    }
+
+    /// Enqueue a proposal and return a receiver that resolves when the proposal
+    /// is applied or rejected.
+    pub fn propose_begin(&self, eval_result: EvalResult) -> Result<(Instant, ProposalReceiver)> {
         let start_at = Instant::now();
         let (sender, receiver) = oneshot::channel();
+        self.send(Request::Propose { eval_result, start: start_at, sender })?;
+        Ok((start_at, receiver))
+    }
 
-        let request = Request::Propose { eval_result, start: start_at, sender };
-
-        self.send(request)?;
+    pub async fn wait_proposal(start_at: Instant, receiver: ProposalReceiver) -> Result<()> {
         take_propose_metrics(start_at, receiver.await?)
     }
 
