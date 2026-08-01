@@ -74,6 +74,8 @@ protoc-build.workspace = true
 layer_etcd = ["dep:sekas-etcd-proxy"]
 
 [dev-dependencies]
+sekas-checker = { path = "../checker", version = "0.5" }
+
 ctor = "0.1"
 quote = "1.0"
 rand = { workspace = true, features = ["small_rng"] }

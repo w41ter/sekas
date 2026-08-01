@@ -16,6 +16,7 @@
 #![allow(clippy::result_large_err)]
 
 mod bench;
+mod checker;
 mod perf_lab;
 mod shell;
 
@@ -35,6 +36,7 @@ struct Command {
 enum SubCommand {
     Start(StartCommand),
     Bench(bench::BenchCommand),
+    Checker(checker::CheckerCommand),
     PerfLab(perf_lab::Command),
     Shell(shell::ShellCommand),
 }
@@ -129,6 +131,7 @@ fn main() -> Result<()> {
             cmd.run();
             Ok(())
         }
+        SubCommand::Checker(cmd) => cmd.run().map_err(|err| Error::InvalidData(err.to_string())),
         SubCommand::PerfLab(cmd) => cmd.run().map_err(|err| Error::InvalidData(err.to_string())),
         SubCommand::Shell(cmd) => {
             cmd.run();

@@ -2753,6 +2753,7 @@ dependencies = [
  "rand 0.8.5",
  "rustyline",
  "sekas-api",
+ "sekas-checker",
  "sekas-client",
  "sekas-parser",
  "sekas-rock",
@@ -2778,6 +2779,15 @@ dependencies = [
  "protoc-build",
  "tonic",
  "tonic-build",
+]
+
+[[package]]
+name = "sekas-checker"
+version = "0.5.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror",
 ]
 
 [[package]]
@@ -2941,6 +2951,7 @@ dependencies = [
  "reqwest",
  "rocksdb",
  "sekas-api",
+ "sekas-checker",
  "sekas-client",
  "sekas-etcd-proxy",
  "sekas-macro",

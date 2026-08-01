@@ -13,6 +13,7 @@ default-run = "sekas"
 [dependencies]
 sekas-client = { path = "../client", version = "0.5" }
 sekas-api = { path = "../api", version = "0.5" }
+sekas-checker = { path = "../checker", version = "0.5" }
 sekas-parser = { path = "../parser", version = "0.5" }
 sekas-server = { path = "../server", version = "0.5" }
 sekas-rock = { path = "../rock", version = "0.5" }

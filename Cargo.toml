@@ -2,6 +2,7 @@
 members = [
     "src/api",
     "src/bin",
+    "src/checker",
     "src/client",
     "src/engine",
     "src/macro",
