@@ -14,6 +14,7 @@
 use std::time::Duration;
 
 use log::{debug, trace, warn};
+use prost::Message;
 use sekas_api::server::v1::group_request_union::Request;
 use sekas_api::server::v1::group_response_union::Response;
 use sekas_api::server::v1::*;
@@ -22,7 +23,7 @@ use sekas_rock::time::timestamp_millis;
 use sekas_schema::system::keys::{self, txn_lower_key};
 use sekas_schema::system::{self, table};
 
-use crate::{Error, GroupClient, Result, RetryState, SekasClient, WriteBuilder};
+use crate::{Error, GroupClient, Result, RetryState, RouterGroupState, SekasClient, WriteBuilder};
 
 const TXN_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -40,6 +41,10 @@ pub struct TxnRecord {
     /// The commit version of txn, it only used when state is equals to
     /// COMMITTED.
     pub commit_version: Option<u64>,
+    /// The async transaction deadline in milliseconds since epoch.
+    pub deadline_ms: Option<u64>,
+    /// The keys written by an async transaction.
+    pub async_keys: Vec<AsyncTxnKey>,
 }
 
 #[derive(Default)]
@@ -98,10 +103,12 @@ impl TxnStateTable {
         debug!("try begin txn {start_version}, but prev state is {}", prev_state.as_str_name());
         match prev_state {
             TxnState::Running => Ok(()),
-            TxnState::Committed | TxnState::Aborted => Err(Error::InvalidArgument(format!(
-                "txn {start_version}, txn already {}",
-                prev_state.as_str_name()
-            ))),
+            TxnState::Committed | TxnState::Aborted | TxnState::AsyncCommitting => {
+                Err(Error::InvalidArgument(format!(
+                    "txn {start_version}, txn already {}",
+                    prev_state.as_str_name()
+                )))
+            }
         }
     }
 
@@ -126,6 +133,56 @@ impl TxnStateTable {
             }
             Err(err) => Err(err),
             Ok(_) => Ok(()),
+        }
+    }
+
+    pub async fn begin_async_txn(
+        &self,
+        start_version: u64,
+        deadline_ms: u64,
+        keys: Vec<AsyncTxnKey>,
+        total_size: u64,
+    ) -> Result<()> {
+        let hash_tag = system::txn::hash_tag(start_version);
+        let keys_value =
+            AsyncTxnKeys { key_count: keys.len() as u64, total_size, keys }.encode_to_vec();
+        let request = TxnWriteRequest {
+            hash_tag,
+            puts: vec![
+                WriteBuilder::new(keys::txn_state_key(hash_tag, start_version))
+                    .expect_not_exists()
+                    .take_prev_value()
+                    .ensure_put(txn_state_value(TxnState::AsyncCommitting)),
+                WriteBuilder::new(keys::txn_heartbeat_key(hash_tag, start_version))
+                    .ensure_put(txn_u64_value(timestamp_millis())),
+                WriteBuilder::new(keys::txn_deadline_key(hash_tag, start_version))
+                    .ensure_put(txn_u64_value(deadline_ms)),
+                WriteBuilder::new(keys::txn_keys_key(hash_tag, start_version))
+                    .ensure_put(keys_value),
+            ],
+            ..Default::default()
+        };
+
+        let (idx, cond_idx, prev_value) = match self.write(request).await {
+            Err(Error::CasFailed(idx, cond_idx, prev_value)) => (idx, cond_idx, prev_value),
+            Err(err) => return Err(err),
+            Ok(_) => return Ok(()),
+        };
+
+        if idx != 0 || cond_idx != 0 {
+            return Err(Error::Internal(format!("invalid cas failed response, idx {idx} and cond idx {cond_idx} are not expected").into()));
+        }
+        let Some(prev_value) = prev_value.as_ref().and_then(|v| v.content.as_ref()) else {
+            return Err(Error::NotFound(format!("target txn {start_version}")));
+        };
+        let prev_state = parse_txn_state(prev_value)?;
+        if prev_state == TxnState::AsyncCommitting {
+            Ok(())
+        } else {
+            Err(Error::InvalidArgument(format!(
+                "txn {start_version}, txn already {}",
+                prev_state.as_str_name()
+            )))
         }
     }
 
@@ -181,7 +238,19 @@ impl TxnStateTable {
             TxnState::Aborted => {
                 Err(Error::InvalidArgument(format!("txn {start_version}, txn already aborted")))
             }
+            TxnState::AsyncCommitting => {
+                Err(Error::InvalidArgument(format!("txn {start_version}, txn is async committing")))
+            }
         }
+    }
+
+    pub async fn commit_async_txn(&self, start_version: u64, commit_version: u64) -> Result<()> {
+        self.commit_txn_with_expected_state(
+            start_version,
+            commit_version,
+            TxnState::AsyncCommitting,
+        )
+        .await
     }
 
     /// Get the corresponding txn record.
@@ -240,6 +309,240 @@ impl TxnStateTable {
                 Err(Error::InvalidArgument(format!("txn {start_version}, txn already committed")))
             }
             TxnState::Aborted => Ok(()),
+            TxnState::AsyncCommitting => {
+                Err(Error::InvalidArgument(format!("txn {start_version}, txn is async committing")))
+            }
+        }
+    }
+
+    pub async fn abort_async_txn(&self, start_version: u64) -> Result<()> {
+        self.abort_txn_with_expected_state(start_version, TxnState::AsyncCommitting).await
+    }
+
+    pub async fn abort_txn_if_absent(&self, start_version: u64) -> Result<TxnState> {
+        let hash_tag = system::txn::hash_tag(start_version);
+        let request = TxnWriteRequest {
+            hash_tag,
+            puts: vec![
+                WriteBuilder::new(keys::txn_state_key(hash_tag, start_version))
+                    .expect_not_exists()
+                    .take_prev_value()
+                    .ensure_put(txn_state_value(TxnState::Aborted)),
+                WriteBuilder::new(keys::txn_heartbeat_key(hash_tag, start_version))
+                    .ensure_put(txn_u64_value(timestamp_millis())),
+            ],
+            ..Default::default()
+        };
+
+        match self.write(request).await {
+            Ok(_) => Ok(TxnState::Aborted),
+            Err(Error::CasFailed(0, 0, Some(prev_value))) => {
+                let Some(content) = prev_value.content.as_ref() else {
+                    return Err(Error::NotFound(format!("target txn {start_version}")));
+                };
+                parse_txn_state(content)
+            }
+            Err(err) => Err(err),
+        }
+    }
+
+    pub async fn resolve_async_txn(&self, start_version: u64) -> Result<TxnRecord> {
+        self.resolve_async_txn_inner(start_version, true).await
+    }
+
+    pub async fn try_commit_async_txn(&self, start_version: u64) -> Result<TxnRecord> {
+        self.resolve_async_txn_inner(start_version, false).await
+    }
+
+    async fn resolve_async_txn_inner(
+        &self,
+        start_version: u64,
+        abort_after_deadline: bool,
+    ) -> Result<TxnRecord> {
+        let Some(record) = self.get_txn_record(start_version).await? else {
+            return Err(Error::NotFound(format!("target txn {start_version}")));
+        };
+        match record.state {
+            TxnState::Committed | TxnState::Aborted => return Ok(record),
+            TxnState::AsyncCommitting => {}
+            TxnState::Running => {
+                return Ok(record);
+            }
+        }
+
+        let found = self.query_async_intents(start_version, &record.async_keys).await?;
+        if found.len() == record.async_keys.len() {
+            let commit_version = found
+                .iter()
+                .map(|found| found.candidate_version)
+                .max()
+                .unwrap_or(start_version.saturating_add(1));
+            match self.commit_async_txn(start_version, commit_version).await {
+                Ok(()) | Err(Error::InvalidArgument(_)) => {}
+                Err(err) => return Err(err),
+            }
+            return self
+                .get_txn_record(start_version)
+                .await?
+                .ok_or_else(|| Error::NotFound(format!("target txn {start_version}")));
+        }
+
+        if abort_after_deadline && record.deadline_ms.unwrap_or_default() <= timestamp_millis() {
+            match self.abort_async_txn(start_version).await {
+                Ok(()) | Err(Error::InvalidArgument(_)) => {}
+                Err(err) => return Err(err),
+            }
+            return self
+                .get_txn_record(start_version)
+                .await?
+                .ok_or_else(|| Error::NotFound(format!("target txn {start_version}")));
+        }
+
+        Ok(record)
+    }
+}
+
+impl TxnStateTable {
+    async fn query_async_intents(
+        &self,
+        start_version: u64,
+        keys: &[AsyncTxnKey],
+    ) -> Result<Vec<QueryIntentFound>> {
+        let mut groups: Vec<(RouterGroupState, Vec<ShardKey>)> = Vec::new();
+        let router = self.client.router();
+        for key in keys {
+            let group_state = router.find_group_by_shard(key.shard_id)?;
+            let shard_key = ShardKey { shard_id: key.shard_id, user_key: key.user_key.clone() };
+            if let Some((_, shard_keys)) =
+                groups.iter_mut().find(|(group, _)| group.id == group_state.id)
+            {
+                shard_keys.push(shard_key);
+            } else {
+                groups.push((group_state, vec![shard_key]));
+            }
+        }
+
+        let mut handles = Vec::with_capacity(groups.len());
+        for (group_state, shard_keys) in groups {
+            let client = self.client.clone();
+            let timeout = self.timeout;
+            let handle = tokio::spawn(async move {
+                let mut group_client = GroupClient::new(group_state, client);
+                group_client.set_timeout_opt(timeout);
+                let req = QueryIntentRequest { start_version, shard_keys };
+                match group_client.request(&Request::QueryIntent(req)).await? {
+                    Response::QueryIntent(resp) => Ok(resp.shard_keys),
+                    _ => Err(Error::Internal(
+                        "invalid response type, QueryIntent is required".into(),
+                    )),
+                }
+            });
+            handles.push(handle);
+        }
+
+        let mut found = Vec::new();
+        for handle in handles {
+            for result in handle.await?? {
+                if let Some(intent) = result.into_result()? {
+                    found.push(intent);
+                }
+            }
+        }
+        Ok(found)
+    }
+
+    async fn commit_txn_with_expected_state(
+        &self,
+        start_version: u64,
+        commit_version: u64,
+        expected_state: TxnState,
+    ) -> Result<()> {
+        debug_assert!(start_version < commit_version);
+
+        let hash_tag = system::txn::hash_tag(start_version);
+        let request = TxnWriteRequest {
+            hash_tag,
+            puts: vec![
+                WriteBuilder::new(keys::txn_state_key(hash_tag, start_version))
+                    .expect_value(txn_state_value(expected_state))
+                    .take_prev_value()
+                    .ensure_put(txn_state_value(TxnState::Committed)),
+                WriteBuilder::new(keys::txn_commit_key(hash_tag, start_version))
+                    .ensure_put(txn_u64_value(commit_version)),
+                WriteBuilder::new(keys::txn_heartbeat_key(hash_tag, start_version))
+                    .ensure_put(txn_u64_value(timestamp_millis())),
+            ],
+            ..Default::default()
+        };
+
+        let (idx, cond_idx, prev_value) = match self.write(request).await {
+            Err(Error::CasFailed(idx, cond_idx, prev_value)) => (idx, cond_idx, prev_value),
+            Err(err) => return Err(err),
+            Ok(_) => return Ok(()),
+        };
+
+        if idx != 0 || cond_idx != 0 {
+            return Err(Error::Internal(format!("invalid cas failed response, idx {idx} and cond idx {cond_idx} are not expected").into()));
+        }
+        let Some(prev_value) = prev_value.as_ref().and_then(|v| v.content.as_ref()) else {
+            return Err(Error::NotFound(format!("target txn {start_version}")));
+        };
+
+        match parse_txn_state(prev_value)? {
+            TxnState::Committed => Ok(()),
+            TxnState::Aborted => {
+                Err(Error::InvalidArgument(format!("txn {start_version}, txn already aborted")))
+            }
+            state => Err(Error::InvalidArgument(format!(
+                "txn {start_version}, expect {}, but got {}",
+                expected_state.as_str_name(),
+                state.as_str_name()
+            ))),
+        }
+    }
+
+    async fn abort_txn_with_expected_state(
+        &self,
+        start_version: u64,
+        expected_state: TxnState,
+    ) -> Result<()> {
+        let hash_tag = system::txn::hash_tag(start_version);
+        let request = TxnWriteRequest {
+            hash_tag,
+            puts: vec![
+                WriteBuilder::new(keys::txn_state_key(hash_tag, start_version))
+                    .expect_value(txn_state_value(expected_state))
+                    .take_prev_value()
+                    .ensure_put(txn_state_value(TxnState::Aborted)),
+                WriteBuilder::new(keys::txn_heartbeat_key(hash_tag, start_version))
+                    .ensure_put(txn_u64_value(timestamp_millis())),
+            ],
+            ..Default::default()
+        };
+
+        let (idx, cond_idx, prev_value) = match self.write(request).await {
+            Err(Error::CasFailed(idx, cond_idx, prev_value)) => (idx, cond_idx, prev_value),
+            Err(err) => return Err(err),
+            Ok(_) => return Ok(()),
+        };
+
+        if idx != 0 || cond_idx != 0 {
+            return Err(Error::Internal(format!("invalid cas failed response, idx {idx} and cond idx {cond_idx} are not expected").into()));
+        }
+        let Some(prev_value) = prev_value.as_ref().and_then(|v| v.content.as_ref()) else {
+            return Err(Error::NotFound(format!("target txn {start_version}")));
+        };
+
+        match parse_txn_state(prev_value)? {
+            TxnState::Aborted => Ok(()),
+            TxnState::Committed => {
+                Err(Error::InvalidArgument(format!("txn {start_version}, txn already committed")))
+            }
+            state => Err(Error::InvalidArgument(format!(
+                "txn {start_version}, expect {}, but got {}",
+                expected_state.as_str_name(),
+                state.as_str_name()
+            ))),
         }
     }
 }
@@ -325,36 +628,49 @@ fn parse_txn_record(
     start_version: u64,
     values: Vec<ValueSet>,
 ) -> Result<Option<TxnRecord>> {
-    // The scan response output orders.
     let txn_commit_key = keys::txn_commit_key(hash_tag, start_version);
+    let txn_deadline_key = keys::txn_deadline_key(hash_tag, start_version);
     let txn_heartbeat_key = keys::txn_heartbeat_key(hash_tag, start_version);
+    let txn_keys_key = keys::txn_keys_key(hash_tag, start_version);
     let txn_state_key = keys::txn_state_key(hash_tag, start_version);
 
+    if values.is_empty() {
+        return Ok(None);
+    }
+
     let mut txn_record = TxnRecord::default();
-    let mut it = values.into_iter().peekable();
-    match it.peek() {
-        Some(value_set) => {
-            if value_set.user_key == txn_commit_key {
-                let commit_version = parse_txn_value(value_set, parse_u64)?;
-                txn_record.commit_version = Some(commit_version);
-                let _ = it.next();
-            }
-        }
-        None => {
-            // No any key returned.
-            return Ok(None);
+    txn_record.start_version = start_version;
+    let mut has_heartbeat = false;
+    let mut has_state = false;
+    for value_set in values {
+        if value_set.user_key == txn_commit_key {
+            txn_record.commit_version = Some(parse_txn_value(&value_set, parse_u64)?);
+        } else if value_set.user_key == txn_deadline_key {
+            txn_record.deadline_ms = Some(parse_txn_value(&value_set, parse_u64)?);
+        } else if value_set.user_key == txn_heartbeat_key {
+            txn_record.heartbeat = parse_txn_value(&value_set, parse_u64)?;
+            has_heartbeat = true;
+        } else if value_set.user_key == txn_keys_key {
+            txn_record.async_keys = parse_txn_value(&value_set, parse_async_txn_keys)?;
+        } else if value_set.user_key == txn_state_key {
+            txn_record.state = parse_txn_value(&value_set, parse_txn_state)?;
+            has_state = true;
+        } else {
+            return Err(Error::Internal(
+                format!(
+                    "unknown txn record key {:?}, start version: {start_version}",
+                    value_set.user_key
+                )
+                .into(),
+            ));
         }
     }
 
-    txn_record.start_version = start_version;
-    txn_record.heartbeat = parse_next_txn_key(&mut it, &txn_heartbeat_key, parse_u64)?;
-    txn_record.state = parse_next_txn_key(&mut it, &txn_state_key, parse_txn_state)?;
-    if it.next().is_some() {
+    if !has_heartbeat || !has_state {
         return Err(Error::Internal(
-            format!("not all txn record keys are consumed, start version: {start_version}").into(),
+            format!("txn record misses heartbeat or state, start version: {start_version}").into(),
         ));
     }
-
     Ok(Some(txn_record))
 }
 
@@ -373,6 +689,22 @@ fn parse_txn_state(bytes: &[u8]) -> Result<TxnState> {
         .ok_or_else(|| Error::Internal(format!("unknown txn state value: {bytes:?}").into()))
 }
 
+fn parse_async_txn_keys(bytes: &[u8]) -> Result<Vec<AsyncTxnKey>> {
+    let keys = AsyncTxnKeys::decode(bytes)
+        .map_err(|err| Error::Internal(format!("decode async txn keys: {err}").into()))?;
+    if keys.key_count != keys.keys.len() as u64 {
+        return Err(Error::Internal(
+            format!(
+                "async txn key count mismatch, expect {}, got {}",
+                keys.key_count,
+                keys.keys.len()
+            )
+            .into(),
+        ));
+    }
+    Ok(keys.keys)
+}
+
 fn parse_txn_value<Fn, T>(value_set: &ValueSet, parser: Fn) -> Result<T>
 where
     Fn: FnOnce(&[u8]) -> Result<T>,
@@ -384,18 +716,6 @@ where
         .ok_or_else(|| Error::Internal("at lease a value in scan value set is required".into()))
         .map(Vec::as_slice)
         .and_then(parser)
-}
-
-fn parse_next_txn_key<Fn, T, I>(it: &mut I, key: &[u8], parser: Fn) -> Result<T>
-where
-    I: Iterator<Item = ValueSet>,
-    Fn: FnOnce(&[u8]) -> Result<T>,
-{
-    let value_set = it
-        .next()
-        .filter(|v| v.user_key == key)
-        .ok_or_else(|| Error::Internal(format!("the next key {key:?} is required").into()))?;
-    parse_txn_value(&value_set, parser)
 }
 
 #[inline]

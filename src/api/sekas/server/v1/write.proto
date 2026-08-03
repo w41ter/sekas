@@ -90,4 +90,6 @@ message DeleteRequest {
 message WriteResponse {
     // The previous value of the target, only set if `take_prev_value` is true.
     optional Value prev_value = 1;
+    // The candidate commit version proposed by the target group for async commit.
+    uint64 candidate_version = 2;
 }

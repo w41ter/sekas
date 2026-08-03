@@ -135,6 +135,10 @@ pub fn take_group_request_metrics(request: &GroupRequest) -> Option<&'static His
             NODE_SERVICE_GROUP_REQUEST_TOTAL.clear_intent.inc();
             Some(&NODE_SERVICE_GROUP_REQUEST_DURATION_SECONDS.clear_intent)
         }
+        Some(Request::QueryIntent(_)) => {
+            NODE_SERVICE_GROUP_REQUEST_TOTAL.get.inc();
+            Some(&NODE_SERVICE_GROUP_REQUEST_DURATION_SECONDS.get)
+        }
         Some(Request::WatchKey(_)) => {
             NODE_SERVICE_GROUP_REQUEST_TOTAL.watch_key.inc();
             None

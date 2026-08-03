@@ -172,6 +172,10 @@ fn is_executable(descriptor: &GroupDesc, request: &Request) -> bool {
                 .shard_keys
                 .iter()
                 .all(|key| is_target_shard_exists(descriptor, key.shard_id, &key.user_key)),
+            Request::QueryIntent(req) => req
+                .shard_keys
+                .iter()
+                .all(|key| is_target_shard_exists(descriptor, key.shard_id, &key.user_key)),
             Request::WatchKey(req) => is_target_shard_exists(descriptor, req.shard_id, &req.key),
             Request::GetSplitKey(req) => is_target_shard_exists(
                 descriptor,

@@ -665,7 +665,7 @@ impl GroupClient {
 
 #[inline]
 fn is_read_only_request(request: &Request) -> bool {
-    matches!(request, Request::Get(_) | Request::Scan(_))
+    matches!(request, Request::Get(_) | Request::Scan(_) | Request::QueryIntent(_))
 }
 
 fn is_executable(descriptor: &GroupDesc, request: &Request) -> bool {
@@ -685,6 +685,10 @@ fn is_executable(descriptor: &GroupDesc, request: &Request) -> bool {
             .iter()
             .all(|key| is_target_shard_exists(descriptor, key.shard_id, &key.user_key)),
         Request::ClearIntent(req) => req
+            .shard_keys
+            .iter()
+            .all(|key| is_target_shard_exists(descriptor, key.shard_id, &key.user_key)),
+        Request::QueryIntent(req) => req
             .shard_keys
             .iter()
             .all(|key| is_target_shard_exists(descriptor, key.shard_id, &key.user_key)),

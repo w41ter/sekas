@@ -35,6 +35,8 @@ use crate::{
 };
 
 const TXN_CLEANUP_TIMEOUT: Duration = Duration::from_secs(5);
+const ASYNC_COMMIT_MAX_KEYS: usize = 63;
+const ASYNC_COMMIT_MAX_SIZE: usize = 64 * 1024;
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct TxnReadOptions {
@@ -861,6 +863,23 @@ fn push_local_txn_group(
     }
 }
 
+fn approx_write_size(write: &WriteContext) -> usize {
+    match &write.request {
+        WriteRequest::Put(put) => {
+            put.key.len()
+                + put.value.len()
+                + put.conditions.iter().map(approx_condition_size).sum::<usize>()
+        }
+        WriteRequest::Delete(delete) => {
+            delete.key.len() + delete.conditions.iter().map(approx_condition_size).sum::<usize>()
+        }
+    }
+}
+
+fn approx_condition_size(condition: &WriteCondition) -> usize {
+    condition.value.len() + std::mem::size_of::<u64>() * 2 + std::mem::size_of::<i32>()
+}
+
 impl WriteBatchContext {
     fn new(
         start_version: u64,
@@ -896,6 +915,12 @@ impl WriteBatchContext {
     }
 
     pub async fn commit(mut self) -> Result<WriteBatchResponse> {
+        if self.is_async_commit_eligible()
+            && let Some(resp) = self.try_commit_async().await?
+        {
+            return Ok(resp);
+        }
+
         self.start_txn().await?;
         self.txn_started = true;
 
@@ -946,6 +971,91 @@ impl WriteBatchContext {
 
         self.commit_txn().await?;
         Ok(self.take_response(self.commit_version))
+    }
+
+    async fn try_commit_async(&mut self) -> Result<Option<WriteBatchResponse>> {
+        let keys = self.async_txn_keys()?;
+        let total_size = self.approx_txn_size() as u64;
+        let deadline_ms = self.async_deadline_ms();
+        let txn_table = TxnStateTable::new(self.client.clone(), self.retry_state.timeout());
+
+        let begin = txn_table.begin_async_txn(self.start_version, deadline_ms, keys, total_size);
+        let prepare = self.prepare_async_intents(deadline_ms);
+        if let Err(err) = tokio::try_join!(begin, prepare) {
+            self.abort_async_after_error().await?;
+            if matches!(err, Error::CasFailed(..) | Error::TxnConflict) {
+                return Err(err);
+            }
+            self.reset_for_2pc_fallback().await?;
+            return Ok(None);
+        }
+
+        self.commit_version = self
+            .writes
+            .iter()
+            .filter_map(|write| write.response.as_ref().map(|resp| resp.candidate_version))
+            .max()
+            .unwrap_or(self.start_version.saturating_add(1));
+
+        TxnStateTable::new(self.client.clone(), self.retry_state.timeout())
+            .commit_async_txn(self.start_version, self.commit_version)
+            .await?;
+        let resp = self.take_response(self.commit_version);
+        self.spawn_commit_intents();
+        Ok(Some(resp))
+    }
+
+    async fn abort_async_after_error(&mut self) -> Result<()> {
+        let txn_table = TxnStateTable::new(self.client.clone(), Some(TXN_CLEANUP_TIMEOUT));
+        match txn_table.abort_async_txn(self.start_version).await {
+            Ok(()) => {}
+            Err(Error::NotFound(_)) => {
+                let _ = txn_table.abort_txn_if_absent(self.start_version).await?;
+            }
+            Err(Error::InvalidArgument(_)) => {
+                let Some(record) = txn_table.get_txn_record(self.start_version).await? else {
+                    let _ = txn_table.abort_txn_if_absent(self.start_version).await?;
+                    self.clear_intents().await?;
+                    return Ok(());
+                };
+                if record.state == TxnState::Committed {
+                    self.commit_version = record.commit_version.unwrap_or_default();
+                    self.finish_commit_intents().await?;
+                    return Ok(());
+                }
+                if record.state != TxnState::Aborted {
+                    return Err(Error::InvalidArgument(format!(
+                        "txn {}, cannot abort async txn in state {}",
+                        self.start_version,
+                        record.state.as_str_name()
+                    )));
+                }
+            }
+            Err(err) => return Err(err),
+        }
+        self.clear_intents().await?;
+        Ok(())
+    }
+
+    async fn reset_for_2pc_fallback(&mut self) -> Result<()> {
+        self.start_version = self.alloc_txn_version().await?;
+        self.commit_version = 0;
+        self.txn_started = false;
+        self.num_doing_writes = self.writes.len();
+        for write in &mut self.writes {
+            write.done = false;
+            write.response = None;
+        }
+        Ok(())
+    }
+
+    async fn prepare_async_intents(&mut self, deadline_ms: u64) -> Result<()> {
+        loop {
+            if !self.prepare_intents_inner_with_async(true, deadline_ms).await? {
+                return Ok(());
+            }
+            self.retry_state.force_retry().await?;
+        }
     }
 
     fn take_response(&mut self, version: u64) -> WriteBatchResponse {
@@ -1108,6 +1218,61 @@ impl WriteBatchContext {
         Ok(groups)
     }
 
+    fn is_async_commit_eligible(&self) -> bool {
+        self.writes.len() <= ASYNC_COMMIT_MAX_KEYS
+            && self.approx_txn_size() <= ASYNC_COMMIT_MAX_SIZE
+            && self.spans_multiple_groups()
+    }
+
+    fn spans_multiple_groups(&self) -> bool {
+        let router = self.client.router();
+        let mut first_group_id = None;
+        for write in &self.writes {
+            let Ok((group_state, _shard_desc)) =
+                router.find_shard(write.table_id, write.user_key())
+            else {
+                return false;
+            };
+            match first_group_id {
+                Some(group_id) if group_id != group_state.id => return true,
+                Some(_) => {}
+                None => first_group_id = Some(group_state.id),
+            }
+        }
+        false
+    }
+
+    fn async_deadline_ms(&self) -> u64 {
+        self.retry_state
+            .timeout()
+            .map(|timeout| sekas_rock::time::timestamp_millis() + timeout.as_millis() as u64)
+            .unwrap_or_else(|| {
+                sekas_rock::time::timestamp_millis() + TXN_CLEANUP_TIMEOUT.as_millis() as u64
+            })
+    }
+
+    fn async_txn_keys(&self) -> Result<Vec<AsyncTxnKey>> {
+        let router = self.client.router();
+        let mut keys = Vec::with_capacity(self.writes.len());
+        for write in &self.writes {
+            let (_group_state, shard_desc) = router.find_shard(write.table_id, write.user_key())?;
+            keys.push(AsyncTxnKey {
+                table_id: write.table_id,
+                shard_id: shard_desc.id,
+                user_key: write.user_key().to_vec(),
+            });
+        }
+        keys.sort_unstable_by(|a, b| {
+            a.shard_id.cmp(&b.shard_id).then_with(|| a.user_key.cmp(&b.user_key))
+        });
+        keys.dedup_by(|a, b| a.shard_id == b.shard_id && a.user_key == b.user_key);
+        Ok(keys)
+    }
+
+    fn approx_txn_size(&self) -> usize {
+        self.writes.iter().map(approx_write_size).sum()
+    }
+
     async fn prepare_intents(&mut self) -> Result<()> {
         loop {
             if !self.prepare_intents_inner().await? {
@@ -1118,6 +1283,14 @@ impl WriteBatchContext {
     }
 
     async fn prepare_intents_inner(&mut self) -> Result<bool> {
+        self.prepare_intents_inner_with_async(false, 0).await
+    }
+
+    async fn prepare_intents_inner_with_async(
+        &mut self,
+        async_commit: bool,
+        deadline_ms: u64,
+    ) -> Result<bool> {
         trace!("txn prepare intents, version: {}", self.start_version);
         let groups = self.prepare_intent_groups()?;
         let mut handles = Vec::with_capacity(groups.len());
@@ -1127,6 +1300,8 @@ impl WriteBatchContext {
                 start_version: self.start_version,
                 writes: intent_group.entries.iter().map(|entry| entry.write.clone()).collect(),
                 check_write_conflict: self.check_write_conflict,
+                async_commit,
+                deadline_ms,
             });
             let index_map = intent_group
                 .entries
@@ -1243,6 +1418,49 @@ impl WriteBatchContext {
                     Err(err) => {
                         warn!("txn {} commit intents: {}", self.start_version, err);
                         break;
+                    }
+                }
+            }
+        });
+    }
+
+    fn spawn_commit_intents(&mut self) {
+        let mut ctx = WriteBatchContext {
+            client: self.client.clone(),
+            writes: self
+                .writes
+                .iter()
+                .map(|write| WriteContext {
+                    table_id: write.table_id,
+                    request: write.request.clone(),
+                    response: None,
+                    index: write.index,
+                    done: false,
+                })
+                .collect(),
+            num_doing_writes: self.writes.len(),
+            num_deletes: self.num_deletes,
+            start_version: self.start_version,
+            check_write_conflict: self.check_write_conflict,
+            commit_version: self.commit_version,
+            txn_started: true,
+            retry_state: RetryState::new(TXN_CLEANUP_TIMEOUT),
+        };
+        tokio::spawn(async move {
+            loop {
+                match ctx.commit_intents_inner(Some(TXN_CLEANUP_TIMEOUT)).await {
+                    Ok(false) => break,
+                    Ok(true) => {
+                        if let Err(err) = ctx.retry_state.force_retry().await {
+                            warn!("txn {} async commit intents retry: {}", ctx.start_version, err);
+                            break;
+                        }
+                    }
+                    Err(err) => {
+                        if let Err(err) = ctx.retry_state.retry(err).await {
+                            warn!("txn {} async commit intents: {}", ctx.start_version, err);
+                            break;
+                        }
                     }
                 }
             }

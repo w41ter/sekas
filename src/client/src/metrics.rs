@@ -157,6 +157,7 @@ pub fn take_group_request_metrics(
             GROUP_CLIENT_GROUP_REQUEST_TOTAL.clear_intent.inc();
             Some(&GROUP_CLIENT_GROUP_REQUEST_DURATION_SECONDS.clear_intent)
         }
+        Request::QueryIntent(_) => Some(&GROUP_CLIENT_GROUP_REQUEST_DURATION_SECONDS.get),
         Request::AcceptShard(_) => {
             GROUP_CLIENT_GROUP_REQUEST_TOTAL.accept_shard.inc();
             Some(&GROUP_CLIENT_GROUP_REQUEST_DURATION_SECONDS.accept_shard)

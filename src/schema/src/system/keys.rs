@@ -18,6 +18,8 @@ pub const TXN_PREFIX: &[u8] = b"txn_";
 pub const TXN_SUFFIX_STATE: &[u8] = b"state";
 pub const TXN_SUFFIX_HEARTBEAT: &[u8] = b"hb";
 pub const TXN_SUFFIX_COMMIT: &[u8] = b"commit";
+pub const TXN_SUFFIX_DEADLINE: &[u8] = b"deadline";
+pub const TXN_SUFFIX_KEYS: &[u8] = b"keys";
 
 /// The boundary of a txn tag.
 #[inline]
@@ -57,5 +59,21 @@ pub fn txn_heartbeat_key(hash_tag: u8, txn_id: u64) -> Vec<u8> {
 pub fn txn_commit_key(hash_tag: u8, txn_id: u64) -> Vec<u8> {
     let mut buf = txn_prefix(hash_tag, txn_id);
     buf.extend_from_slice(TXN_SUFFIX_COMMIT);
+    buf
+}
+
+/// The txn deadline key.
+#[inline]
+pub fn txn_deadline_key(hash_tag: u8, txn_id: u64) -> Vec<u8> {
+    let mut buf = txn_prefix(hash_tag, txn_id);
+    buf.extend_from_slice(TXN_SUFFIX_DEADLINE);
+    buf
+}
+
+/// The txn keys key.
+#[inline]
+pub fn txn_keys_key(hash_tag: u8, txn_id: u64) -> Vec<u8> {
+    let mut buf = txn_prefix(hash_tag, txn_id);
+    buf.extend_from_slice(TXN_SUFFIX_KEYS);
     buf
 }

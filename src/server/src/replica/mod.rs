@@ -131,6 +131,7 @@ where
     local_txn_mgr: LocalTxnManager,
     pending_overlay: PendingWriteOverlay,
     write_view: PendingWriteView,
+    sekas_client: sekas_client::SekasClient,
 }
 
 impl Replica {
@@ -165,7 +166,7 @@ impl Replica {
         watcher_sender: WatcherSender,
     ) -> Self {
         let latch_mgr =
-            RemoteLatchManager::new(sekas_client, group_engine.clone(), raft_group.clone());
+            RemoteLatchManager::new(sekas_client.clone(), group_engine.clone(), raft_group.clone());
         let pending_overlay = PendingWriteOverlay::default();
         let write_view = PendingWriteView::new(group_engine.clone(), pending_overlay.clone());
         Replica {
@@ -181,6 +182,7 @@ impl Replica {
             local_txn_mgr: LocalTxnManager::default(),
             pending_overlay,
             write_view,
+            sekas_client,
         }
     }
 
@@ -305,6 +307,11 @@ impl Replica {
     #[inline]
     pub(crate) fn group_engine(&self) -> GroupEngine {
         self.group_engine.clone()
+    }
+
+    #[inline]
+    pub(crate) fn client(&self) -> sekas_client::SekasClient {
+        self.sekas_client.clone()
     }
 
     #[inline]
@@ -512,6 +519,17 @@ impl Replica {
                 }
                 (None, Response::ClearIntent(resp))
             }
+            Request::QueryIntent(req) => {
+                let (resp, forwards) =
+                    eval::query_intent(exec_ctx, &self.group_engine, req).await?;
+                if !forwards.is_empty() {
+                    return Err(EvaluateAction::Error(Error::PartialForward(PartialForward {
+                        response: Response::QueryIntent(resp),
+                        parts: forwards,
+                    })));
+                }
+                (None, Response::QueryIntent(resp))
+            }
             Request::Scan(req) => {
                 self.local_txn_mgr.before_read(req.start_version).await;
                 let eval_result =
@@ -682,6 +700,7 @@ impl Replica {
                     }
                 }
             }
+            Request::QueryIntent(_) => {}
             Request::Get(_)
             | Request::Scan(_)
             | Request::CreateShard(_)
@@ -860,6 +879,7 @@ fn is_change_meta_request(request: &Request) -> bool {
         | Request::WriteIntent(_)
         | Request::CommitIntent(_)
         | Request::ClearIntent(_)
+        | Request::QueryIntent(_)
         | Request::GetSplitKey(_)
         | Request::WatchKey(_) => false,
     }

@@ -57,6 +57,7 @@ message GroupRequestUnion {
         CommitIntentRequest commit_intent = 12;
         ClearIntentRequest clear_intent = 13;
         LocalTxnWriteRequest local_txn_write = 14;
+        QueryIntentRequest query_intent = 15;
 
         // Add a new shard to an existing group.
         CreateShardRequest create_shard = 20;
@@ -101,6 +102,7 @@ message GroupResponseUnion {
         CommitIntentResponse commit_intent = 11;
         ClearIntentResponse clear_intent = 12;
         LocalTxnWriteResponse local_txn_write = 13;
+        QueryIntentResponse query_intent = 14;
 
         CreateShardResponse create_shard = 20;
         DeleteShardResponse delete_shard = 27;
@@ -187,6 +189,8 @@ message WriteIntentRequest {
     uint64 start_version = 1;
     repeated ShardWriteRequest writes = 2;
     bool check_write_conflict = 3;
+    bool async_commit = 4;
+    uint64 deadline_ms = 5;
 }
 
 message WriteIntentResponse {
@@ -218,6 +222,31 @@ message ClearIntentRequest {
 message ClearIntentResponse {
     repeated IntentResult shard_keys = 1;
 }
+
+message QueryIntentRequest {
+    uint64 start_version = 1;
+    repeated ShardKey shard_keys = 2;
+}
+
+message QueryIntentResponse {
+    repeated QueryIntentResult shard_keys = 1;
+}
+
+message QueryIntentResult {
+    oneof result {
+        QueryIntentFound found = 1;
+        QueryIntentMissing missing = 2;
+        Error error = 3;
+    }
+}
+
+message QueryIntentFound {
+    bool async_commit = 1;
+    uint64 candidate_version = 2;
+    uint64 deadline_ms = 3;
+}
+
+message QueryIntentMissing {}
 
 message IntentResult {
     oneof result {

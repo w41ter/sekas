@@ -18,10 +18,51 @@ use crate::server::v1::TxnIntent;
 
 impl TxnIntent {
     pub fn tombstone(start_version: u64) -> Self {
-        TxnIntent { start_version, is_delete: true, value: None }
+        TxnIntent {
+            start_version,
+            is_delete: true,
+            value: None,
+            async_commit: false,
+            candidate_version: 0,
+            deadline_ms: 0,
+        }
     }
 
     pub fn with_put(start_version: u64, value: Option<Vec<u8>>) -> Self {
-        TxnIntent { start_version, is_delete: false, value }
+        TxnIntent {
+            start_version,
+            is_delete: false,
+            value,
+            async_commit: false,
+            candidate_version: 0,
+            deadline_ms: 0,
+        }
+    }
+
+    pub fn async_tombstone(start_version: u64, candidate_version: u64, deadline_ms: u64) -> Self {
+        TxnIntent {
+            start_version,
+            is_delete: true,
+            value: None,
+            async_commit: true,
+            candidate_version,
+            deadline_ms,
+        }
+    }
+
+    pub fn async_put(
+        start_version: u64,
+        value: Option<Vec<u8>>,
+        candidate_version: u64,
+        deadline_ms: u64,
+    ) -> Self {
+        TxnIntent {
+            start_version,
+            is_delete: false,
+            value,
+            async_commit: true,
+            candidate_version,
+            deadline_ms,
+        }
     }
 }

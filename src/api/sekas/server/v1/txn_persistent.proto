@@ -23,6 +23,19 @@ enum TxnState {
     RUNNING = 0;
     ABORTED = 1;
     COMMITTED = 2;
+    ASYNC_COMMITTING = 3;
+}
+
+message AsyncTxnKey {
+    uint64 table_id = 1;
+    uint64 shard_id = 2;
+    bytes user_key = 3;
+}
+
+message AsyncTxnKeys {
+    repeated AsyncTxnKey keys = 1;
+    uint64 key_count = 2;
+    uint64 total_size = 3;
 }
 
 // The txn record.
@@ -47,6 +60,9 @@ message TxnIntent {
     bool is_delete = 2;
     // The value to apply to state machine. `None` for Nop.
     optional bytes value = 3;
+    bool async_commit = 4;
+    uint64 candidate_version = 5;
+    uint64 deadline_ms = 6;
 }
 
 

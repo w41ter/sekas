@@ -121,6 +121,7 @@ where
         Request::LocalTxnWrite(req) => collect_local_txn_write_keys(req)?,
         Request::Scan(_)
         | Request::Get(_)
+        | Request::QueryIntent(_)
         | Request::CreateShard(_)
         | Request::DeleteShard(_)
         | Request::ChangeReplicas(_)
@@ -436,15 +437,27 @@ pub mod remote {
             let start_version = txn_intent.start_version;
             trace!("try resolve txn {start_version}, shard key {:?}", self.shard_key);
             loop {
-                let txn_record =
-                    self.latch_mgr.core.txn_table.get_txn_record(start_version).await?.ok_or_else(
-                        || {
-                            Error::InvalidData(format!(
-                                "resolve txn {}, but txn record is not exists",
-                                start_version
-                            ))
-                        },
-                    )?;
+                let Some(txn_record) =
+                    self.latch_mgr.core.txn_table.get_txn_record(start_version).await?
+                else {
+                    if txn_intent.async_commit {
+                        if txn_intent.deadline_ms <= sekas_rock::time::timestamp_millis() {
+                            let _ = self
+                                .latch_mgr
+                                .core
+                                .txn_table
+                                .abort_txn_if_absent(start_version)
+                                .await?;
+                            continue;
+                        }
+                        sekas_runtime::time::sleep(Duration::from_millis(10)).await;
+                        continue;
+                    }
+                    return Err(Error::InvalidData(format!(
+                        "resolve txn {}, but txn record is not exists",
+                        start_version
+                    )));
+                };
 
                 trace!(
                     "txn record state is {}, start version: {}, commit version: {:?}",
@@ -522,6 +535,14 @@ pub mod remote {
                     }
                     TxnState::Running => {
                         unreachable!("the txn state should be resolved")
+                    }
+                    TxnState::AsyncCommitting => {
+                        let record =
+                            self.latch_mgr.core.txn_table.resolve_async_txn(start_version).await?;
+                        if record.state == TxnState::AsyncCommitting {
+                            sekas_runtime::time::sleep(Duration::from_millis(10)).await;
+                        }
+                        continue;
                     }
                 }
             }

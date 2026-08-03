@@ -22,6 +22,7 @@ use helper::context::TestContext;
 use helper::init::setup_panic_hook;
 use helper::runtime::spawn;
 use log::info;
+use sekas_api::server::v1::TxnState;
 use sekas_client::{AppError, Database, TableDesc, Txn, WriteBuilder};
 use sekas_rock::fn_name;
 
@@ -149,6 +150,17 @@ async fn txn_blind_write_across_groups_does_not_conflict() {
     let group_a = c.find_router_group_state_by_key(table_a.id, &key_a).await.unwrap();
     let group_b = c.find_router_group_state_by_key(table_b.id, &key_b).await.unwrap();
     assert_ne!(group_a.id, group_b.id);
+
+    let mut warmup_txn = db.begin_txn();
+    warmup_txn.put(table_a.id, WriteBuilder::new(key_a.clone()).ensure_put(b"warmup-a".to_vec()));
+    warmup_txn.put(table_b.id, WriteBuilder::new(key_b.clone()).ensure_put(b"warmup-b".to_vec()));
+    let warmup_start_version = warmup_txn.start_version().await.unwrap();
+    let warmup_resp = warmup_txn.commit().await.unwrap();
+    let txn_table = sekas_client::TxnStateTable::new(app.clone(), Some(Duration::from_secs(5)));
+    let record = txn_table.get_txn_record(warmup_start_version).await.unwrap().unwrap();
+    assert_eq!(record.state, TxnState::Committed);
+    assert_eq!(record.commit_version, Some(warmup_resp.version));
+    assert_eq!(record.async_keys.len(), 2);
 
     let iterations = 20;
     let table_a_id = table_a.id;

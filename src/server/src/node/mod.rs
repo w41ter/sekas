@@ -351,6 +351,11 @@ impl Node {
         if let Some(mvcc_gc_handle) = self::job::setup_mvcc_gc(self.cfg.clone(), replica.clone()) {
             task_group.add_task(mvcc_gc_handle);
         }
+        if let Some(async_txn_resolver_handle) =
+            self::job::setup_async_txn_resolver(self.cfg.clone(), replica.clone())
+        {
+            task_group.add_task(async_txn_resolver_handle);
+        }
 
         // Now that all initialization work is done, the replica is ready to serve, mark
         // it as normal state.
@@ -753,6 +758,14 @@ fn merge_partial_forward_response(
                 response.shard_keys[index] = result;
             }
         }
+        (Response::QueryIntent(response), Response::QueryIntent(forward_response)) => {
+            if indexes.len() != forward_response.shard_keys.len() {
+                return Err(Error::InvalidData("invalid QueryIntent forward response".into()));
+            }
+            for (index, result) in indexes.into_iter().zip(forward_response.shard_keys) {
+                response.shard_keys[index] = result;
+            }
+        }
         (_, other) => {
             return Err(Error::InvalidData(format!(
                 "unexpected partial forward response {other:?}"
@@ -781,6 +794,11 @@ fn fill_partial_forward_error(
         Response::ClearIntent(response) => {
             for index in indexes {
                 response.shard_keys[index] = IntentResult::err(error.clone());
+            }
+        }
+        Response::QueryIntent(response) => {
+            for index in indexes {
+                response.shard_keys[index] = QueryIntentResult::err(error.clone());
             }
         }
         other => {
@@ -1210,6 +1228,8 @@ mod tests {
                 deletes: Vec::new(),
             }],
             check_write_conflict: false,
+            async_commit: false,
+            deadline_ms: 0,
         })
     }
 

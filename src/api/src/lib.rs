@@ -95,6 +95,46 @@ impl server::v1::IntentResult {
     }
 }
 
+impl server::v1::QueryIntentResult {
+    #[inline]
+    pub fn found(found: server::v1::QueryIntentFound) -> Self {
+        use server::v1::query_intent_result::Result;
+
+        Self { result: Some(Result::Found(found)) }
+    }
+
+    #[inline]
+    pub fn missing() -> Self {
+        use server::v1::query_intent_result::Result;
+
+        Self { result: Some(Result::Missing(server::v1::QueryIntentMissing {})) }
+    }
+
+    #[inline]
+    pub fn err(error: server::v1::Error) -> Self {
+        use server::v1::query_intent_result::Result;
+
+        Self { result: Some(Result::Error(error)) }
+    }
+
+    #[inline]
+    pub fn into_result(
+        self,
+    ) -> std::result::Result<Option<server::v1::QueryIntentFound>, server::v1::Error> {
+        use server::v1::query_intent_result::Result;
+
+        match self.result {
+            Some(Result::Found(found)) => Ok(Some(found)),
+            Some(Result::Missing(_)) => Ok(None),
+            Some(Result::Error(error)) => Err(error),
+            None => Err(server::v1::Error::status(
+                tonic::Code::Internal.into(),
+                "QueryIntentResult::result is None",
+            )),
+        }
+    }
+}
+
 const SHARD_UPDATE_DELTA: u64 = 1 << 32;
 const CONFIG_CHANGE_DELTA: u64 = 1;
 

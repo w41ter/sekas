@@ -882,22 +882,23 @@ impl Root {
                 return Err(Error::NotLeader(0, 0, None));
             }
 
-            if next_txn_id + num_required > max_txn_id {
-                sekas_runtime::yield_now().await;
+            let candidate_txn_id = next_txn_id.max(timestamp_nanos());
+            if candidate_txn_id + num_required > max_txn_id {
+                root_core.bump_txn_id().await?;
                 continue;
             }
             if root_core
                 .next_txn_id
                 .compare_exchange(
                     next_txn_id,
-                    next_txn_id + num_required,
+                    candidate_txn_id + num_required,
                     Ordering::AcqRel,
                     Ordering::Relaxed,
                 )
                 .is_ok()
             {
                 // TODO(walter) ensure leadership before return.
-                return Ok(next_txn_id);
+                return Ok(candidate_txn_id);
             }
         }
     }

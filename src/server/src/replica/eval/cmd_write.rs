@@ -60,6 +60,7 @@ pub(crate) async fn batch_write(
         let prev_version = prev_value.as_ref().map(|v| v.version).unwrap_or_default();
         resp.deletes.push(WriteResponse {
             prev_value: if del.take_prev_value { prev_value } else { None },
+            candidate_version: 0,
         });
         let version = std::cmp::max(prev_version + 1, next_version());
         group_engine.tombstone(&mut wb, req.shard_id, &del.key, version)?;
@@ -77,6 +78,7 @@ pub(crate) async fn batch_write(
         let prev_version = prev_value.as_ref().map(|v| v.version).unwrap_or_default();
         resp.puts.push(WriteResponse {
             prev_value: if put.take_prev_value { prev_value } else { None },
+            candidate_version: 0,
         });
         let version = std::cmp::max(prev_version + 1, next_version());
         trace!(

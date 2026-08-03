@@ -52,6 +52,8 @@ pub(crate) async fn write_intent<T: LatchGuard>(
             latch_guard,
             req.start_version,
             req.check_write_conflict,
+            req.async_commit,
+            req.deadline_ms,
             write,
             &mut wb,
         )
@@ -103,6 +105,8 @@ async fn write_intent_forward_part(
         start_version: req.start_version,
         writes: vec![write.clone()],
         check_write_conflict: req.check_write_conflict,
+        async_commit: req.async_commit,
+        deadline_ms: req.deadline_ms,
     });
     Ok(Some(ForwardPart {
         indexes: vec![index],
@@ -121,6 +125,8 @@ async fn write_intent_inner<T: LatchGuard>(
     latch_guard: &mut DeferSignalLatchGuard<T>,
     start_version: u64,
     check_write_conflict: bool,
+    async_commit: bool,
+    deadline_ms: u64,
     req: &ShardWriteRequest,
     wb: &mut WriteBatch,
 ) -> Result<WriteResponse> {
@@ -128,9 +134,18 @@ async fn write_intent_inner<T: LatchGuard>(
     let write = single_write_request(req)?;
 
     let user_key = write.user_key();
+    if async_commit
+        && let (Some(intent), _) =
+            read_intent_and_next_key(group_engine, start_version, req.shard_id, user_key)?
+        && intent.start_version != start_version
+    {
+        return Err(Error::LocalTxnNotAllowed);
+    }
     let (skip_write, prev_value) =
         read_first_non_intent_key(latch_guard, group_engine, start_version, req.shard_id, user_key)
             .await?;
+    let candidate_version =
+        if async_commit { next_candidate_version(start_version, prev_value.as_ref()) } else { 0 };
 
     if let Some(value) = prev_value.as_ref() {
         if check_write_conflict && value.version > start_version && !is_atomic_operation(&write) {
@@ -145,7 +160,12 @@ async fn write_intent_inner<T: LatchGuard>(
                 if let Some(cond_idx) = eval_conditions(prev_value.as_ref(), &del.conditions)? {
                     return Err(Error::CasFailed(0, cond_idx as u64, prev_value));
                 }
-                let txn_intent = TxnIntent::tombstone(start_version).encode_to_vec();
+                let txn_intent = if async_commit {
+                    TxnIntent::async_tombstone(start_version, candidate_version, deadline_ms)
+                } else {
+                    TxnIntent::tombstone(start_version)
+                }
+                .encode_to_vec();
                 group_engine.put(
                     &mut *wb,
                     req.shard_id,
@@ -164,7 +184,12 @@ async fn write_intent_inner<T: LatchGuard>(
                 }
                 let apply_value =
                     apply_put_op(put.put_type(), prev_value.as_ref(), put.value.clone())?;
-                let txn_intent = TxnIntent::with_put(start_version, apply_value).encode_to_vec();
+                let txn_intent = if async_commit {
+                    TxnIntent::async_put(start_version, apply_value, candidate_version, deadline_ms)
+                } else {
+                    TxnIntent::with_put(start_version, apply_value)
+                }
+                .encode_to_vec();
                 group_engine.put(
                     &mut *wb,
                     req.shard_id,
@@ -177,7 +202,7 @@ async fn write_intent_inner<T: LatchGuard>(
         }
     };
 
-    Ok(WriteResponse { prev_value })
+    Ok(WriteResponse { prev_value, candidate_version })
 }
 
 fn single_write_request(req: &ShardWriteRequest) -> Result<WriteRequest> {
@@ -343,6 +368,46 @@ pub(crate) async fn clear_intent<T: LatchGuard>(
     Ok((eval_result, ClearIntentResponse { shard_keys: responses }, forwards))
 }
 
+pub(crate) async fn query_intent(
+    exec_ctx: &ExecCtx,
+    group_engine: &GroupEngine,
+    req: &QueryIntentRequest,
+) -> Result<(QueryIntentResponse, Vec<ForwardPart>)> {
+    let mut responses = vec![QueryIntentResult::missing(); req.shard_keys.len()];
+    let mut forwards = Vec::new();
+    for (index, shard_key) in req.shard_keys.iter().enumerate() {
+        if let Some(forward_part) = intent_key_forward_part(
+            exec_ctx,
+            group_engine,
+            req.start_version,
+            RequestKind::Query,
+            index,
+            shard_key,
+        )
+        .await?
+        {
+            forwards.push(forward_part);
+            continue;
+        }
+        responses[index] = match read_target_intent(
+            group_engine,
+            req.start_version,
+            shard_key.shard_id,
+            &shard_key.user_key,
+        )
+        .await?
+        {
+            Some(intent) => QueryIntentResult::found(QueryIntentFound {
+                async_commit: intent.async_commit,
+                candidate_version: intent.candidate_version,
+                deadline_ms: intent.deadline_ms,
+            }),
+            None => QueryIntentResult::missing(),
+        };
+    }
+    Ok((QueryIntentResponse { shard_keys: responses }, forwards))
+}
+
 async fn clear_intent_inner<T: LatchGuard>(
     _exec_ctx: &ExecCtx,
     group_engine: &GroupEngine,
@@ -369,6 +434,7 @@ async fn clear_intent_inner<T: LatchGuard>(
 enum RequestKind {
     Commit(u64),
     Clear,
+    Query,
 }
 
 async fn intent_key_forward_part(
@@ -397,6 +463,10 @@ async fn intent_key_forward_part(
             start_version,
             shard_keys: vec![shard_key.clone()],
         }),
+        RequestKind::Query => Request::QueryIntent(QueryIntentRequest {
+            start_version,
+            shard_keys: vec![shard_key.clone()],
+        }),
     };
     Ok(Some(ForwardPart {
         indexes: vec![index],
@@ -418,6 +488,12 @@ fn retry_write_result(message: &'static str) -> WriteIntentResult {
 
 fn retry_intent_result(message: &'static str) -> IntentResult {
     IntentResult::err(sekas_api::server::v1::Error::status(tonic::Code::NotFound.into(), message))
+}
+
+fn next_candidate_version(start_version: u64, prev_value: Option<&Value>) -> u64 {
+    let min_commit_version =
+        prev_value.map(|value| value.version.saturating_add(1)).unwrap_or_default();
+    start_version.saturating_add(1).max(min_commit_version)
 }
 
 pub(super) fn apply_put_op(
@@ -689,6 +765,8 @@ mod tests {
                 deletes: Vec::new(),
             }],
             check_write_conflict: false,
+            async_commit: false,
+            deadline_ms: 0,
         }
     }
 
@@ -817,6 +895,8 @@ mod tests {
                 deletes: Vec::new(),
             }],
             check_write_conflict: false,
+            async_commit: false,
+            deadline_ms: 0,
         };
         let (eval_result, resp, forwards) =
             write_intent(&ExecCtx::default(), &engine, &mut latch_guard, &req).await.unwrap();
@@ -833,6 +913,8 @@ mod tests {
                 puts: Vec::new(),
             }],
             check_write_conflict: false,
+            async_commit: false,
+            deadline_ms: 0,
         };
         let (eval_result, resp, forwards) =
             write_intent(&ExecCtx::default(), &engine, &mut latch_guard, &req).await.unwrap();
@@ -856,6 +938,8 @@ mod tests {
                 deletes: Vec::new(),
             }],
             check_write_conflict: false,
+            async_commit: false,
+            deadline_ms: 0,
         };
         let (eval_result, resp, forwards) =
             write_intent(&ExecCtx::default(), &engine, &mut latch_guard, &req).await.unwrap();
@@ -993,6 +1077,8 @@ mod tests {
                         deletes: Vec::new(),
                     }],
                     check_write_conflict: false,
+                    async_commit: false,
+                    deadline_ms: 0,
                 };
                 let mut latch_guard = DeferSignalLatchGuard::with_single(
                     &ShardKey { shard_id, user_key: key_clone.to_vec() },

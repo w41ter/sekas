@@ -295,7 +295,10 @@ async fn eval_local_txn_write_entry<T: LatchGuard>(
                 return Err(Error::CasFailed(0, cond_idx as u64, prev_value));
             }
             group_engine.tombstone(wb, shard_id, &del.key, commit_version)?;
-            Ok(WriteResponse { prev_value: if del.take_prev_value { prev_value } else { None } })
+            Ok(WriteResponse {
+                prev_value: if del.take_prev_value { prev_value } else { None },
+                candidate_version: 0,
+            })
         }
         WriteRequest::Put(put) => {
             if let Some(cond_idx) = eval_conditions(prev_value.as_ref(), &put.conditions)? {
@@ -306,7 +309,10 @@ async fn eval_local_txn_write_entry<T: LatchGuard>(
             {
                 group_engine.put(wb, shard_id, &put.key, &value, commit_version)?;
             }
-            Ok(WriteResponse { prev_value: if put.take_prev_value { prev_value } else { None } })
+            Ok(WriteResponse {
+                prev_value: if put.take_prev_value { prev_value } else { None },
+                candidate_version: 0,
+            })
         }
     }
 }
@@ -356,7 +362,10 @@ async fn eval_local_txn_write_entry_with_view<T: LatchGuard>(
                 del.key.clone(),
                 sekas_api::server::v1::Value::tombstone(commit_version),
             ));
-            Ok(WriteResponse { prev_value: if del.take_prev_value { prev_value } else { None } })
+            Ok(WriteResponse {
+                prev_value: if del.take_prev_value { prev_value } else { None },
+                candidate_version: 0,
+            })
         }
         WriteRequest::Put(put) => {
             if let Some(cond_idx) = eval_conditions(prev_value.as_ref(), &put.conditions)
@@ -384,7 +393,10 @@ async fn eval_local_txn_write_entry_with_view<T: LatchGuard>(
                 // Nop produces no raft write and therefore no pending overlay
                 // entry.
             }
-            Ok(WriteResponse { prev_value: if put.take_prev_value { prev_value } else { None } })
+            Ok(WriteResponse {
+                prev_value: if put.take_prev_value { prev_value } else { None },
+                candidate_version: 0,
+            })
         }
     }
 }

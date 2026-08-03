@@ -64,6 +64,35 @@ async fn txn_write_batch_basic() {
 }
 
 #[sekas_macro::test]
+async fn txn_async_commit_records_committed_state() {
+    let mut ctx = TestContext::new(fn_name!());
+    let nodes = ctx.bootstrap_servers(3).await;
+    let c = ClusterClient::new(nodes).await;
+    let app = c.app_client().await;
+
+    let db = app.create_database("test_db".to_string()).await.unwrap();
+    let table_a = db.create_table("test_table_a".to_string()).await.unwrap();
+    let table_b = db.create_table("test_table_b".to_string()).await.unwrap();
+    c.assert_table_ready(table_a.id).await;
+    c.assert_table_ready(table_b.id).await;
+
+    let key_a = b"async_key_a".to_vec();
+    let key_b = b"async_key_b".to_vec();
+    let mut txn = db.begin_txn();
+    txn.put(table_a.id, WriteBuilder::new(key_a.clone()).ensure_put(b"a".to_vec()));
+    txn.put(table_b.id, WriteBuilder::new(key_b.clone()).ensure_put(b"b".to_vec()));
+    let start_version = txn.start_version().await.unwrap();
+
+    let resp = txn.commit().await.unwrap();
+    assert!(resp.version > start_version);
+
+    let txn_table = sekas_client::TxnStateTable::new(app.clone(), Some(Duration::from_secs(5)));
+    let record = txn_table.get_txn_record(start_version).await.unwrap().unwrap();
+    assert_eq!(record.state, TxnState::Committed);
+    assert_eq!(record.commit_version, Some(resp.version));
+}
+
+#[sekas_macro::test]
 async fn txn_point_read_overlay_is_opt_in() {
     let mut ctx = TestContext::new(fn_name!());
     let nodes = ctx.bootstrap_servers(3).await;
@@ -128,6 +157,7 @@ async fn txn_guard_key_conflicts() {
     txn_a.put(co.id, WriteBuilder::new(guard_key.clone()).ensure_put(Vec::new()));
     txn_a.put(co.id, WriteBuilder::new(key_a.clone()).ensure_put(b"a".to_vec()));
     let _ = txn_a.start_version().await.unwrap();
+    assert_eq!(txn_a.get(co.id, guard_key.clone()).await.unwrap(), Some(b"guard".to_vec()));
 
     let mut txn_b = db.begin_txn();
     txn_b.put(co.id, WriteBuilder::new(guard_key).ensure_put(Vec::new()));
@@ -171,6 +201,8 @@ async fn txn_read_resolves_committed_orphan_intent() {
                 deletes: Vec::new(),
             }],
             check_write_conflict: false,
+            async_commit: false,
+            deadline_ms: 0,
         }))
         .await
         .expect("write intent with partial forward should succeed");
@@ -276,6 +308,8 @@ async fn txn_prepare_partial_success_reports_per_entry_results() {
                 },
             ],
             check_write_conflict: false,
+            async_commit: false,
+            deadline_ms: 0,
         }))
         .await
         .unwrap();
@@ -329,6 +363,8 @@ async fn txn_write_intent_batch_deduplicates_same_key_latches() {
             },
         ],
         check_write_conflict: false,
+        async_commit: false,
+        deadline_ms: 0,
     });
 
     let resp = tokio::time::timeout(Duration::from_secs(5), group_client.request(&request))
@@ -419,6 +455,8 @@ async fn txn_intent_batch_partially_forwards_moving_shard() {
                 },
             ],
             check_write_conflict: false,
+            async_commit: false,
+            deadline_ms: 0,
         }))
         .await
         .unwrap();
