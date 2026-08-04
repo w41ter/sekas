@@ -19,13 +19,12 @@ use sekas_api::server::v1::*;
 use sekas_rock::num::decode_i64;
 use sekas_schema::system::txn::TXN_INTENT_VERSION;
 
-use super::LatchGuard;
 use super::cas::eval_conditions;
 use super::latch::DeferSignalLatchGuard;
-use crate::engine::{GroupEngine, SnapshotMode, WriteBatch};
+use super::{LatchGuard, WriteEvalResult};
+use crate::engine::{GroupEngine, SnapshotMode};
 use crate::node::move_shard::ForwardCtx;
 use crate::replica::{ExecCtx, ForwardPart};
-use crate::serverpb::v1::EvalResult;
 use crate::{Error, Result};
 
 pub(crate) async fn write_intent<T: LatchGuard>(
@@ -33,8 +32,8 @@ pub(crate) async fn write_intent<T: LatchGuard>(
     group_engine: &GroupEngine,
     latch_guard: &mut DeferSignalLatchGuard<T>,
     req: &WriteIntentRequest,
-) -> Result<(Option<EvalResult>, WriteIntentResponse, Vec<ForwardPart>)> {
-    let mut wb = WriteBatch::default();
+) -> Result<(Option<WriteEvalResult>, WriteIntentResponse, Vec<ForwardPart>)> {
+    let mut eval_result = WriteEvalResult::default();
     let mut responses = vec![retry_write_result("intent entry is not executed"); req.writes.len()];
     let mut forwards = Vec::new();
     let mut local_indexes = Vec::new();
@@ -55,7 +54,7 @@ pub(crate) async fn write_intent<T: LatchGuard>(
             req.async_commit,
             req.deadline_ms,
             write,
-            &mut wb,
+            &mut eval_result,
         )
         .await
         .map_err(|err| match err {
@@ -79,8 +78,7 @@ pub(crate) async fn write_intent<T: LatchGuard>(
             Err(err) => return Err(err),
         }
     }
-    let eval_result =
-        if !wb.is_empty() { Some(EvalResult::with_batch(wb.data().to_owned())) } else { None };
+    let eval_result = if !eval_result.is_empty() { Some(eval_result) } else { None };
     Ok((eval_result, WriteIntentResponse { writes: responses }, forwards))
 }
 
@@ -128,7 +126,7 @@ async fn write_intent_inner<T: LatchGuard>(
     async_commit: bool,
     deadline_ms: u64,
     req: &ShardWriteRequest,
-    wb: &mut WriteBatch,
+    eval_result: &mut WriteEvalResult,
 ) -> Result<WriteResponse> {
     // TODO(walter) txn for internal shards is not supported.
     let write = single_write_request(req)?;
@@ -166,13 +164,7 @@ async fn write_intent_inner<T: LatchGuard>(
                     TxnIntent::tombstone(start_version)
                 }
                 .encode_to_vec();
-                group_engine.put(
-                    &mut *wb,
-                    req.shard_id,
-                    &del.key,
-                    &txn_intent,
-                    TXN_INTENT_VERSION,
-                )?;
+                eval_result.put(req.shard_id, del.key.clone(), txn_intent, TXN_INTENT_VERSION);
             }
             if del.take_prev_value { prev_value } else { None }
         }
@@ -190,13 +182,7 @@ async fn write_intent_inner<T: LatchGuard>(
                     TxnIntent::with_put(start_version, apply_value)
                 }
                 .encode_to_vec();
-                group_engine.put(
-                    &mut *wb,
-                    req.shard_id,
-                    &put.key,
-                    &txn_intent,
-                    TXN_INTENT_VERSION,
-                )?;
+                eval_result.put(req.shard_id, put.key.clone(), txn_intent, TXN_INTENT_VERSION);
             }
             if put.take_prev_value { prev_value } else { None }
         }
@@ -220,8 +206,8 @@ pub(crate) async fn commit_intent<T: LatchGuard>(
     group_engine: &GroupEngine,
     latch_guard: &mut DeferSignalLatchGuard<T>,
     req: &CommitIntentRequest,
-) -> Result<(Option<EvalResult>, CommitIntentResponse, Vec<ForwardPart>)> {
-    let mut wb = WriteBatch::default();
+) -> Result<(Option<WriteEvalResult>, CommitIntentResponse, Vec<ForwardPart>)> {
+    let mut eval_result = WriteEvalResult::default();
     let mut responses =
         vec![retry_intent_result("intent entry is not executed"); req.shard_keys.len()];
     let mut forwards = Vec::new();
@@ -246,13 +232,12 @@ pub(crate) async fn commit_intent<T: LatchGuard>(
             req.start_version,
             req.commit_version,
             shard_key,
-            &mut wb,
+            &mut eval_result,
         )
         .await?;
         responses[index] = IntentResult::ok();
     }
-    let eval_result =
-        if wb.is_empty() { None } else { Some(EvalResult::with_batch(wb.data().to_owned())) };
+    let eval_result = if eval_result.is_empty() { None } else { Some(eval_result) };
     Ok((eval_result, CommitIntentResponse { shard_keys: responses }, forwards))
 }
 
@@ -263,7 +248,7 @@ async fn commit_intent_inner<T: LatchGuard>(
     start_version: u64,
     commit_version: u64,
     shard_key: &ShardKey,
-    wb: &mut WriteBatch,
+    eval_result: &mut WriteEvalResult,
 ) -> Result<()> {
     trace!(
         "group {} commit txn {} intent with version {}",
@@ -278,7 +263,7 @@ async fn commit_intent_inner<T: LatchGuard>(
         return Ok(());
     };
 
-    group_engine.delete(&mut *wb, shard_key.shard_id, &shard_key.user_key, TXN_INTENT_VERSION)?;
+    eval_result.delete(shard_key.shard_id, shard_key.user_key.clone(), TXN_INTENT_VERSION);
     if intent.is_delete {
         trace!(
             "group {} commit txn {} intents, shard id {}, version {}, delete kv {}",
@@ -288,12 +273,7 @@ async fn commit_intent_inner<T: LatchGuard>(
             commit_version,
             sekas_rock::ascii::escape_bytes(&shard_key.user_key),
         );
-        group_engine.tombstone(
-            &mut *wb,
-            shard_key.shard_id,
-            &shard_key.user_key,
-            commit_version,
-        )?;
+        eval_result.tombstone(shard_key.shard_id, shard_key.user_key.clone(), commit_version);
     } else if let Some(value) = intent.value {
         trace!(
             "group {} commit txn {} intents, shard id {}, version {}, put kv {} => {}",
@@ -304,13 +284,7 @@ async fn commit_intent_inner<T: LatchGuard>(
             sekas_rock::ascii::escape_bytes(&shard_key.user_key),
             sekas_rock::ascii::escape_bytes(&value),
         );
-        group_engine.put(
-            &mut *wb,
-            shard_key.shard_id,
-            &shard_key.user_key,
-            &value,
-            commit_version,
-        )?;
+        eval_result.put(shard_key.shard_id, shard_key.user_key.clone(), value, commit_version);
     }
 
     trace!(
@@ -333,8 +307,8 @@ pub(crate) async fn clear_intent<T: LatchGuard>(
     group_engine: &GroupEngine,
     latch_guard: &mut DeferSignalLatchGuard<T>,
     req: &ClearIntentRequest,
-) -> Result<(Option<EvalResult>, ClearIntentResponse, Vec<ForwardPart>)> {
-    let mut wb = WriteBatch::default();
+) -> Result<(Option<WriteEvalResult>, ClearIntentResponse, Vec<ForwardPart>)> {
+    let mut eval_result = WriteEvalResult::default();
     let mut responses =
         vec![retry_intent_result("intent entry is not executed"); req.shard_keys.len()];
     let mut forwards = Vec::new();
@@ -358,13 +332,12 @@ pub(crate) async fn clear_intent<T: LatchGuard>(
             latch_guard,
             req.start_version,
             shard_key,
-            &mut wb,
+            &mut eval_result,
         )
         .await?;
         responses[index] = IntentResult::ok();
     }
-    let eval_result =
-        if wb.is_empty() { None } else { Some(EvalResult::with_batch(wb.data().to_owned())) };
+    let eval_result = if eval_result.is_empty() { None } else { Some(eval_result) };
     Ok((eval_result, ClearIntentResponse { shard_keys: responses }, forwards))
 }
 
@@ -414,7 +387,7 @@ async fn clear_intent_inner<T: LatchGuard>(
     latch_guard: &mut DeferSignalLatchGuard<T>,
     start_version: u64,
     shard_key: &ShardKey,
-    wb: &mut WriteBatch,
+    eval_result: &mut WriteEvalResult,
 ) -> Result<()> {
     if read_target_intent(group_engine, start_version, shard_key.shard_id, &shard_key.user_key)
         .await?
@@ -423,7 +396,7 @@ async fn clear_intent_inner<T: LatchGuard>(
         return Ok(());
     }
 
-    group_engine.delete(&mut *wb, shard_key.shard_id, &shard_key.user_key, TXN_INTENT_VERSION)?;
+    eval_result.delete(shard_key.shard_id, shard_key.user_key.clone(), TXN_INTENT_VERSION);
 
     latch_guard.signal_all(TxnState::Aborted, None);
 
@@ -620,7 +593,7 @@ mod tests {
     use tempdir::TempDir;
 
     use super::*;
-    use crate::engine::{WriteStates, create_group_engine};
+    use crate::engine::{WriteBatch, WriteStates, create_group_engine};
     use crate::replica::eval::LatchManager;
     use crate::replica::eval::latch::local::LocalLatchManager;
 
@@ -678,11 +651,9 @@ mod tests {
         engine.commit(wb, WriteStates::default(), false).unwrap();
     }
 
-    fn commit_eval_result(engine: &GroupEngine, eval_result: Option<EvalResult>) {
-        if let Some(eval_result) = eval_result
-            && let Some(batch) = eval_result.batch
-        {
-            let wb = WriteBatch::new(&batch.data);
+    fn commit_eval_result(engine: &GroupEngine, eval_result: Option<WriteEvalResult>) {
+        if let Some(eval_result) = eval_result {
+            let wb = eval_result.serialize(engine).unwrap();
             engine.commit(wb, WriteStates::default(), false).unwrap();
         }
     }
@@ -783,8 +754,7 @@ mod tests {
             write_intent(&ExecCtx::default(), &engine, &mut latch_guard, &req).await.unwrap();
         assert!(forwards.is_empty());
         assert!(eval_result.is_some());
-        let wb = WriteBatch::new(&eval_result.unwrap().batch.unwrap().data);
-        engine.commit(wb, WriteStates::default(), false).unwrap();
+        commit_eval_result(&engine, eval_result);
 
         let req = CommitIntentRequest {
             start_version,
@@ -795,8 +765,7 @@ mod tests {
             commit_intent(&ExecCtx::default(), &engine, &mut latch_guard, &req).await.unwrap();
         assert!(forwards.is_empty());
         assert!(eval_result.is_some());
-        let wb = WriteBatch::new(&eval_result.unwrap().batch.unwrap().data);
-        engine.commit(wb, WriteStates::default(), false).unwrap();
+        commit_eval_result(&engine, eval_result);
 
         // commit intent is idempotent
         let req = CommitIntentRequest {
@@ -823,8 +792,7 @@ mod tests {
             write_intent(&ExecCtx::default(), &engine, &mut latch_guard, &req).await.unwrap();
         assert!(forwards.is_empty());
         assert!(eval_result.is_some());
-        let wb = WriteBatch::new(&eval_result.unwrap().batch.unwrap().data);
-        engine.commit(wb, WriteStates::default(), false).unwrap();
+        commit_eval_result(&engine, eval_result);
 
         let req = ClearIntentRequest {
             start_version,
@@ -834,8 +802,7 @@ mod tests {
             clear_intent(&ExecCtx::default(), &engine, &mut latch_guard, &req).await.unwrap();
         assert!(forwards.is_empty());
         assert!(eval_result.is_some());
-        let wb = WriteBatch::new(&eval_result.unwrap().batch.unwrap().data);
-        engine.commit(wb, WriteStates::default(), false).unwrap();
+        commit_eval_result(&engine, eval_result);
 
         // clear intent is idempotent
         let req = ClearIntentRequest {
@@ -861,8 +828,7 @@ mod tests {
             write_intent(&ExecCtx::default(), &engine, &mut latch_guard, &req).await.unwrap();
         assert!(forwards.is_empty());
         assert!(eval_result.is_some());
-        let wb = WriteBatch::new(&eval_result.unwrap().batch.unwrap().data);
-        engine.commit(wb, WriteStates::default(), false).unwrap();
+        commit_eval_result(&engine, eval_result);
 
         let req = write_intent_request(start_version, key);
         let (eval_result, resp, forwards) =

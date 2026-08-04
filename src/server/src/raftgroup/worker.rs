@@ -44,15 +44,35 @@ use crate::serverpb::v1::{EvalResult, RaftMessage};
 use crate::{RaftConfig, Result, record_latency};
 
 pub enum Request {
-    Read { policy: ReadPolicy, sender: oneshot::Sender<Result<()>> },
-    Propose { eval_result: EvalResult, start: Instant, sender: oneshot::Sender<Result<()>> },
+    Read {
+        policy: ReadPolicy,
+        sender: oneshot::Sender<Result<()>>,
+    },
+    Propose {
+        eval_result: EvalResult,
+        start: Instant,
+        /// The expected term in raft node.
+        term: Option<u64>,
+        sender: oneshot::Sender<Result<()>>,
+    },
     CreateSnapshotFinished,
-    InstallSnapshot { msg: Message },
-    RejectSnapshot { msg: Message },
-    ChangeConfig { change: ChangeReplicas, sender: oneshot::Sender<Result<()>> },
-    Transfer { transferee: u64 },
+    InstallSnapshot {
+        msg: Message,
+    },
+    RejectSnapshot {
+        msg: Message,
+    },
+    ChangeConfig {
+        change: ChangeReplicas,
+        sender: oneshot::Sender<Result<()>>,
+    },
+    Transfer {
+        transferee: u64,
+    },
     Message(RaftMessage),
-    Unreachable { target_id: u64 },
+    Unreachable {
+        target_id: u64,
+    },
     State(oneshot::Sender<RaftGroupState>),
     Monitor(oneshot::Sender<Box<WorkerPerfContext>>),
     Start,
@@ -360,8 +380,8 @@ where
     fn handle_request(&mut self, ctx: &mut WorkerContext, request: Request) -> Result<()> {
         ctx.perf_ctx.num_requests += 1;
         match request {
-            Request::Propose { eval_result, start, sender } => {
-                self.handle_proposal(ctx, eval_result, start, sender)
+            Request::Propose { eval_result, start, term, sender } => {
+                self.handle_proposal(ctx, eval_result, start, term, sender)
             }
             Request::Read { policy, sender } => self.handle_read(policy, sender),
             Request::ChangeConfig { change, sender } => self.handle_conf_change(change, sender),
@@ -443,6 +463,7 @@ where
         ctx: &mut WorkerContext,
         eval_result: EvalResult,
         start: Instant,
+        term: Option<u64>,
         sender: oneshot::Sender<Result<()>>,
     ) {
         use prost::Message;
@@ -450,7 +471,7 @@ where
         let data = eval_result.encode_to_vec();
         ctx.accumulated_bytes += data.len();
         ctx.perf_ctx.num_proposal += 1;
-        self.raft_node.propose(data, vec![], sender);
+        self.raft_node.propose(data, vec![], term, sender);
         RAFTGROUP_WORKER_REQUEST_IN_QUEUE_DURATION_SECONDS.observe(elapsed_seconds(start));
     }
 

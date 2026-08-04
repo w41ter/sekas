@@ -31,7 +31,7 @@ use crate::serverpb::v1::*;
 use crate::transport::TransportManager;
 use crate::{NodeConfig, Result, record_latency};
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct ForwardCtx {
     pub shard_id: u64,
     pub dest_group_id: u64,

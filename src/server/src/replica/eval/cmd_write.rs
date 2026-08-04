@@ -17,18 +17,18 @@ use log::trace;
 use sekas_api::server::v1::{PutType, ShardWriteRequest, ShardWriteResponse, WriteResponse};
 use sekas_rock::time::timestamp_nanos;
 
+use super::WriteEvalResult;
 use super::cas::eval_conditions;
-use crate::engine::{GroupEngine, WriteBatch};
+use crate::engine::GroupEngine;
 use crate::node::move_shard::ForwardCtx;
 use crate::replica::ExecCtx;
-use crate::serverpb::v1::EvalResult;
 use crate::{Error, Result};
 
 pub(crate) async fn batch_write(
     exec_ctx: &ExecCtx,
     group_engine: &GroupEngine,
     req: &ShardWriteRequest,
-) -> Result<(Option<EvalResult>, ShardWriteResponse)> {
+) -> Result<(Option<WriteEvalResult>, ShardWriteResponse)> {
     // TODO(walter) only internal shards would write in batch.
     if req.deletes.is_empty() && req.puts.is_empty() {
         return Ok((None, ShardWriteResponse::default()));
@@ -49,7 +49,7 @@ pub(crate) async fn batch_write(
         }
     }
 
-    let mut wb = WriteBatch::default();
+    let mut eval_result = WriteEvalResult::default();
     let mut resp = ShardWriteResponse::default();
     let num_deletes = req.deletes.len();
     for (idx, del) in req.deletes.iter().enumerate() {
@@ -63,7 +63,7 @@ pub(crate) async fn batch_write(
             candidate_version: 0,
         });
         let version = std::cmp::max(prev_version + 1, next_version());
-        group_engine.tombstone(&mut wb, req.shard_id, &del.key, version)?;
+        eval_result.tombstone(req.shard_id, del.key.clone(), version);
     }
     for (idx, put) in req.puts.iter().enumerate() {
         if put.put_type != PutType::None as i32 {
@@ -88,9 +88,9 @@ pub(crate) async fn batch_write(
             sekas_rock::ascii::escape_bytes(&put.key),
             sekas_rock::ascii::escape_bytes(&put.value),
         );
-        group_engine.put(&mut wb, req.shard_id, &put.key, &put.value, version)?;
+        eval_result.put(req.shard_id, put.key.clone(), put.value.clone(), version);
     }
-    Ok((Some(EvalResult::with_batch(wb.data().to_owned())), resp))
+    Ok((Some(eval_result), resp))
 }
 
 #[inline]
@@ -106,7 +106,7 @@ mod tests {
     use tempdir::TempDir;
 
     use super::*;
-    use crate::engine::{WriteStates, create_group_engine};
+    use crate::engine::{WriteBatch, WriteStates, create_group_engine};
 
     const SHARD_ID: u64 = 1;
 

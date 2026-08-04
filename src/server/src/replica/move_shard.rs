@@ -57,7 +57,7 @@ impl Replica {
             },
             op: Some(SyncOp::ingest(progress_key.to_vec())),
         };
-        self.raft_group.propose(eval_result).await?;
+        self.raft_group.propose(eval_result, None)?.wait_result().await?;
         drop(latch_guards);
 
         Ok(())
@@ -69,7 +69,7 @@ impl Replica {
         self.check_moving_shard_request_early(shard_id)?;
         let eval_result =
             EvalResult { op: Some(SyncOp::ingest(user_key.to_vec())), ..Default::default() };
-        self.raft_group.propose(eval_result).await?;
+        self.raft_group.propose(eval_result, None)?.wait_result().await?;
         Ok(())
     }
 
@@ -91,7 +91,7 @@ impl Replica {
 
         let eval_result =
             EvalResult { batch: Some(WriteBatchRep { data: wb.data().to_owned() }), op: None };
-        self.raft_group.propose(eval_result).await?;
+        self.raft_group.propose(eval_result, None)?.wait_result().await?;
 
         Ok(())
     }
@@ -135,7 +135,7 @@ impl Replica {
 
         let eval_result =
             EvalResult { op: Some(SyncOp::move_shard(event, desc.clone())), ..Default::default() };
-        self.raft_group.propose(eval_result).await?;
+        self.raft_group.propose(eval_result, None)?.wait_result().await?;
 
         Ok(())
     }

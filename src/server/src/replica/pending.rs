@@ -14,13 +14,11 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
 
-use sekas_api::server::v1::{ShardKey, Value};
+use sekas_api::server::v1::{ReplicaDesc, ShardKey, Value};
 use tokio::sync::Notify;
 
-use super::local_txn::PendingLocalTxnGuard;
-use crate::raftgroup::{ProposalReceiver, RaftGroup};
+use crate::error::BusyReason;
 use crate::{Error, Result};
 
 #[derive(Clone, Debug)]
@@ -40,21 +38,24 @@ pub(super) struct CommitFence {
     watchers: Vec<ProposalWatcher>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum ProposalState {
+#[derive(Clone, Debug)]
+pub(super) enum ProposalOutcome {
     Applied,
-    NotLeader,
+    NotLeader(u64, u64, Option<ReplicaDesc>),
+    GroupNotReady(u64),
+    ServiceIsBusy(BusyReason),
+    Canceled,
+    Failed(Arc<Error>),
 }
 
 #[derive(Clone, Debug)]
 pub(super) struct ProposalWatcher {
-    group_id: u64,
     core: Arc<ProposalWatcherCore>,
 }
 
 #[derive(Debug)]
 struct ProposalWatcherCore {
-    state: Mutex<Option<ProposalState>>,
+    outcome: Mutex<Option<ProposalOutcome>>,
     notify: Notify,
 }
 
@@ -108,58 +109,68 @@ impl CommitFence {
 }
 
 impl ProposalWatcher {
-    pub fn new(group_id: u64) -> Self {
+    pub fn new() -> Self {
         ProposalWatcher {
-            group_id,
-            core: Arc::new(ProposalWatcherCore { state: Mutex::new(None), notify: Notify::new() }),
+            core: Arc::new(ProposalWatcherCore {
+                outcome: Mutex::new(None),
+                notify: Notify::new(),
+            }),
         }
-    }
-
-    pub fn drive(
-        &self,
-        dependencies: CommitFence,
-        proposal_start_at: Instant,
-        proposal: ProposalReceiver,
-        overlay: PendingWriteOverlay,
-        pending_writes: Vec<PendingWrite>,
-        pending_local_txn: Option<PendingLocalTxnGuard>,
-    ) {
-        let watcher = self.clone();
-        tokio::spawn(async move {
-            let deps_applied = dependencies.wait().await.is_ok();
-            let proposal_applied =
-                matches!(RaftGroup::wait_proposal(proposal_start_at, proposal).await, Ok(()));
-            let state = if deps_applied && proposal_applied {
-                ProposalState::Applied
-            } else {
-                ProposalState::NotLeader
-            };
-            overlay.remove_batch(&pending_writes);
-            if let Some(pending_local_txn) = pending_local_txn {
-                match state {
-                    ProposalState::Applied => pending_local_txn.finish().await,
-                    ProposalState::NotLeader => pending_local_txn.abort().await,
-                }
-            }
-            watcher.complete(state);
-        });
     }
 
     pub async fn wait(&self) -> Result<()> {
         loop {
-            if let Some(state) = *self.core.state.lock().unwrap() {
-                return match state {
-                    ProposalState::Applied => Ok(()),
-                    ProposalState::NotLeader => Err(Error::NotLeader(self.group_id, 0, None)),
-                };
+            let notified = self.core.notify.notified();
+            if let Some(outcome) = self.core.outcome.lock().unwrap().clone() {
+                return outcome.into_result();
             }
-            self.core.notify.notified().await;
+            notified.await;
         }
     }
 
-    pub fn complete(&self, state: ProposalState) {
-        *self.core.state.lock().unwrap() = Some(state);
+    pub fn complete(&self, outcome: ProposalOutcome) {
+        *self.core.outcome.lock().unwrap() = Some(outcome);
         self.core.notify.notify_waiters();
+    }
+
+    pub fn complete_result(&self, result: Result<()>) -> Result<()> {
+        let outcome = ProposalOutcome::from_result(result);
+        self.complete(outcome.clone());
+        outcome.into_result()
+    }
+}
+
+impl ProposalOutcome {
+    fn from_result(result: Result<()>) -> Self {
+        match result {
+            Ok(()) => ProposalOutcome::Applied,
+            Err(err) => ProposalOutcome::from_error(err),
+        }
+    }
+
+    fn from_error(err: Error) -> Self {
+        match err {
+            Error::NotLeader(group_id, term, leader) => {
+                ProposalOutcome::NotLeader(group_id, term, leader.clone())
+            }
+            Error::GroupNotReady(group_id) => ProposalOutcome::GroupNotReady(group_id),
+            Error::ServiceIsBusy(reason) => ProposalOutcome::ServiceIsBusy(reason),
+            Error::Canceled => ProposalOutcome::Canceled,
+            err => ProposalOutcome::Failed(Arc::new(err)),
+        }
+    }
+
+    fn into_result(self) -> Result<()> {
+        match self {
+            ProposalOutcome::Applied => Ok(()),
+            ProposalOutcome::NotLeader(group_id, term, leader) => {
+                Err(Error::NotLeader(group_id, term, leader))
+            }
+            ProposalOutcome::GroupNotReady(group_id) => Err(Error::GroupNotReady(group_id)),
+            ProposalOutcome::ServiceIsBusy(reason) => Err(Error::ServiceIsBusy(reason)),
+            ProposalOutcome::Canceled => Err(Error::Canceled),
+            ProposalOutcome::Failed(err) => Err(Error::Shared(err)),
+        }
     }
 }
 
@@ -172,16 +183,30 @@ impl PendingWriteOverlay {
     }
 
     pub fn insert_batch(&self, writes: &[PendingWrite], fence: CommitFence) {
+        if writes.is_empty() {
+            return;
+        }
+
         let mut inner = self.inner.lock().unwrap();
         for write in writes {
-            inner.entries.entry(write.shard_key.clone()).or_default().insert(
+            let old = inner.entries.entry(write.shard_key.clone()).or_default().insert(
                 write.value.version,
                 PendingEntry { value: write.value.clone(), fence: fence.clone() },
+            );
+            debug_assert!(
+                old.is_none(),
+                "duplicated pending write for shard_key={:?}, version={}",
+                write.shard_key,
+                write.value.version
             );
         }
     }
 
     pub fn remove_batch(&self, writes: &[PendingWrite]) {
+        if writes.is_empty() {
+            return;
+        }
+
         let mut inner = self.inner.lock().unwrap();
         for write in writes {
             let remove_key = if let Some(versions) = inner.entries.get_mut(&write.shard_key) {
@@ -203,9 +228,9 @@ mod tests {
 
     #[sekas_macro::test]
     async fn commit_fence_waits_for_watcher() {
-        let watcher = ProposalWatcher::new(1);
+        let watcher = ProposalWatcher::new();
         let fence = CommitFence::from_watcher(watcher.clone());
-        watcher.complete(ProposalState::Applied);
+        watcher.complete(ProposalOutcome::Applied);
         fence.wait().await.unwrap();
     }
 
@@ -237,32 +262,40 @@ mod tests {
 
     #[test]
     fn proposal_watcher_is_multi_waiter() {
-        let watcher = ProposalWatcher::new(1);
+        let watcher = ProposalWatcher::new();
         let _left = watcher.clone();
         let _right = watcher.clone();
-        watcher.complete(ProposalState::Applied);
+        watcher.complete(ProposalOutcome::Applied);
     }
 
     #[sekas_macro::test]
-    async fn watcher_driver_removes_overlay_after_proposal() {
+    async fn commit_fence_preserves_typed_failure() {
+        let watcher = ProposalWatcher::new();
+        let fence = CommitFence::from_watcher(watcher.clone());
+        watcher.complete_result(Err(Error::GroupNotReady(7))).unwrap_err();
+
+        assert!(matches!(fence.wait().await, Err(Error::GroupNotReady(7))));
+    }
+
+    #[sekas_macro::test]
+    async fn commit_fence_preserves_shared_failure_detail() {
+        let watcher = ProposalWatcher::new();
+        let fence = CommitFence::from_watcher(watcher.clone());
+        watcher.complete_result(Err(Error::InvalidData("proposal failed".into()))).unwrap_err();
+
+        let err = fence.wait().await.unwrap_err();
+        assert_eq!(err.to_string(), "invalid proposal failed data");
+    }
+
+    #[test]
+    fn overlay_remove_batch_clears_writes() {
         let overlay = PendingWriteOverlay::default();
         let write = PendingWrite::new(1, b"k".to_vec(), Value::with_value(b"v".to_vec(), 10));
-        let watcher = ProposalWatcher::new(1);
+        let watcher = ProposalWatcher::new();
         let fence = CommitFence::from_watcher(watcher.clone());
         overlay.insert_batch(std::slice::from_ref(&write), fence.clone());
 
-        let (sender, receiver) = futures::channel::oneshot::channel();
-        watcher.drive(
-            CommitFence::none(),
-            Instant::now(),
-            receiver,
-            overlay.clone(),
-            vec![write],
-            None,
-        );
-        sender.send(Ok(())).unwrap();
-
-        fence.wait().await.unwrap();
+        overlay.remove_batch(&[write]);
         assert!(overlay.latest(1, b"k").is_none());
     }
 }

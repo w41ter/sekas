@@ -1,4 +1,4 @@
-// Copyright 2024-present The Sekas Authors.
+// Copyright 2026 The Sekas Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,8 +15,22 @@
 use log::debug;
 use sekas_api::server::v1::*;
 
-use crate::replica::{EvalResult, GroupEngine, SplitShard, SyncOp};
+use super::WriteEvalResult;
+use crate::replica::{GroupEngine, SplitShard, SyncOp};
+use crate::serverpb::v1::*;
 use crate::{Error, Result};
+
+pub async fn accept_shard(group_id: u64, epoch: u64, req: &AcceptShardRequest) -> WriteEvalResult {
+    let move_shard_desc = MoveShardDesc {
+        shard_desc: req.shard_desc.clone(),
+        src_group_id: req.src_group_id,
+        src_group_epoch: req.src_group_epoch,
+        dest_group_id: group_id,
+        dest_group_epoch: epoch,
+    };
+    let sync_op = SyncOp::move_shard(MoveShardEvent::Setup, move_shard_desc);
+    WriteEvalResult::with_op(sync_op)
+}
 
 pub(crate) fn get_split_key(
     engine: &GroupEngine,
@@ -32,7 +46,10 @@ pub(crate) fn get_split_key(
 }
 
 /// Eval split shard request.
-pub(crate) fn split_shard(engine: &GroupEngine, req: &SplitShardRequest) -> Result<EvalResult> {
+pub(crate) fn split_shard(
+    engine: &GroupEngine,
+    req: &SplitShardRequest,
+) -> Result<WriteEvalResult> {
     let old_shard_id = req.old_shard_id;
     let new_shard_id = req.new_shard_id;
 
@@ -70,5 +87,50 @@ pub(crate) fn split_shard(engine: &GroupEngine, req: &SplitShardRequest) -> Resu
 
     let split_shard = SplitShard { old_shard_id, new_shard_id, split_key };
     let sync_op = Box::new(SyncOp { split_shard: Some(split_shard), ..Default::default() });
-    Ok(EvalResult { batch: None, op: Some(sync_op) })
+    Ok(WriteEvalResult::with_op(sync_op))
+}
+
+/// Eval merge shard request.
+pub(crate) fn merge_shard(
+    engine: &GroupEngine,
+    req: &MergeShardRequest,
+) -> Result<WriteEvalResult> {
+    let left_shard_id = req.left_shard_id;
+    let right_shard_id = req.right_shard_id;
+
+    debug!("execute merge shard {right_shard_id} into {left_shard_id}",);
+
+    let left_shard = engine.shard_desc(left_shard_id)?;
+    let right_shard = engine.shard_desc(right_shard_id)?;
+    let Some(RangePartition { start: _, end: left_end }) = &left_shard.range else {
+        return Err(Error::InvalidData(format!(
+            "apply merge shard but left shard {left_shard_id} range is missing",
+        )));
+    };
+    let Some(RangePartition { start: right_start, end: _ }) = &right_shard.range else {
+        return Err(Error::InvalidData(format!(
+            "apply merge shard but right shard {right_shard_id} range is missing",
+        )));
+    };
+    if left_end != right_start {
+        return Err(Error::InvalidData(format!(
+            "the left shard {left_shard_id} is not mergeable with right shard {right_shard_id}",
+        )));
+    }
+
+    let merge_shard = MergeShard { left_shard_id, right_shard_id };
+    let sync_op = Box::new(SyncOp { merge_shard: Some(merge_shard), ..Default::default() });
+    Ok(WriteEvalResult::with_op(sync_op))
+}
+
+pub fn add_shard(shard: ShardDesc) -> WriteEvalResult {
+    use crate::serverpb::v1::SyncOp;
+
+    WriteEvalResult::with_op(SyncOp::add_shard(shard))
+}
+
+pub fn delete_shard(shard_id: u64) -> WriteEvalResult {
+    use crate::serverpb::v1::SyncOp;
+
+    WriteEvalResult::with_op(SyncOp::delete_shard(shard_id))
 }

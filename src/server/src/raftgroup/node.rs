@@ -115,9 +115,10 @@ where
         &mut self,
         data: Vec<u8>,
         context: Vec<u8>,
+        term: Option<u64>,
         sender: oneshot::Sender<Result<()>>,
     ) {
-        if let Err(err) = self.check_proposal_early(false) {
+        if let Err(err) = self.check_proposal_early(term, false) {
             sender.send(Err(err)).unwrap_or_default();
             return;
         }
@@ -144,7 +145,7 @@ where
         cc: impl ConfChangeI,
         sender: oneshot::Sender<Result<()>>,
     ) {
-        if let Err(err) = self.check_proposal_early(true) {
+        if let Err(err) = self.check_proposal_early(None, true) {
             sender.send(Err(err)).unwrap_or_default();
             return;
         }
@@ -165,9 +166,17 @@ where
         self.applier.delegate_proposal_context(index, term, sender);
     }
 
-    pub fn check_proposal_early(&self, check_config_change: bool) -> Result<()> {
+    pub fn check_proposal_early(
+        &self,
+        proposal_term: Option<u64>,
+        check_config_change: bool,
+    ) -> Result<()> {
         // See `raft-rs/src/raft.rs`:`step_leader` for details.
         if self.raw_node.raft.state != StateRole::Leader {
+            Err(Error::NotLeader(self.group_id, self.raw_node.raft.term, None))
+        } else if let Some(expected_term) = proposal_term
+            && expected_term != self.raw_node.raft.term
+        {
             Err(Error::NotLeader(self.group_id, self.raw_node.raft.term, None))
         } else if self.raw_node.raft.lead_transferee.is_some() {
             Err(Error::ServiceIsBusy(BusyReason::Transfering))

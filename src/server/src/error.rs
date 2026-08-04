@@ -12,6 +12,8 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+use std::sync::Arc;
+
 use sekas_api::server::v1::{GroupDesc, ReplicaDesc, RootDesc, Value};
 
 #[derive(thiserror::Error, Debug)]
@@ -69,6 +71,9 @@ pub enum Error {
     #[error("rpc {0}")]
     Rpc(tonic::Status),
 
+    #[error(transparent)]
+    Shared(Arc<Error>),
+
     // retryable errors
     #[error("group {0} not ready")]
     GroupNotReady(u64),
@@ -112,7 +117,7 @@ pub enum Error {
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
 pub enum BusyReason {
     Transfering,
     Moving,
@@ -211,7 +216,8 @@ impl From<Error> for tonic::Status {
             | Error::RaftEngine(_)
             | Error::ShardNotFound(_)
             | Error::NoAvaliableGroup
-            | Error::Rpc(_)) => Status::internal(err.to_string()),
+            | Error::Rpc(_)
+            | Error::Shared(_)) => Status::internal(err.to_string()),
         }
     }
 }
@@ -276,7 +282,8 @@ impl From<Error> for sekas_api::server::v1::Error {
             | Error::ClusterNotMatch
             | Error::NoAvaliableGroup
             | Error::Canceled
-            | Error::Rpc(_)) => v1::Error::status(Code::Internal.into(), err.to_string()),
+            | Error::Rpc(_)
+            | Error::Shared(_)) => v1::Error::status(Code::Internal.into(), err.to_string()),
         }
     }
 }

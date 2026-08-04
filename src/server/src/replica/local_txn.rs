@@ -17,18 +17,18 @@ use std::sync::Arc;
 use sekas_schema::system::txn::TXN_MAX_VERSION;
 use tokio::sync::{Mutex, Notify};
 
-#[derive(Clone, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct LocalTxnManager {
     core: Arc<LocalTxnManagerCore>,
 }
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 struct LocalTxnManagerCore {
     inner: Mutex<LocalTxnState>,
     notify: Notify,
 }
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 struct LocalTxnState {
     next_pending_id: u64,
     max_served_read_version: u64,
@@ -45,6 +45,7 @@ struct PendingLocalTxn {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct PendingLocalTxnId(u64);
 
+#[derive(Debug)]
 pub struct PendingLocalTxnGuard {
     manager: LocalTxnManager,
     id: PendingLocalTxnId,

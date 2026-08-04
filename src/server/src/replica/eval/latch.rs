@@ -369,7 +369,11 @@ pub mod remote {
                     commit_version,
                 )?;
             }
-            self.core.raft_group.propose(EvalResult::with_batch(wb.data().to_vec())).await
+            self.core
+                .raft_group
+                .propose(EvalResult::with_batch(wb.data().to_vec()), None)?
+                .wait_result()
+                .await
         }
 
         async fn clear_intent(&self, shard_key: &ShardKey) -> Result<()> {
@@ -380,7 +384,11 @@ pub mod remote {
                 &shard_key.user_key,
                 TXN_INTENT_VERSION,
             )?;
-            self.core.raft_group.propose(EvalResult::with_batch(wb.data().to_owned())).await
+            self.core
+                .raft_group
+                .propose(EvalResult::with_batch(wb.data().to_owned()), None)?
+                .wait_result()
+                .await
         }
     }
 
