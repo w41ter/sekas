@@ -432,7 +432,15 @@ impl Txn {
     async fn try_commit_local_txn(&mut self) -> Result<Option<WriteBatchResponse>> {
         let mut retry_state = RetryState::with_deadline_opt(self.deadline);
         let response = loop {
-            let Some(mut group) = self.prepare_local_txn_group()? else {
+            let Some(mut group) = (match self.prepare_local_txn_group() {
+                Ok(group) => group,
+                Err(err) if can_retry_local_txn(&err) => {
+                    trace!("retry local txn route: {err:?}");
+                    retry_state.retry(err).await?;
+                    continue;
+                }
+                Err(err) => return Err(err),
+            }) else {
                 return Ok(None);
             };
             group.request.commit_version =
