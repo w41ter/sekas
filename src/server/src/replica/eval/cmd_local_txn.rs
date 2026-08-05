@@ -17,14 +17,15 @@ use sekas_api::server::v1::{LocalTxnWriteRequest, LocalTxnWriteResponse, PutType
 use super::cas::eval_conditions;
 use super::cmd_txn::{apply_put_op, read_first_non_intent_key};
 use super::latch::DeferSignalLatchGuard;
-use super::{LatchGuard, WriteEvalResult};
+use super::{LatchGuard, WriteEvalResult, write_not_executed, write_ok};
 use crate::engine::GroupEngine;
 use crate::replica::ExecCtx;
+use crate::replica::write_view::WriteEvalContext;
 use crate::{Error, Result};
 
 pub(crate) async fn local_txn_write<T: LatchGuard>(
     exec_ctx: &ExecCtx,
-    group_engine: &GroupEngine,
+    write_ctx: &mut WriteEvalContext<'_>,
     latch_guard: &mut DeferSignalLatchGuard<T>,
     req: &LocalTxnWriteRequest,
     commit_version: u64,
@@ -32,10 +33,10 @@ pub(crate) async fn local_txn_write<T: LatchGuard>(
     if is_local_txn_hits_moving_shard(exec_ctx, req) {
         return Err(Error::LocalTxnNotAllowed);
     }
-    validate_local_shards(group_engine, req)?;
+    validate_local_shards(write_ctx.engine(), req)?;
 
     let mut eval_result = WriteEvalResult::default();
-    let mut txn_resp = LocalTxnWriteResponse::default();
+    let mut txn_resp = LocalTxnWriteResponse { commit_version, ..Default::default() };
     let mut write_index_base = 0;
     for shard_req in &req.writes {
         let shard_id = shard_req.shard_id;
@@ -43,39 +44,49 @@ pub(crate) async fn local_txn_write<T: LatchGuard>(
         for (idx, del) in shard_req.deletes.iter().enumerate() {
             let (_, prev_value) = read_first_non_intent_key(
                 latch_guard,
-                group_engine,
+                write_ctx,
                 commit_version,
                 shard_id,
                 &del.key,
             )
             .await?;
             if let Some(cond_idx) = eval_conditions(prev_value.as_ref(), &del.conditions)? {
-                return Err(Error::CasFailed(
-                    (write_index_base + idx) as u64,
-                    cond_idx as u64,
-                    prev_value,
+                let write_index = write_index_base + idx;
+                return Ok((
+                    None,
+                    cas_failed_response(
+                        req,
+                        commit_version,
+                        write_index,
+                        Error::CasFailed(write_index as u64, cond_idx as u64, prev_value),
+                    ),
                 ));
             }
             eval_result.tombstone(shard_id, del.key.clone(), commit_version);
-            txn_resp.writes.push(WriteResponse {
+            txn_resp.writes.push(write_ok(WriteResponse {
                 prev_value: if del.take_prev_value { prev_value } else { None },
                 candidate_version: 0,
-            })
+            }))
         }
         for (idx, put) in shard_req.puts.iter().enumerate() {
             let (_, prev_value) = read_first_non_intent_key(
                 latch_guard,
-                group_engine,
+                write_ctx,
                 commit_version,
                 shard_id,
                 &put.key,
             )
             .await?;
             if let Some(cond_idx) = eval_conditions(prev_value.as_ref(), &put.conditions)? {
-                return Err(Error::CasFailed(
-                    (write_index_base + num_deletes + idx) as u64,
-                    cond_idx as u64,
-                    prev_value,
+                let write_index = write_index_base + num_deletes + idx;
+                return Ok((
+                    None,
+                    cas_failed_response(
+                        req,
+                        commit_version,
+                        write_index,
+                        Error::CasFailed(write_index as u64, cond_idx as u64, prev_value),
+                    ),
                 ));
             }
             if let Some(value) =
@@ -86,10 +97,10 @@ pub(crate) async fn local_txn_write<T: LatchGuard>(
                 // Nop produces no raft write and therefore no pending overlay
                 // entry.
             }
-            txn_resp.writes.push(WriteResponse {
+            txn_resp.writes.push(write_ok(WriteResponse {
                 prev_value: if put.take_prev_value { prev_value } else { None },
                 candidate_version: 0,
-            });
+            }));
         }
         write_index_base += num_deletes + shard_req.puts.len();
     }
@@ -121,6 +132,25 @@ fn validate_local_shards(group_engine: &GroupEngine, req: &LocalTxnWriteRequest)
     Ok(())
 }
 
+fn cas_failed_response(
+    req: &LocalTxnWriteRequest,
+    commit_version: u64,
+    failed_index: usize,
+    err: Error,
+) -> LocalTxnWriteResponse {
+    let err: sekas_api::server::v1::Error = err.into();
+    let num_writes = req.writes.iter().map(|write| write.deletes.len() + write.puts.len()).sum();
+    let mut resp = LocalTxnWriteResponse { commit_version, ..Default::default() };
+    for idx in 0..num_writes {
+        resp.writes.push(if idx == failed_index {
+            sekas_api::server::v1::WriteResult::err(err.clone())
+        } else {
+            write_not_executed()
+        });
+    }
+    resp
+}
+
 #[cfg(test)]
 mod tests {
     use sekas_api::server::v1::{PutRequest, PutType, ShardWriteRequest, Value};
@@ -131,6 +161,8 @@ mod tests {
     use super::*;
     use crate::engine::{WriteBatch, WriteStates, create_group_engine};
     use crate::replica::eval::latch::DeferSignalLatchGuard;
+    use crate::replica::pending::{PendingMutationKind, PendingMutationOverlay};
+    use crate::replica::write_view::WriteEvalContext;
 
     const SHARD_ID: u64 = 1;
 
@@ -196,16 +228,25 @@ mod tests {
         engine
     }
 
+    fn write_ctx(engine: &GroupEngine) -> WriteEvalContext<'_> {
+        WriteEvalContext::new(engine, PendingMutationOverlay::default())
+    }
+
     #[sekas_macro::test]
     async fn local_txn_writes_multiple_keys_with_one_commit_version() {
         let engine = new_engine(fn_name!()).await;
         let mut latch_guard = DeferSignalLatchGuard::<TestLatchGuard>::empty();
         let req = new_req(20, vec![put_write(b"a", b"va"), put_write(b"b", b"vb")]);
 
-        let (eval_result, resp) =
-            local_txn_write(&ExecCtx::default(), &engine, &mut latch_guard, &req, 20)
-                .await
-                .unwrap();
+        let (eval_result, resp) = local_txn_write(
+            &ExecCtx::default(),
+            &mut write_ctx(&engine),
+            &mut latch_guard,
+            &req,
+            20,
+        )
+        .await
+        .unwrap();
         assert_eq!(resp.writes.len(), 2);
         commit_eval_result(&engine, eval_result);
 
@@ -220,10 +261,15 @@ mod tests {
         let mut latch_guard = DeferSignalLatchGuard::<TestLatchGuard>::empty();
         let req = new_req(40, vec![put_write(b"a", b"new")]);
 
-        let (eval_result, resp) =
-            local_txn_write(&ExecCtx::default(), &engine, &mut latch_guard, &req, 40)
-                .await
-                .unwrap();
+        let (eval_result, resp) = local_txn_write(
+            &ExecCtx::default(),
+            &mut write_ctx(&engine),
+            &mut latch_guard,
+            &req,
+            40,
+        )
+        .await
+        .unwrap();
         assert_eq!(resp.writes.len(), 1);
         commit_eval_result(&engine, eval_result);
         let value = engine.get(SHARD_ID, b"a").await.unwrap().unwrap();
@@ -242,9 +288,20 @@ mod tests {
         };
         let req = new_req(40, vec![put_write(b"a", b"va"), failed_put]);
 
-        let result =
-            local_txn_write(&ExecCtx::default(), &engine, &mut latch_guard, &req, 40).await;
-        assert!(matches!(result, Err(Error::CasFailed(1, 0, _))));
+        let (eval_result, resp) = local_txn_write(
+            &ExecCtx::default(),
+            &mut write_ctx(&engine),
+            &mut latch_guard,
+            &req,
+            40,
+        )
+        .await
+        .unwrap();
+        assert!(eval_result.is_none());
+        assert!(matches!(
+            resp.writes[1].clone().into_result().unwrap_err().into(),
+            Error::CasFailed(1, 0, _)
+        ));
     }
 
     #[sekas_macro::test]
@@ -266,10 +323,15 @@ mod tests {
             }],
         );
 
-        let (eval_result, resp) =
-            local_txn_write(&ExecCtx::default(), &engine, &mut latch_guard, &req, 40)
-                .await
-                .unwrap();
+        let (eval_result, resp) = local_txn_write(
+            &ExecCtx::default(),
+            &mut write_ctx(&engine),
+            &mut latch_guard,
+            &req,
+            40,
+        )
+        .await
+        .unwrap();
         assert_eq!(resp.writes.len(), 1);
         commit_eval_result(&engine, eval_result);
         assert_eq!(
@@ -279,7 +341,7 @@ mod tests {
     }
 
     #[sekas_macro::test]
-    async fn local_txn_records_pending_writes_without_serializing() {
+    async fn local_txn_records_pending_mutations_without_serializing() {
         let engine = new_engine(fn_name!()).await;
         let mut latch_guard = DeferSignalLatchGuard::<TestLatchGuard>::empty();
         let req = new_req(
@@ -295,15 +357,20 @@ mod tests {
             }],
         );
 
-        let (eval_result, _resp) =
-            local_txn_write(&ExecCtx::default(), &engine, &mut latch_guard, &req, 50)
-                .await
-                .unwrap();
+        let (eval_result, _resp) = local_txn_write(
+            &ExecCtx::default(),
+            &mut write_ctx(&engine),
+            &mut latch_guard,
+            &req,
+            50,
+        )
+        .await
+        .unwrap();
         let eval_result = eval_result.unwrap();
-        let pending_writes = eval_result.pending_writes();
-        assert_eq!(pending_writes.len(), 1);
-        assert_eq!(pending_writes[0].value.version, 50);
-        assert_eq!(pending_writes[0].value.content.as_deref(), Some(&b"va"[..]));
+        let pending_mutations = eval_result.pending_mutations();
+        assert_eq!(pending_mutations.len(), 1);
+        assert_eq!(pending_mutations[0].version, 50);
+        assert_eq!(pending_mutations[0].kind, PendingMutationKind::Put(b"va".to_vec()));
         commit_eval_result(&engine, Some(eval_result));
         assert_eq!(engine.get(SHARD_ID, b"a").await.unwrap().unwrap().version, 50);
     }

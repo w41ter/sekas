@@ -14,11 +14,14 @@
 // limitations under the License.
 
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use rocksdb::DBCompressionType;
 use sekas_runtime::ExecutorConfig;
 use serde::{Deserialize, Serialize};
+use tokio::sync::Notify;
 
 use crate::constants::REPLICA_PER_GROUP;
 
@@ -93,6 +96,57 @@ pub struct ReplicaTestingKnobs {
     pub disable_scheduler_orphan_replica_detecting_intervals: bool,
     pub disable_scheduler_durable_task: bool,
     pub disable_scheduler_remove_orphan_replica_task: bool,
+    pub after_overlay_insert: Option<Arc<TestingBarrier>>,
+}
+
+#[derive(Default)]
+pub struct TestingBarrier {
+    armed: AtomicBool,
+    released: AtomicBool,
+    reached_count: AtomicU64,
+    reached: Notify,
+    release: Notify,
+}
+
+impl std::fmt::Debug for TestingBarrier {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TestingBarrier").finish_non_exhaustive()
+    }
+}
+
+impl TestingBarrier {
+    pub fn new() -> Self {
+        TestingBarrier::default()
+    }
+
+    pub fn arm(&self) -> u64 {
+        let observed = self.reached_count.load(Ordering::SeqCst);
+        self.released.store(false, Ordering::SeqCst);
+        self.armed.store(true, Ordering::SeqCst);
+        observed
+    }
+
+    pub async fn wait_reached(&self, observed: u64) {
+        while self.reached_count.load(Ordering::SeqCst) == observed {
+            self.reached.notified().await;
+        }
+    }
+
+    pub fn release(&self) {
+        self.released.store(true, Ordering::SeqCst);
+        self.release.notify_waiters();
+    }
+
+    pub(crate) async fn on_reached(&self) {
+        if !self.armed.swap(false, Ordering::SeqCst) {
+            return;
+        }
+        self.reached_count.fetch_add(1, Ordering::SeqCst);
+        self.reached.notify_waiters();
+        while !self.released.load(Ordering::SeqCst) {
+            self.release.notified().await;
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

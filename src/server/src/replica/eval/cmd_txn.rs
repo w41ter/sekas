@@ -22,14 +22,15 @@ use sekas_schema::system::txn::TXN_INTENT_VERSION;
 use super::cas::eval_conditions;
 use super::latch::DeferSignalLatchGuard;
 use super::{LatchGuard, WriteEvalResult};
-use crate::engine::{GroupEngine, SnapshotMode};
+use crate::engine::GroupEngine;
 use crate::node::move_shard::ForwardCtx;
+use crate::replica::write_view::WriteEvalContext;
 use crate::replica::{ExecCtx, ForwardPart};
 use crate::{Error, Result};
 
 pub(crate) async fn write_intent<T: LatchGuard>(
     exec_ctx: &ExecCtx,
-    group_engine: &GroupEngine,
+    write_ctx: &mut WriteEvalContext<'_>,
     latch_guard: &mut DeferSignalLatchGuard<T>,
     req: &WriteIntentRequest,
 ) -> Result<(Option<WriteEvalResult>, WriteIntentResponse, Vec<ForwardPart>)> {
@@ -39,7 +40,7 @@ pub(crate) async fn write_intent<T: LatchGuard>(
     let mut local_indexes = Vec::new();
     for (index, write) in req.writes.iter().enumerate() {
         if let Some(forward_part) =
-            write_intent_forward_part(exec_ctx, group_engine, req, index, write).await?
+            write_intent_forward_part(exec_ctx, write_ctx.engine(), req, index, write).await?
         {
             forwards.push(forward_part);
             continue;
@@ -47,7 +48,7 @@ pub(crate) async fn write_intent<T: LatchGuard>(
 
         let resp = write_intent_inner(
             exec_ctx,
-            group_engine,
+            write_ctx,
             latch_guard,
             req.start_version,
             req.check_write_conflict,
@@ -65,14 +66,14 @@ pub(crate) async fn write_intent<T: LatchGuard>(
         });
         match resp {
             Ok(resp) => {
-                responses[index] = WriteIntentResult::ok(resp);
+                responses[index] = WriteResult::ok(resp);
                 local_indexes.push(index);
             }
             Err(err @ (Error::CasFailed(..) | Error::TxnConflict)) => {
                 for local_index in local_indexes {
                     responses[local_index] = retry_write_result("intent entry is not executed");
                 }
-                responses[index] = WriteIntentResult::err(err.into());
+                responses[index] = WriteResult::err(err.into());
                 return Ok((None, WriteIntentResponse { writes: responses }, Vec::new()));
             }
             Err(err) => return Err(err),
@@ -119,7 +120,7 @@ async fn write_intent_forward_part(
 
 async fn write_intent_inner<T: LatchGuard>(
     _exec_ctx: &ExecCtx,
-    group_engine: &GroupEngine,
+    write_ctx: &mut WriteEvalContext<'_>,
     latch_guard: &mut DeferSignalLatchGuard<T>,
     start_version: u64,
     check_write_conflict: bool,
@@ -132,15 +133,15 @@ async fn write_intent_inner<T: LatchGuard>(
     let write = single_write_request(req)?;
 
     let user_key = write.user_key();
+    while write_ctx.wait_pending_intent(req.shard_id, user_key).await? {}
     if async_commit
-        && let (Some(intent), _) =
-            read_intent_and_next_key(group_engine, start_version, req.shard_id, user_key)?
+        && let (Some(intent), _) = write_ctx.intent_and_next_value(req.shard_id, user_key)?
         && intent.start_version != start_version
     {
         return Err(Error::LocalTxnNotAllowed);
     }
     let (skip_write, prev_value) =
-        read_first_non_intent_key(latch_guard, group_engine, start_version, req.shard_id, user_key)
+        read_first_non_intent_key(latch_guard, write_ctx, start_version, req.shard_id, user_key)
             .await?;
     let candidate_version =
         if async_commit { next_candidate_version(start_version, prev_value.as_ref()) } else { 0 };
@@ -203,7 +204,7 @@ fn single_write_request(req: &ShardWriteRequest) -> Result<WriteRequest> {
 
 pub(crate) async fn commit_intent<T: LatchGuard>(
     exec_ctx: &ExecCtx,
-    group_engine: &GroupEngine,
+    write_ctx: &mut WriteEvalContext<'_>,
     latch_guard: &mut DeferSignalLatchGuard<T>,
     req: &CommitIntentRequest,
 ) -> Result<(Option<WriteEvalResult>, CommitIntentResponse, Vec<ForwardPart>)> {
@@ -214,7 +215,7 @@ pub(crate) async fn commit_intent<T: LatchGuard>(
     for (index, shard_key) in req.shard_keys.iter().enumerate() {
         if let Some(forward_part) = intent_key_forward_part(
             exec_ctx,
-            group_engine,
+            write_ctx.engine(),
             req.start_version,
             RequestKind::Commit(req.commit_version),
             index,
@@ -227,7 +228,7 @@ pub(crate) async fn commit_intent<T: LatchGuard>(
         }
         commit_intent_inner(
             exec_ctx,
-            group_engine,
+            write_ctx,
             latch_guard,
             req.start_version,
             req.commit_version,
@@ -243,7 +244,7 @@ pub(crate) async fn commit_intent<T: LatchGuard>(
 
 async fn commit_intent_inner<T: LatchGuard>(
     exec_ctx: &ExecCtx,
-    group_engine: &GroupEngine,
+    write_ctx: &mut WriteEvalContext<'_>,
     latch_guard: &mut DeferSignalLatchGuard<T>,
     start_version: u64,
     commit_version: u64,
@@ -256,8 +257,7 @@ async fn commit_intent_inner<T: LatchGuard>(
     );
 
     let Some(intent) =
-        read_target_intent(group_engine, start_version, shard_key.shard_id, &shard_key.user_key)
-            .await?
+        write_ctx.target_intent(start_version, shard_key.shard_id, &shard_key.user_key).await?
     else {
         trace!("txn {} intent not exists exists", start_version);
         return Ok(());
@@ -304,7 +304,7 @@ async fn commit_intent_inner<T: LatchGuard>(
 
 pub(crate) async fn clear_intent<T: LatchGuard>(
     exec_ctx: &ExecCtx,
-    group_engine: &GroupEngine,
+    write_ctx: &mut WriteEvalContext<'_>,
     latch_guard: &mut DeferSignalLatchGuard<T>,
     req: &ClearIntentRequest,
 ) -> Result<(Option<WriteEvalResult>, ClearIntentResponse, Vec<ForwardPart>)> {
@@ -315,7 +315,7 @@ pub(crate) async fn clear_intent<T: LatchGuard>(
     for (index, shard_key) in req.shard_keys.iter().enumerate() {
         if let Some(forward_part) = intent_key_forward_part(
             exec_ctx,
-            group_engine,
+            write_ctx.engine(),
             req.start_version,
             RequestKind::Clear,
             index,
@@ -328,7 +328,7 @@ pub(crate) async fn clear_intent<T: LatchGuard>(
         }
         clear_intent_inner(
             exec_ctx,
-            group_engine,
+            write_ctx,
             latch_guard,
             req.start_version,
             shard_key,
@@ -383,13 +383,14 @@ pub(crate) async fn query_intent(
 
 async fn clear_intent_inner<T: LatchGuard>(
     _exec_ctx: &ExecCtx,
-    group_engine: &GroupEngine,
+    write_ctx: &mut WriteEvalContext<'_>,
     latch_guard: &mut DeferSignalLatchGuard<T>,
     start_version: u64,
     shard_key: &ShardKey,
     eval_result: &mut WriteEvalResult,
 ) -> Result<()> {
-    if read_target_intent(group_engine, start_version, shard_key.shard_id, &shard_key.user_key)
+    if write_ctx
+        .target_intent(start_version, shard_key.shard_id, &shard_key.user_key)
         .await?
         .is_none()
     {
@@ -452,11 +453,8 @@ async fn intent_key_forward_part(
     }))
 }
 
-fn retry_write_result(message: &'static str) -> WriteIntentResult {
-    WriteIntentResult::err(sekas_api::server::v1::Error::status(
-        tonic::Code::NotFound.into(),
-        message,
-    ))
+fn retry_write_result(message: &'static str) -> WriteResult {
+    WriteResult::err(sekas_api::server::v1::Error::status(tonic::Code::NotFound.into(), message))
 }
 
 fn retry_intent_result(message: &'static str) -> IntentResult {
@@ -495,14 +493,16 @@ pub(super) fn apply_put_op(
 
 pub(super) async fn read_first_non_intent_key<T: LatchGuard>(
     latch_guard: &mut DeferSignalLatchGuard<T>,
-    engine: &GroupEngine,
+    write_ctx: &mut WriteEvalContext<'_>,
     start_version: u64,
     shard_id: u64,
     key: &[u8],
 ) -> Result<(bool, Option<Value>)> {
     loop {
-        let (txn_intent, prev_value) =
-            read_intent_and_next_key(engine, start_version, shard_id, key)?;
+        if write_ctx.wait_pending_intent(shard_id, key).await? {
+            continue;
+        }
+        let (txn_intent, prev_value) = write_ctx.intent_and_next_value(shard_id, key)?;
         let Some(txn_intent) = txn_intent else { return Ok((false, prev_value)) };
         if txn_intent.start_version == start_version {
             // Support idempotent.
@@ -515,35 +515,6 @@ pub(super) async fn read_first_non_intent_key<T: LatchGuard>(
         trace!("another txn {} intent exists", txn_intent.start_version);
         latch_guard.resolve_txn(shard_id, key, txn_intent).await?;
     }
-}
-
-fn read_intent_and_next_key(
-    engine: &GroupEngine,
-    start_version: u64,
-    shard_id: u64,
-    key: &[u8],
-) -> Result<(Option<TxnIntent>, Option<Value>)> {
-    let mut snapshot = engine.snapshot(shard_id, SnapshotMode::Key { key })?;
-    if let Some(mvcc_iter) = snapshot.next() {
-        let mut mvcc_iter = mvcc_iter?;
-        if let Some(entry) = mvcc_iter.next() {
-            let entry = entry?;
-            if entry.version() == TXN_INTENT_VERSION {
-                let content = entry.value().ok_or_else(|| {
-                    Error::InvalidData(format!(
-                        "intent value must exist, shard={}, key={:?}, txn={}",
-                        shard_id, key, start_version,
-                    ))
-                })?;
-                let txn_intent = TxnIntent::decode(content)?;
-                let prev_value = mvcc_iter.next().transpose()?.map(Into::<Value>::into);
-                return Ok((Some(txn_intent), prev_value));
-            } else {
-                return Ok((None, Some(entry.into())));
-            }
-        }
-    }
-    Ok((None, None))
 }
 
 async fn read_target_intent(
@@ -596,6 +567,7 @@ mod tests {
     use crate::engine::{WriteBatch, WriteStates, create_group_engine};
     use crate::replica::eval::LatchManager;
     use crate::replica::eval::latch::local::LocalLatchManager;
+    use crate::replica::pending::PendingMutationOverlay;
 
     #[derive(Default)]
     struct NotifyLatchGuard {
@@ -658,6 +630,10 @@ mod tests {
         }
     }
 
+    fn write_ctx(engine: &GroupEngine) -> WriteEvalContext<'_> {
+        WriteEvalContext::new(engine, PendingMutationOverlay::default())
+    }
+
     fn unwrap_single_write_error(resp: WriteIntentResponse) -> Error {
         let err = resp.writes.into_iter().next().unwrap().into_result().unwrap_err();
         err.into()
@@ -706,7 +682,7 @@ mod tests {
                 values.push(value.clone());
             }
             commit_values(&engine, &[idx], &values);
-            let (intent, prev_value) = read_intent_and_next_key(&engine, 123, 1, &[idx]).unwrap();
+            let (intent, prev_value) = write_ctx(&engine).intent_and_next_value(1, &[idx]).unwrap();
 
             assert_eq!(intent, expect_intent, "idx={idx}");
             assert_eq!(prev_value, expect_prev_value, "idx={idx}");
@@ -751,7 +727,9 @@ mod tests {
         let start_version = 9394;
         let req = write_intent_request(start_version, key.clone());
         let (eval_result, _resp, forwards) =
-            write_intent(&ExecCtx::default(), &engine, &mut latch_guard, &req).await.unwrap();
+            write_intent(&ExecCtx::default(), &mut write_ctx(&engine), &mut latch_guard, &req)
+                .await
+                .unwrap();
         assert!(forwards.is_empty());
         assert!(eval_result.is_some());
         commit_eval_result(&engine, eval_result);
@@ -762,7 +740,9 @@ mod tests {
             shard_keys: vec![ShardKey { shard_id: 1, user_key: key.clone() }],
         };
         let (eval_result, _resp, forwards) =
-            commit_intent(&ExecCtx::default(), &engine, &mut latch_guard, &req).await.unwrap();
+            commit_intent(&ExecCtx::default(), &mut write_ctx(&engine), &mut latch_guard, &req)
+                .await
+                .unwrap();
         assert!(forwards.is_empty());
         assert!(eval_result.is_some());
         commit_eval_result(&engine, eval_result);
@@ -774,7 +754,9 @@ mod tests {
             shard_keys: vec![ShardKey { shard_id: 1, user_key: key.clone() }],
         };
         let (eval_result, _resp, forwards) =
-            commit_intent(&ExecCtx::default(), &engine, &mut latch_guard, &req).await.unwrap();
+            commit_intent(&ExecCtx::default(), &mut write_ctx(&engine), &mut latch_guard, &req)
+                .await
+                .unwrap();
         assert!(forwards.is_empty());
         assert!(eval_result.is_none());
     }
@@ -789,7 +771,9 @@ mod tests {
         let start_version = 9394;
         let req = write_intent_request(start_version, key.clone());
         let (eval_result, _resp, forwards) =
-            write_intent(&ExecCtx::default(), &engine, &mut latch_guard, &req).await.unwrap();
+            write_intent(&ExecCtx::default(), &mut write_ctx(&engine), &mut latch_guard, &req)
+                .await
+                .unwrap();
         assert!(forwards.is_empty());
         assert!(eval_result.is_some());
         commit_eval_result(&engine, eval_result);
@@ -799,7 +783,9 @@ mod tests {
             shard_keys: vec![ShardKey { shard_id: 1, user_key: key.clone() }],
         };
         let (eval_result, _resp, forwards) =
-            clear_intent(&ExecCtx::default(), &engine, &mut latch_guard, &req).await.unwrap();
+            clear_intent(&ExecCtx::default(), &mut write_ctx(&engine), &mut latch_guard, &req)
+                .await
+                .unwrap();
         assert!(forwards.is_empty());
         assert!(eval_result.is_some());
         commit_eval_result(&engine, eval_result);
@@ -810,7 +796,9 @@ mod tests {
             shard_keys: vec![ShardKey { shard_id: 1, user_key: key.clone() }],
         };
         let (eval_result, _resp, forwards) =
-            clear_intent(&ExecCtx::default(), &engine, &mut latch_guard, &req).await.unwrap();
+            clear_intent(&ExecCtx::default(), &mut write_ctx(&engine), &mut latch_guard, &req)
+                .await
+                .unwrap();
         assert!(forwards.is_empty());
         assert!(eval_result.is_none());
     }
@@ -825,14 +813,18 @@ mod tests {
         let start_version = 9394;
         let req = write_intent_request(start_version, key.clone());
         let (eval_result, _resp, forwards) =
-            write_intent(&ExecCtx::default(), &engine, &mut latch_guard, &req).await.unwrap();
+            write_intent(&ExecCtx::default(), &mut write_ctx(&engine), &mut latch_guard, &req)
+                .await
+                .unwrap();
         assert!(forwards.is_empty());
         assert!(eval_result.is_some());
         commit_eval_result(&engine, eval_result);
 
         let req = write_intent_request(start_version, key);
         let (eval_result, resp, forwards) =
-            write_intent(&ExecCtx::default(), &engine, &mut latch_guard, &req).await.unwrap();
+            write_intent(&ExecCtx::default(), &mut write_ctx(&engine), &mut latch_guard, &req)
+                .await
+                .unwrap();
         assert!(forwards.is_empty());
         assert!(eval_result.is_none());
 
@@ -865,7 +857,9 @@ mod tests {
             deadline_ms: 0,
         };
         let (eval_result, resp, forwards) =
-            write_intent(&ExecCtx::default(), &engine, &mut latch_guard, &req).await.unwrap();
+            write_intent(&ExecCtx::default(), &mut write_ctx(&engine), &mut latch_guard, &req)
+                .await
+                .unwrap();
         assert!(eval_result.is_none());
         assert!(forwards.is_empty());
         assert!(matches!(unwrap_single_write_error(resp), Error::CasFailed(0, 0, _)));
@@ -883,7 +877,9 @@ mod tests {
             deadline_ms: 0,
         };
         let (eval_result, resp, forwards) =
-            write_intent(&ExecCtx::default(), &engine, &mut latch_guard, &req).await.unwrap();
+            write_intent(&ExecCtx::default(), &mut write_ctx(&engine), &mut latch_guard, &req)
+                .await
+                .unwrap();
         assert!(eval_result.is_none());
         assert!(forwards.is_empty());
         assert!(matches!(unwrap_single_write_error(resp), Error::CasFailed(0, 0, _)));
@@ -908,7 +904,9 @@ mod tests {
             deadline_ms: 0,
         };
         let (eval_result, resp, forwards) =
-            write_intent(&ExecCtx::default(), &engine, &mut latch_guard, &req).await.unwrap();
+            write_intent(&ExecCtx::default(), &mut write_ctx(&engine), &mut latch_guard, &req)
+                .await
+                .unwrap();
         assert!(eval_result.is_some());
         assert!(forwards.is_empty());
         assert!(resp.writes.into_iter().next().unwrap().into_result().is_ok());
@@ -928,14 +926,18 @@ mod tests {
             write_intent_request_with_value(start_version, key.clone(), b"overwrite".to_vec());
         req.check_write_conflict = true;
         let (eval_result, resp, forwards) =
-            write_intent(&ExecCtx::default(), &engine, &mut latch_guard, &req).await.unwrap();
+            write_intent(&ExecCtx::default(), &mut write_ctx(&engine), &mut latch_guard, &req)
+                .await
+                .unwrap();
         assert!(eval_result.is_none());
         assert!(forwards.is_empty());
         assert!(matches!(unwrap_single_write_error(resp), Error::TxnConflict));
 
         req.check_write_conflict = false;
         let (eval_result, resp, forwards) =
-            write_intent(&ExecCtx::default(), &engine, &mut latch_guard, &req).await.unwrap();
+            write_intent(&ExecCtx::default(), &mut write_ctx(&engine), &mut latch_guard, &req)
+                .await
+                .unwrap();
         assert!(eval_result.is_some());
         assert!(forwards.is_empty());
         assert!(resp.writes.into_iter().next().unwrap().into_result().is_ok());
@@ -1050,10 +1052,14 @@ mod tests {
                     &ShardKey { shard_id, user_key: key_clone.to_vec() },
                     latch_mgr_clone.acquire(shard_id, &key_clone).await.unwrap(),
                 );
-                let (eval_result, _, forwards) =
-                    write_intent(&ExecCtx::default(), &engine_clone, &mut latch_guard, &req)
-                        .await
-                        .unwrap();
+                let (eval_result, _, forwards) = write_intent(
+                    &ExecCtx::default(),
+                    &mut write_ctx(&engine_clone),
+                    &mut latch_guard,
+                    &req,
+                )
+                .await
+                .unwrap();
                 assert!(forwards.is_empty());
                 commit_eval_result(&engine_clone, eval_result);
                 drop(latch_guard);
@@ -1073,10 +1079,14 @@ mod tests {
                     commit_version,
                     shard_keys: vec![ShardKey { shard_id, user_key: key_clone }],
                 };
-                let (eval_result, _, forwards) =
-                    commit_intent(&ExecCtx::default(), &engine_clone, &mut latch_guard, &req)
-                        .await
-                        .unwrap();
+                let (eval_result, _, forwards) = commit_intent(
+                    &ExecCtx::default(),
+                    &mut write_ctx(&engine_clone),
+                    &mut latch_guard,
+                    &req,
+                )
+                .await
+                .unwrap();
                 assert!(forwards.is_empty());
                 commit_eval_result(&engine_clone, eval_result);
 

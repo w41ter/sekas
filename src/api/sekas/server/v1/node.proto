@@ -125,8 +125,8 @@ message ShardWriteRequest {
 
 // The response of batch writes to a shard.
 message ShardWriteResponse {
-    repeated WriteResponse deletes = 1;
-    repeated WriteResponse puts = 2;
+    repeated WriteResult deletes = 1;
+    repeated WriteResult puts = 2;
 }
 
 message ShardGetRequest {
@@ -146,7 +146,7 @@ message LocalTxnWriteRequest {
 
 message LocalTxnWriteResponse {
     uint64 commit_version = 1;
-    repeated WriteResponse writes = 2;
+    repeated WriteResult writes = 2;
 }
 
 message ShardScanRequest {
@@ -194,10 +194,10 @@ message WriteIntentRequest {
 }
 
 message WriteIntentResponse {
-    repeated WriteIntentResult writes = 1;
+    repeated WriteResult writes = 1;
 }
 
-message WriteIntentResult {
+message WriteResult {
     oneof result {
         WriteResponse response = 1;
         Error error = 2;

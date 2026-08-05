@@ -39,7 +39,7 @@ pub(crate) use self::eval::merge_scan_response;
 use self::eval::remote::RemoteLatchManager;
 use self::fsm::WatchEvent;
 use self::local_txn::LocalTxnManager;
-use self::pending::{CommitFence, PendingWriteOverlay, ProposalWatcher};
+use self::pending::{CommitFence, PendingMutationOverlay, ProposalWatcher};
 pub use self::state::{LeaseState, LeaseStateObserver};
 use self::write_view::PendingWriteView;
 use crate::engine::GroupEngine;
@@ -51,7 +51,7 @@ use crate::replica::eval::remote::RemoteLatchGuard;
 use crate::replica::eval::{DeferSignalLatchGuard, WriteEvalResult};
 use crate::schedule::MoveReplicasProvider;
 use crate::serverpb::v1::*;
-use crate::{Error, RaftConfig, Result};
+use crate::{Error, RaftConfig, ReplicaConfig, Result};
 
 #[derive(Debug, Default, Clone, Serialize)]
 pub struct ReplicaPerfContext {
@@ -122,9 +122,10 @@ where
     meta_acl: Arc<tokio::sync::RwLock<()>>,
     latch_mgr: RemoteLatchManager,
     local_txn_mgr: LocalTxnManager,
-    pending_overlay: PendingWriteOverlay,
+    pending_overlay: PendingMutationOverlay,
     write_view: PendingWriteView,
     sekas_client: sekas_client::SekasClient,
+    cfg: ReplicaConfig,
 }
 
 impl Replica {
@@ -162,11 +163,12 @@ impl Replica {
         sekas_client: sekas_client::SekasClient,
         move_replicas_provider: Arc<MoveReplicasProvider>,
         watcher_sender: WatcherSender,
+        cfg: ReplicaConfig,
     ) -> Self {
         let latch_mgr =
             RemoteLatchManager::new(sekas_client.clone(), group_engine.clone(), raft_group.clone());
-        let pending_overlay = PendingWriteOverlay::default();
-        let write_view = PendingWriteView::new(group_engine.clone(), pending_overlay.clone());
+        let pending_overlay = PendingMutationOverlay::default();
+        let write_view = PendingWriteView::new(pending_overlay.clone());
         Replica {
             info,
             group_engine,
@@ -181,6 +183,7 @@ impl Replica {
             pending_overlay,
             write_view,
             sekas_client,
+            cfg,
         }
     }
 
@@ -402,11 +405,12 @@ impl Replica {
         // be no deadlock, so waiting while holding `read/write_acl_guard` will
         // not affect other requests.
         let mut latches = acquire_row_latches(&self.latch_mgr, request).await?;
-        let pending_fences = self.get_overlap_pending_fence(request);
+        let mut pending_fences = CommitFence::none();
         let (eval_result_opt, response, forwards, pending_txn_guard_opt) = match &request {
             Request::Write(req) => {
-                let (eval_result, resp) =
-                    eval::batch_write(exec_ctx, &self.group_engine, req).await?;
+                let mut write_ctx = self.write_view.context(&self.group_engine);
+                let (eval_result, resp) = eval::batch_write(exec_ctx, &mut write_ctx, req).await?;
+                pending_fences.join(write_ctx.take_dependencies());
                 (eval_result, Response::Write(resp), vec![], None)
             }
             Request::LocalTxnWrite(req) => {
@@ -414,21 +418,26 @@ impl Replica {
                     latches.as_mut().expect("local txn write request must hold latches");
                 let pending_txn_guard = self.local_txn_mgr.begin_commit(req.commit_version).await;
                 let commit_version = pending_txn_guard.commit_version();
+                let mut write_ctx = self.write_view.context(&self.group_engine);
                 let local_txn_result = eval::local_txn_write(
                     exec_ctx,
-                    &self.group_engine,
+                    &mut write_ctx,
                     latches_mut,
                     req,
                     commit_version,
                 )
                 .await;
+                pending_fences.join(write_ctx.take_dependencies());
                 match local_txn_result {
-                    Ok((eval_result, resp)) => (
-                        eval_result,
-                        Response::LocalTxnWrite(resp),
-                        vec![],
-                        Some(pending_txn_guard),
-                    ),
+                    Ok((eval_result, resp)) => {
+                        let pending_txn_guard_opt = if eval_result.is_some() {
+                            Some(pending_txn_guard)
+                        } else {
+                            pending_txn_guard.abort().await;
+                            None
+                        };
+                        (eval_result, Response::LocalTxnWrite(resp), vec![], pending_txn_guard_opt)
+                    }
                     Err(err) => {
                         pending_txn_guard.abort().await;
                         return Err(err);
@@ -437,21 +446,27 @@ impl Replica {
             }
             Request::WriteIntent(req) => {
                 let latches_mut = latches.as_mut().expect("clear intent request must hold latches");
+                let mut write_ctx = self.write_view.context(&self.group_engine);
                 let (eval_result, resp, forwards) =
-                    eval::write_intent(exec_ctx, &self.group_engine, latches_mut, req).await?;
+                    eval::write_intent(exec_ctx, &mut write_ctx, latches_mut, req).await?;
+                pending_fences.join(write_ctx.take_dependencies());
 
                 (eval_result, Response::WriteIntent(resp), forwards, None)
             }
             Request::CommitIntent(req) => {
                 let latches_mut = latches.as_mut().expect("clear intent request must hold latches");
+                let mut write_ctx = self.write_view.context(&self.group_engine);
                 let (eval_result, resp, forwards) =
-                    eval::commit_intent(exec_ctx, &self.group_engine, latches_mut, req).await?;
+                    eval::commit_intent(exec_ctx, &mut write_ctx, latches_mut, req).await?;
+                pending_fences.join(write_ctx.take_dependencies());
                 (eval_result, Response::CommitIntent(resp), forwards, None)
             }
             Request::ClearIntent(req) => {
                 let latches_mut = latches.as_mut().expect("clear intent request must hold latches");
+                let mut write_ctx = self.write_view.context(&self.group_engine);
                 let (eval_result, resp, forwards) =
-                    eval::clear_intent(exec_ctx, &self.group_engine, latches_mut, req).await?;
+                    eval::clear_intent(exec_ctx, &mut write_ctx, latches_mut, req).await?;
+                pending_fences.join(write_ctx.take_dependencies());
                 (eval_result, Response::ClearIntent(resp), forwards, None)
             }
             Request::QueryIntent(req) => {
@@ -558,7 +573,7 @@ impl Replica {
             .handle_evaluate_result(
                 exec_ctx,
                 eval_result_opt,
-                pending_fences,
+                if pending_fences.is_empty() { None } else { Some(pending_fences) },
                 response,
                 forwards,
                 latches,
@@ -605,16 +620,19 @@ impl Replica {
         pending_fences: Option<CommitFence>,
         eval_latches: Option<DeferSignalLatchGuard<RemoteLatchGuard>>,
     ) -> Result<()> {
-        let pending_writes = eval_result.pending_writes();
+        let pending_mutations = eval_result.pending_mutations();
         let watcher = ProposalWatcher::new();
         self.pending_overlay
-            .insert_batch(&pending_writes, CommitFence::from_watcher(watcher.clone()));
+            .insert_batch(&pending_mutations, CommitFence::from_watcher(watcher.clone()));
+        if let Some(barrier) = self.cfg.testing_knobs.after_overlay_insert.as_ref() {
+            barrier.on_reached().await;
+        }
         let pending_fence = pending_fences.unwrap_or_else(CommitFence::none);
         let (pending_fence_result, propose_result) = futures::join!(
             pending_fence.wait(),
             self.propose_eval_result_and_wait(exec_ctx, eval_result, eval_latches),
         );
-        self.pending_overlay.remove_batch(&pending_writes);
+        self.pending_overlay.remove_batch(&pending_mutations);
         watcher.complete_result(pending_fence_result.and(propose_result))
     }
 
@@ -628,81 +646,6 @@ impl Replica {
         let proposal = self.raft_group.propose(eval_result, Some(exec_ctx.current_term))?;
         drop(eval_latches);
         proposal.wait_result().await
-    }
-
-    fn get_overlap_pending_fence(&self, request: &Request) -> Option<CommitFence> {
-        let mut fence = CommitFence::none();
-        match request {
-            Request::Write(req) => {
-                self.join_pending_writes(&mut fence, req.shard_id, &req.deletes, &req.puts);
-            }
-            Request::WriteIntent(req) => {
-                for write in &req.writes {
-                    self.join_pending_writes(
-                        &mut fence,
-                        write.shard_id,
-                        &write.deletes,
-                        &write.puts,
-                    );
-                }
-            }
-            Request::LocalTxnWrite(req) => {
-                for write in &req.writes {
-                    self.join_pending_writes(
-                        &mut fence,
-                        write.shard_id,
-                        &write.deletes,
-                        &write.puts,
-                    );
-                }
-            }
-            Request::CommitIntent(req) => {
-                for shard_key in &req.shard_keys {
-                    if let Some(pending) =
-                        self.pending_overlay.latest(shard_key.shard_id, &shard_key.user_key)
-                    {
-                        fence.join(pending.fence);
-                    }
-                }
-            }
-            Request::ClearIntent(req) => {
-                for shard_key in &req.shard_keys {
-                    if let Some(pending) =
-                        self.pending_overlay.latest(shard_key.shard_id, &shard_key.user_key)
-                    {
-                        fence.join(pending.fence);
-                    }
-                }
-            }
-            Request::QueryIntent(_) => {}
-            Request::Get(_)
-            | Request::Scan(_)
-            | Request::CreateShard(_)
-            | Request::DeleteShard(_)
-            | Request::ChangeReplicas(_)
-            | Request::AcceptShard(_)
-            | Request::MoveReplicas(_)
-            | Request::Transfer(_)
-            | Request::WatchKey(_)
-            | Request::GetSplitKey(_)
-            | Request::SplitShard(_)
-            | Request::MergeShard(_) => {}
-        }
-        if fence.is_empty() { None } else { Some(fence) }
-    }
-
-    fn join_pending_writes(
-        &self,
-        fence: &mut CommitFence,
-        shard_id: u64,
-        deletes: &[DeleteRequest],
-        puts: &[PutRequest],
-    ) {
-        for key in deletes.iter().map(|delete| &delete.key).chain(puts.iter().map(|put| &put.key)) {
-            if let Some(pending) = self.pending_overlay.latest(shard_id, key) {
-                fence.join(pending.fence);
-            }
-        }
     }
 
     fn check_request_early(&self, exec_ctx: &mut ExecCtx, req: &Request) -> Result<()> {

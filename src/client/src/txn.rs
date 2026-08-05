@@ -471,11 +471,14 @@ impl Txn {
         }
 
         let mut writes = response.writes.into_iter();
-        let deletes = (0..self.deletes.len())
-            .map(|_| writes.next().and_then(|resp| resp.prev_value))
-            .collect();
-        let puts =
-            (0..self.puts.len()).map(|_| writes.next().and_then(|resp| resp.prev_value)).collect();
+        let mut deletes = Vec::with_capacity(self.deletes.len());
+        for _ in 0..self.deletes.len() {
+            deletes.push(writes.next().unwrap().into_result()?.prev_value);
+        }
+        let mut puts = Vec::with_capacity(self.puts.len());
+        for _ in 0..self.puts.len() {
+            puts.push(writes.next().unwrap().into_result()?.prev_value);
+        }
         Ok(Some(WriteBatchResponse { version: response.commit_version, deletes, puts }))
     }
 

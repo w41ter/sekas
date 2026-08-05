@@ -330,6 +330,7 @@ impl Node {
             client,
             move_replicas_provider.clone(),
             watcher_sender,
+            self.cfg.replica.clone(),
         );
         let replica = Arc::new(replica);
         self.replica_route_table.update(replica.clone());
@@ -783,7 +784,7 @@ fn fill_partial_forward_error(
     match response {
         Response::WriteIntent(response) => {
             for index in indexes {
-                response.writes[index] = WriteIntentResult::err(error.clone());
+                response.writes[index] = WriteResult::err(error.clone());
             }
         }
         Response::CommitIntent(response) => {
@@ -1117,7 +1118,7 @@ mod tests {
         assert!(matches!(response, Response::Write(_)));
         let Response::Write(response) = response else { unreachable!() };
         assert_eq!(response.puts.len(), 1);
-        response.puts[0].prev_value.clone()
+        response.puts.into_iter().next().unwrap().into_result().unwrap().prev_value
     }
 
     // execute delete request and return prev values.
@@ -1127,7 +1128,7 @@ mod tests {
         assert!(matches!(response, Response::Write(_)));
         let Response::Write(response) = response else { unreachable!() };
         assert_eq!(response.deletes.len(), 1);
-        response.deletes[0].prev_value.clone()
+        response.deletes.into_iter().next().unwrap().into_result().unwrap().prev_value
     }
 
     #[sekas_macro::test]

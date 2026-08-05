@@ -15,21 +15,29 @@
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 
-use sekas_api::server::v1::{ReplicaDesc, ShardKey, Value};
+use sekas_api::server::v1::{ReplicaDesc, ShardKey};
 use tokio::sync::Notify;
 
 use crate::error::BusyReason;
 use crate::{Error, Result};
 
-#[derive(Clone, Debug)]
-pub(super) struct PendingWrite {
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct PendingMutation {
     pub shard_key: ShardKey,
-    pub value: Value,
+    pub version: u64,
+    pub kind: PendingMutationKind,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum PendingMutationKind {
+    Put(Vec<u8>),
+    Tombstone,
+    Delete,
 }
 
 #[derive(Clone, Debug)]
-pub(super) struct PendingValue {
-    pub value: Value,
+pub(super) struct PendingMutationEntry {
+    pub mutation: PendingMutation,
     pub fence: CommitFence,
 }
 
@@ -60,26 +68,48 @@ struct ProposalWatcherCore {
 }
 
 #[derive(Clone, Default)]
-pub(super) struct PendingWriteOverlay {
-    inner: Arc<Mutex<PendingWriteOverlayInner>>,
+pub(super) struct PendingMutationOverlay {
+    inner: Arc<Mutex<PendingMutationOverlayInner>>,
 }
 
 #[derive(Default)]
-struct PendingWriteOverlayInner {
+struct PendingMutationOverlayInner {
     // The outer map is keyed by shard/user key. The inner map is keyed by MVCC
-    // version, which keeps intent (u64::MAX) and newer versions last.
-    entries: HashMap<ShardKey, BTreeMap<u64, PendingEntry>>,
+    // version, which keeps intent (u64::MAX) and newer versions last. The
+    // value stack preserves proposal order for multiple pending mutations at
+    // the same MVCC version.
+    entries: HashMap<ShardKey, BTreeMap<u64, Vec<PendingEntry>>>,
 }
 
 #[derive(Clone)]
 struct PendingEntry {
-    value: Value,
+    mutation: PendingMutation,
     fence: CommitFence,
 }
 
-impl PendingWrite {
-    pub fn new(shard_id: u64, user_key: Vec<u8>, value: Value) -> Self {
-        PendingWrite { shard_key: ShardKey { shard_id, user_key }, value }
+impl PendingMutation {
+    pub fn put(shard_id: u64, user_key: Vec<u8>, value: Vec<u8>, version: u64) -> Self {
+        PendingMutation {
+            shard_key: ShardKey { shard_id, user_key },
+            version,
+            kind: PendingMutationKind::Put(value),
+        }
+    }
+
+    pub fn tombstone(shard_id: u64, user_key: Vec<u8>, version: u64) -> Self {
+        PendingMutation {
+            shard_key: ShardKey { shard_id, user_key },
+            version,
+            kind: PendingMutationKind::Tombstone,
+        }
+    }
+
+    pub fn delete(shard_id: u64, user_key: Vec<u8>, version: u64) -> Self {
+        PendingMutation {
+            shard_key: ShardKey { shard_id, user_key },
+            version,
+            kind: PendingMutationKind::Delete,
+        }
     }
 }
 
@@ -174,49 +204,67 @@ impl ProposalOutcome {
     }
 }
 
-impl PendingWriteOverlay {
-    pub fn latest(&self, shard_id: u64, user_key: &[u8]) -> Option<PendingValue> {
+impl PendingMutationOverlay {
+    pub fn entries(&self, shard_id: u64, user_key: &[u8]) -> Vec<PendingMutationEntry> {
         let shard_key = ShardKey { shard_id, user_key: user_key.to_vec() };
         let inner = self.inner.lock().unwrap();
-        let entry = inner.entries.get(&shard_key)?.iter().next_back().map(|(_, v)| v)?;
-        Some(PendingValue { value: entry.value.clone(), fence: entry.fence.clone() })
+        inner
+            .entries
+            .get(&shard_key)
+            .map(|versions| {
+                versions
+                    .values()
+                    .flat_map(|entries| {
+                        entries.iter().map(|entry| PendingMutationEntry {
+                            mutation: entry.mutation.clone(),
+                            fence: entry.fence.clone(),
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
-    pub fn insert_batch(&self, writes: &[PendingWrite], fence: CommitFence) {
-        if writes.is_empty() {
+    pub fn insert_batch(&self, mutations: &[PendingMutation], fence: CommitFence) {
+        if mutations.is_empty() {
             return;
         }
 
         let mut inner = self.inner.lock().unwrap();
-        for write in writes {
-            let old = inner.entries.entry(write.shard_key.clone()).or_default().insert(
-                write.value.version,
-                PendingEntry { value: write.value.clone(), fence: fence.clone() },
-            );
-            debug_assert!(
-                old.is_none(),
-                "duplicated pending write for shard_key={:?}, version={}",
-                write.shard_key,
-                write.value.version
-            );
+        for mutation in mutations {
+            inner
+                .entries
+                .entry(mutation.shard_key.clone())
+                .or_default()
+                .entry(mutation.version)
+                .or_default()
+                .push(PendingEntry { mutation: mutation.clone(), fence: fence.clone() });
         }
     }
 
-    pub fn remove_batch(&self, writes: &[PendingWrite]) {
-        if writes.is_empty() {
+    pub fn remove_batch(&self, mutations: &[PendingMutation]) {
+        if mutations.is_empty() {
             return;
         }
 
         let mut inner = self.inner.lock().unwrap();
-        for write in writes {
-            let remove_key = if let Some(versions) = inner.entries.get_mut(&write.shard_key) {
-                versions.remove(&write.value.version);
+        for mutation in mutations {
+            let remove_key = if let Some(versions) = inner.entries.get_mut(&mutation.shard_key) {
+                if let Some(entries) = versions.get_mut(&mutation.version) {
+                    if let Some(pos) = entries.iter().position(|entry| entry.mutation == *mutation)
+                    {
+                        entries.remove(pos);
+                    }
+                    if entries.is_empty() {
+                        versions.remove(&mutation.version);
+                    }
+                }
                 versions.is_empty()
             } else {
                 false
             };
             if remove_key {
-                inner.entries.remove(&write.shard_key);
+                inner.entries.remove(&mutation.shard_key);
             }
         }
     }
@@ -235,29 +283,31 @@ mod tests {
     }
 
     #[test]
-    fn overlay_returns_latest_version() {
-        let overlay = PendingWriteOverlay::default();
-        let first = PendingWrite::new(1, b"k".to_vec(), Value::with_value(b"v1".to_vec(), 10));
-        let second = PendingWrite::new(1, b"k".to_vec(), Value::with_value(b"v2".to_vec(), 20));
+    fn overlay_returns_entries_in_version_order() {
+        let overlay = PendingMutationOverlay::default();
+        let first = PendingMutation::put(1, b"k".to_vec(), b"v1".to_vec(), 10);
+        let second = PendingMutation::put(1, b"k".to_vec(), b"v2".to_vec(), 20);
         overlay.insert_batch(&[first], CommitFence::none());
         overlay.insert_batch(&[second.clone()], CommitFence::none());
 
-        let latest = overlay.latest(1, b"k").unwrap();
-        assert_eq!(latest.value.version, 20);
-        assert_eq!(latest.value.content.as_deref(), Some(&b"v2"[..]));
+        let entries = overlay.entries(1, b"k");
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].mutation.version, 10);
+        assert_eq!(entries[1].mutation.version, 20);
 
         overlay.remove_batch(&[second]);
-        let latest = overlay.latest(1, b"k").unwrap();
-        assert_eq!(latest.value.version, 10);
+        let entries = overlay.entries(1, b"k");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].mutation.version, 10);
     }
 
     #[test]
     fn overlay_removes_empty_key() {
-        let overlay = PendingWriteOverlay::default();
-        let write = PendingWrite::new(1, b"k".to_vec(), Value::with_value(b"v".to_vec(), 10));
-        overlay.insert_batch(std::slice::from_ref(&write), CommitFence::none());
-        overlay.remove_batch(&[write]);
-        assert!(overlay.latest(1, b"k").is_none());
+        let overlay = PendingMutationOverlay::default();
+        let mutation = PendingMutation::put(1, b"k".to_vec(), b"v".to_vec(), 10);
+        overlay.insert_batch(std::slice::from_ref(&mutation), CommitFence::none());
+        overlay.remove_batch(&[mutation]);
+        assert!(overlay.entries(1, b"k").is_empty());
     }
 
     #[test]
@@ -289,13 +339,25 @@ mod tests {
 
     #[test]
     fn overlay_remove_batch_clears_writes() {
-        let overlay = PendingWriteOverlay::default();
-        let write = PendingWrite::new(1, b"k".to_vec(), Value::with_value(b"v".to_vec(), 10));
+        let overlay = PendingMutationOverlay::default();
+        let mutation = PendingMutation::put(1, b"k".to_vec(), b"v".to_vec(), 10);
         let watcher = ProposalWatcher::new();
         let fence = CommitFence::from_watcher(watcher.clone());
-        overlay.insert_batch(std::slice::from_ref(&write), fence.clone());
+        overlay.insert_batch(std::slice::from_ref(&mutation), fence.clone());
 
-        overlay.remove_batch(&[write]);
-        assert!(overlay.latest(1, b"k").is_none());
+        overlay.remove_batch(&[mutation]);
+        assert!(overlay.entries(1, b"k").is_empty());
+    }
+
+    #[test]
+    fn overlay_preserves_same_version_order() {
+        let overlay = PendingMutationOverlay::default();
+        let put = PendingMutation::put(1, b"k".to_vec(), b"v".to_vec(), 10);
+        let delete = PendingMutation::delete(1, b"k".to_vec(), 10);
+        overlay.insert_batch(&[put.clone(), delete.clone()], CommitFence::none());
+
+        let entries = overlay.entries(1, b"k");
+        assert_eq!(entries[0].mutation, put);
+        assert_eq!(entries[1].mutation, delete);
     }
 }

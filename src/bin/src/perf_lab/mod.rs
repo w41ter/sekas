@@ -301,6 +301,7 @@ impl LabContext {
                         disable_scheduler_orphan_replica_detecting_intervals: false,
                         disable_scheduler_durable_task: false,
                         disable_scheduler_remove_orphan_replica_task: false,
+                        ..Default::default()
                     },
                     ..self.config.cluster.node.replica.clone()
                 },

@@ -24,7 +24,7 @@ mod cmd_txn;
 mod cmd_write;
 mod latch;
 
-use sekas_api::server::v1::Value;
+use sekas_api::server::v1::{WriteResponse, WriteResult};
 
 pub(crate) use self::cmd_get::get;
 pub(crate) use self::cmd_ingest::ingest_value_set;
@@ -41,8 +41,19 @@ pub(crate) use self::latch::{
 };
 use crate::Result;
 use crate::engine::{GroupEngine, WriteBatch};
-use crate::replica::pending::PendingWrite;
+use crate::replica::pending::PendingMutation;
 use crate::serverpb::v1::{EvalResult, SyncOp, WriteBatchRep};
+
+fn write_ok(response: WriteResponse) -> WriteResult {
+    WriteResult::ok(response)
+}
+
+fn write_not_executed() -> WriteResult {
+    WriteResult::err(sekas_api::server::v1::Error::status(
+        tonic::Code::NotFound.into(),
+        "write entry is not executed",
+    ))
+}
 
 #[derive(Debug)]
 pub(crate) struct WriteEvalResult {
@@ -74,19 +85,19 @@ impl WriteEvalResult {
         self.writes.push(WriteEvalOp::Delete { shard_id, user_key, version });
     }
 
-    pub fn pending_writes(&self) -> Vec<PendingWrite> {
+    pub fn pending_mutations(&self) -> Vec<PendingMutation> {
         self.writes
             .iter()
-            .filter_map(|op| match op {
-                WriteEvalOp::Put { shard_id, user_key, value, version } => Some(PendingWrite::new(
-                    *shard_id,
-                    user_key.clone(),
-                    Value::with_value(value.clone(), *version),
-                )),
-                WriteEvalOp::Tombstone { shard_id, user_key, version } => {
-                    Some(PendingWrite::new(*shard_id, user_key.clone(), Value::tombstone(*version)))
+            .map(|op| match op {
+                WriteEvalOp::Put { shard_id, user_key, value, version } => {
+                    PendingMutation::put(*shard_id, user_key.clone(), value.clone(), *version)
                 }
-                WriteEvalOp::Delete { .. } => None,
+                WriteEvalOp::Tombstone { shard_id, user_key, version } => {
+                    PendingMutation::tombstone(*shard_id, user_key.clone(), *version)
+                }
+                WriteEvalOp::Delete { shard_id, user_key, version } => {
+                    PendingMutation::delete(*shard_id, user_key.clone(), *version)
+                }
             })
             .collect()
     }

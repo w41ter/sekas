@@ -35,31 +35,31 @@ pub mod server {
     }
 }
 
-impl server::v1::WriteIntentResult {
+impl server::v1::WriteResult {
     #[inline]
     pub fn ok(response: server::v1::WriteResponse) -> Self {
-        use server::v1::write_intent_result::Result;
+        use server::v1::write_result::Result;
 
         Self { result: Some(Result::Response(response)) }
     }
 
     #[inline]
     pub fn err(error: server::v1::Error) -> Self {
-        use server::v1::write_intent_result::Result;
+        use server::v1::write_result::Result;
 
         Self { result: Some(Result::Error(error)) }
     }
 
     #[inline]
     pub fn into_result(self) -> std::result::Result<server::v1::WriteResponse, server::v1::Error> {
-        use server::v1::write_intent_result::Result;
+        use server::v1::write_result::Result;
 
         match self.result {
             Some(Result::Response(response)) => Ok(response),
             Some(Result::Error(error)) => Err(error),
             None => Err(server::v1::Error::status(
                 tonic::Code::Internal.into(),
-                "WriteIntentResult::result is None",
+                "WriteResult::result is None",
             )),
         }
     }
