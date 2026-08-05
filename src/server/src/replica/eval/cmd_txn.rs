@@ -292,7 +292,7 @@ async fn commit_intent_inner<T: LatchGuard>(
         exec_ctx.group_id, start_version, commit_version
     );
 
-    latch_guard.signal_all(TxnState::Committed, Some(commit_version));
+    latch_guard.signal_all(start_version, TxnState::Committed, Some(commit_version));
 
     trace!(
         "group {} commit txn {} intent with version {}, after signal all",
@@ -399,7 +399,7 @@ async fn clear_intent_inner<T: LatchGuard>(
 
     eval_result.delete(shard_key.shard_id, shard_key.user_key.clone(), TXN_INTENT_VERSION);
 
-    latch_guard.signal_all(TxnState::Aborted, None);
+    latch_guard.signal_all(start_version, TxnState::Aborted, None);
 
     Ok(())
 }
@@ -590,7 +590,12 @@ mod tests {
             }
         }
 
-        fn signal_all(&self, txn_state: TxnState, commit_version: Option<u64>) {
+        fn signal_all(
+            &self,
+            _intent_version: u64,
+            txn_state: TxnState,
+            commit_version: Option<u64>,
+        ) {
             let mut waiters = self.waiters.lock().unwrap();
             while let Some(sender) = waiters.pop() {
                 let _ = sender.send((txn_state, commit_version));

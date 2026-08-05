@@ -29,7 +29,7 @@ pub trait LatchGuard {
     async fn resolve_txn(&mut self, txn_intent: TxnIntent) -> Result<Option<Value>>;
 
     /// Signal all intent waiters.
-    fn signal_all(&self, txn_state: TxnState, commit_version: Option<u64>);
+    fn signal_all(&self, intent_version: u64, txn_state: TxnState, commit_version: Option<u64>);
 }
 
 pub trait LatchManager {
@@ -53,7 +53,7 @@ pub trait LatchManager {
 }
 
 pub struct DeferSignalLatchGuard<L: LatchGuard> {
-    state: Option<(TxnState, Option<u64>)>,
+    state: Option<(u64, TxnState, Option<u64>)>,
     latches: HashMap<ShardKey, L>,
 }
 
@@ -88,16 +88,21 @@ impl<L: LatchGuard> DeferSignalLatchGuard<L> {
     }
 
     #[inline]
-    pub fn signal_all(&mut self, txn_state: TxnState, commit_version: Option<u64>) {
-        self.state = Some((txn_state, commit_version));
+    pub fn signal_all(
+        &mut self,
+        intent_version: u64,
+        txn_state: TxnState,
+        commit_version: Option<u64>,
+    ) {
+        self.state = Some((intent_version, txn_state, commit_version));
     }
 }
 
 impl<L: LatchGuard> Drop for DeferSignalLatchGuard<L> {
     fn drop(&mut self) {
-        if let Some((txn_state, commit_version)) = self.state.take() {
+        if let Some((intent_version, txn_state, commit_version)) = self.state.take() {
             for latch in self.latches.values() {
-                latch.signal_all(txn_state, commit_version);
+                latch.signal_all(intent_version, txn_state, commit_version);
             }
         }
     }
@@ -208,12 +213,21 @@ pub mod remote {
     use crate::serverpb::v1::EvalResult;
     use crate::{Error, Result};
 
+    const TXN_HEARTBEAT_GRACE_MS: u64 = 500;
+
+    struct IntentWaiter {
+        id: u64,
+        intent_version: u64,
+        sender: oneshot::Sender<(TxnState, u64)>,
+    }
+
     #[derive(Default)]
     struct LatchBlock {
         hold: bool,
         shard_key: ShardKey,
         latch_waiters: VecDeque<oneshot::Sender<RemoteLatchGuard>>,
-        intent_waiters: VecDeque<oneshot::Sender<(TxnState, u64)>>,
+        next_intent_waiter_id: u64,
+        intent_waiters: VecDeque<IntentWaiter>,
     }
 
     pub struct RemoteLatchGuard {
@@ -390,6 +404,28 @@ pub mod remote {
                 .wait_result()
                 .await
         }
+
+        fn register_intent_waiter(
+            &self,
+            shard_key: &ShardKey,
+            intent_version: u64,
+            sender: oneshot::Sender<(TxnState, u64)>,
+        ) -> u64 {
+            let mut entry = self.core.get_latch_mut(shard_key.shard_id, &shard_key.user_key);
+            let latch = entry.value_mut();
+            let waiter_id = latch.next_intent_waiter_id;
+            latch.next_intent_waiter_id = latch.next_intent_waiter_id.wrapping_add(1);
+            latch.intent_waiters.push_back(IntentWaiter { id: waiter_id, intent_version, sender });
+            #[allow(clippy::explicit_auto_deref)]
+            self.transfer_latch_guard(&mut *entry);
+            waiter_id
+        }
+
+        fn remove_intent_waiter(&self, shard_key: &ShardKey, waiter_id: u64) {
+            if let Some(mut latch_block) = self.core.latches.get_mut(shard_key) {
+                latch_block.intent_waiters.retain(|waiter| waiter.id != waiter_id);
+            }
+        }
     }
 
     impl super::LatchManager for RemoteLatchManager {
@@ -476,7 +512,9 @@ pub mod remote {
 
                 let mut delete_intent = false;
                 let (actual_txn_state, commit_version) = if txn_record.state == TxnState::Running {
-                    if txn_record.heartbeat + 500 < timestamp_millis() {
+                    let lease_deadline_ms =
+                        txn_record.heartbeat.saturating_add(TXN_HEARTBEAT_GRACE_MS);
+                    if lease_deadline_ms < timestamp_millis() {
                         debug!("abort txn {} because it was expired", start_version);
                         match self.latch_mgr.core.txn_table.abort_txn(start_version).await {
                             Ok(()) => {
@@ -490,19 +528,31 @@ pub mod remote {
                         }
                     } else {
                         debug!("wait txn {} intent to commit or abort", start_version);
-                        let (sender, receiver) = oneshot::channel();
-                        {
-                            let mut entry = self
-                                .latch_mgr
-                                .core
-                                .get_latch_mut(self.shard_key.shard_id, &self.shard_key.user_key);
-                            entry.intent_waiters.push_back(sender);
-                            #[allow(clippy::explicit_auto_deref)]
-                            self.latch_mgr.transfer_latch_guard(&mut *entry);
-                        }
+                        let (sender, mut receiver) = oneshot::channel();
+                        let waiter_id = self.latch_mgr.register_intent_waiter(
+                            &self.shard_key,
+                            start_version,
+                            sender,
+                        );
                         debug_assert!(self.hold, "resolve txn should hold the lock");
                         self.hold = false;
-                        let (txn_state, commit_version) = receiver.await.expect("Do not cancel");
+                        let wait_timeout = Duration::from_millis(
+                            lease_deadline_ms.saturating_sub(timestamp_millis()),
+                        );
+                        let sleep = sekas_runtime::time::sleep(wait_timeout);
+                        tokio::pin!(sleep);
+                        let signal = tokio::select! {
+                            signal = &mut receiver => Some(signal.expect("Do not cancel")),
+                            _ = &mut sleep => None,
+                        };
+                        let Some((txn_state, commit_version)) = signal else {
+                            self.latch_mgr.remove_intent_waiter(&self.shard_key, waiter_id);
+                            *self = self
+                                .latch_mgr
+                                .acquire(self.shard_key.shard_id, &self.shard_key.user_key)
+                                .await?;
+                            continue;
+                        };
                         *self = self
                             .latch_mgr
                             .acquire(self.shard_key.shard_id, &self.shard_key.user_key)
@@ -556,15 +606,25 @@ pub mod remote {
             }
         }
 
-        fn signal_all(&self, txn_state: TxnState, commit_version: Option<u64>) {
-            // FIXME(walter) what happen if the signal intent is not equals to wait intent.
+        fn signal_all(
+            &self,
+            intent_version: u64,
+            txn_state: TxnState,
+            commit_version: Option<u64>,
+        ) {
             let commit_version = commit_version.unwrap_or_default();
             if let Some(mut latch_block) =
                 self.latch_mgr.core.latches.get_mut(&self.shard_key.clone())
             {
-                for sender in std::mem::take(&mut latch_block.intent_waiters) {
-                    let _ = sender.send((txn_state, commit_version));
+                let mut remaining = VecDeque::new();
+                while let Some(waiter) = latch_block.intent_waiters.pop_front() {
+                    if waiter.intent_version == intent_version {
+                        let _ = waiter.sender.send((txn_state, commit_version));
+                    } else {
+                        remaining.push_back(waiter);
+                    }
                 }
+                latch_block.intent_waiters = remaining;
             }
         }
     }
@@ -772,7 +832,12 @@ pub mod local {
             }
         }
 
-        fn signal_all(&self, txn_state: TxnState, commit_version: Option<u64>) {
+        fn signal_all(
+            &self,
+            _intent_version: u64,
+            txn_state: TxnState,
+            commit_version: Option<u64>,
+        ) {
             let mut latches = self.latch_mgr.latches.lock().unwrap();
             if let Some(latch_block) = latches.get_mut(&self.shard_key) {
                 while let Some(sender) = latch_block.intent_waiters.pop_front() {

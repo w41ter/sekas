@@ -179,6 +179,7 @@ mod tests {
 
         fn signal_all(
             &self,
+            _intent_version: u64,
             _txn_state: sekas_api::server::v1::TxnState,
             _commit_version: Option<u64>,
         ) {

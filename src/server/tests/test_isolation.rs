@@ -14,7 +14,7 @@
 mod helper;
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use helper::client::ClusterClient;
@@ -50,6 +50,7 @@ async fn bootstrap_servers_and_tables(
     let table_b = db.create_table(TABLE_B.to_string()).await.unwrap();
     c.assert_table_ready(table_a.id).await;
     c.assert_table_ready(table_b.id).await;
+    c.assert_root_group_has_promoted().await;
 
     // ATTN: here is an assumption, two table would not be optimized in one txn
     // batch write.
@@ -140,6 +141,7 @@ async fn txn_blind_write_across_groups_does_not_conflict() {
     let table_b = db.create_table(TABLE_B.to_string()).await.unwrap();
     c.assert_table_ready(table_a.id).await;
     c.assert_table_ready(table_b.id).await;
+    c.assert_root_group_has_promoted().await;
     c.assert_num_group_voters(1, 3).await;
     c.assert_num_group_voters(2, 3).await;
 
@@ -170,19 +172,26 @@ async fn txn_blind_write_across_groups_does_not_conflict() {
     let key_b_clone = key_b.clone();
     let writer_a = spawn(async move {
         for i in 0..iterations {
-            let mut txn = db_clone.begin_txn();
-            txn.put(
-                table_a_id,
-                WriteBuilder::new(key_a_clone.clone()).ensure_put(format!("a-{i}").into_bytes()),
-            );
-            txn.put(
-                table_b_id,
-                WriteBuilder::new(key_b_clone.clone()).ensure_put(format!("a-{i}").into_bytes()),
-            );
-            match txn.commit().await {
-                Ok(_) => {}
-                Err(AppError::TxnConflict) => panic!("blind write txn should not conflict"),
-                Err(err) => panic!("commit blind write txn: {err:?}"),
+            loop {
+                let mut txn = db_clone.begin_txn();
+                txn.put(
+                    table_a_id,
+                    WriteBuilder::new(key_a_clone.clone())
+                        .ensure_put(format!("a-{i}").into_bytes()),
+                );
+                txn.put(
+                    table_b_id,
+                    WriteBuilder::new(key_b_clone.clone())
+                        .ensure_put(format!("a-{i}").into_bytes()),
+                );
+                match txn.commit().await {
+                    Ok(_) => break,
+                    Err(AppError::TxnConflict) => panic!("blind write txn should not conflict"),
+                    Err(AppError::DeadlineExceeded(_)) => {
+                        info!("blind write txn timed out, retry later ...");
+                    }
+                    Err(err) => panic!("commit blind write txn: {err:?}"),
+                }
             }
         }
     });
@@ -190,19 +199,24 @@ async fn txn_blind_write_across_groups_does_not_conflict() {
     let db_clone = db.clone();
     let writer_b = spawn(async move {
         for i in 0..iterations {
-            let mut txn = db_clone.begin_txn();
-            txn.put(
-                table_a_id,
-                WriteBuilder::new(key_a.clone()).ensure_put(format!("b-{i}").into_bytes()),
-            );
-            txn.put(
-                table_b_id,
-                WriteBuilder::new(key_b.clone()).ensure_put(format!("b-{i}").into_bytes()),
-            );
-            match txn.commit().await {
-                Ok(_) => {}
-                Err(AppError::TxnConflict) => panic!("blind write txn should not conflict"),
-                Err(err) => panic!("commit blind write txn: {err:?}"),
+            loop {
+                let mut txn = db_clone.begin_txn();
+                txn.put(
+                    table_a_id,
+                    WriteBuilder::new(key_a.clone()).ensure_put(format!("b-{i}").into_bytes()),
+                );
+                txn.put(
+                    table_b_id,
+                    WriteBuilder::new(key_b.clone()).ensure_put(format!("b-{i}").into_bytes()),
+                );
+                match txn.commit().await {
+                    Ok(_) => break,
+                    Err(AppError::TxnConflict) => panic!("blind write txn should not conflict"),
+                    Err(AppError::DeadlineExceeded(_)) => {
+                        info!("blind write txn timed out, retry later ...");
+                    }
+                    Err(err) => panic!("commit blind write txn: {err:?}"),
+                }
             }
         }
     });
@@ -222,9 +236,13 @@ async fn test_lost_update_anomaly() {
     let (ctx, c, db, table_a, _table_b) = bootstrap_servers_and_tables(fn_name!()).await;
 
     let table_a = table_a.id;
-    let loop_times = 100;
+    let loop_times = 100usize;
+    let expected_value = 100i64;
+    let progress_a = Arc::new(AtomicUsize::new(0));
+    let progress_b = Arc::new(AtomicUsize::new(0));
 
     let db_clone = db.clone();
+    let progress = progress_a.clone();
     let bumper_a = spawn(async move {
         for i in 0..loop_times {
             loop {
@@ -232,7 +250,7 @@ async fn test_lost_update_anomaly() {
                 let value = read_i64(&txn, table_a, table_a.to_string().into_bytes()).await;
                 let a = value & 0x0000FFFF;
                 let b = value & 0xFFFF0000;
-                if a != i {
+                if a != i as i64 {
                     panic!("a = {}, i = {}, b = {}, the lost update anomaly is exists", a, i, b);
                 }
                 let value = b | (a + 1);
@@ -241,9 +259,12 @@ async fn test_lost_update_anomaly() {
                     .ensure_put(value.to_be_bytes().to_vec());
                 txn.put(table_a, put);
                 match txn.commit().await {
-                    Ok(_) => break,
-                    Err(AppError::TxnConflict) => {
-                        info!("bumper a txn is conflict, retry later ...");
+                    Ok(_) => {
+                        progress.store(i + 1, Ordering::Release);
+                        break;
+                    }
+                    Err(AppError::TxnConflict | AppError::DeadlineExceeded(_)) => {
+                        info!("bumper a txn is not committed, retry later ...");
                     }
                     Err(err) => panic!("commit txn: {err:?}"),
                 }
@@ -253,6 +274,7 @@ async fn test_lost_update_anomaly() {
     });
 
     let db_clone = db.clone();
+    let progress = progress_b.clone();
     let bumper_b = spawn(async move {
         for i in 0..loop_times {
             loop {
@@ -260,7 +282,7 @@ async fn test_lost_update_anomaly() {
                 let value = read_i64(&txn, table_a, table_a.to_string().into_bytes()).await;
                 let a = value & 0x0000FFFF;
                 let b = (value & 0xFFFF0000) >> 16;
-                if b != i {
+                if b != i as i64 {
                     panic!("b = {}, i = {}, a = {}, the lost update anomaly is exists", b, i, a);
                 }
                 let value = a | ((b + 1) << 16);
@@ -269,9 +291,12 @@ async fn test_lost_update_anomaly() {
                     .ensure_put(value.to_be_bytes().to_vec());
                 txn.put(table_a, put);
                 match txn.commit().await {
-                    Ok(_) => break,
-                    Err(AppError::TxnConflict) => {
-                        info!("bumper b txn is conflict, retry later ...");
+                    Ok(_) => {
+                        progress.store(i + 1, Ordering::Release);
+                        break;
+                    }
+                    Err(AppError::TxnConflict | AppError::DeadlineExceeded(_)) => {
+                        info!("bumper b txn is not committed, retry later ...");
                     }
                     Err(err) => panic!("commit txn: {err:?}"),
                 }
@@ -280,12 +305,22 @@ async fn test_lost_update_anomaly() {
         }
     });
 
-    bumper_a.await.unwrap();
-    bumper_b.await.unwrap();
+    let joined = tokio::time::timeout(Duration::from_secs(60), async {
+        bumper_a.await.unwrap();
+        bumper_b.await.unwrap();
+    })
+    .await;
+    if joined.is_err() {
+        panic!(
+            "lost update workers did not finish in time, progress a={}, b={}",
+            progress_a.load(Ordering::Acquire),
+            progress_b.load(Ordering::Acquire)
+        );
+    }
 
     let txn = db.begin_txn();
     let value = read_i64(&txn, table_a, table_a.to_string().into_bytes()).await;
-    assert_eq!(value, (loop_times << 16) | loop_times);
+    assert_eq!(value, (expected_value << 16) | expected_value);
 
     drop(c);
     drop(ctx);

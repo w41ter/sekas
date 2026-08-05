@@ -115,7 +115,12 @@ mod tests {
     struct NopLatchGuard {}
 
     impl eval::LatchGuard for NopLatchGuard {
-        fn signal_all(&self, _txn_state: TxnState, _commit_version: Option<u64>) {
+        fn signal_all(
+            &self,
+            _intent_version: u64,
+            _txn_state: TxnState,
+            _commit_version: Option<u64>,
+        ) {
             todo!()
         }
 

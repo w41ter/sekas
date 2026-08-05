@@ -133,14 +133,23 @@ impl GroupClient {
         }
         self.next_access_index = 0;
 
-        let deadline = self.timeout.take().map(|duration| Instant::now() + duration);
+        let timeout = self.timeout.take();
+        let deadline = timeout.map(|duration| Instant::now() + duration);
         let mut index = 0;
         let group_id = self.group_id;
         while let Some((node_id, client)) = self.recommend_client() {
             trace!("group {group_id} issue rpc request with index {index} to node {node_id}");
             index += 1;
-            let ctx = InvokeContext { group_id, epoch: self.epoch, timeout: self.timeout };
-            match op(ctx, client).await {
+            let ctx = InvokeContext { group_id, epoch: self.epoch, timeout };
+            let resp = if let Some(deadline) = deadline {
+                let timeout = deadline.saturating_duration_since(Instant::now());
+                tokio::time::timeout(timeout, op(ctx, client))
+                    .await
+                    .map_err(|_| Error::DeadlineExceeded("issue rpc".to_owned()))?
+            } else {
+                op(ctx, client).await
+            };
+            match resp {
                 Err(status) => self.apply_status(status, &opt)?,
                 Ok(s) => return Ok(s),
             };
