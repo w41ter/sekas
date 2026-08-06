@@ -102,6 +102,12 @@ pub(crate) fn merge_shard(
 
     let left_shard = engine.shard_desc(left_shard_id)?;
     let right_shard = engine.shard_desc(right_shard_id)?;
+    if left_shard.table_id != right_shard.table_id {
+        return Err(Error::InvalidData(format!(
+            "apply merge shard but two shard from different table, left {} table {}, right {} table {}",
+            left_shard.id, left_shard.table_id, right_shard.id, right_shard.table_id
+        )));
+    }
     let Some(RangePartition { start: _, end: left_end }) = &left_shard.range else {
         return Err(Error::InvalidData(format!(
             "apply merge shard but left shard {left_shard_id} range is missing",

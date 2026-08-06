@@ -394,19 +394,29 @@ fn is_merge_candidate(
     move_shard_size_limit: u64,
     is_scheduled: bool,
 ) -> bool {
-    if left.table_id != right.table_id || is_scheduled {
+    if is_scheduled {
         return false;
     }
-    if left.table_id < sekas_schema::FIRST_USER_TABLE_ID {
-        return false;
-    }
-    let (Some(left_range), Some(right_range)) = (&left.range, &right.range) else {
-        return false;
-    };
-    if left_range.end != right_range.start {
+    if check_merge_shards(left, right).is_err() {
         return false;
     }
     left_stats.shard_size.saturating_add(right_stats.shard_size) <= move_shard_size_limit
+}
+
+fn check_merge_shards(left: &ShardDesc, right: &ShardDesc) -> Result<(), &'static str> {
+    if left.table_id != right.table_id {
+        return Err("different table");
+    }
+    if left.table_id < sekas_schema::FIRST_USER_TABLE_ID {
+        return Err("system table");
+    }
+    let (Some(left_range), Some(right_range)) = (&left.range, &right.range) else {
+        return Err("missing range");
+    };
+    if left_range.end != right_range.start {
+        return Err("not mergeable");
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -850,6 +860,33 @@ impl ScheduleContext {
     }
 
     async fn handle_merge_shard_inner(&self, task: &mut MergeShardTask) -> Result<SchedResult> {
+        let schema = self.shared.schema()?;
+        let Some(group) = schema.get_group(task.group_id).await? else {
+            warn!("merge shard but group {} is not exists", task.group_id);
+            return Ok(SchedResult::next());
+        };
+        let Some(left) = group.shard(task.left_shard_id) else {
+            warn!(
+                "abort merge shard task because left shard is missing. group={}, left={}, right={}",
+                task.group_id, task.left_shard_id, task.right_shard_id
+            );
+            return Ok(SchedResult::next());
+        };
+        let Some(right) = group.shard(task.right_shard_id) else {
+            warn!(
+                "abort merge shard task because right shard is missing. group={}, left={}, right={}",
+                task.group_id, task.left_shard_id, task.right_shard_id
+            );
+            return Ok(SchedResult::next());
+        };
+        if let Err(reason) = check_merge_shards(left, right) {
+            warn!(
+                "abort merge shard task because shards are not mergeable. group={}, left={}, right={}, reason={reason}",
+                task.group_id, task.left_shard_id, task.right_shard_id
+            );
+            return Ok(SchedResult::next());
+        }
+
         match self.try_merge_shard(task.group_id, task.left_shard_id, task.right_shard_id).await {
             Ok(()) => Ok(SchedResult::next()),
             Err(crate::Error::EpochNotMatch(_)) => {
@@ -1015,7 +1052,9 @@ impl ScheduleContext {
 mod tests {
     use sekas_api::server::v1::{RangePartition, ShardDesc, ShardStats};
 
-    use super::{MigrateShardPrecheck, is_merge_candidate, precheck_migrate_shard_stats};
+    use super::{
+        MigrateShardPrecheck, check_merge_shards, is_merge_candidate, precheck_migrate_shard_stats,
+    };
     use crate::RootConfig;
 
     #[test]
@@ -1073,5 +1112,23 @@ mod tests {
             1000,
             false
         ));
+    }
+
+    #[test]
+    fn merge_precheck_rejects_cross_table_and_non_user_shards() {
+        let table_id = sekas_schema::FIRST_USER_TABLE_ID;
+        let left = ShardDesc::with_range(1, table_id, b"a".to_vec(), b"m".to_vec());
+        let right = ShardDesc::with_range(2, table_id, b"m".to_vec(), b"z".to_vec());
+        assert!(check_merge_shards(&left, &right).is_ok());
+
+        let other_table = ShardDesc::with_range(3, table_id + 1, b"m".to_vec(), b"z".to_vec());
+        assert_eq!(check_merge_shards(&left, &other_table), Err("different table"));
+
+        let system_left = ShardDesc::with_range(4, 2, b"a".to_vec(), b"m".to_vec());
+        let system_right = ShardDesc::with_range(5, 2, b"m".to_vec(), b"z".to_vec());
+        assert_eq!(check_merge_shards(&system_left, &system_right), Err("system table"));
+
+        let non_adjacent = ShardDesc::with_range(6, table_id, b"n".to_vec(), b"z".to_vec());
+        assert_eq!(check_merge_shards(&left, &non_adjacent), Err("not mergeable"));
     }
 }
