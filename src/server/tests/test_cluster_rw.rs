@@ -14,6 +14,8 @@
 // limitations under the License.
 mod helper;
 
+use std::time::Instant;
+
 use futures::StreamExt;
 use log::info;
 use rand::prelude::SmallRng;
@@ -205,6 +207,8 @@ async fn cluster_rw_with_shard_moving() {
 #[test]
 #[ignore]
 fn cluster_rw_single_server_large_read_write() {
+    const DEFAULT_KEY_COUNT: usize = 655_350;
+
     fn next_bytes(rng: &mut SmallRng, range: std::ops::Range<usize>) -> Vec<u8> {
         const BYTES: &[u8; 62] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
         let len = rng.gen_range(range);
@@ -215,6 +219,23 @@ fn cluster_rw_single_server_large_read_write() {
     }
 
     block_on_current(async move {
+        let key_count = std::env::var("SEKAS_LARGE_RW_KEYS")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(DEFAULT_KEY_COUNT);
+        let progress_interval = std::env::var("SEKAS_LARGE_RW_PROGRESS")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(key_count.max(1));
+        let write_batch_size = std::env::var("SEKAS_LARGE_RW_WRITE_BATCH_SIZE")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(1)
+            .max(1);
+        let read_one_txn = std::env::var("SEKAS_LARGE_RW_READ_ONE_TXN")
+            .ok()
+            .is_some_and(|v| matches!(v.as_str(), "1" | "true" | "TRUE"));
+        let started_at = Instant::now();
         let mut ctx = TestContext::new("rw_test__single_server_large_read_write");
         let nodes = ctx.bootstrap_servers(1).await;
         let c = ClusterClient::new(nodes).await;
@@ -222,19 +243,65 @@ fn cluster_rw_single_server_large_read_write() {
 
         let db = app.create_database("test_db".to_string()).await.unwrap();
         let co = db.create_table("test_co".to_string()).await.unwrap();
-        c.assert_table_ready(co.id).await;
+        c.assert_table_ready_with_voters(co.id, 1).await;
+        let setup_elapsed = started_at.elapsed();
+        println!(
+            "large_rw setup: {setup_elapsed:?}, keys: {key_count}, write_batch_size: {write_batch_size}, read_one_txn: {read_one_txn}"
+        );
 
         let mut rng = SmallRng::seed_from_u64(0);
         let leading = 10;
-        for id in 0..655350 {
-            let key = format!("user{id:0leading$}").into_bytes();
-            let value = next_bytes(&mut rng, 1024..1025);
-            db.put(co.id, key, value).await.unwrap();
+        let write_started_at = Instant::now();
+        for batch_start in (0..key_count).step_by(write_batch_size) {
+            let batch_end = (batch_start + write_batch_size).min(key_count);
+            if write_batch_size == 1 {
+                let key = format!("user{batch_start:0leading$}").into_bytes();
+                let value = next_bytes(&mut rng, 1024..1025);
+                db.put(co.id, key, value).await.unwrap();
+            } else {
+                let mut txn = db.begin_txn();
+                for id in batch_start..batch_end {
+                    let key = format!("user{id:0leading$}").into_bytes();
+                    let value = next_bytes(&mut rng, 1024..1025);
+                    txn.put(co.id, WriteBuilder::new(key).ensure_put(value));
+                }
+                txn.commit().await.unwrap();
+            }
+            let done = batch_end;
+            if progress_interval > 0 && done % progress_interval == 0 {
+                let elapsed = write_started_at.elapsed();
+                println!("large_rw write progress: {done}/{key_count}, elapsed: {elapsed:?}");
+            }
         }
-        for id in 0..655350 {
-            let key = format!("user{id:0leading$}").into_bytes();
-            assert!(db.get(co.id, key).await.unwrap().is_some());
+        let write_elapsed = write_started_at.elapsed();
+        println!("large_rw write done: {key_count} keys, elapsed: {write_elapsed:?}");
+
+        let read_started_at = Instant::now();
+        if read_one_txn {
+            let txn = db.begin_txn();
+            for id in 0..key_count {
+                let key = format!("user{id:0leading$}").into_bytes();
+                assert!(txn.get(co.id, key).await.unwrap().is_some());
+                let done = id + 1;
+                if progress_interval > 0 && done % progress_interval == 0 {
+                    let elapsed = read_started_at.elapsed();
+                    println!("large_rw read progress: {done}/{key_count}, elapsed: {elapsed:?}");
+                }
+            }
+        } else {
+            for id in 0..key_count {
+                let key = format!("user{id:0leading$}").into_bytes();
+                assert!(db.get(co.id, key).await.unwrap().is_some());
+                let done = id + 1;
+                if progress_interval > 0 && done % progress_interval == 0 {
+                    let elapsed = read_started_at.elapsed();
+                    println!("large_rw read progress: {done}/{key_count}, elapsed: {elapsed:?}");
+                }
+            }
         }
+        let read_elapsed = read_started_at.elapsed();
+        println!("large_rw read done: {key_count} keys, elapsed: {read_elapsed:?}");
+        println!("large_rw total: {:?}", started_at.elapsed());
     });
 }
 

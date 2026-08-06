@@ -364,6 +364,10 @@ impl ClusterClient {
     }
 
     pub async fn assert_table_ready(&self, table_id: u64) {
+        self.assert_table_ready_with_voters(table_id, 3).await;
+    }
+
+    pub async fn assert_table_ready_with_voters(&self, table_id: u64, required_voters: usize) {
         let mut ready_group: HashSet<u64> = HashSet::default();
         for i in 0..255u8 {
             for _ in 0..1000 {
@@ -375,7 +379,7 @@ impl ClusterClient {
                     }
                 };
                 if ready_group.insert(state.id) {
-                    self.assert_num_group_voters(state.id, 3).await;
+                    self.assert_num_group_voters(state.id, required_voters).await;
                     info!("table {table_id} is ready");
                     break;
                 }
