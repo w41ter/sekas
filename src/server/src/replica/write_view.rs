@@ -89,7 +89,7 @@ impl WriteEvalContext<'_> {
         shard_id: u64,
         key: &[u8],
     ) -> Result<(Option<TxnIntent>, Option<Value>)> {
-        let mut values = self.all_values(shard_id, key)?;
+        let mut values = self.first_values(shard_id, key, 2)?;
         let Some(value) = values.first().cloned() else {
             return Ok((None, None));
         };
@@ -127,18 +127,59 @@ impl WriteEvalContext<'_> {
         Ok(Some(intent))
     }
 
-    fn all_values(&mut self, shard_id: u64, key: &[u8]) -> Result<Vec<Value>> {
-        let committed = self.committed_values(shard_id, key)?;
+    fn first_values(&mut self, shard_id: u64, key: &[u8], limit: usize) -> Result<Vec<Value>> {
         let pending = self.overlay.entries(shard_id, key);
-        Ok(self.merge_values(committed, pending))
-    }
+        self.join_pending_fences(&pending);
+        let mut pending_values = std::collections::BTreeMap::<u64, Option<Value>>::new();
+        for entry in pending {
+            let value = match entry.mutation.kind {
+                PendingMutationKind::Put(value) => {
+                    Some(Value::with_value(value, entry.mutation.version))
+                }
+                PendingMutationKind::Tombstone => Some(Value::tombstone(entry.mutation.version)),
+                PendingMutationKind::Delete => None,
+            };
+            pending_values.insert(entry.mutation.version, value);
+        }
+        let mut pending_values = pending_values.into_iter().rev().peekable();
 
-    fn committed_values(&self, shard_id: u64, key: &[u8]) -> Result<Vec<Value>> {
         let mut snapshot = self.engine.snapshot(shard_id, SnapshotMode::Key { key })?;
-        let Some(iter) = snapshot.next() else {
-            return Ok(Vec::new());
-        };
-        iter?.map(|entry| entry.map(Into::<Value>::into)).collect()
+        let mut committed_values = snapshot.next().transpose()?.map(|iter| iter.peekable());
+        let mut values = Vec::with_capacity(limit);
+        while values.len() < limit {
+            let committed_version = match committed_values.as_mut().and_then(|iter| iter.peek()) {
+                Some(Ok(entry)) => Some(entry.version()),
+                Some(Err(_)) => {
+                    let err = committed_values.as_mut().unwrap().next().unwrap().unwrap_err();
+                    return Err(err);
+                }
+                None => None,
+            };
+            let pending_version = pending_values.peek().map(|(version, _)| *version);
+
+            let value = match (committed_version, pending_version) {
+                (Some(committed_version), Some(pending_version))
+                    if committed_version > pending_version =>
+                {
+                    committed_values.as_mut().unwrap().next().transpose()?.map(Into::into)
+                }
+                (Some(committed_version), Some(pending_version))
+                    if committed_version == pending_version =>
+                {
+                    committed_values.as_mut().unwrap().next().transpose()?;
+                    pending_values.next().unwrap().1
+                }
+                (_, Some(_)) => pending_values.next().unwrap().1,
+                (Some(_), None) => {
+                    committed_values.as_mut().unwrap().next().transpose()?.map(Into::into)
+                }
+                (None, None) => break,
+            };
+            if let Some(value) = value {
+                values.push(value);
+            }
+        }
+        Ok(values)
     }
 
     fn merge_latest_value(
@@ -244,5 +285,38 @@ mod tests {
         let mut ctx = WriteEvalContext::new(&engine, overlay);
 
         assert!(ctx.latest_value(SHARD_ID, b"k").await.unwrap().is_none());
+    }
+
+    #[sekas_macro::test]
+    async fn intent_and_next_value_handles_deep_history_and_pending_overrides() {
+        let dir = TempDir::new(fn_name!()).unwrap();
+        let engine = create_group_engine(dir.path(), 1, 1, 1).await;
+        let intent = TxnIntent::with_put(123, Some(b"intent".to_vec()));
+        let mut values = vec![Value::with_value(intent.encode_to_vec(), TXN_INTENT_VERSION)];
+        values.extend(
+            (1..=100)
+                .rev()
+                .map(|version| Value::with_value(format!("value-{version}").into_bytes(), version)),
+        );
+        commit_values(&engine, b"k", &values);
+
+        let mut ctx = WriteEvalContext::new(&engine, PendingMutationOverlay::default());
+        let (actual_intent, value) = ctx.intent_and_next_value(SHARD_ID, b"k").unwrap();
+        assert_eq!(actual_intent, Some(intent));
+        assert_eq!(value.unwrap().version, 100);
+
+        let overlay = PendingMutationOverlay::default();
+        overlay.insert_batch(
+            &[
+                PendingMutation::delete(SHARD_ID, b"k".to_vec(), TXN_INTENT_VERSION),
+                PendingMutation::put(SHARD_ID, b"k".to_vec(), b"pending".to_vec(), 100),
+            ],
+            CommitFence::none(),
+        );
+        let mut ctx = WriteEvalContext::new(&engine, overlay);
+
+        let (intent, value) = ctx.intent_and_next_value(SHARD_ID, b"k").unwrap();
+        assert!(intent.is_none());
+        assert_eq!(value.unwrap(), Value::with_value(b"pending".to_vec(), 100));
     }
 }
