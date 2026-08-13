@@ -107,7 +107,8 @@ impl Client {
         req: impl IntoRequest<GroupRequest>,
     ) -> Result<GroupResponse, tonic::Status> {
         let mut client = self.client.clone();
-        Ok(client.unary_group(req).await?.into_inner())
+        let res = client.unary_group(req).await?;
+        Ok(res.into_inner())
     }
 
     pub async fn root_heartbeat(
@@ -292,6 +293,13 @@ mod transport_error_tests {
     #[tonic::async_trait]
     impl node_server::Node for MockedServer {
         type GroupStream = MockGroupStream;
+
+        async fn unary_group(
+            &self,
+            request: tonic::Request<sekas_api::server::v1::GroupRequest>,
+        ) -> Result<tonic::Response<sekas_api::server::v1::GroupResponse>, tonic::Status> {
+            todo!()
+        }
 
         async fn group(
             &self,
