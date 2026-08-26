@@ -1,0 +1,18 @@
+[package]
+name = "sekas-chaos"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "Chaos testing framework and workloads for Sekas."
+
+[dependencies]
+crc32fast.workspace = true
+libc.workspace = true
+rand = { workspace = true, features = ["small_rng"] }
+serde.workspace = true
+sekas-api = { path = "../api", version = "0.5" }
+sekas-client = { path = "../client", version = "0.5" }
+thiserror.workspace = true
+tokio.workspace = true

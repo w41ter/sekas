@@ -2761,6 +2761,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "sekas-chaos"
+version = "0.5.0"
+dependencies = [
+ "crc32fast",
+ "libc",
+ "rand 0.8.5",
+ "sekas-api",
+ "sekas-client",
+ "serde",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "sekas-checker"
 version = "0.5.0"
 dependencies = [
@@ -2930,6 +2944,7 @@ dependencies = [
  "reqwest",
  "rocksdb",
  "sekas-api",
+ "sekas-chaos",
  "sekas-checker",
  "sekas-client",
  "sekas-etcd-proxy",
