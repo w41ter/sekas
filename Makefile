@@ -41,7 +41,7 @@ test:
 .PHONY: perf-lab
 ## perf-lab : Run full perf-lab suite and compare with baseline
 perf-lab:
-	$(V)cargo run --bin sekas -- perf-lab \
+	$(V)cargo run --release --bin sekas -- perf-lab \
 		--conf $(PERF_LAB_CONF) \
 		--baseline $(PERF_LAB_BASELINE) \
 		--out-dir $(PERF_LAB_OUT_DIR) \

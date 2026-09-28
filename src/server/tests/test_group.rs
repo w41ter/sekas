@@ -198,3 +198,46 @@ async fn group_move_replica() {
     c.assert_group_not_contains_member(group_id, follower_id).await;
     c.assert_group_contains_member(group_id, 123123).await;
 }
+
+#[sekas_macro::test]
+async fn group_move_replica_add_only() {
+    let mut ctx = TestContext::new(fn_name!());
+    let nodes = ctx.bootstrap_servers(4).await;
+    let c = ClusterClient::new(nodes.clone()).await;
+    let group_id = 10;
+    let mut node_id_list = nodes.keys().cloned().collect::<Vec<_>>();
+    let node_id = node_id_list.pop().unwrap();
+    create_group(&c, group_id, node_id_list).await;
+
+    info!("issue add-only moving replicas request");
+    c.assert_group_leader(group_id).await;
+    let mut group = c.group(group_id);
+    group
+        .move_replicas(
+            vec![ReplicaDesc { id: 123123, node_id, role: ReplicaRole::Voter as i32 }],
+            vec![],
+        )
+        .await
+        .unwrap();
+
+    c.assert_group_contains_member(group_id, 123123).await;
+}
+
+#[sekas_macro::test]
+async fn group_move_replica_remove_only() {
+    let mut ctx = TestContext::new(fn_name!());
+    ctx.disable_all_node_scheduler();
+    let nodes = ctx.bootstrap_servers(4).await;
+    let c = ClusterClient::new(nodes.clone()).await;
+    let group_id = 10;
+    create_group(&c, group_id, nodes.keys().cloned().collect()).await;
+
+    info!("issue remove-only moving replicas request");
+    c.assert_group_leader(group_id).await;
+    let follower = c.must_group_any_follower(group_id).await;
+    let follower_id = follower.id;
+    let mut group = c.group(group_id);
+    group.move_replicas(vec![], vec![follower]).await.unwrap();
+
+    c.assert_group_not_contains_member(group_id, follower_id).await;
+}

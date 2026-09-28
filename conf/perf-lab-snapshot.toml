@@ -1,7 +1,7 @@
 runner_threads = 4
 
 [environment]
-root_dir = "/tmp/sekas-perf-lab-snapshot"
+root_dir = "./sekas-perf-lab-snapshot"
 cleanup = true
 disk_pools = []
 

@@ -650,9 +650,9 @@ impl LabContext {
     pub(crate) async fn add_group_replica(&self, group_id: u64, node_id: u64) -> Result<Duration> {
         let started = Instant::now();
         let replica_id = group_id * 1000 + node_id + 100;
-        let mut client = self.group(group_id);
-        client.add_replica(replica_id, node_id).await?;
-        self.wait_group_contains_node(group_id, node_id).await?;
+        let incoming = ReplicaDesc { id: replica_id, node_id, role: ReplicaRole::Voter as i32 };
+        self.move_group_replicas(group_id, vec![incoming], vec![]).await?;
+        self.wait_group_voter_on_node(group_id, node_id).await?;
         Ok(started.elapsed())
     }
 
@@ -664,13 +664,14 @@ impl LabContext {
     ) -> Result<ReplicaRemoveResult> {
         let started = Instant::now();
         let group = self.router.find_group(group_id)?;
-        let replica = group
-            .replicas
-            .values()
-            .find(|replica| replica.node_id == node_id)
-            .ok_or_else(|| anyhow!("group {group_id} has no replica on node {node_id}"))?;
-        let mut client = self.group(group_id);
-        client.remove_group_replica(replica.id).await?;
+        let replica =
+            group
+                .replicas
+                .values()
+                .find(|replica| replica.node_id == node_id)
+                .cloned()
+                .ok_or_else(|| anyhow!("group {group_id} has no replica on node {node_id}"))?;
+        self.move_group_replicas(group_id, vec![], vec![replica]).await?;
         let deadline = Instant::now() + wait;
         let mut converged = false;
         while Instant::now() < deadline {
@@ -697,16 +698,45 @@ impl LabContext {
         Ok(ReplicaRemoveResult { duration: started.elapsed(), converged, final_voters })
     }
 
-    async fn wait_group_contains_node(&self, group_id: u64, node_id: u64) -> Result<()> {
+    async fn wait_group_voter_on_node(&self, group_id: u64, node_id: u64) -> Result<()> {
         for _ in 0..400 {
             if let Ok(group) = self.router.find_group(group_id)
-                && group.replicas.values().any(|replica| replica.node_id == node_id)
+                && group.replicas.values().any(|replica| {
+                    replica.node_id == node_id && replica.role == ReplicaRole::Voter as i32
+                })
             {
                 return Ok(());
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
-        bail!("group {group_id} does not contain node {node_id}");
+        bail!("group {group_id} does not contain voter on node {node_id}");
+    }
+
+    async fn move_group_replicas(
+        &self,
+        group_id: u64,
+        incoming: Vec<ReplicaDesc>,
+        outgoing: Vec<ReplicaDesc>,
+    ) -> Result<()> {
+        let mut last_err = None;
+        for _ in 0..400 {
+            let mut client = self.group(group_id);
+            match client.move_replicas(incoming.clone(), outgoing.clone()).await {
+                Ok(_) => return Ok(()),
+                Err(sekas_client::Error::AlreadyExists(message))
+                    if message == "config change" || message == "MoveReplicas task" =>
+                {
+                    last_err = Some(message);
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+                Err(err) => return Err(err.into()),
+            }
+        }
+
+        bail!(
+            "group {group_id} move replicas is still busy: {}",
+            last_err.unwrap_or_else(|| "unknown".to_owned())
+        );
     }
 
     pub(crate) async fn migrate_shard_to_new_group(

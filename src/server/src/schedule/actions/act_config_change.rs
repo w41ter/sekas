@@ -134,12 +134,18 @@ impl Action for ReplaceVoters {
         let replicas = self.providers.descriptor.replicas();
 
         let mut incoming_voters = self.incoming_voters.iter().map(|r| r.id).collect::<HashSet<_>>();
+        let demoting_voters = self.demoting_voters.iter().map(|r| r.id).collect::<HashSet<_>>();
+        let mut pending_demotions = HashSet::new();
         for replica in &replicas {
             if replica.role == ReplicaRole::Voter as i32 {
                 incoming_voters.remove(&replica.id);
             }
+            if demoting_voters.contains(&replica.id) && replica.role != ReplicaRole::Learner as i32
+            {
+                pending_demotions.insert(replica.id);
+            }
         }
-        if incoming_voters.is_empty() {
+        if incoming_voters.is_empty() && pending_demotions.is_empty() {
             let group_id = ctx.group_id;
             let replica_id = ctx.replica_id;
             info!(
