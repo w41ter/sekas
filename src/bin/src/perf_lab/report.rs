@@ -69,13 +69,12 @@ pub(crate) struct MetricsRecorder {
 }
 
 impl MetricsRecorder {
-    pub(crate) fn mark(&mut self, name: String) -> Result<()> {
+    pub(crate) fn mark(&mut self, name: String) {
         self.marks.push(MetricMark {
             name,
             at_unix_ms: crate::perf_lab::unix_millis(),
             metrics: prometheus::gather(),
         });
-        Ok(())
     }
 
     pub(crate) fn intervals(&self) -> Vec<MetricInterval> {

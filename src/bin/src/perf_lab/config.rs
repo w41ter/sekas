@@ -100,25 +100,22 @@ pub(crate) struct ClusterConfig {
 
 impl Default for ClusterConfig {
     fn default() -> Self {
-        let mut root = RootConfig::default();
-        root.enable_group_balance = true;
-        root.enable_replica_balance = true;
-        root.enable_leader_balance = false;
-        root.enable_shard_balance = false;
-        root.replicas_per_group = 3;
-        root.schedule_interval_sec = 1;
-
-        let mut raft = RaftConfig::default();
-        raft.tick_interval_ms = 100;
-
         ClusterConfig {
             nodes: 3,
             cpus_per_node: 2,
             enable_proxy_service: false,
             db: DbConfig { max_background_jobs: 2, max_sub_compactions: 1, ..DbConfig::default() },
             node: NodeConfig::default(),
-            raft,
-            root,
+            raft: RaftConfig { tick_interval_ms: 100, ..RaftConfig::default() },
+            root: RootConfig {
+                enable_group_balance: true,
+                enable_replica_balance: true,
+                enable_leader_balance: false,
+                enable_shard_balance: false,
+                replicas_per_group: 3,
+                schedule_interval_sec: 1,
+                ..RootConfig::default()
+            },
         }
     }
 }
@@ -135,7 +132,6 @@ pub(crate) struct WorkloadConfig {
     pub(crate) cooldown_secs: u64,
     pub(crate) value_size: usize,
     pub(crate) key_space: u64,
-    pub(crate) report_interval_secs: u64,
     pub(crate) meta_interval_secs: u64,
 }
 
@@ -151,7 +147,6 @@ impl Default for WorkloadConfig {
             cooldown_secs: 5,
             value_size: 128,
             key_space: 10_000,
-            report_interval_secs: 5,
             meta_interval_secs: 5,
         }
     }

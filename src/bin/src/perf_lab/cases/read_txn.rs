@@ -45,7 +45,7 @@ impl PerfCase for PointRead {
             lab.config.workload.value_size,
         )
         .await?;
-        lab.mark("start").await?;
+        lab.mark("start");
         let workload = spawn_workload(
             db,
             "point_read",
@@ -55,7 +55,7 @@ impl PerfCase for PointRead {
             lab.config.workload.key_space,
         );
         tokio::time::sleep(Duration::from_secs(lab.config.workload.duration_secs)).await;
-        lab.mark("end").await?;
+        lab.mark("end");
         let report = workload.stop().await;
         let mut derived = BTreeMap::new();
         prepare.insert_into(&mut derived);
@@ -78,7 +78,7 @@ impl PerfCase for MixedReadWrite {
             lab.config.workload.value_size,
         )
         .await?;
-        lab.mark("start").await?;
+        lab.mark("start");
         let workload = spawn_workload(
             db,
             "mixed_read_write",
@@ -92,7 +92,7 @@ impl PerfCase for MixedReadWrite {
             lab.config.workload.key_space,
         );
         tokio::time::sleep(Duration::from_secs(lab.config.workload.duration_secs)).await;
-        lab.mark("end").await?;
+        lab.mark("end");
         let report = workload.stop().await;
         let mut derived = BTreeMap::new();
         prepare.insert_into(&mut derived);
@@ -115,7 +115,7 @@ impl PerfCase for PrefixScan {
             lab.config.workload.value_size,
         )
         .await?;
-        lab.mark("start").await?;
+        lab.mark("start");
         let workload = spawn_workload(
             db,
             "prefix_scan",
@@ -129,7 +129,7 @@ impl PerfCase for PrefixScan {
             lab.config.workload.key_space,
         );
         tokio::time::sleep(Duration::from_secs(lab.config.workload.duration_secs)).await;
-        lab.mark("end").await?;
+        lab.mark("end");
         let report = workload.stop().await;
         let mut derived = BTreeMap::new();
         prepare.insert_into(&mut derived);
@@ -146,7 +146,7 @@ impl PerfCase for TxnConflict {
         let db = lab.database().await?;
         let table = lab.table(&db, &lab.config.workload.table).await?;
         db.put(table.id, b"txn-conflict-guard".to_vec(), b"seed".to_vec()).await?;
-        lab.mark("start").await?;
+        lab.mark("start");
         let workload = spawn_workload(
             db,
             "txn_conflict",
@@ -160,7 +160,7 @@ impl PerfCase for TxnConflict {
             lab.config.workload.key_space,
         );
         tokio::time::sleep(Duration::from_secs(lab.config.workload.duration_secs)).await;
-        lab.mark("end").await?;
+        lab.mark("end");
         let report = workload.stop().await;
         Ok(case_report(lab, self.name(), vec![report], BTreeMap::new()))
     }
@@ -174,7 +174,7 @@ impl PerfCase for MultiKeyTxn {
     async fn run(&self, lab: &mut LabContext) -> Result<CaseReport> {
         let db = lab.database().await?;
         let table = lab.table(&db, &lab.config.workload.table).await?;
-        lab.mark("start").await?;
+        lab.mark("start");
         let workload = spawn_workload(
             db,
             "multi_key_txn",
@@ -188,7 +188,7 @@ impl PerfCase for MultiKeyTxn {
             lab.config.workload.key_space,
         );
         tokio::time::sleep(Duration::from_secs(lab.config.workload.duration_secs)).await;
-        lab.mark("end").await?;
+        lab.mark("end");
         let report = workload.stop().await;
         Ok(case_report(lab, self.name(), vec![report], BTreeMap::new()))
     }
@@ -205,7 +205,7 @@ impl PerfCase for ValueSizeMatrix {
         let mut reports = Vec::new();
         let mut derived = BTreeMap::new();
         for size in [16usize, 128, 1024, 16 * 1024] {
-            lab.mark(format!("value_size_{size}_start")).await?;
+            lab.mark(format!("value_size_{size}_start"));
             let workload = spawn_workload(
                 db.clone(),
                 &format!("value_size_{size}"),
@@ -215,7 +215,7 @@ impl PerfCase for ValueSizeMatrix {
                 lab.config.workload.key_space,
             );
             tokio::time::sleep(Duration::from_secs(lab.config.workload.duration_secs)).await;
-            lab.mark(format!("value_size_{size}_end")).await?;
+            lab.mark(format!("value_size_{size}_end"));
             let report = workload.stop().await;
             let payload_bytes = report.successes as f64 * size as f64;
             let duration_secs = (report.duration_ms as f64 / 1000.0).max(0.001);

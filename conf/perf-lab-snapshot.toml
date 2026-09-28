@@ -60,7 +60,6 @@ warmup_secs = 2
 cooldown_secs = 5
 value_size = 4096
 key_space = 4096
-report_interval_secs = 1
 
 [report]
 out_dir = "target/perf-lab-snapshot"

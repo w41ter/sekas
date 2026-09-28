@@ -161,24 +161,20 @@ impl Command {
             };
             lab.shutdown();
 
-            let out_dir = self
-                .out_dir
-                .as_ref()
-                .map(PathBuf::from)
-                .unwrap_or_else(|| result.config.report.out_dir.clone());
-            fs::create_dir_all(&out_dir)
+            let out_dir = &result.config.report.out_dir;
+            fs::create_dir_all(out_dir)
                 .with_context(|| format!("create report dir {}", out_dir.display()))?;
             let report_path = out_dir.join(format!("{}-{}.json", result.case, result.run_id));
             fs::write(&report_path, serde_json::to_vec_pretty(&result)?)
                 .with_context(|| format!("write report {}", report_path.display()))?;
             println!("perf-lab report: {}", report_path.display());
 
-            let baseline = self.baseline.as_ref().or(result.config.report.baseline.as_ref());
+            let baseline = result.config.report.baseline.as_ref();
             if let Some(path) = baseline {
                 let comparison = compare_with_baseline(
                     &result,
                     Path::new(path),
-                    self.fail_on_regression || result.config.report.fail_on_regression,
+                    result.config.report.fail_on_regression,
                 )?;
                 println!("{}", serde_json::to_string_pretty(&comparison)?);
                 if comparison.failed() {
@@ -686,9 +682,7 @@ impl LabContext {
         let before_epoch = self.router.find_group(group_id)?.epoch;
         let started = Instant::now();
         let mut last_err = None;
-        let mut attempts = 0_u64;
-        for _ in 0..20 {
-            attempts += 1;
+        for attempts in 1..=20 {
             let mut group = self.group(group_id);
             match group.merge_shard(left_shard_id, right_shard_id).await {
                 Ok(()) => {
@@ -756,7 +750,7 @@ impl LabContext {
         self.router.find_group_by_shard(shard_id).map(|group| group.id == group_id).unwrap_or(false)
     }
 
-    pub(crate) async fn mark(&mut self, name: impl Into<String>) -> Result<()> {
+    pub(crate) fn mark(&mut self, name: impl Into<String>) {
         self.metrics.mark(name.into())
     }
 }

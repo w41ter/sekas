@@ -32,7 +32,7 @@ impl PerfCase for SingleKeyUpdate {
         let db = lab.database().await?;
         let table = lab.table(&db, &lab.config.workload.table).await?;
         let key = b"single-key".to_vec();
-        lab.mark("start").await?;
+        lab.mark("start");
         let workload = spawn_workload(
             db,
             "single_key_update",
@@ -42,7 +42,7 @@ impl PerfCase for SingleKeyUpdate {
             lab.config.workload.key_space,
         );
         tokio::time::sleep(Duration::from_secs(lab.config.workload.duration_secs)).await;
-        lab.mark("end").await?;
+        lab.mark("end");
         let report = workload.stop().await;
         Ok(case_report(lab, self.name(), vec![report], BTreeMap::new()))
     }
@@ -59,7 +59,7 @@ impl PerfCase for BatchTxnCommit {
         let db = lab.database().await?;
         let left = lab.table(&db, &lab.config.workload.table).await?;
         let right = lab.table(&db, &lab.config.workload.second_table).await?;
-        lab.mark("start").await?;
+        lab.mark("start");
         let workload = spawn_workload(
             db,
             "batch_txn_commit",
@@ -69,7 +69,7 @@ impl PerfCase for BatchTxnCommit {
             lab.config.workload.key_space,
         );
         tokio::time::sleep(Duration::from_secs(lab.config.workload.duration_secs)).await;
-        lab.mark("end").await?;
+        lab.mark("end");
         let report = workload.stop().await;
         Ok(case_report(lab, self.name(), vec![report], BTreeMap::new()))
     }

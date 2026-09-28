@@ -13,14 +13,13 @@
 // limitations under the License.
 
 use std::collections::BTreeMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use rand::prelude::*;
 use rand::rngs::SmallRng;
 use sekas_client::{AppError, Database, Range, RangeRequest, WriteBuilder};
 use serde::{Deserialize, Serialize};
-use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 use tokio_stream::StreamExt;
 
@@ -66,12 +65,12 @@ impl WorkloadHandle {
             let _ = task.await;
         }
         let elapsed = self.started.elapsed();
-        let stats = self.stats.lock().await;
+        let stats = self.stats.lock().unwrap();
         stats.report(elapsed)
     }
 
-    pub(crate) async fn phase(&self, name: &str) {
-        self.stats.lock().await.phase(name.to_owned());
+    pub(crate) fn phase(&self, name: &str) {
+        self.stats.lock().unwrap().phase(name.to_owned());
     }
 }
 
@@ -79,11 +78,6 @@ impl WorkloadHandle {
 struct WorkloadStats {
     name: String,
     phase: String,
-    operations: u64,
-    successes: u64,
-    failures: u64,
-    latencies: Vec<u64>,
-    errors: BTreeMap<String, u64>,
     phases: BTreeMap<String, PhaseStats>,
 }
 
@@ -104,35 +98,38 @@ impl WorkloadStats {
     }
 
     fn observe(&mut self, latency_us: u64, error: Option<String>) {
-        self.operations += 1;
-        let success = error.is_none();
-        if success {
-            self.successes += 1;
-        } else {
-            self.failures += 1;
-        }
-        if let Some(error) = error.as_ref() {
-            *self.errors.entry(error.clone()).or_default() += 1;
-        }
-        self.latencies.push(latency_us);
         self.phases
-            .entry(self.phase.clone())
-            .or_insert_with(PhaseStats::new)
+            .get_mut(&self.phase)
+            .expect("active workload phase must exist")
             .observe(latency_us, error.as_ref());
     }
 
     fn report(&self, elapsed: Duration) -> WorkloadReport {
         let seconds = elapsed.as_secs_f64().max(0.001);
         let phase_summaries = self.phases.iter().map(|(name, phase)| phase.report(name)).collect();
+        let mut operations = 0;
+        let mut successes = 0;
+        let mut failures = 0;
+        let mut latencies = Vec::new();
+        let mut errors = BTreeMap::new();
+        for phase in self.phases.values() {
+            operations += phase.operations;
+            successes += phase.successes;
+            failures += phase.failures;
+            latencies.extend_from_slice(&phase.latencies);
+            for (error, count) in &phase.errors {
+                *errors.entry(error.clone()).or_default() += count;
+            }
+        }
         WorkloadReport {
             name: self.name.clone(),
-            operations: self.operations,
-            successes: self.successes,
-            failures: self.failures,
+            operations,
+            successes,
+            failures,
             duration_ms: elapsed.as_millis(),
-            qps: self.operations as f64 / seconds,
-            latency: HistogramSummary::from_latencies(&self.latencies),
-            errors: self.errors.clone(),
+            qps: operations as f64 / seconds,
+            latency: HistogramSummary::from_latencies(&latencies),
+            errors,
             phase_summaries,
         }
     }
@@ -297,7 +294,7 @@ pub(crate) fn spawn_workload(
                     }
                 };
                 let latency = start.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;
-                stats.lock().await.observe(latency, result.err().map(classify_app_error));
+                stats.lock().unwrap().observe(latency, result.err().map(classify_app_error));
             }
         }));
     }
@@ -352,4 +349,27 @@ fn random_bytes(rng: &mut SmallRng, size: usize) -> Vec<u8> {
         out.push(BYTES[rng.gen_range(0..BYTES.len())]);
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn report_aggregates_phase_stats() {
+        let mut stats = WorkloadStats::new("test");
+        stats.observe(10, None);
+        stats.phase("recovery".to_owned());
+        stats.observe(30, Some("network_unavailable".to_owned()));
+
+        let report = stats.report(Duration::from_secs(1));
+        assert_eq!(report.operations, 2);
+        assert_eq!(report.successes, 1);
+        assert_eq!(report.failures, 1);
+        assert_eq!(report.latency.count, 2);
+        assert_eq!(report.latency.avg_us, 20);
+        assert_eq!(report.errors.get("network_unavailable"), Some(&1));
+        assert_eq!(report.phase_summaries.len(), 2);
+        assert_eq!(report.phase_summaries.iter().map(|phase| phase.operations).sum::<u64>(), 2);
+    }
 }

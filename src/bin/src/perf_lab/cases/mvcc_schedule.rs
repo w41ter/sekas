@@ -39,7 +39,7 @@ impl PerfCase for MvccVersionAccumulation {
         for i in 0..1000_u64 {
             db.put(table.id, key.clone(), i.to_be_bytes().to_vec()).await?;
         }
-        lab.mark("start").await?;
+        lab.mark("start");
         let workload = spawn_workload(
             db,
             "mvcc_version_get",
@@ -49,7 +49,7 @@ impl PerfCase for MvccVersionAccumulation {
             1,
         );
         tokio::time::sleep(Duration::from_secs(lab.config.workload.duration_secs)).await;
-        lab.mark("end").await?;
+        lab.mark("end");
         let report = workload.stop().await;
         let mut derived = BTreeMap::new();
         derived.insert("mvcc_versions_per_key".to_owned(), 1000.0);
@@ -69,7 +69,7 @@ impl PerfCase for MvccGcImpact {
         for i in 0..500_u64 {
             db.put(table.id, key.clone(), i.to_be_bytes().to_vec()).await?;
         }
-        lab.mark("baseline_start").await?;
+        lab.mark("baseline_start");
         let workload = spawn_workload(
             db,
             "write_during_mvcc_gc",
@@ -78,12 +78,12 @@ impl PerfCase for MvccGcImpact {
             lab.config.workload.value_size,
             lab.config.workload.key_space,
         );
-        workload.phase("baseline").await;
+        workload.phase("baseline");
         tokio::time::sleep(Duration::from_secs(lab.config.workload.warmup_secs)).await;
-        lab.mark("gc_window_start").await?;
-        workload.phase("gc_window").await;
+        lab.mark("gc_window_start");
+        workload.phase("gc_window");
         tokio::time::sleep(Duration::from_secs(lab.config.workload.cooldown_secs.max(1))).await;
-        lab.mark("gc_window_end").await?;
+        lab.mark("gc_window_end");
         let report = workload.stop().await;
         let mut case = case_report(lab, self.name(), vec![report], BTreeMap::new());
         let deleted_versions = case.counter_delta_contains("node_mvcc_gc_delete_versions_total");
@@ -115,15 +115,15 @@ impl PerfCase for AutoShardBalance {
             lab.config.workload.value_size,
             lab.config.workload.key_space,
         );
-        lab.mark("baseline_start").await?;
-        workload.phase("baseline").await;
+        lab.mark("baseline_start");
+        workload.phase("baseline");
         tokio::time::sleep(Duration::from_secs(lab.config.workload.warmup_secs)).await;
-        lab.mark("before_balance_window").await?;
-        workload.phase("balance_window").await;
+        lab.mark("before_balance_window");
+        workload.phase("balance_window");
         let started = std::time::Instant::now();
         let _ = lab.add_server().await?;
         tokio::time::sleep(Duration::from_secs(lab.config.workload.cooldown_secs.max(5))).await;
-        lab.mark("after_balance_window").await?;
+        lab.mark("after_balance_window");
         let report = workload.stop().await;
         let mut case = case_report(lab, self.name(), vec![report], BTreeMap::new());
         let root_migrate_tasks = case.counter_delta_contains(
@@ -162,20 +162,20 @@ impl PerfCase for AutoSplitMerge {
             lab.config.workload.value_size,
             lab.config.workload.key_space,
         );
-        lab.mark("baseline_start").await?;
-        workload.phase("baseline").await;
+        lab.mark("baseline_start");
+        workload.phase("baseline");
         tokio::time::sleep(Duration::from_secs(lab.config.workload.warmup_secs)).await;
-        lab.mark("before_split").await?;
-        workload.phase("split").await;
+        lab.mark("before_split");
+        workload.phase("split");
         let split = lab.split_shard_for_key(table.id, &key).await?;
-        lab.mark("after_split").await?;
-        workload.phase("merge").await;
+        lab.mark("after_split");
+        workload.phase("merge");
         let merge =
             lab.merge_shards(split.group_id, split.left_shard_id, split.right_shard_id).await?;
-        lab.mark("after_merge").await?;
-        workload.phase("recovery").await;
+        lab.mark("after_merge");
+        workload.phase("recovery");
         tokio::time::sleep(Duration::from_secs(lab.config.workload.cooldown_secs)).await;
-        lab.mark("end").await?;
+        lab.mark("end");
         let report = workload.stop().await;
         let mut derived = BTreeMap::new();
         derived
@@ -219,20 +219,20 @@ impl PerfCase for SchemaChurn {
             lab.config.workload.value_size,
             lab.config.workload.key_space,
         );
-        lab.mark("baseline_start").await?;
-        workload.phase("baseline").await;
+        lab.mark("baseline_start");
+        workload.phase("baseline");
         tokio::time::sleep(Duration::from_secs(lab.config.workload.warmup_secs)).await;
-        lab.mark("schema_churn_start").await?;
-        workload.phase("schema_churn").await;
+        lab.mark("schema_churn_start");
+        workload.phase("schema_churn");
         let started = std::time::Instant::now();
         for i in 0..16_u64 {
             let name = format!("schema_churn_{i}");
             let _ = lab.table(&db, &name).await?;
         }
-        lab.mark("schema_churn_end").await?;
-        workload.phase("recovery").await;
+        lab.mark("schema_churn_end");
+        workload.phase("recovery");
         tokio::time::sleep(Duration::from_secs(lab.config.workload.cooldown_secs)).await;
-        lab.mark("end").await?;
+        lab.mark("end");
         let report = workload.stop().await;
         let mut derived = BTreeMap::new();
         derived.insert(

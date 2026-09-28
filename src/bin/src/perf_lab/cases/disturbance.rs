@@ -43,17 +43,17 @@ impl PerfCase for TransferLeaderUnderWrite {
             lab.config.workload.value_size,
             lab.config.workload.key_space,
         );
-        lab.mark("baseline_start").await?;
-        workload.phase("baseline").await;
+        lab.mark("baseline_start");
+        workload.phase("baseline");
         tokio::time::sleep(Duration::from_secs(lab.config.workload.warmup_secs)).await;
-        lab.mark("before_transfer").await?;
-        workload.phase("disturbance").await;
+        lab.mark("before_transfer");
+        workload.phase("disturbance");
         let transfer = lab.transfer_group_leader(group_id).await?;
         let _ = lab.group_leader(group_id).await?;
-        lab.mark("after_transfer").await?;
-        workload.phase("recovery").await;
+        lab.mark("after_transfer");
+        workload.phase("recovery");
         tokio::time::sleep(Duration::from_secs(lab.config.workload.cooldown_secs)).await;
-        lab.mark("end").await?;
+        lab.mark("end");
         let report = workload.stop().await;
         let mut derived = BTreeMap::new();
         derived.insert(
@@ -103,18 +103,18 @@ impl PerfCase for NodeOfflineUnderWrite {
             lab.config.workload.value_size,
             lab.config.workload.key_space,
         );
-        lab.mark("baseline_start").await?;
-        workload.phase("baseline").await;
+        lab.mark("baseline_start");
+        workload.phase("baseline");
         tokio::time::sleep(Duration::from_secs(lab.config.workload.warmup_secs)).await;
-        lab.mark("before_offline").await?;
-        workload.phase("disturbance").await;
+        lab.mark("before_offline");
+        workload.phase("disturbance");
         lab.stop_server(offline_node).await?;
         tokio::time::sleep(Duration::from_millis(lab.config.cluster.raft.tick_interval_ms * 6))
             .await;
-        lab.mark("after_offline").await?;
-        workload.phase("recovery").await;
+        lab.mark("after_offline");
+        workload.phase("recovery");
         tokio::time::sleep(Duration::from_secs(lab.config.workload.cooldown_secs)).await;
-        lab.mark("end").await?;
+        lab.mark("end");
         let report = workload.stop().await;
         Ok(case_report(lab, self.name(), vec![report], BTreeMap::new()))
     }
@@ -139,16 +139,16 @@ impl PerfCase for ShardMigrationUnderWrite {
             lab.config.workload.value_size,
             lab.config.workload.key_space,
         );
-        lab.mark("baseline_start").await?;
-        workload.phase("baseline").await;
+        lab.mark("baseline_start");
+        workload.phase("baseline");
         tokio::time::sleep(Duration::from_secs(lab.config.workload.warmup_secs)).await;
-        lab.mark("before_migration").await?;
-        workload.phase("disturbance").await;
+        lab.mark("before_migration");
+        workload.phase("disturbance");
         let migration = lab.migrate_shard_to_new_group(table.id, &key).await?;
-        lab.mark("after_migration").await?;
-        workload.phase("recovery").await;
+        lab.mark("after_migration");
+        workload.phase("recovery");
         tokio::time::sleep(Duration::from_secs(lab.config.workload.cooldown_secs)).await;
-        lab.mark("end").await?;
+        lab.mark("end");
         let report = workload.stop().await;
         let mut derived = BTreeMap::new();
         derived.insert(
@@ -234,13 +234,13 @@ impl PerfCase for ShardMetaChurnUnderRw {
             lab.config.workload.key_space,
         );
 
-        lab.mark("baseline_start").await?;
-        write_workload.phase("baseline").await;
-        read_workload.phase("baseline").await;
+        lab.mark("baseline_start");
+        write_workload.phase("baseline");
+        read_workload.phase("baseline");
         tokio::time::sleep(Duration::from_secs(lab.config.workload.warmup_secs)).await;
-        lab.mark("meta_churn_start").await?;
-        write_workload.phase("meta_churn").await;
-        read_workload.phase("meta_churn").await;
+        lab.mark("meta_churn_start");
+        write_workload.phase("meta_churn");
+        read_workload.phase("meta_churn");
         let meta_ops = run_meta_churn_window(
             lab,
             meta_table.id,
@@ -249,11 +249,11 @@ impl PerfCase for ShardMetaChurnUnderRw {
             Duration::from_secs(lab.config.workload.meta_interval_secs.max(1)),
         )
         .await?;
-        lab.mark("meta_churn_end").await?;
-        write_workload.phase("recovery").await;
-        read_workload.phase("recovery").await;
+        lab.mark("meta_churn_end");
+        write_workload.phase("recovery");
+        read_workload.phase("recovery");
         tokio::time::sleep(Duration::from_secs(lab.config.workload.cooldown_secs)).await;
-        lab.mark("end").await?;
+        lab.mark("end");
 
         let write_report = write_workload.stop().await;
         let read_report = read_workload.stop().await;

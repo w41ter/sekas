@@ -46,17 +46,17 @@ impl PerfCase for ReplicaChangeUnderWrite {
             lab.config.workload.value_size,
             lab.config.workload.key_space,
         );
-        lab.mark("baseline_start").await?;
-        workload.phase("baseline").await;
+        lab.mark("baseline_start");
+        workload.phase("baseline");
         tokio::time::sleep(Duration::from_secs(lab.config.workload.warmup_secs)).await;
         let new_node = lab.add_server().await?;
-        lab.mark("before_replica_add").await?;
-        workload.phase("replica_add").await;
+        lab.mark("before_replica_add");
+        workload.phase("replica_add");
         let add_duration = lab.add_group_replica(group_id, new_node).await?;
-        lab.mark("after_replica_add").await?;
-        workload.phase("recovery").await;
+        lab.mark("after_replica_add");
+        workload.phase("recovery");
         tokio::time::sleep(Duration::from_secs(lab.config.workload.cooldown_secs)).await;
-        lab.mark("end").await?;
+        lab.mark("end");
         let report = workload.stop().await;
         let mut derived = BTreeMap::new();
         derived.insert("replica_add_duration_ms".to_owned(), add_duration.as_secs_f64() * 1000.0);
@@ -84,11 +84,11 @@ impl PerfCase for ReplicaRemoveUnderWrite {
             lab.config.workload.value_size,
             lab.config.workload.key_space,
         );
-        lab.mark("baseline_start").await?;
-        workload.phase("baseline").await;
+        lab.mark("baseline_start");
+        workload.phase("baseline");
         tokio::time::sleep(Duration::from_secs(lab.config.workload.warmup_secs)).await;
-        lab.mark("before_replica_remove").await?;
-        workload.phase("replica_remove").await;
+        lab.mark("before_replica_remove");
+        workload.phase("replica_remove");
         let remove = lab
             .remove_group_replica_on_node(
                 group_id,
@@ -96,10 +96,10 @@ impl PerfCase for ReplicaRemoveUnderWrite {
                 Duration::from_secs(lab.config.workload.cooldown_secs.max(1)),
             )
             .await?;
-        lab.mark("after_replica_remove").await?;
-        workload.phase("recovery").await;
+        lab.mark("after_replica_remove");
+        workload.phase("recovery");
         tokio::time::sleep(Duration::from_secs(lab.config.workload.cooldown_secs)).await;
-        lab.mark("end").await?;
+        lab.mark("end");
         let report = workload.stop().await;
         let mut derived = BTreeMap::new();
         derived.insert("replica_add_duration_ms".to_owned(), add_duration.as_secs_f64() * 1000.0);
@@ -132,17 +132,17 @@ impl PerfCase for NodeJoinScaleOut {
             lab.config.workload.value_size,
             lab.config.workload.key_space,
         );
-        lab.mark("baseline_start").await?;
-        workload.phase("baseline").await;
+        lab.mark("baseline_start");
+        workload.phase("baseline");
         tokio::time::sleep(Duration::from_secs(lab.config.workload.warmup_secs)).await;
-        lab.mark("before_node_join").await?;
-        workload.phase("node_join").await;
+        lab.mark("before_node_join");
+        workload.phase("node_join");
         let started = std::time::Instant::now();
         let _ = lab.add_server().await?;
-        lab.mark("after_node_join").await?;
-        workload.phase("recovery").await;
+        lab.mark("after_node_join");
+        workload.phase("recovery");
         tokio::time::sleep(Duration::from_secs(lab.config.workload.cooldown_secs)).await;
-        lab.mark("end").await?;
+        lab.mark("end");
         let report = workload.stop().await;
         let mut derived = BTreeMap::new();
         derived
@@ -167,19 +167,19 @@ impl PerfCase for RootLeaderFailover {
             lab.config.workload.value_size,
             lab.config.workload.key_space,
         );
-        lab.mark("baseline_start").await?;
-        workload.phase("baseline").await;
+        lab.mark("baseline_start");
+        workload.phase("baseline");
         tokio::time::sleep(Duration::from_secs(lab.config.workload.warmup_secs)).await;
         let root_leader_node = lab.group_leader_node(0).await?;
-        lab.mark("before_root_leader_stop").await?;
-        workload.phase("failover").await;
+        lab.mark("before_root_leader_stop");
+        workload.phase("failover");
         lab.stop_server(root_leader_node).await?;
         let started = std::time::Instant::now();
         let _ = lab.group_leader(0).await?;
-        lab.mark("after_root_leader_stop").await?;
-        workload.phase("recovery").await;
+        lab.mark("after_root_leader_stop");
+        workload.phase("recovery");
         tokio::time::sleep(Duration::from_secs(lab.config.workload.cooldown_secs)).await;
-        lab.mark("end").await?;
+        lab.mark("end");
         let report = workload.stop().await;
         let mut derived = BTreeMap::new();
         derived.insert(
@@ -220,16 +220,16 @@ impl PerfCase for SnapshotUnderWrite {
             lab.config.workload.value_size,
             lab.config.workload.key_space,
         );
-        lab.mark("baseline_start").await?;
-        workload.phase("baseline").await;
+        lab.mark("baseline_start");
+        workload.phase("baseline");
         tokio::time::sleep(Duration::from_secs(lab.config.workload.warmup_secs)).await;
-        lab.mark("before_snapshot_pressure").await?;
-        workload.phase("snapshot_pressure").await;
+        lab.mark("before_snapshot_pressure");
+        workload.phase("snapshot_pressure");
         let duration = lab.add_group_replica(group_id, new_node).await?;
-        lab.mark("after_snapshot_pressure").await?;
-        workload.phase("recovery").await;
+        lab.mark("after_snapshot_pressure");
+        workload.phase("recovery");
         tokio::time::sleep(Duration::from_secs(lab.config.workload.cooldown_secs)).await;
-        lab.mark("end").await?;
+        lab.mark("end");
         let report = workload.stop().await;
         let mut case = case_report(lab, self.name(), vec![report], BTreeMap::new());
         let send_total = case.counter_delta_contains("raftgroup_send_snapshot_total");
@@ -289,17 +289,17 @@ impl PerfCase for SnapshotForcedDiagnostics {
             lab.config.workload.value_size,
             lab.config.workload.key_space,
         );
-        lab.mark("baseline_start").await?;
-        workload.phase("baseline").await;
+        lab.mark("baseline_start");
+        workload.phase("baseline");
         tokio::time::sleep(Duration::from_secs(lab.config.workload.warmup_secs)).await;
-        lab.mark("before_snapshot_pressure").await?;
-        workload.phase("snapshot_pressure").await;
+        lab.mark("before_snapshot_pressure");
+        workload.phase("snapshot_pressure");
         let duration = lab.add_group_replica(group_id, new_node).await?;
         tokio::time::sleep(Duration::from_secs(lab.config.workload.cooldown_secs.max(5))).await;
-        lab.mark("after_snapshot_pressure").await?;
-        workload.phase("recovery").await;
+        lab.mark("after_snapshot_pressure");
+        workload.phase("recovery");
         tokio::time::sleep(Duration::from_secs(lab.config.workload.cooldown_secs)).await;
-        lab.mark("end").await?;
+        lab.mark("end");
         let report = workload.stop().await;
         let mut case = case_report(lab, self.name(), vec![report], BTreeMap::new());
         let send_total = case.counter_delta_contains("raftgroup_send_snapshot_total");
