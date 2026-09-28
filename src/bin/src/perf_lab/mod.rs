@@ -47,15 +47,19 @@ use self::cases::{
     TxnConflict, ValueSizeMatrix,
 };
 use self::config::LabConfig;
-use self::report::{CaseReport, MetricsRecorder, compare_with_baseline};
+use self::report::{
+    CaseReport, MetricsRecorder, SuiteReport, compare_with_baseline, read_baseline_reports,
+};
 use self::workload::WorkloadReport;
 
 #[derive(Debug, Parser)]
 #[clap(about = "Run in-process performance lab scenarios")]
 pub struct Command {
     /// The built-in case to run.
+    ///
+    /// When omitted, every built-in case is run.
     #[clap(long, value_enum)]
-    case: CaseKind,
+    case: Option<CaseKind>,
 
     /// Sets a custom config file.
     #[clap(long, value_name = "FILE")]
@@ -65,7 +69,7 @@ pub struct Command {
     #[clap(long, value_name = "DIR")]
     out_dir: Option<String>,
 
-    /// Compare report against a previous JSON report.
+    /// Compare against a previous suite JSON report.
     #[clap(long, value_name = "FILE")]
     baseline: Option<String>,
 
@@ -74,7 +78,7 @@ pub struct Command {
     fail_on_regression: bool,
 }
 
-#[derive(Clone, Debug, ValueEnum)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, ValueEnum)]
 enum CaseKind {
     SingleKeyUpdate,
     BatchTxnCommit,
@@ -106,11 +110,82 @@ enum CaseKind {
     ShardMetaChurnUnderRw,
 }
 
+const ALL_CASES: &[CaseKind] = &[
+    CaseKind::SingleKeyUpdate,
+    CaseKind::BatchTxnCommit,
+    CaseKind::HotspotUpdateDiagnostics,
+    CaseKind::HotspotDirectWriteDiagnostics,
+    CaseKind::PointRead,
+    CaseKind::MixedReadWrite,
+    CaseKind::PrefixScan,
+    CaseKind::TxnConflict,
+    CaseKind::MultiKeyTxn,
+    CaseKind::MultiKeyTxnMatrix,
+    CaseKind::ValueSizeMatrix,
+    CaseKind::ReplicaChangeUnderWrite,
+    CaseKind::ReplicaRemoveUnderWrite,
+    CaseKind::NodeJoinScaleOut,
+    CaseKind::RootLeaderFailover,
+    CaseKind::RootFailoverMatrix,
+    CaseKind::SnapshotUnderWrite,
+    CaseKind::SnapshotForcedDiagnostics,
+    CaseKind::MvccVersionAccumulation,
+    CaseKind::MvccGcImpact,
+    CaseKind::AutoShardBalance,
+    CaseKind::AutoSplitMerge,
+    CaseKind::SchemaChurn,
+    CaseKind::SchemaChurnScale,
+    CaseKind::TransferLeaderUnderWrite,
+    CaseKind::NodeOfflineUnderWrite,
+    CaseKind::ShardMigrationUnderWrite,
+    CaseKind::ShardMetaChurnUnderRw,
+];
+
+impl CaseKind {
+    fn name(self) -> &'static str {
+        match self {
+            CaseKind::SingleKeyUpdate => "single-key-update",
+            CaseKind::BatchTxnCommit => "batch-txn-commit",
+            CaseKind::HotspotUpdateDiagnostics => "hotspot-update-diagnostics",
+            CaseKind::HotspotDirectWriteDiagnostics => "hotspot-direct-write-diagnostics",
+            CaseKind::PointRead => "point-read",
+            CaseKind::MixedReadWrite => "mixed-read-write",
+            CaseKind::PrefixScan => "prefix-scan",
+            CaseKind::TxnConflict => "txn-conflict",
+            CaseKind::MultiKeyTxn => "multi-key-txn",
+            CaseKind::MultiKeyTxnMatrix => "multi-key-txn-matrix",
+            CaseKind::ValueSizeMatrix => "value-size-matrix",
+            CaseKind::ReplicaChangeUnderWrite => "replica-change-under-write",
+            CaseKind::ReplicaRemoveUnderWrite => "replica-remove-under-write",
+            CaseKind::NodeJoinScaleOut => "node-join-scale-out",
+            CaseKind::RootLeaderFailover => "root-leader-failover",
+            CaseKind::RootFailoverMatrix => "root-failover-matrix",
+            CaseKind::SnapshotUnderWrite => "snapshot-under-write",
+            CaseKind::SnapshotForcedDiagnostics => "snapshot-forced-diagnostics",
+            CaseKind::MvccVersionAccumulation => "mvcc-version-accumulation",
+            CaseKind::MvccGcImpact => "mvcc-gc-impact",
+            CaseKind::AutoShardBalance => "auto-shard-balance",
+            CaseKind::AutoSplitMerge => "auto-split-merge",
+            CaseKind::SchemaChurn => "schema-churn",
+            CaseKind::SchemaChurnScale => "schema-churn-scale",
+            CaseKind::TransferLeaderUnderWrite => "transfer-leader-under-write",
+            CaseKind::NodeOfflineUnderWrite => "node-offline-under-write",
+            CaseKind::ShardMigrationUnderWrite => "shard-migration-under-write",
+            CaseKind::ShardMetaChurnUnderRw => "shard-meta-churn-under-rw",
+        }
+    }
+
+    fn from_report_name(name: &str) -> Option<Self> {
+        ALL_CASES.iter().copied().find(|case| case.name() == name)
+    }
+}
+
 impl Command {
     pub fn run(self) -> Result<()> {
+        let specs = self.run_specs()?;
         let cfg = LabConfig::load(&self)?;
-        let run_id = run_id();
-        init_logging(&cfg, &run_id)?;
+        let suite_id = run_id();
+        init_logging(&cfg, &suite_id)?;
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .worker_threads(cfg.runner_threads)
@@ -118,72 +193,130 @@ impl Command {
             .context("build perf lab runtime")?;
 
         runtime.block_on(async move {
-            let mut lab = LabContext::start(cfg, run_id).await?;
-            let result = match self.case {
-                CaseKind::SingleKeyUpdate => SingleKeyUpdate.run(&mut lab).await?,
-                CaseKind::BatchTxnCommit => BatchTxnCommit.run(&mut lab).await?,
-                CaseKind::HotspotUpdateDiagnostics => {
-                    HotspotUpdateDiagnostics.run(&mut lab).await?
-                }
-                CaseKind::HotspotDirectWriteDiagnostics => {
-                    HotspotDirectWriteDiagnostics.run(&mut lab).await?
-                }
-                CaseKind::PointRead => PointRead.run(&mut lab).await?,
-                CaseKind::MixedReadWrite => MixedReadWrite.run(&mut lab).await?,
-                CaseKind::PrefixScan => PrefixScan.run(&mut lab).await?,
-                CaseKind::TxnConflict => TxnConflict.run(&mut lab).await?,
-                CaseKind::MultiKeyTxn => MultiKeyTxn.run(&mut lab).await?,
-                CaseKind::MultiKeyTxnMatrix => MultiKeyTxnMatrix.run(&mut lab).await?,
-                CaseKind::ValueSizeMatrix => ValueSizeMatrix.run(&mut lab).await?,
-                CaseKind::ReplicaChangeUnderWrite => ReplicaChangeUnderWrite.run(&mut lab).await?,
-                CaseKind::ReplicaRemoveUnderWrite => ReplicaRemoveUnderWrite.run(&mut lab).await?,
-                CaseKind::NodeJoinScaleOut => NodeJoinScaleOut.run(&mut lab).await?,
-                CaseKind::RootLeaderFailover => RootLeaderFailover.run(&mut lab).await?,
-                CaseKind::RootFailoverMatrix => RootFailoverMatrix.run(&mut lab).await?,
-                CaseKind::SnapshotUnderWrite => SnapshotUnderWrite.run(&mut lab).await?,
-                CaseKind::SnapshotForcedDiagnostics => {
-                    SnapshotForcedDiagnostics.run(&mut lab).await?
-                }
-                CaseKind::MvccVersionAccumulation => MvccVersionAccumulation.run(&mut lab).await?,
-                CaseKind::MvccGcImpact => MvccGcImpact.run(&mut lab).await?,
-                CaseKind::AutoShardBalance => AutoShardBalance.run(&mut lab).await?,
-                CaseKind::AutoSplitMerge => AutoSplitMerge.run(&mut lab).await?,
-                CaseKind::SchemaChurn => SchemaChurn.run(&mut lab).await?,
-                CaseKind::SchemaChurnScale => SchemaChurnScale.run(&mut lab).await?,
-                CaseKind::TransferLeaderUnderWrite => {
-                    TransferLeaderUnderWrite.run(&mut lab).await?
-                }
-                CaseKind::NodeOfflineUnderWrite => NodeOfflineUnderWrite.run(&mut lab).await?,
-                CaseKind::ShardMigrationUnderWrite => {
-                    ShardMigrationUnderWrite.run(&mut lab).await?
-                }
-                CaseKind::ShardMetaChurnUnderRw => ShardMetaChurnUnderRw.run(&mut lab).await?,
-            };
-            lab.shutdown();
+            let multi_case = specs.len() > 1;
+            if multi_case {
+                println!("perf-lab suite: {} cases", specs.len());
+            }
 
-            let out_dir = &result.config.report.out_dir;
-            fs::create_dir_all(out_dir)
-                .with_context(|| format!("create report dir {}", out_dir.display()))?;
-            let report_path = out_dir.join(format!("{}-{}.json", result.case, result.run_id));
-            fs::write(&report_path, serde_json::to_vec_pretty(&result)?)
-                .with_context(|| format!("write report {}", report_path.display()))?;
-            println!("perf-lab report: {}", report_path.display());
+            let mut reports = Vec::new();
+            let mut has_failed_regression = false;
+            for (idx, case) in specs.into_iter().enumerate() {
+                let cfg = cfg.clone();
+                let run_id = if multi_case {
+                    format!("{suite_id}-{:02}", idx + 1)
+                } else {
+                    suite_id.clone()
+                };
+                println!("perf-lab case: {}", case.name());
 
-            let baseline = result.config.report.baseline.as_ref();
-            if let Some(path) = baseline {
-                let comparison = compare_with_baseline(
-                    &result,
-                    Path::new(path),
-                    result.config.report.fail_on_regression,
-                )?;
-                println!("{}", serde_json::to_string_pretty(&comparison)?);
-                if comparison.failed() {
-                    bail!("perf-lab regression threshold exceeded");
-                }
+                let mut lab = LabContext::start(cfg, run_id).await?;
+                let result = run_case(case, &mut lab).await;
+                lab.shutdown();
+                let result = result?;
+
+                has_failed_regression |= compare_report(&result)?;
+                reports.push(result);
+            }
+
+            write_suite_report(&suite_id, &reports)?;
+            if has_failed_regression {
+                bail!("perf-lab regression threshold exceeded");
             }
             Ok(())
         })
     }
+
+    fn run_specs(&self) -> Result<Vec<CaseKind>> {
+        if let Some(path) = &self.baseline {
+            validate_baseline(Path::new(path))?;
+        }
+
+        if let Some(case) = self.case {
+            return Ok(vec![case]);
+        }
+
+        Ok(ALL_CASES.to_vec())
+    }
+}
+
+async fn run_case(case: CaseKind, lab: &mut LabContext) -> Result<CaseReport> {
+    match case {
+        CaseKind::SingleKeyUpdate => SingleKeyUpdate.run(lab).await,
+        CaseKind::BatchTxnCommit => BatchTxnCommit.run(lab).await,
+        CaseKind::HotspotUpdateDiagnostics => HotspotUpdateDiagnostics.run(lab).await,
+        CaseKind::HotspotDirectWriteDiagnostics => HotspotDirectWriteDiagnostics.run(lab).await,
+        CaseKind::PointRead => PointRead.run(lab).await,
+        CaseKind::MixedReadWrite => MixedReadWrite.run(lab).await,
+        CaseKind::PrefixScan => PrefixScan.run(lab).await,
+        CaseKind::TxnConflict => TxnConflict.run(lab).await,
+        CaseKind::MultiKeyTxn => MultiKeyTxn.run(lab).await,
+        CaseKind::MultiKeyTxnMatrix => MultiKeyTxnMatrix.run(lab).await,
+        CaseKind::ValueSizeMatrix => ValueSizeMatrix.run(lab).await,
+        CaseKind::ReplicaChangeUnderWrite => ReplicaChangeUnderWrite.run(lab).await,
+        CaseKind::ReplicaRemoveUnderWrite => ReplicaRemoveUnderWrite.run(lab).await,
+        CaseKind::NodeJoinScaleOut => NodeJoinScaleOut.run(lab).await,
+        CaseKind::RootLeaderFailover => RootLeaderFailover.run(lab).await,
+        CaseKind::RootFailoverMatrix => RootFailoverMatrix.run(lab).await,
+        CaseKind::SnapshotUnderWrite => SnapshotUnderWrite.run(lab).await,
+        CaseKind::SnapshotForcedDiagnostics => SnapshotForcedDiagnostics.run(lab).await,
+        CaseKind::MvccVersionAccumulation => MvccVersionAccumulation.run(lab).await,
+        CaseKind::MvccGcImpact => MvccGcImpact.run(lab).await,
+        CaseKind::AutoShardBalance => AutoShardBalance.run(lab).await,
+        CaseKind::AutoSplitMerge => AutoSplitMerge.run(lab).await,
+        CaseKind::SchemaChurn => SchemaChurn.run(lab).await,
+        CaseKind::SchemaChurnScale => SchemaChurnScale.run(lab).await,
+        CaseKind::TransferLeaderUnderWrite => TransferLeaderUnderWrite.run(lab).await,
+        CaseKind::NodeOfflineUnderWrite => NodeOfflineUnderWrite.run(lab).await,
+        CaseKind::ShardMigrationUnderWrite => ShardMigrationUnderWrite.run(lab).await,
+        CaseKind::ShardMetaChurnUnderRw => ShardMetaChurnUnderRw.run(lab).await,
+    }
+}
+
+fn compare_report(result: &CaseReport) -> Result<bool> {
+    let baseline = result.config.report.baseline.as_ref();
+    if let Some(path) = baseline {
+        let Some(comparison) = compare_with_baseline(result, Path::new(path))? else {
+            println!("perf-lab baseline: no report for case '{}', skip comparison", result.case);
+            return Ok(false);
+        };
+        let failed = comparison.failed();
+        println!("{}", serde_json::to_string_pretty(&comparison)?);
+        return Ok(failed && result.config.report.fail_on_regression);
+    }
+    Ok(false)
+}
+
+fn write_suite_report(run_id: &str, reports: &[CaseReport]) -> Result<()> {
+    let out_dir = reports
+        .first()
+        .map(|report| report.config.report.out_dir.as_path())
+        .ok_or_else(|| anyhow!("suite report requires at least one case report"))?;
+    fs::create_dir_all(out_dir)
+        .with_context(|| format!("create report dir {}", out_dir.display()))?;
+    let suite = SuiteReport { run_id: run_id.to_owned(), reports: reports.to_vec() };
+    let suite_path = out_dir.join(format!("suite-{run_id}.json"));
+    fs::write(&suite_path, serde_json::to_vec_pretty(&suite)?)
+        .with_context(|| format!("write suite report {}", suite_path.display()))?;
+    println!("perf-lab suite report: {}", suite_path.display());
+    Ok(())
+}
+
+fn validate_baseline(path: &Path) -> Result<()> {
+    let reports = read_baseline_reports(path)?;
+    let mut seen = HashMap::new();
+    for report in reports {
+        let case = CaseKind::from_report_name(&report.case).ok_or_else(|| {
+            anyhow!("unknown perf-lab case '{}' in {}", report.case, path.display())
+        })?;
+        if seen.insert(case, ()).is_some() {
+            bail!(
+                "baseline {} contains multiple reports for case '{}'",
+                path.display(),
+                case.name()
+            );
+        }
+    }
+    Ok(())
 }
 
 pub(crate) trait PerfCase {

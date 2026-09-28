@@ -1,0 +1,178 @@
+{
+  "run_id": "baseline-20260928",
+  "reports": [
+    {
+      "case": "batch-txn-commit",
+      "run_id": "1790581707055",
+      "config": {},
+      "workloads": [],
+      "derived": {
+        "batch_txn_commit.failure_rate": 0.0,
+        "batch_txn_commit.p99_us": 2461.0,
+        "batch_txn_commit.qps": 2350.95839592017
+      },
+      "metric_intervals": []
+    },
+    {
+      "case": "hotspot-update-diagnostics",
+      "run_id": "1790581813800",
+      "config": {},
+      "workloads": [],
+      "derived": {
+        "hotspot_single_key.failure_rate": 0.0,
+        "hotspot_single_key.p99_us": 2032.0,
+        "hotspot_single_key.qps": 2538.942926799603,
+        "hotspot_small_hotset.failure_rate": 0.0,
+        "hotspot_small_hotset.p99_us": 2039.0,
+        "hotspot_small_hotset.qps": 2551.505607748851,
+        "hotspot_wide_hotset.failure_rate": 0.0,
+        "hotspot_wide_hotset.p99_us": 2090.0,
+        "hotspot_wide_hotset.qps": 2485.7285171828303
+      },
+      "metric_intervals": []
+    },
+    {
+      "case": "mixed-read-write",
+      "run_id": "1790581725492",
+      "config": {},
+      "workloads": [],
+      "derived": {
+        "mixed_read_write.failure_rate": 0.0,
+        "mixed_read_write.p99_us": 1766.0,
+        "mixed_read_write.qps": 3236.59891458121,
+        "prepare_duration_ms": 3640.242583,
+        "prepare_seed_bytes": 16777216.0,
+        "prepare_seed_keys": 4096.0
+      },
+      "metric_intervals": []
+    },
+    {
+      "case": "multi-key-txn",
+      "run_id": "1790581754826",
+      "config": {},
+      "workloads": [],
+      "derived": {
+        "multi_key_txn.failure_rate": 0.0,
+        "multi_key_txn.p99_us": 8125.0,
+        "multi_key_txn.qps": 1720.434651250156
+      },
+      "metric_intervals": []
+    },
+    {
+      "case": "multi-key-txn-matrix",
+      "run_id": "1790581785386",
+      "config": {},
+      "workloads": [],
+      "derived": {
+        "multi_key_txn_1.failure_rate": 0.0,
+        "multi_key_txn_1.keys_per_txn": 1.0,
+        "multi_key_txn_1.p99_us": 1922.0,
+        "multi_key_txn_1.qps": 2834.309554128441,
+        "multi_key_txn_16.failure_rate": 0.0,
+        "multi_key_txn_16.keys_per_txn": 16.0,
+        "multi_key_txn_16.p99_us": 6386.0,
+        "multi_key_txn_16.qps": 1050.6114940326831,
+        "multi_key_txn_2.failure_rate": 0.0,
+        "multi_key_txn_2.keys_per_txn": 2.0,
+        "multi_key_txn_2.p99_us": 2160.0,
+        "multi_key_txn_2.qps": 2636.714690512808,
+        "multi_key_txn_4.failure_rate": 0.0,
+        "multi_key_txn_4.keys_per_txn": 4.0,
+        "multi_key_txn_4.p99_us": 2783.0,
+        "multi_key_txn_4.qps": 2142.633639380281,
+        "multi_key_txn_8.failure_rate": 0.0,
+        "multi_key_txn_8.keys_per_txn": 8.0,
+        "multi_key_txn_8.p99_us": 4208.0,
+        "multi_key_txn_8.qps": 1685.7670249000973
+      },
+      "metric_intervals": []
+    },
+    {
+      "case": "point-read",
+      "run_id": "1790581714079",
+      "config": {},
+      "workloads": [],
+      "derived": {
+        "point_read.failure_rate": 0.0,
+        "point_read.p99_us": 1507.0,
+        "point_read.qps": 3429.5098988277405,
+        "prepare_duration_ms": 3576.657209,
+        "prepare_seed_bytes": 16777216.0,
+        "prepare_seed_keys": 4096.0
+      },
+      "metric_intervals": []
+    },
+    {
+      "case": "prefix-scan",
+      "run_id": "1790581737074",
+      "config": {},
+      "workloads": [],
+      "derived": {
+        "prefix_scan.failure_rate": 0.0,
+        "prefix_scan.p99_us": 8130.0,
+        "prefix_scan.qps": 817.5951379661034,
+        "prepare_duration_ms": 2685.2185830000003,
+        "prepare_seed_bytes": 16777216.0,
+        "prepare_seed_keys": 4096.0
+      },
+      "metric_intervals": []
+    },
+    {
+      "case": "single-key-update",
+      "run_id": "1790581698905",
+      "config": {},
+      "workloads": [],
+      "derived": {
+        "single_key_update.failure_rate": 0.0,
+        "single_key_update.p99_us": 4724.0,
+        "single_key_update.qps": 2276.8515988794484
+      },
+      "metric_intervals": []
+    },
+    {
+      "case": "txn-conflict",
+      "run_id": "1790581747531",
+      "config": {},
+      "workloads": [],
+      "derived": {
+        "txn_conflict.failure_rate": 0.0,
+        "txn_conflict.p99_us": 2873.0,
+        "txn_conflict.qps": 2247.3066788786955
+      },
+      "metric_intervals": []
+    },
+    {
+      "case": "value-size-matrix",
+      "run_id": "1790581762512",
+      "config": {},
+      "workloads": [],
+      "derived": {
+        "value_size_1024.bytes_per_sec": 2933760.0,
+        "value_size_1024.failure_rate": 0.0,
+        "value_size_1024.p99_us": 1945.0,
+        "value_size_1024.p99_us_per_kib": 1945.0,
+        "value_size_1024.qps": 2864.667388053041,
+        "value_size_1024.qps_per_kib": 2864.667388053041,
+        "value_size_128.bytes_per_sec": 365699.6600679864,
+        "value_size_128.failure_rate": 0.0,
+        "value_size_128.p99_us": 2303.0,
+        "value_size_128.p99_us_per_kib": 18424.0,
+        "value_size_128.qps": 2856.908271084864,
+        "value_size_128.qps_per_kib": 22855.26616867891,
+        "value_size_16.bytes_per_sec": 46579.2,
+        "value_size_16.failure_rate": 0.0,
+        "value_size_16.p99_us": 1999.0,
+        "value_size_16.p99_us_per_kib": 127936.0,
+        "value_size_16.qps": 2910.797582234256,
+        "value_size_16.qps_per_kib": 186291.04526299238,
+        "value_size_16384.bytes_per_sec": 27034746.650669865,
+        "value_size_16384.failure_rate": 0.0,
+        "value_size_16384.p99_us": 3031.0,
+        "value_size_16384.p99_us_per_kib": 189.4375,
+        "value_size_16384.qps": 1650.0670989627845,
+        "value_size_16384.qps_per_kib": 103.12919368517403
+      },
+      "metric_intervals": []
+    }
+  ]
+}

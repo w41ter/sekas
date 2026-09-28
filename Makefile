@@ -6,6 +6,9 @@ else
 endif
 
 GRCOV := $(shell command -v grcov 2> /dev/null)
+PERF_LAB_CONF ?= conf/perf-lab-snapshot.toml
+PERF_LAB_BASELINE ?= conf/perf-lab-baseline.json
+PERF_LAB_OUT_DIR ?= target/perf-lab
 
 .PHONY: build
 ## build : Build binary
@@ -34,6 +37,15 @@ fmt:
 ## test : Run test
 test:
 	$(V)cargo test --workspace -- $(FILTER)
+
+.PHONY: perf-lab
+## perf-lab : Run full perf-lab suite and compare with baseline
+perf-lab:
+	$(V)cargo run --bin sekas -- perf-lab \
+		--conf $(PERF_LAB_CONF) \
+		--baseline $(PERF_LAB_BASELINE) \
+		--out-dir $(PERF_LAB_OUT_DIR) \
+		--fail-on-regression
 
 .PHONY: clean
 ## clean : Clean build env

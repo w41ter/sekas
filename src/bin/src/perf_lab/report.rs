@@ -16,7 +16,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
-use anyhow::{Context as _, Result};
+use anyhow::{Context as _, Result, anyhow, bail};
 use prometheus::proto::{Metric, MetricFamily};
 use serde::{Deserialize, Serialize};
 
@@ -250,6 +250,12 @@ pub(crate) struct CaseReport {
     pub(crate) metric_intervals: Vec<MetricInterval>,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(crate) struct SuiteReport {
+    pub(crate) run_id: String,
+    pub(crate) reports: Vec<CaseReport>,
+}
+
 impl CaseReport {
     pub(crate) fn counter_delta_contains(&self, name: &str) -> f64 {
         self.metric_intervals
@@ -288,13 +294,10 @@ pub(crate) fn case_report(
 pub(crate) fn compare_with_baseline(
     current: &CaseReport,
     baseline_path: &Path,
-    fail_on_regression: bool,
-) -> Result<ComparisonReport> {
-    let baseline: CaseReport = serde_json::from_slice(
-        &fs::read(baseline_path)
-            .with_context(|| format!("read baseline {}", baseline_path.display()))?,
-    )
-    .with_context(|| format!("parse baseline {}", baseline_path.display()))?;
+) -> Result<Option<ComparisonReport>> {
+    let Some(baseline) = read_baseline_for_case(baseline_path, &current.case)? else {
+        return Ok(None);
+    };
     let mut checks = Vec::new();
     for (metric, value) in &current.derived {
         let Some(base) = baseline.derived.get(metric) else {
@@ -326,8 +329,34 @@ pub(crate) fn compare_with_baseline(
             });
         }
     }
-    let failed = fail_on_regression && checks.iter().any(|check| check.failed);
-    Ok(ComparisonReport { baseline: baseline_path.display().to_string(), failed, checks })
+    let failed = checks.iter().any(|check| check.failed);
+    Ok(Some(ComparisonReport { baseline: baseline_path.display().to_string(), failed, checks }))
+}
+
+pub(crate) fn read_baseline_reports(path: &Path) -> Result<Vec<CaseReport>> {
+    let bytes = fs::read(path).with_context(|| format!("read baseline {}", path.display()))?;
+    let suite: SuiteReport = serde_json::from_slice(&bytes)
+        .with_context(|| format!("parse baseline suite {}", path.display()))?;
+    if suite.reports.is_empty() {
+        bail!("baseline {} contains no reports", path.display());
+    }
+    Ok(suite.reports)
+}
+
+fn read_baseline_for_case(path: &Path, case: &str) -> Result<Option<CaseReport>> {
+    let mut matched = read_baseline_reports(path)?
+        .into_iter()
+        .filter(|report| report.case == case)
+        .collect::<Vec<_>>();
+    match matched.len() {
+        0 => Ok(None),
+        1 => Ok(Some(matched.remove(0))),
+        _ => Err(anyhow!(
+            "baseline {} contains multiple reports for case '{}'",
+            path.display(),
+            case
+        )),
+    }
 }
 
 #[derive(Debug, Serialize)]

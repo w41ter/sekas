@@ -39,5 +39,8 @@ Thanks for your help in improving the project! We have a [contributing guide](CO
 
 ## More information
 
+See [perf-lab](docs/perf-lab.md) for local performance baselines and regression
+checks.
+
 For informal discussions, please go to the [forum](https://github.com/w41ter/sekas/discussions).
 
