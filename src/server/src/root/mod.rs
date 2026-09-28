@@ -347,6 +347,7 @@ impl Root {
             self.scheduler.wait_one_heartbeat_tick().await;
         }
         info!("node {node_id} current root node drop leader");
+        self.watcher_hub().notify_error(Error::NotRootLeader(RootDesc::default(), 0, None)).await;
 
         // After that, RootCore needs to be set to None before returning.
         drop(txn_bumper_handle);
@@ -1052,6 +1053,7 @@ mod root_test {
     use tempdir::TempDir;
 
     use super::Config;
+    use crate::Error;
     use crate::bootstrap::bootstrap_cluster;
     use crate::constants::{INITIAL_EPOCH, ROOT_GROUP_ID};
     use crate::engine::Engines;
@@ -1135,7 +1137,12 @@ mod root_test {
         assert!(matches!(&resp2.updates[0].event, _create_db2_event));
         let resp22 = w2.next().await.unwrap().unwrap();
         assert!(matches!(&resp22.updates[0].event, _create_db2_event));
-        // hub.notify_error(Error::NotRootLeader(vec![])).await;
+
+        hub.notify_error(Error::NotRootLeader(Default::default(), 0, None)).await;
+        let err = w.next().await.unwrap().unwrap_err();
+        assert_eq!(err.code(), tonic::Code::Unknown);
+        assert_eq!(err.message(), "not root");
+        assert!(w.next().await.is_none());
     }
 }
 

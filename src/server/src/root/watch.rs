@@ -81,11 +81,12 @@ impl WatchHub {
         &self,
         updates: Vec<UpdateEvent>,
         deletes: Vec<DeleteEvent>,
-        _err: Option<Error>,
+        err: Option<Error>,
     ) {
         let inner = self.inner.read().await;
+        let status = err.map(tonic::Status::from);
         for w in inner.watchers.values() {
-            w.notify(&updates, &deletes, None) // TODO: clonable error
+            w.notify(&updates, &deletes, status.clone())
         }
     }
 
@@ -108,12 +109,12 @@ struct WatcherInner {
     waker: Option<Waker>,
     updates: Vec<UpdateEvent>,
     deletes: Vec<DeleteEvent>,
-    err: Option<Error>,
+    err: Option<tonic::Status>,
     dropped: bool,
 }
 
 impl Watcher {
-    fn notify(&self, updates: &[UpdateEvent], deletes: &[DeleteEvent], err: Option<Error>) {
+    fn notify(&self, updates: &[UpdateEvent], deletes: &[DeleteEvent], err: Option<tonic::Status>) {
         let _timer = super::metrics::WATCH_NOTIFY_DURATION_SECONDS.start_timer();
         let mut inner = self.inner.lock().unwrap();
         if inner.dropped {
@@ -142,6 +143,7 @@ impl Stream for Watcher {
             return Poll::Ready(None);
         }
         if let Some(err) = inner.err.take() {
+            inner.dropped = true;
             return Poll::Ready(Some(Err(err.into())));
         }
         if !inner.updates.is_empty() || !inner.deletes.is_empty() {
