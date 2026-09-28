@@ -107,11 +107,7 @@ impl Client {
         req: impl IntoRequest<GroupRequest>,
     ) -> Result<GroupResponse, tonic::Status> {
         let mut client = self.client.clone();
-        let res = client.group(req).await?;
-        res.into_inner()
-            .message()
-            .await?
-            .ok_or_else(|| tonic::Status::internal("group response stream is empty"))
+        Ok(client.unary_group(req).await?.into_inner())
     }
 
     pub async fn root_heartbeat(
@@ -301,6 +297,13 @@ mod transport_error_tests {
             &self,
             request: tonic::Request<sekas_api::server::v1::GroupRequest>,
         ) -> Result<tonic::Response<Self::GroupStream>, tonic::Status> {
+            todo!()
+        }
+
+        async fn unary_group(
+            &self,
+            request: tonic::Request<sekas_api::server::v1::GroupRequest>,
+        ) -> Result<tonic::Response<sekas_api::server::v1::GroupResponse>, tonic::Status> {
             todo!()
         }
 

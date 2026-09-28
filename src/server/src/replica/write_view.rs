@@ -20,6 +20,9 @@ use super::pending::{
     CommitFence, PendingMutationEntry, PendingMutationKind, PendingMutationOverlay,
 };
 use crate::engine::{GroupEngine, SnapshotMode};
+use crate::raftgroup::metrics::{
+    REPLICA_WRITE_VIEW_COMMITTED_VALUES_DURATION_SECONDS, REPLICA_WRITE_VIEW_COMMITTED_VALUES_SIZE,
+};
 use crate::{Error, Result};
 
 #[derive(Clone)]

@@ -15,6 +15,7 @@
 
 use std::sync::Arc;
 use std::thread::{Builder, JoinHandle};
+use std::time::Instant;
 
 use futures::StreamExt;
 use futures::channel::{mpsc, oneshot};
@@ -22,6 +23,11 @@ use futures::stream::FusedStream;
 use log::error;
 
 use crate::Result;
+use crate::raftgroup::metrics::{
+    RAFTGROUP_LOG_WRITER_BATCH_BYTES_SIZE, RAFTGROUP_LOG_WRITER_BATCH_REQUESTS_SIZE,
+    RAFTGROUP_LOG_WRITER_QUEUE_DURATION_SECONDS, RAFTGROUP_LOG_WRITER_WRITE_DURATION_SECONDS,
+    elapsed_seconds,
+};
 
 #[derive(Clone)]
 pub struct LogWriter {
@@ -35,6 +41,7 @@ struct WriterInner {
 
 struct LogRequest {
     batch: raft_engine::LogBatch,
+    enqueued_at: Instant,
     sender: oneshot::Sender<LogResponse>,
 }
 
@@ -48,7 +55,7 @@ impl LogWriter {
 
     pub fn submit(&mut self, batch: raft_engine::LogBatch) -> oneshot::Receiver<LogResponse> {
         let (sender, receiver) = oneshot::channel();
-        let req = LogRequest { batch, sender };
+        let req = LogRequest { batch, enqueued_at: Instant::now(), sender };
         match self.sender.start_send(req) {
             Ok(()) => {}
             Err(err) => {
@@ -107,7 +114,8 @@ async fn log_writer_main(
             break;
         };
 
-        let LogRequest { batch, sender } = req;
+        RAFTGROUP_LOG_WRITER_QUEUE_DURATION_SECONDS.observe(elapsed_seconds(req.enqueued_at));
+        let LogRequest { batch, sender, .. } = req;
         let mut log_batch = batch;
         let mut senders = vec![sender];
         estimated_size = estimate_size(estimated_size, log_batch.approximate_size());
@@ -115,18 +123,24 @@ async fn log_writer_main(
             let Ok(Some(mut req)) = receiver.try_next() else {
                 break;
             };
+            RAFTGROUP_LOG_WRITER_QUEUE_DURATION_SECONDS.observe(elapsed_seconds(req.enqueued_at));
             estimated_size = estimate_size(estimated_size, req.batch.approximate_size());
             log_batch.merge(&mut req.batch).expect("size wont exceeds u32::MAX");
             senders.push(req.sender);
         }
 
+        RAFTGROUP_LOG_WRITER_BATCH_REQUESTS_SIZE.observe(senders.len() as f64);
+        RAFTGROUP_LOG_WRITER_BATCH_BYTES_SIZE.observe(log_batch.approximate_size() as f64);
+        let write_start = Instant::now();
         match engine.write(&mut log_batch, false) {
             Ok(_) => {
+                RAFTGROUP_LOG_WRITER_WRITE_DURATION_SECONDS.observe(elapsed_seconds(write_start));
                 for sender in senders {
                     sender.send(Ok(())).unwrap_or_default();
                 }
             }
             Err(err) => {
+                RAFTGROUP_LOG_WRITER_WRITE_DURATION_SECONDS.observe(elapsed_seconds(write_start));
                 // Since `raft_engine::Error` is not `Clone`, converts err to string for message
                 // passing.
                 error!("write log batch to raft engine: {err:?}");

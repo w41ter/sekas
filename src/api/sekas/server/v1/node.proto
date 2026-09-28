@@ -25,6 +25,7 @@ import "google/protobuf/field_mask.proto";
 
 service Node {
     rpc Group(GroupRequest) returns (stream GroupResponse) {}
+    rpc UnaryGroup(GroupRequest) returns (GroupResponse) {}
     // A set methods to manipulate node.
     rpc Admin(NodeAdminRequest) returns (NodeAdminResponse) {}
     // A set methods about shard moving.

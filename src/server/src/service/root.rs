@@ -85,6 +85,7 @@ impl root_server::Root for Server {
         &self,
         request: Request<AllocTxnIdRequest>,
     ) -> Result<Response<AllocTxnIdResponse>, Status> {
+        record_latency!(take_alloc_txn_id_request_metrics());
         let req = request.into_inner();
 
         let base_txn_id = self.wrap(self.root.alloc_txn_id(req.num_required).await).await?;

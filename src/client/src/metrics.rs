@@ -105,6 +105,82 @@ lazy_static! {
     .unwrap();
     pub static ref GROUP_CLIENT_RETRY_REASON_TOTAL: RetryTotal =
         RetryTotal::from(&GROUP_CLIENT_RETRY_REASON_TOTAL_VEC);
+    pub static ref GROUP_CLIENT_INVOKE_DURATION_SECONDS: Histogram = register_histogram!(
+        "group_client_invoke_duration_seconds",
+        "The total time spent by GroupClient::invoke_with_opt for a successful request",
+        exponential_buckets(0.00005, 1.8, 26).unwrap(),
+    )
+    .unwrap();
+    pub static ref GROUP_CLIENT_RECOMMEND_CLIENT_DURATION_SECONDS: Histogram = register_histogram!(
+        "group_client_recommend_client_duration_seconds",
+        "The time spent choosing or fetching a node client in GroupClient",
+        exponential_buckets(0.00005, 1.8, 26).unwrap(),
+    )
+    .unwrap();
+    pub static ref GROUP_CLIENT_RPC_BUILD_DURATION_SECONDS: Histogram = register_histogram!(
+        "group_client_rpc_build_duration_seconds",
+        "The time spent building GroupRequest before issuing the node RPC",
+        exponential_buckets(0.00005, 1.8, 26).unwrap(),
+    )
+    .unwrap();
+    pub static ref NODE_CLIENT_GROUP_OPEN_STREAM_DURATION_SECONDS: Histogram = register_histogram!(
+        "node_client_group_open_stream_duration_seconds",
+        "The time spent opening the node Group server-streaming RPC",
+        exponential_buckets(0.00005, 1.8, 26).unwrap(),
+    )
+    .unwrap();
+    pub static ref NODE_CLIENT_GROUP_FIRST_MESSAGE_DURATION_SECONDS: Histogram =
+        register_histogram!(
+            "node_client_group_first_message_duration_seconds",
+            "The time spent waiting for the first message from the node Group stream",
+            exponential_buckets(0.00005, 1.8, 26).unwrap(),
+        )
+        .unwrap();
+    pub static ref CLIENT_TXN_LOCAL_PREPARE_GROUP_DURATION_SECONDS: Histogram =
+        register_histogram!(
+            "client_txn_local_prepare_group_duration_seconds",
+            "The time spent preparing the local transaction target group",
+            exponential_buckets(0.00005, 1.8, 26).unwrap(),
+        )
+        .unwrap();
+    pub static ref CLIENT_TXN_LOCAL_ALLOC_VERSION_DURATION_SECONDS: Histogram =
+        register_histogram!(
+            "client_txn_local_alloc_version_duration_seconds",
+            "The time spent allocating a commit version for local transactions",
+            exponential_buckets(0.00005, 1.8, 26).unwrap(),
+        )
+        .unwrap();
+    pub static ref CLIENT_TXN_LOCAL_GROUP_REQUEST_DURATION_SECONDS: Histogram =
+        register_histogram!(
+            "client_txn_local_group_request_duration_seconds",
+            "The time spent issuing LocalTxnWrite to the target group",
+            exponential_buckets(0.00005, 1.8, 26).unwrap(),
+        )
+        .unwrap();
+    pub static ref ROOT_CLIENT_ALLOC_TXN_ID_DURATION_SECONDS: Histogram = register_histogram!(
+        "root_client_alloc_txn_id_duration_seconds",
+        "The total client-side time spent in RootClient::alloc_txn_id",
+        exponential_buckets(0.00005, 1.8, 26).unwrap(),
+    )
+    .unwrap();
+    pub static ref ROOT_CLIENT_CORE_LOCK_DURATION_SECONDS: Histogram = register_histogram!(
+        "root_client_core_lock_duration_seconds",
+        "The time spent locking and cloning the cached root client core",
+        exponential_buckets(0.00005, 1.8, 26).unwrap(),
+    )
+    .unwrap();
+    pub static ref ROOT_CLIENT_GET_CLIENT_DURATION_SECONDS: Histogram = register_histogram!(
+        "root_client_get_client_duration_seconds",
+        "The time spent fetching a cached tonic RootClient",
+        exponential_buckets(0.00005, 1.8, 26).unwrap(),
+    )
+    .unwrap();
+    pub static ref ROOT_CLIENT_RPC_DURATION_SECONDS: Histogram = register_histogram!(
+        "root_client_rpc_duration_seconds",
+        "The time spent awaiting the root RPC future",
+        exponential_buckets(0.00005, 1.8, 26).unwrap(),
+    )
+    .unwrap();
 }
 
 pub fn record_retry_reason(err: &crate::Error) {

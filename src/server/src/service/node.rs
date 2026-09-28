@@ -176,6 +176,24 @@ fn handle_group_request(
     }
 }
 
+async fn handle_unary_group_request(
+    server: Server,
+    request: GroupRequest,
+) -> Result<GroupResponse, Status> {
+    record_latency_opt!(take_group_request_metrics(&request));
+    let inner_request = request
+        .request
+        .as_ref()
+        .and_then(|request| request.request.as_ref())
+        .ok_or_else(|| Error::InvalidArgument("GroupRequest::request is None".into()))?;
+    if matches!(inner_request, ShardRequest::WatchKey(_)) {
+        return Err(Status::invalid_argument("WatchKeyRequest requires the streaming Group RPC"));
+    }
+
+    let exec_ctx = ExecCtx::default();
+    Ok(server.node.execute_request(&exec_ctx, &request).await.unwrap_or_else(error_to_response))
+}
+
 #[crate::async_trait]
 impl node_server::Node for Server {
     type GroupStream = GroupStream;
@@ -187,6 +205,14 @@ impl node_server::Node for Server {
         let group_response_stream =
             Box::pin(handle_group_request(self.clone(), request.into_inner()));
         Ok(Response::new(GroupStream { inner: group_response_stream }))
+    }
+
+    async fn unary_group(
+        &self,
+        request: Request<GroupRequest>,
+    ) -> Result<Response<GroupResponse>, Status> {
+        let group_response = handle_unary_group_request(self.clone(), request.into_inner()).await?;
+        Ok(Response::new(group_response))
     }
 
     async fn admin(

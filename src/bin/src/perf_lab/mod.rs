@@ -314,8 +314,9 @@ impl LabContext {
         };
         let notifier = ShutdownNotifier::new();
         let shutdown = notifier.subscribe();
+        let worker_threads = self.config.cluster.cpus_per_node.max(1);
         let handle = thread::spawn(move || {
-            let owner = ExecutorOwner::new(1);
+            let owner = ExecutorOwner::new(worker_threads);
             if let Err(err) = sekas_server::run(cfg, owner.executor(), shutdown) {
                 panic!("perf-lab server {node_id} at {addr} exits with {err}");
             }

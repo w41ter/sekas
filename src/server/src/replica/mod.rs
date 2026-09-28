@@ -44,6 +44,7 @@ pub use self::state::{LeaseState, LeaseStateObserver};
 use self::write_view::PendingWriteView;
 use crate::engine::GroupEngine;
 use crate::error::BusyReason;
+use crate::raftgroup::metrics::REPLICA_ROW_LATCH_ACQUIRE_DURATION_SECONDS;
 use crate::raftgroup::{
     RaftGroup, ReadPolicy, WorkerPerfContext, perf_point_micros, write_initial_state,
 };
@@ -404,7 +405,9 @@ impl Replica {
         // Acquire row latches one by one. The implementation guarantees that there will
         // be no deadlock, so waiting while holding `read/write_acl_guard` will
         // not affect other requests.
+        let latch_timer = REPLICA_ROW_LATCH_ACQUIRE_DURATION_SECONDS.start_timer();
         let mut latches = acquire_row_latches(&self.latch_mgr, request).await?;
+        drop(latch_timer);
         let mut pending_fences = CommitFence::none();
         let (eval_result_opt, response, forwards, pending_txn_guard_opt) = match &request {
             Request::Write(req) => {

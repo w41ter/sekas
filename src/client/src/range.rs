@@ -84,8 +84,10 @@ struct RangeScanner {
     table_id: u64,
     /// The target version to request.
     version: u64,
-    /// The num of keys to limit.
+    /// The num of keys to limit for the whole range, 0 means unlimited.
     limit: u64,
+    /// Remaining keys to scan when `limit` is non-zero.
+    remaining_limit: Option<u64>,
     /// The num of bytes to limit.
     limit_bytes: u64,
 
@@ -149,6 +151,7 @@ impl RangeStream {
             table_id: request.table_id,
             version: request.version.unwrap_or(TXN_MAX_VERSION),
             limit: request.limit,
+            remaining_limit: (request.limit > 0).then_some(request.limit),
             limit_bytes: request.limit_bytes,
             cursor_key,
             end_key,
@@ -204,11 +207,15 @@ impl RangeScanner {
         shard_desc: &ShardDesc,
     ) -> crate::Result<()> {
         loop {
+            if self.remaining_limit == Some(0) {
+                self.state = ScannerState::Finished;
+                return Ok(());
+            }
             let begin_key = self.cursor_key.clone();
             let req = ShardScanRequest {
                 shard_id: shard_desc.id,
                 start_version: self.version,
-                limit: self.limit,
+                limit: self.remaining_limit.unwrap_or(self.limit),
                 limit_bytes: self.limit_bytes,
                 start_key: Some(begin_key),
                 end_key: self.end_key.clone(),
@@ -226,12 +233,24 @@ impl RangeScanner {
             if let Some(last_value) = scan_resp.data.last() {
                 self.cursor_key = lexical_next_boundary(&last_value.user_key);
             }
+            let limit_reached = self
+                .remaining_limit
+                .as_mut()
+                .map(|remaining| {
+                    *remaining = remaining.saturating_sub(scan_resp.data.len() as u64);
+                    *remaining == 0
+                })
+                .unwrap_or(false);
             if self.sender.send(Ok(scan_resp.data)).await.is_err() {
                 self.state = ScannerState::Cancelled;
                 return Ok(());
             }
 
             self.num_scanned += 1;
+            if limit_reached {
+                self.state = ScannerState::Finished;
+                return Ok(());
+            }
             if !scan_resp.has_more {
                 // This shard are scanned.
                 return Ok(());

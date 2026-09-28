@@ -223,6 +223,7 @@ simple_root_method!(watch);
 simple_root_method!(admin);
 simple_root_method!(join);
 simple_root_method!(alloc_replica);
+simple_root_method!(alloc_txn_id);
 
 lazy_static! {
     pub static ref RAFT_SERVICE_MSG_REQUEST_TOTAL: IntCounter = register_int_counter!(

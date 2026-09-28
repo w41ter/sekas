@@ -432,38 +432,63 @@ impl Txn {
     async fn try_commit_local_txn(&mut self) -> Result<Option<WriteBatchResponse>> {
         let mut retry_state = RetryState::with_deadline_opt(self.deadline);
         let response = loop {
+            let prepare_start = Instant::now();
             let Some(mut group) = (match self.prepare_local_txn_group() {
                 Ok(group) => group,
                 Err(err) if can_retry_local_txn(&err) => {
+                    CLIENT_TXN_LOCAL_PREPARE_GROUP_DURATION_SECONDS
+                        .observe(prepare_start.elapsed().as_secs_f64());
                     trace!("retry local txn route: {err:?}");
                     retry_state.retry(err).await?;
                     continue;
                 }
                 Err(err) => return Err(err),
             }) else {
+                CLIENT_TXN_LOCAL_PREPARE_GROUP_DURATION_SECONDS
+                    .observe(prepare_start.elapsed().as_secs_f64());
                 return Ok(None);
             };
+            CLIENT_TXN_LOCAL_PREPARE_GROUP_DURATION_SECONDS
+                .observe(prepare_start.elapsed().as_secs_f64());
+            let alloc_start = Instant::now();
             group.request.commit_version =
                 self.db.client.root_client().alloc_txn_id(1, retry_state.timeout()).await?;
+            CLIENT_TXN_LOCAL_ALLOC_VERSION_DURATION_SECONDS
+                .observe(alloc_start.elapsed().as_secs_f64());
 
             let mut client = GroupClient::new(group.group_state, self.db.client.clone());
             client.set_timeout_opt(retry_state.timeout());
             let request = Request::LocalTxnWrite(group.request);
+            let group_request_start = Instant::now();
             match client.request(&request).await {
-                Ok(Response::LocalTxnWrite(resp)) => break resp,
+                Ok(Response::LocalTxnWrite(resp)) => {
+                    CLIENT_TXN_LOCAL_GROUP_REQUEST_DURATION_SECONDS
+                        .observe(group_request_start.elapsed().as_secs_f64());
+                    break resp;
+                }
                 Ok(other) => {
+                    CLIENT_TXN_LOCAL_GROUP_REQUEST_DURATION_SECONDS
+                        .observe(group_request_start.elapsed().as_secs_f64());
                     return Err(Error::Internal(
                         format!("invalid response {other:?}, `LocalTxnWrite` is required").into(),
                     ));
                 }
                 Err(Error::LocalTxnNotAllowed) => {
+                    CLIENT_TXN_LOCAL_GROUP_REQUEST_DURATION_SECONDS
+                        .observe(group_request_start.elapsed().as_secs_f64());
                     return Ok(None);
                 }
                 Err(err) if can_retry_local_txn(&err) => {
+                    CLIENT_TXN_LOCAL_GROUP_REQUEST_DURATION_SECONDS
+                        .observe(group_request_start.elapsed().as_secs_f64());
                     trace!("retry local txn: {err:?}");
                     retry_state.retry(err).await?;
                 }
-                Err(err) => return Err(err),
+                Err(err) => {
+                    CLIENT_TXN_LOCAL_GROUP_REQUEST_DURATION_SECONDS
+                        .observe(group_request_start.elapsed().as_secs_f64());
+                    return Err(err);
+                }
             }
         };
 

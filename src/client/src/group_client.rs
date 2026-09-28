@@ -127,6 +127,7 @@ impl GroupClient {
         F: Fn(InvokeContext, NodeClient) -> O,
         O: Future<Output = Result<V, tonic::Status>>,
     {
+        let invoke_start = Instant::now();
         // Initial lazy connection
         if self.epoch == 0 {
             self.initial_group_state()?;
@@ -151,7 +152,11 @@ impl GroupClient {
             };
             match resp {
                 Err(status) => self.apply_status(status, &opt)?,
-                Ok(s) => return Ok(s),
+                Ok(s) => {
+                    GROUP_CLIENT_INVOKE_DURATION_SECONDS
+                        .observe(invoke_start.elapsed().as_secs_f64());
+                    return Ok(s);
+                }
             };
             if deadline.map(|v| v.elapsed() > Duration::ZERO).unwrap_or_default() {
                 return Err(Error::DeadlineExceeded("issue rpc".to_owned()));
@@ -164,13 +169,17 @@ impl GroupClient {
     }
 
     fn recommend_client(&mut self) -> Option<(u64, NodeClient)> {
+        let start = Instant::now();
         while let Some(node_id) = self.access_node_id.or_else(|| self.next_access_node_id()) {
             if let Some(client) = self.fetch_client(node_id) {
                 self.access_node_id = Some(node_id);
+                GROUP_CLIENT_RECOMMEND_CLIENT_DURATION_SECONDS
+                    .observe(start.elapsed().as_secs_f64());
                 return Some((node_id, client));
             }
             self.access_node_id = None;
         }
+        GROUP_CLIENT_RECOMMEND_CLIENT_DURATION_SECONDS.observe(start.elapsed().as_secs_f64());
         None
     }
 
@@ -365,11 +374,13 @@ impl GroupClient {
     pub async fn request(&mut self, request: &Request) -> Result<Response> {
         let op = |ctx: InvokeContext, client: NodeClient| {
             let latency = take_group_request_metrics(request);
+            let build_start = Instant::now();
             let req = GroupRequest {
                 group_id: ctx.group_id,
                 epoch: ctx.epoch,
                 request: Some(GroupRequestUnion { request: Some(request.clone()) }),
             };
+            GROUP_CLIENT_RPC_BUILD_DURATION_SECONDS.observe(build_start.elapsed().as_secs_f64());
             async move {
                 record_latency_opt!(latency);
                 client

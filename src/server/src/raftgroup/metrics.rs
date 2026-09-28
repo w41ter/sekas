@@ -231,6 +231,49 @@ lazy_static! {
         exponential_buckets(1.0, 1.8, 22).unwrap(),
     )
     .unwrap();
+    pub static ref RAFTGROUP_LOG_WRITER_QUEUE_DURATION_SECONDS: Histogram = register_histogram!(
+        "raftgroup_log_writer_queue_duration_seconds",
+        "The time a raft log write request waits in the shared log writer queue",
+        exponential_buckets(0.00005, 1.8, 26).unwrap()
+    )
+    .unwrap();
+    pub static ref RAFTGROUP_LOG_WRITER_WRITE_DURATION_SECONDS: Histogram = register_histogram!(
+        "raftgroup_log_writer_write_duration_seconds",
+        "The time spent by the shared log writer thread in engine.write",
+        exponential_buckets(0.00005, 1.8, 26).unwrap()
+    )
+    .unwrap();
+    pub static ref RAFTGROUP_LOG_WRITER_BATCH_REQUESTS_SIZE: Histogram = register_histogram!(
+        "raftgroup_log_writer_batch_requests_size",
+        "The number of raft worker write requests merged by the shared log writer",
+        exponential_buckets(1.0, 1.8, 22).unwrap(),
+    )
+    .unwrap();
+    pub static ref RAFTGROUP_LOG_WRITER_BATCH_BYTES_SIZE: Histogram = register_histogram!(
+        "raftgroup_log_writer_batch_bytes_size",
+        "The approximate bytes merged by the shared log writer",
+        exponential_buckets(256.0, 1.8, 22).unwrap(),
+    )
+    .unwrap();
+    pub static ref REPLICA_ROW_LATCH_ACQUIRE_DURATION_SECONDS: Histogram = register_histogram!(
+        "replica_row_latch_acquire_duration_seconds",
+        "The time spent acquiring replica row latches",
+        exponential_buckets(0.00005, 1.8, 26).unwrap()
+    )
+    .unwrap();
+    pub static ref REPLICA_WRITE_VIEW_COMMITTED_VALUES_DURATION_SECONDS: Histogram =
+        register_histogram!(
+            "replica_write_view_committed_values_duration_seconds",
+            "The time spent loading committed MVCC values for a single key",
+            exponential_buckets(0.00005, 1.8, 26).unwrap()
+        )
+        .unwrap();
+    pub static ref REPLICA_WRITE_VIEW_COMMITTED_VALUES_SIZE: Histogram = register_histogram!(
+        "replica_write_view_committed_values_size",
+        "The number of committed MVCC values loaded for a single key",
+        exponential_buckets(1.0, 1.8, 22).unwrap(),
+    )
+    .unwrap();
 }
 
 pub fn take_read_metrics(read_policy: ReadPolicy) -> &'static Histogram {

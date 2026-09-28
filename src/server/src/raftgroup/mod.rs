@@ -16,7 +16,7 @@ mod applier;
 mod fsm;
 mod group;
 mod io;
-mod metrics;
+pub(crate) mod metrics;
 mod monitor;
 mod node;
 pub mod snap;

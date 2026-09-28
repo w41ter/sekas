@@ -31,6 +31,10 @@ use tonic::{Code, Status, Streaming};
 
 use crate::discovery::ServiceDiscovery;
 use crate::error::retryable_rpc_err;
+use crate::metrics::{
+    ROOT_CLIENT_ALLOC_TXN_ID_DURATION_SECONDS, ROOT_CLIENT_CORE_LOCK_DURATION_SECONDS,
+    ROOT_CLIENT_GET_CLIENT_DURATION_SECONDS, ROOT_CLIENT_RPC_DURATION_SECONDS,
+};
 use crate::rpc::{ConnManager, NodeClient};
 use crate::{Error as ClientError, Result};
 
@@ -206,6 +210,7 @@ impl Client {
     }
 
     pub async fn alloc_txn_id(&self, num_required: u64, timeout: Option<Duration>) -> Result<u64> {
+        let total_start = Instant::now();
         let req = AllocTxnIdRequest { num_required };
         let res = self
             .invoke_with_timeout(timeout, |mut client| {
@@ -216,6 +221,7 @@ impl Client {
                 async move { client.alloc_txn_id(req).await }
             })
             .await?;
+        ROOT_CLIENT_ALLOC_TXN_ID_DURATION_SECONDS.observe(total_start.elapsed().as_secs_f64());
         let res = res.into_inner();
         debug_assert_eq!(res.num, num_required);
         Ok(res.base_txn_id)
@@ -260,26 +266,38 @@ impl Client {
     {
         let mut interval = 1;
         let mut save_core = false;
+        let core_start = Instant::now();
         let mut core = self.core().await;
+        ROOT_CLIENT_CORE_LOCK_DURATION_SECONDS.observe(core_start.elapsed().as_secs_f64());
 
         let deadline = timeout.map(|duration| Instant::now() + duration);
         'OUTER: loop {
             if let Some(leader) = core.leader {
                 // Fast path of invoking.
                 let leader_node = &core.root.root_nodes[leader];
+                let get_client_start = Instant::now();
                 let client = self.get_root_client(leader_node.addr.clone())?;
+                ROOT_CLIENT_GET_CLIENT_DURATION_SECONDS
+                    .observe(get_client_start.elapsed().as_secs_f64());
+                let rpc_start = Instant::now();
                 match invoke(client, &op).await {
                     Ok(res) => {
+                        ROOT_CLIENT_RPC_DURATION_SECONDS.observe(rpc_start.elapsed().as_secs_f64());
                         if save_core {
                             self.apply_core(core).await;
                         }
                         return Ok(res);
                     }
-                    Err(RootError::Rpc(status)) => return Err(status.into()),
+                    Err(RootError::Rpc(status)) => {
+                        ROOT_CLIENT_RPC_DURATION_SECONDS.observe(rpc_start.elapsed().as_secs_f64());
+                        return Err(status.into());
+                    }
                     Err(RootError::NotAvailable) => {
+                        ROOT_CLIENT_RPC_DURATION_SECONDS.observe(rpc_start.elapsed().as_secs_f64());
                         trace!("send rpc to root {}: remote is not available", leader_node.addr);
                     }
                     Err(RootError::NotRoot(root, term, leader_opt)) => {
+                        ROOT_CLIENT_RPC_DURATION_SECONDS.observe(rpc_start.elapsed().as_secs_f64());
                         if core.root.epoch <= root.epoch {
                             // A new round is found, retry next times.
                             core.leader = None;
@@ -303,19 +321,29 @@ impl Client {
                     continue;
                 }
 
+                let get_client_start = Instant::now();
                 let client = self.get_root_client(node.addr.clone())?;
+                ROOT_CLIENT_GET_CLIENT_DURATION_SECONDS
+                    .observe(get_client_start.elapsed().as_secs_f64());
+                let rpc_start = Instant::now();
                 match invoke(client, &op).await {
                     Ok(res) => {
+                        ROOT_CLIENT_RPC_DURATION_SECONDS.observe(rpc_start.elapsed().as_secs_f64());
                         // Save new leader of root.
                         core.leader = Some(i);
                         self.apply_core(core).await;
                         return Ok(res);
                     }
-                    Err(RootError::Rpc(status)) => return Err(status.into()),
+                    Err(RootError::Rpc(status)) => {
+                        ROOT_CLIENT_RPC_DURATION_SECONDS.observe(rpc_start.elapsed().as_secs_f64());
+                        return Err(status.into());
+                    }
                     Err(RootError::NotAvailable) => {
+                        ROOT_CLIENT_RPC_DURATION_SECONDS.observe(rpc_start.elapsed().as_secs_f64());
                         // Connect timeout or refused, try next address.
                     }
                     Err(RootError::NotRoot(root, term, leader_opt)) => {
+                        ROOT_CLIENT_RPC_DURATION_SECONDS.observe(rpc_start.elapsed().as_secs_f64());
                         if core.root.epoch < root.epoch {
                             // A new root desc is found, iterate the new root nodes.
                             core.leader = None;
