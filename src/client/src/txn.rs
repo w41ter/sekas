@@ -884,7 +884,18 @@ impl WriteContext {
 }
 
 fn can_retry_local_txn(err: &Error) -> bool {
-    matches!(err, Error::NotFound(_) | Error::EpochNotMatch(_))
+    matches!(err, Error::NotFound(_) | Error::EpochNotMatch(_) | Error::GroupNotAccessable(_))
+}
+
+#[cfg(test)]
+mod local_txn_retry_tests {
+    use super::*;
+
+    #[test]
+    fn group_not_accessable_is_retryable_for_local_txn() {
+        assert!(can_retry_local_txn(&Error::GroupNotAccessable(1)));
+        assert!(!can_retry_local_txn(&Error::DeadlineExceeded("timeout".into())));
+    }
 }
 
 fn push_local_txn_group(

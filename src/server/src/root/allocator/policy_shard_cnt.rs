@@ -33,13 +33,9 @@ impl<T: AllocSource> ShardCountPolicy<T> {
         Self { alloc_source }
     }
 
-    pub fn allocate_shard(&self, n: usize) -> Result<Vec<GroupDesc>> {
-        let mut groups = self.current_user_groups();
-        if groups.is_empty() {
-            return Ok(vec![]);
-        }
-        groups.sort_by(|g1, g2| g1.shards.len().cmp(&g2.shards.len()));
-        Ok(groups.into_iter().take(n).collect())
+    pub fn allocate_shard(&self, n: usize, required_replicas: usize) -> Result<Vec<GroupDesc>> {
+        let groups = self.current_user_groups();
+        Ok(select_groups_for_shard(groups, n, required_replicas))
     }
 
     pub fn compute_balance(&self) -> Result<Vec<ShardAction>> {
@@ -145,5 +141,40 @@ impl<T: AllocSource> ShardCountPolicy<T> {
     fn current_user_groups(&self) -> Vec<GroupDesc> {
         let groups = self.alloc_source.groups();
         groups.values().filter(|g| g.id != ROOT_GROUP_ID).map(ToOwned::to_owned).collect()
+    }
+}
+
+fn select_groups_for_shard(
+    mut groups: Vec<GroupDesc>,
+    n: usize,
+    required_replicas: usize,
+) -> Vec<GroupDesc> {
+    groups.retain(|group| group.replicas.len() == required_replicas);
+    groups.sort_by(|g1, g2| g1.shards.len().cmp(&g2.shards.len()));
+    groups.into_iter().take(n).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use sekas_api::server::v1::ReplicaDesc;
+
+    use super::*;
+
+    fn group(id: u64, replicas: usize, shards: usize) -> GroupDesc {
+        GroupDesc {
+            id,
+            replicas: (0..replicas).map(|_| ReplicaDesc::default()).collect(),
+            shards: (0..shards).map(|_| ShardDesc::default()).collect(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn select_groups_for_shard_requires_exact_replica_count() {
+        let groups = vec![group(1, 1, 0), group(2, 3, 2), group(3, 3, 1), group(4, 4, 0)];
+
+        let selected = select_groups_for_shard(groups, 2, 3);
+
+        assert_eq!(selected.iter().map(|group| group.id).collect::<Vec<_>>(), vec![3, 2]);
     }
 }

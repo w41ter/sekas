@@ -23,6 +23,7 @@ use log::{error, info, warn};
 use prometheus::HistogramTimer;
 use sekas_api::server::v1::*;
 use sekas_client::RetryState;
+use sekas_schema::property::REPLICAS_PER_GROUP;
 use tokio::time::Instant;
 
 use super::allocator::*;
@@ -231,10 +232,38 @@ impl Jobs {
         job_id: u64,
         create_table: &mut CreateTableJob,
     ) -> Result<()> {
+        let table = create_table.desc.as_ref().ok_or_else(|| {
+            crate::Error::InvalidData("create table job misses table desc".into())
+        })?;
+        let required_replicas = table
+            .properties
+            .get(REPLICAS_PER_GROUP)
+            .ok_or_else(|| {
+                crate::Error::InvalidArgument(format!(
+                    "table {} misses property {REPLICAS_PER_GROUP}",
+                    table.name
+                ))
+            })?
+            .parse::<usize>()
+            .map_err(|err| {
+                crate::Error::InvalidArgument(format!(
+                    "invalid {REPLICAS_PER_GROUP} of table {}: {err}",
+                    table.name
+                ))
+            })?;
+        if required_replicas == 0 {
+            return Err(crate::Error::InvalidArgument(format!(
+                "{REPLICAS_PER_GROUP} of table {} must be greater than zero",
+                table.name
+            )));
+        }
+
         while let Some(shard) = create_table.wait_create.pop() {
-            let groups = self.core.alloc.place_group_for_shard(1).await?;
+            let groups = self.core.alloc.place_group_for_shard(1, required_replicas).await?;
             if groups.is_empty() {
-                return Err(crate::Error::ResourceExhausted("no enough groups".into()));
+                return Err(crate::Error::ResourceExhausted(format!(
+                    "no group with {required_replicas} replicas"
+                )));
             }
             let group = groups.first().unwrap();
             info!("try create shard at group {}, shards: {}", group.id, group.shards.len());

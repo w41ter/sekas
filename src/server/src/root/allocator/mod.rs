@@ -201,10 +201,14 @@ impl<T: AllocSource> Allocator<T> {
     }
 
     /// Find a group to place shard.
-    pub async fn place_group_for_shard(&self, n: usize) -> Result<Vec<GroupDesc>> {
+    pub async fn place_group_for_shard(
+        &self,
+        n: usize,
+        required_replicas: usize,
+    ) -> Result<Vec<GroupDesc>> {
         self.alloc_source.refresh_all().await?;
 
-        ShardCountPolicy::with(self.alloc_source.to_owned()).allocate_shard(n)
+        ShardCountPolicy::with(self.alloc_source.to_owned()).allocate_shard(n, required_replicas)
     }
 
     pub async fn compute_leader_action(&self) -> Result<Vec<LeaderAction>> {
