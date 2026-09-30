@@ -15,7 +15,7 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{Result, ensure};
 
 use crate::perf_lab::report::{CaseReport, case_report};
 use crate::perf_lab::workload::{WorkloadKind, spawn_workload};
@@ -96,6 +96,13 @@ impl PerfCase for ReplicaRemoveUnderWrite {
                 Duration::from_secs(lab.config.workload.cooldown_secs.max(1)),
             )
             .await?;
+        ensure!(remove.converged, "group {group_id} did not remove replica on node {new_node}");
+        ensure!(
+            remove.final_voters == lab.config.cluster.root.replicas_per_group,
+            "group {group_id} has {} voters after removing replica on node {new_node}, expected {}",
+            remove.final_voters,
+            lab.config.cluster.root.replicas_per_group,
+        );
         lab.mark("after_replica_remove");
         workload.phase("recovery");
         tokio::time::sleep(Duration::from_secs(lab.config.workload.cooldown_secs)).await;

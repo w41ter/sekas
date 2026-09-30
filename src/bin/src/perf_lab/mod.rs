@@ -34,7 +34,7 @@ use sekas_client::{
     SekasClient, StaticServiceDiscovery, TableDesc,
 };
 use sekas_runtime::{ExecutorOwner, ShutdownNotifier};
-use sekas_server::{Config, NodeConfig, ReplicaConfig, ReplicaTestingKnobs};
+use sekas_server::{Config, NodeConfig};
 use tracing_subscriber::EnvFilter;
 
 use self::cases::{
@@ -178,6 +178,12 @@ impl CaseKind {
     fn from_report_name(name: &str) -> Option<Self> {
         ALL_CASES.iter().copied().find(|case| case.name() == name)
     }
+
+    fn configure(self, config: &mut LabConfig) {
+        if matches!(self, CaseKind::ReplicaChangeUnderWrite | CaseKind::ReplicaRemoveUnderWrite) {
+            config.cluster.node.replica.testing_knobs.disable_scheduler_durable_task = true;
+        }
+    }
 }
 
 impl Command {
@@ -201,7 +207,8 @@ impl Command {
             let mut reports = Vec::new();
             let mut has_failed_regression = false;
             for (idx, case) in specs.into_iter().enumerate() {
-                let cfg = cfg.clone();
+                let mut cfg = cfg.clone();
+                case.configure(&mut cfg);
                 let run_id = if multi_case {
                     format!("{suite_id}-{:02}", idx + 1)
                 } else {
@@ -425,15 +432,7 @@ impl LabContext {
             enable_proxy_service: self.config.cluster.enable_proxy_service,
             join_list,
             node: NodeConfig {
-                replica: ReplicaConfig {
-                    testing_knobs: ReplicaTestingKnobs {
-                        disable_scheduler_orphan_replica_detecting_intervals: false,
-                        disable_scheduler_durable_task: false,
-                        disable_scheduler_remove_orphan_replica_task: false,
-                        ..Default::default()
-                    },
-                    ..self.config.cluster.node.replica.clone()
-                },
+                replica: self.config.cluster.node.replica.clone(),
                 ..self.config.cluster.node.clone()
             },
             raft: self.config.cluster.raft.clone(),
