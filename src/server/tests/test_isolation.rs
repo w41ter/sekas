@@ -58,35 +58,6 @@ async fn bootstrap_servers_and_tables(
     (ctx, c, db, table_a, table_b)
 }
 
-async fn move_key_shard_to_group(
-    c: &ClusterClient,
-    table_id: u64,
-    key: &[u8],
-    target_group_id: u64,
-) {
-    for _ in 0..16 {
-        let source_state = c.find_router_group_state_by_key(table_id, key).await.unwrap();
-        if source_state.id == target_group_id {
-            return;
-        }
-
-        let shard_desc = c.get_shard_desc(table_id, key).await.unwrap();
-        let mut target_group = c.group(target_group_id);
-        if target_group.accept_shard(source_state.id, source_state.epoch, &shard_desc).await.is_ok()
-        {
-            for _ in 0..1000 {
-                let group = c.find_router_group_state_by_key(table_id, key).await.unwrap();
-                if group.id == target_group_id {
-                    return;
-                }
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    panic!("could not move key {key:?} shard to group {target_group_id}");
-}
-
 #[sekas_macro::test]
 async fn test_atomic_operation() {
     // The atomic operation should not count in conflict ranges, since it does not
@@ -147,8 +118,7 @@ async fn txn_blind_write_across_groups_does_not_conflict() {
 
     let key_a = b"blind-write-key-a".to_vec();
     let key_b = b"blind-write-key-b".to_vec();
-    move_key_shard_to_group(&c, table_a.id, &key_a, 1).await;
-    move_key_shard_to_group(&c, table_b.id, &key_b, 2).await;
+    c.ensure_different_group((table_a.id, &key_a), (table_b.id, &key_b)).await;
     let group_a = c.find_router_group_state_by_key(table_a.id, &key_a).await.unwrap();
     let group_b = c.find_router_group_state_by_key(table_b.id, &key_b).await.unwrap();
     assert_ne!(group_a.id, group_b.id);

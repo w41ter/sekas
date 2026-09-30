@@ -53,9 +53,13 @@ impl ClusterClient {
         let conn_manager = ConnManager::new();
         let discovery = Arc::new(StaticServiceDiscovery::new(nodes.values().cloned().collect()));
         let root_client = RootClient::new(discovery, conn_manager.clone());
-        let router = Router::new(root_client).await;
-        let addrs = nodes.values().cloned().collect::<Vec<_>>();
-        let client = SekasClient::new(ClientOptions::default(), addrs).await.unwrap();
+        let router = Router::new(root_client.clone()).await;
+        let client = SekasClient::build(
+            ClientOptions::default(),
+            router.clone(),
+            root_client,
+            conn_manager.clone(),
+        );
         ClusterClient { nodes, router, conn_manager, client }
     }
 
@@ -361,6 +365,94 @@ impl ClusterClient {
     ) -> Option<RouterGroupState> {
         let (_, shard) = self.router.find_shard(table_id, key).ok()?;
         self.router.find_group_by_shard(shard.id).ok()
+    }
+
+    async fn group_for_key(&self, table_id: u64, key: &[u8]) -> (RouterGroupState, ShardDesc) {
+        for _ in 0..1000 {
+            if let Ok(route) = self.router.find_shard(table_id, key) {
+                return route;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        panic!("no group for table {table_id} key {key:?}");
+    }
+
+    async fn move_key_to_group(&self, key: (u64, &[u8]), target: u64) {
+        for _ in 0..16 {
+            let (source, shard) = self.group_for_key(key.0, key.1).await;
+            if source.id == target {
+                return;
+            }
+            if self.group(target).accept_shard(source.id, source.epoch, &shard).await.is_ok() {
+                for _ in 0..1000 {
+                    if self.group_contains_shard(target, shard.id) {
+                        return;
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        panic!("could not move table {} key {:?} to group {target}", key.0, key.1);
+    }
+
+    /// Co-locate the two keys' shards, keeping the first shard in place.
+    /// The caller is responsible for disabling shard balancing.
+    pub async fn ensure_same_group(&self, first: (u64, &[u8]), second: (u64, &[u8])) -> u64 {
+        let (group, _) = self.group_for_key(first.0, first.1).await;
+        self.move_key_to_group(second, group.id).await;
+        let (current_first, _) = self.group_for_key(first.0, first.1).await;
+        let (current_second, _) = self.group_for_key(second.0, second.1).await;
+        assert_eq!(current_first.id, group.id);
+        assert_eq!(current_second.id, group.id);
+        group.id
+    }
+
+    /// Separate the two keys' shards, keeping the first shard in place.
+    /// Requires an existing spare user group; does not change balancing
+    /// settings.
+    pub async fn ensure_different_group(
+        &self,
+        first: (u64, &[u8]),
+        second: (u64, &[u8]),
+    ) -> (u64, u64) {
+        let (first_group, first_shard) = self.group_for_key(first.0, first.1).await;
+        let (second_group, second_shard) = self.group_for_key(second.0, second.1).await;
+        assert_ne!(first_shard.id, second_shard.id, "cannot separate keys in the same shard");
+        if first_group.id != second_group.id {
+            return (first_group.id, second_group.id);
+        }
+        for _ in 0..400 {
+            let body = self.client.handle_statement("show groups").await.unwrap();
+            let sekas_parser::ExecuteResult::Data(groups) = serde_json::from_slice(&body).unwrap()
+            else {
+                panic!("SHOW GROUPS did not return groups");
+            };
+            let mut ids =
+                groups.rows.iter().map(|row| row.values[0].as_u64().unwrap()).collect::<Vec<_>>();
+            ids.sort_unstable();
+            for id in ids {
+                if id == sekas_schema::ROOT_GROUP_ID || id == first_group.id {
+                    continue;
+                }
+                if let Ok(target) = self.router.find_group(id)
+                    && target.replicas.len() == second_group.replicas.len()
+                    && target.leader_state.is_some()
+                {
+                    self.move_key_to_group(second, id).await;
+                    let (current_first, _) = self.group_for_key(first.0, first.1).await;
+                    let (current_second, _) = self.group_for_key(second.0, second.1).await;
+                    assert_eq!(current_first.id, first_group.id);
+                    assert_eq!(current_second.id, id);
+                    return (current_first.id, current_second.id);
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        panic!(
+            "no ready spare user group for shard {} in group {}",
+            second_shard.id, second_group.id
+        );
     }
 
     pub async fn assert_table_ready(&self, table_id: u64) {

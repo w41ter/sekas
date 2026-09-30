@@ -15,7 +15,7 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{Result, ensure};
 
 use crate::perf_lab::report::{CaseReport, case_report};
 use crate::perf_lab::workload::{WorkloadKind, spawn_workload};
@@ -59,6 +59,23 @@ impl PerfCase for BatchTxnCommit {
         let db = lab.database().await?;
         let left = lab.table(&db, &lab.config.workload.table).await?;
         let right = lab.table(&db, &lab.config.workload.second_table).await?;
+        // A probe represents the whole workload only while each table has one shard.
+        for table_id in [left.id, right.id] {
+            let (_, shard) = lab.group_for_key(table_id, b"").await?;
+            ensure!(
+                shard
+                    .range
+                    .as_ref()
+                    .is_some_and(|range| range.start.is_empty() && range.end.is_empty()),
+                "batch-txn-commit requires a single shard per table; use a fresh cluster"
+            );
+        }
+        let (left_group, right_group) = lab
+            .ensure_different_group(
+                (left.id, b"left-00000000000000000000"),
+                (right.id, b"right-00000000000000000000"),
+            )
+            .await?;
         lab.mark("start");
         let workload = spawn_workload(
             db,
@@ -71,6 +88,10 @@ impl PerfCase for BatchTxnCommit {
         tokio::time::sleep(Duration::from_secs(lab.config.workload.duration_secs)).await;
         lab.mark("end");
         let report = workload.stop().await;
-        Ok(case_report(lab, self.name(), vec![report], BTreeMap::new()))
+        let derived = BTreeMap::from([
+            ("left_group_id".to_owned(), left_group as f64),
+            ("right_group_id".to_owned(), right_group as f64),
+        ]);
+        Ok(case_report(lab, self.name(), vec![report], derived))
     }
 }

@@ -180,6 +180,12 @@ impl CaseKind {
     }
 
     fn configure(self, config: &mut LabConfig) {
+        if matches!(self, CaseKind::BatchTxnCommit | CaseKind::ShardMetaChurnUnderRw) {
+            // These cases rely on a fixed table layout throughout the workload.
+            config.cluster.root.enable_shard_balance = false;
+            config.cluster.root.enable_auto_shard_split = false;
+            config.cluster.root.enable_auto_shard_merge = false;
+        }
         if matches!(self, CaseKind::ReplicaChangeUnderWrite | CaseKind::ReplicaRemoveUnderWrite) {
             config.cluster.node.replica.testing_knobs.disable_scheduler_durable_task = true;
         }
@@ -562,6 +568,62 @@ impl LabContext {
         bail!("no group for key {:?}", key);
     }
 
+    /// Co-locate the two keys' shards by moving the second shard if necessary.
+    /// The caller is responsible for disabling shard balancing.
+    pub(crate) async fn ensure_same_group(
+        &self,
+        first: (u64, &[u8]),
+        second: (u64, &[u8]),
+    ) -> Result<u64> {
+        let (group_id, _) = self.group_for_key(first.0, first.1).await?;
+        self.migrate_shard_to_group(second.0, second.1, group_id).await?;
+        let (first_group, _) = self.group_for_key(first.0, first.1).await?;
+        let (second_group, _) = self.group_for_key(second.0, second.1).await?;
+        if first_group != group_id || second_group != group_id {
+            bail!("keys did not converge to group {group_id}: {first_group} vs {second_group}");
+        }
+        Ok(group_id)
+    }
+
+    /// Separate the two keys' shards by moving the second shard if necessary.
+    /// Requires an existing spare user group; does not change balancing
+    /// settings.
+    pub(crate) async fn ensure_different_group(
+        &self,
+        first: (u64, &[u8]),
+        second: (u64, &[u8]),
+    ) -> Result<(u64, u64)> {
+        let (first_group, first_shard) = self.group_for_key(first.0, first.1).await?;
+        let (second_group, second_shard) = self.group_for_key(second.0, second.1).await?;
+        if first_shard.id == second_shard.id {
+            bail!("cannot place keys in the same shard {} in different groups", first_shard.id);
+        }
+        if first_group != second_group {
+            return Ok((first_group, second_group));
+        }
+        let mut destination = None;
+        for _ in 0..400 {
+            destination = self.find_group_without_shard(second_group).await?;
+            if destination.is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        let destination = destination.ok_or_else(|| {
+            anyhow!(
+                "no ready spare user group for shard {} in group {second_group}",
+                second_shard.id
+            )
+        })?;
+        let migration = self.migrate_shard_to_group(second.0, second.1, destination).await?;
+        let (current_first, _) = self.group_for_key(first.0, first.1).await?;
+        let (current_second, _) = self.group_for_key(second.0, second.1).await?;
+        if current_first != first_group || current_second != migration.dest_group {
+            bail!("keys did not converge to different groups: {current_first} vs {current_second}");
+        }
+        Ok((current_first, current_second))
+    }
+
     pub(crate) async fn direct_put(
         &self,
         table_id: u64,
@@ -896,8 +958,16 @@ impl LabContext {
     }
 
     async fn find_group_without_shard(&self, src_group: u64) -> Result<Option<u64>> {
-        for group_id in 1..10000 {
+        let body = self.client.handle_statement("show groups").await?;
+        let sekas_parser::ExecuteResult::Data(groups) = serde_json::from_slice(&body)? else {
+            bail!("SHOW GROUPS did not return groups");
+        };
+        let mut ids =
+            groups.rows.iter().map(|row| row.values[0].as_u64().unwrap()).collect::<Vec<_>>();
+        ids.sort_unstable();
+        for group_id in ids {
             if let Ok(group) = self.router.find_group(group_id)
+                && group.id != 0
                 && group.id != src_group
                 && group.replicas.len() >= self.config.cluster.root.replicas_per_group
                 && group.leader_state.is_some()

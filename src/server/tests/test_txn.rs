@@ -66,6 +66,8 @@ async fn txn_write_batch_basic() {
 #[sekas_macro::test]
 async fn txn_async_commit_records_committed_state() {
     let mut ctx = TestContext::new(fn_name!());
+    ctx.enable_group_balance();
+    ctx.disable_shard_balance();
     let nodes = ctx.bootstrap_servers(3).await;
     let c = ClusterClient::new(nodes).await;
     let app = c.app_client().await;
@@ -78,6 +80,7 @@ async fn txn_async_commit_records_committed_state() {
 
     let key_a = b"async_key_a".to_vec();
     let key_b = b"async_key_b".to_vec();
+    c.ensure_different_group((table_a.id, &key_a), (table_b.id, &key_b)).await;
     let mut txn = db.begin_txn();
     txn.put(table_a.id, WriteBuilder::new(key_a.clone()).ensure_put(b"a".to_vec()));
     txn.put(table_b.id, WriteBuilder::new(key_b.clone()).ensure_put(b"b".to_vec()));
@@ -90,6 +93,38 @@ async fn txn_async_commit_records_committed_state() {
     let record = txn_table.get_txn_record(start_version).await.unwrap().unwrap();
     assert_eq!(record.state, TxnState::Committed);
     assert_eq!(record.commit_version, Some(resp.version));
+    assert_eq!(record.async_keys.len(), 2);
+}
+
+#[sekas_macro::test]
+async fn ensure_key_group_layout() {
+    let mut ctx = TestContext::new(fn_name!());
+    ctx.enable_group_balance();
+    ctx.disable_shard_balance();
+    let nodes = ctx.bootstrap_servers(3).await;
+    let c = ClusterClient::new(nodes).await;
+    let app = c.app_client().await;
+    let db = app.create_database("layout_db".to_owned()).await.unwrap();
+    let left = db.create_table("left".to_owned()).await.unwrap();
+    let right = db.create_table("right".to_owned()).await.unwrap();
+    c.assert_table_ready(left.id).await;
+    c.assert_table_ready(right.id).await;
+    let left_key = (left.id, b"left-key".as_slice());
+    let right_key = (right.id, b"right-key".as_slice());
+    db.put(left.id, left_key.1.to_vec(), b"left".to_vec()).await.unwrap();
+    db.put(right.id, right_key.1.to_vec(), b"right".to_vec()).await.unwrap();
+
+    let group = c.ensure_same_group(left_key, right_key).await;
+    assert_eq!(c.ensure_same_group(left_key, right_key).await, group);
+    // Keys in one shard can share a group without requiring a migration.
+    assert_eq!(c.ensure_same_group(left_key, (left.id, b"another-key")).await, group);
+    let different = c.ensure_different_group(left_key, right_key).await;
+    assert_eq!(different.0, group);
+    assert_ne!(different.0, different.1);
+    assert_eq!(c.ensure_different_group(left_key, right_key).await, different);
+    assert_eq!(c.ensure_same_group(left_key, right_key).await, group);
+    assert_eq!(db.get(left.id, left_key.1.to_vec()).await.unwrap(), Some(b"left".to_vec()));
+    assert_eq!(db.get(right.id, right_key.1.to_vec()).await.unwrap(), Some(b"right".to_vec()));
 }
 
 #[sekas_macro::test]

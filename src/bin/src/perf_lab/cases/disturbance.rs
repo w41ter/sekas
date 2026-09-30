@@ -15,7 +15,7 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Result, anyhow, ensure};
 use sekas_api::server::v1::ReplicaRole;
 
 use crate::perf_lab::report::{CaseReport, case_report};
@@ -181,26 +181,24 @@ impl PerfCase for ShardMetaChurnUnderRw {
         let meta_table = lab.table(&db, &lab.config.workload.second_table).await?;
         let foreground_probe_key = b"meta-churn-write-00000000000000000000".to_vec();
         let meta_split_key = b"meta-churn-split-point".to_vec();
-        let (foreground_group, _) =
-            lab.group_for_key(foreground_table.id, &foreground_probe_key).await?;
-        let mut setup_migration_duration_ms = 0.0;
-        let (mut meta_group, _) = lab.group_for_key(meta_table.id, &meta_split_key).await?;
-        if foreground_group != meta_group {
-            let migration = lab
-                .migrate_shard_to_group(meta_table.id, &meta_split_key, foreground_group)
-                .await?;
-            setup_migration_duration_ms = migration.duration.as_secs_f64() * 1000.0;
-            (meta_group, _) = lab.group_for_key(meta_table.id, &meta_split_key).await?;
-        }
-        if foreground_group != meta_group {
-            bail!(
-                "foreground table {} and meta table {} are not in the same group after setup: {} vs {}",
-                foreground_table.id,
-                meta_table.id,
-                foreground_group,
-                meta_group
+        for table_id in [foreground_table.id, meta_table.id] {
+            let (_, shard) = lab.group_for_key(table_id, b"").await?;
+            ensure!(
+                shard
+                    .range
+                    .as_ref()
+                    .is_some_and(|range| range.start.is_empty() && range.end.is_empty()),
+                "shard-meta-churn-under-rw requires a single shard per table; use a fresh cluster"
             );
         }
+        let setup_started = std::time::Instant::now();
+        let foreground_group = lab
+            .ensure_same_group(
+                (foreground_table.id, &foreground_probe_key),
+                (meta_table.id, &meta_split_key),
+            )
+            .await?;
+        let setup_migration_duration_ms = setup_started.elapsed().as_secs_f64() * 1000.0;
 
         seed_random_read_keys(
             &db,
