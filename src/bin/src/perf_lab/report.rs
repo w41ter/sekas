@@ -275,6 +275,7 @@ pub(crate) fn case_report(
 ) -> CaseReport {
     for workload in &workloads {
         derived.insert(format!("{}.qps", workload.name), workload.qps);
+        derived.insert(format!("{}.avg_us", workload.name), workload.latency.avg_us as f64);
         derived.insert(format!("{}.p99_us", workload.name), workload.latency.p99_us as f64);
         derived.insert(format!("{}.failure_rate", workload.name), failure_rate(workload));
         for (kind, count) in &workload.errors {
@@ -315,7 +316,7 @@ pub(crate) fn compare_with_baseline(
                 failed: drop_percent > current.config.report.max_qps_drop_percent,
                 direction: "drop".to_owned(),
             });
-        } else if metric.ends_with(".p99_us") {
+        } else if metric.ends_with(".avg_us") || metric.ends_with(".p99_us") {
             let increase_percent =
                 if *base <= f64::EPSILON { 0.0 } else { ((*value - *base) / *base) * 100.0 };
             checks.push(ComparisonCheck {
@@ -394,4 +395,59 @@ fn seconds_to_us(seconds: f64) -> u64 {
 
 fn failure_rate(report: &WorkloadReport) -> f64 {
     if report.operations == 0 { 0.0 } else { report.failures as f64 / report.operations as f64 }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn average_latency_uses_latency_regression_threshold() {
+        let baseline = CaseReport {
+            case: "point-read".to_owned(),
+            run_id: "baseline".to_owned(),
+            config: LabConfig::default(),
+            workloads: vec![],
+            derived: BTreeMap::from([
+                ("point_read.avg_us".to_owned(), 100.0),
+                ("point_read.p99_us".to_owned(), 200.0),
+                ("point_read.qps".to_owned(), 1000.0),
+            ]),
+            metric_intervals: vec![],
+        };
+        let path = std::env::temp_dir().join(format!(
+            "sekas-perf-lab-avg-{}-{}.json",
+            std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        let mut suite = SuiteReport { run_id: "baseline".to_owned(), reports: vec![baseline] };
+        fs::write(&path, serde_json::to_vec(&suite).unwrap()).unwrap();
+        let mut current = suite.reports[0].clone();
+        let mut comparisons = Vec::new();
+        for avg in [90.0, 110.0, 111.0] {
+            current.derived.insert("point_read.avg_us".to_owned(), avg);
+            comparisons.push(compare_with_baseline(&current, &path).unwrap().unwrap());
+        }
+
+        // Compact baselines created before avg_us was added still compare QPS and P99.
+        suite.reports[0].derived.remove("point_read.avg_us");
+        fs::write(&path, serde_json::to_vec(&suite).unwrap()).unwrap();
+        let legacy_comparison = compare_with_baseline(&current, &path).unwrap().unwrap();
+        fs::remove_file(&path).unwrap();
+
+        for (comparison, (delta, failed)) in
+            comparisons.iter().zip([(-10.0, false), (10.0, false), (11.0, true)])
+        {
+            let check = comparison.checks.iter().find(|c| c.metric == "point_read.avg_us").unwrap();
+            assert_eq!(check.baseline, 100.0);
+            assert_eq!(check.delta_percent, delta);
+            assert_eq!(check.threshold_percent, 10.0);
+            assert_eq!(check.direction, "increase");
+            assert_eq!(check.failed, failed);
+            assert_eq!(comparison.failed(), failed);
+            assert_eq!(comparison.checks.len(), 3);
+        }
+        assert_eq!(legacy_comparison.checks.len(), 2);
+        assert!(!legacy_comparison.failed());
+    }
 }
