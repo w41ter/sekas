@@ -611,12 +611,17 @@ impl Root {
             .get_database(&database)
             .await?
             .ok_or_else(|| Error::DatabaseNotFound(database.to_owned()))?;
+        let mut properties = sekas_schema::system::table::default_user_properties();
+        properties.insert(
+            sekas_schema::property::REPLICAS_PER_GROUP.to_owned(),
+            self.cfg.replicas_per_group.to_string(),
+        );
 
         let table = schema
             .prepare_create_table(TableDesc {
                 name: name.to_owned(),
                 db: db.id,
-                properties: sekas_schema::system::table::default_user_properties(),
+                properties,
                 ..Default::default()
             })
             .await?;
