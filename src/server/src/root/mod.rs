@@ -481,6 +481,16 @@ impl Root {
         let tables = schema.list_table().await?;
 
         let balanced = !self.scheduler.need_reconcile().await?;
+        let scheduler_tasks = self.scheduler.pending_tasks().await;
+        let ongoing_jobs = self.jobs.pending_jobs();
+        let groups_ready = groups.iter().all(|group| {
+            group.replicas.len() == self.cfg.replicas_per_group
+                && group.replicas.iter().all(|replica| replica.role == ReplicaRole::Voter as i32)
+                && states.iter().any(|state| {
+                    state.group_id == group.id && state.role == RaftRole::Leader as i32
+                })
+        });
+        let stable = balanced && groups_ready && scheduler_tasks == 0 && ongoing_jobs == 0;
 
         use diagnosis::*;
 
@@ -553,6 +563,10 @@ impl Root {
                 })
                 .collect::<Vec<_>>(),
             balanced,
+            groups_ready,
+            scheduler_tasks,
+            ongoing_jobs,
+            stable,
         })
     }
 }
@@ -1154,28 +1168,36 @@ mod root_test {
 pub mod diagnosis {
     use serde::{Deserialize, Serialize};
 
-    #[derive(Serialize, Deserialize)]
+    #[derive(Debug, Serialize, Deserialize)]
     pub struct Metadata {
         pub databases: Vec<Database>,
         pub nodes: Vec<Node>,
         pub groups: Vec<Group>,
         pub balanced: bool,
+        #[serde(default)]
+        pub groups_ready: bool,
+        #[serde(default)]
+        pub scheduler_tasks: usize,
+        #[serde(default)]
+        pub ongoing_jobs: usize,
+        #[serde(default)]
+        pub stable: bool,
     }
 
-    #[derive(Serialize, Deserialize)]
+    #[derive(Debug, Serialize, Deserialize)]
     pub struct Database {
         pub id: u64,
         pub name: String,
         pub tables: Vec<Table>,
     }
 
-    #[derive(Serialize, Deserialize)]
+    #[derive(Debug, Serialize, Deserialize)]
     pub struct Table {
         pub id: u64,
         pub name: String,
     }
 
-    #[derive(Serialize, Deserialize)]
+    #[derive(Debug, Serialize, Deserialize)]
     pub struct Node {
         pub addr: String,
         pub id: u64,
@@ -1184,7 +1206,7 @@ pub mod diagnosis {
         pub status: i32,
     }
 
-    #[derive(Serialize, Deserialize, Clone)]
+    #[derive(Debug, Serialize, Deserialize, Clone)]
     pub struct NodeReplica {
         pub group: u64,
         pub id: u64,
@@ -1192,7 +1214,7 @@ pub mod diagnosis {
         pub replica_role: i32,
     }
 
-    #[derive(Serialize, Deserialize)]
+    #[derive(Debug, Serialize, Deserialize)]
     pub struct Group {
         pub epoch: u64,
         pub id: u64,
@@ -1200,7 +1222,7 @@ pub mod diagnosis {
         pub shards: Vec<GroupShard>,
     }
 
-    #[derive(Serialize, Deserialize)]
+    #[derive(Debug, Serialize, Deserialize)]
     pub struct GroupReplica {
         pub id: u64,
         pub node: u64,
@@ -1209,7 +1231,7 @@ pub mod diagnosis {
         pub term: u64,
     }
 
-    #[derive(Serialize, Deserialize)]
+    #[derive(Debug, Serialize, Deserialize)]
     pub struct GroupShard {
         pub table: u64,
         pub id: u64,

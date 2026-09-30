@@ -15,17 +15,16 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use std::{fs, thread};
 
 use anyhow::{Context as _, Result, anyhow, bail};
-use sekas_api::server::v1::ReplicaRole;
 use sekas_client::{
     AppError, ClientOptions, ConnManager, Database, NodeClient, RootClient, Router, SekasClient,
     StaticServiceDiscovery, TableDesc,
 };
 use sekas_runtime::{ExecutorOwner, ShutdownNotifier};
-use sekas_server::{Config, NodeConfig};
+use sekas_server::{Config, NodeConfig, diagnosis};
 
 use super::config::LabConfig;
 use super::report::MetricsRecorder;
@@ -40,6 +39,7 @@ pub(crate) struct LabContext {
     conn_manager: ConnManager,
     pub(crate) router: Router,
     pub(super) client: SekasClient,
+    http_client: reqwest::Client,
     pub(super) metrics: MetricsRecorder,
 }
 
@@ -67,6 +67,10 @@ impl LabContext {
             ))
             .await,
             client: SekasClient::new(ClientOptions::default(), vec![]).await?,
+            http_client: reqwest::Client::builder()
+                .timeout(Duration::from_secs(2))
+                .build()
+                .context("build perf-lab HTTP client")?,
             metrics: MetricsRecorder::default(),
         };
         lab.start_cluster().await?;
@@ -107,9 +111,7 @@ impl LabContext {
             self.conn_manager.clone(),
         );
         self.wait_root_group_ready().await?;
-        if self.config.cluster.root.enable_group_balance {
-            self.wait_non_root_group_ready(self.config.cluster.root.replicas_per_group).await?;
-        }
+        self.wait_cluster_stable().await?;
         Ok(())
     }
 
@@ -209,24 +211,68 @@ impl LabContext {
         bail!("root group has no leader");
     }
 
-    async fn wait_non_root_group_ready(&self, voters: usize) -> Result<()> {
-        for _ in 0..1000 {
-            for group_id in 1..10000 {
-                let Ok(group) = self.router.find_group(group_id) else {
-                    continue;
-                };
-                let current_voters = group
-                    .replicas
-                    .values()
-                    .filter(|replica| replica.role == ReplicaRole::Voter as i32)
-                    .count();
-                if current_voters >= voters && group.leader_state.is_some() {
-                    return Ok(());
+    async fn wait_cluster_stable(&self) -> Result<()> {
+        let scheduler_interval =
+            Duration::from_secs(self.config.cluster.root.schedule_interval_sec.max(1));
+        let heartbeat_interval = self.config.cluster.root.heartbeat_interval();
+        let stable_for = (scheduler_interval * 2).max(heartbeat_interval);
+        let deadline = Instant::now() + Duration::from_secs(60);
+        let mut stable_since = None;
+        let mut last_state = "root metadata is not available".to_owned();
+
+        while Instant::now() < deadline {
+            match self.root_metadata().await {
+                Ok(metadata) => {
+                    last_state = format!(
+                        "balanced={}, groups_ready={}, scheduler_tasks={}, ongoing_jobs={}, groups={}",
+                        metadata.balanced,
+                        metadata.groups_ready,
+                        metadata.scheduler_tasks,
+                        metadata.ongoing_jobs,
+                        metadata.groups.len()
+                    );
+                    if metadata.stable {
+                        let since = stable_since.get_or_insert_with(Instant::now);
+                        if since.elapsed() >= stable_for {
+                            return Ok(());
+                        }
+                    } else {
+                        stable_since = None;
+                    }
+                }
+                Err(err) => {
+                    last_state = err.to_string();
+                    stable_since = None;
                 }
             }
-            tokio::time::sleep(Duration::from_millis(50)).await;
+            tokio::time::sleep(Duration::from_millis(100)).await;
         }
-        bail!("no non-root group with {voters} voters is ready");
+
+        bail!("cluster did not remain stable for {:?} within 60s: {}", stable_for, last_state);
+    }
+
+    async fn root_metadata(&self) -> Result<diagnosis::Metadata> {
+        let mut addrs = self.nodes.values().collect::<Vec<_>>();
+        addrs.sort_unstable();
+        let mut last_err = None;
+        for addr in addrs {
+            let url = format!("http://{addr}/admin/metadata");
+            match self.http_client.get(&url).send().await {
+                Ok(response) if response.status().is_success() => {
+                    return response
+                        .json::<diagnosis::Metadata>()
+                        .await
+                        .with_context(|| format!("decode root metadata from {url}"));
+                }
+                Ok(response) => {
+                    last_err = Some(anyhow!("GET {url} returned {}", response.status()));
+                }
+                Err(err) => {
+                    last_err = Some(anyhow!("GET {url} failed: {err}"));
+                }
+            }
+        }
+        Err(last_err.unwrap_or_else(|| anyhow!("cluster has no node address")))
     }
 
     pub(crate) async fn database(&self) -> Result<Database> {

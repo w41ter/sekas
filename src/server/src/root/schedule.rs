@@ -68,6 +68,10 @@ impl ReconcileScheduler {
         self.tasks.lock().await.is_empty()
     }
 
+    pub async fn pending_tasks(&self) -> usize {
+        self.tasks.lock().await.len()
+    }
+
     /// Schedule moving root leader task.
     pub async fn sched_root_leader(&self, node_id: u64) {
         self.setup_task(ReconcileTask {

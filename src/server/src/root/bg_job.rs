@@ -69,6 +69,10 @@ impl Jobs {
         self.core.wait_more_jobs().await;
     }
 
+    pub fn pending_jobs(&self) -> usize {
+        self.core.pending_jobs()
+    }
+
     pub async fn advance_jobs(&self) -> Result<()> {
         let jobs = self.core.need_handle_jobs();
         for job in &jobs {
@@ -888,6 +892,10 @@ impl JobCore {
     pub fn need_handle_jobs(&self) -> Vec<BackgroundJob> {
         let jobs = self.mem_jobs.lock().unwrap();
         jobs.jobs.to_owned()
+    }
+
+    fn pending_jobs(&self) -> usize {
+        self.mem_jobs.lock().unwrap().jobs.len()
     }
 
     fn try_lock_res(&self, res_key: Vec<u8>) -> bool {

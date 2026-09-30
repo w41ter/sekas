@@ -44,13 +44,18 @@ async fn admin_balance_init_cluster() {
 
     loop {
         let m = current_metadata(addrs.to_owned()).await;
-        if m.balanced {
+        if m.stable {
             break;
         }
         tokio::time::sleep(Duration::from_secs(1)).await;
     }
 
     let m = current_metadata(addrs.to_owned()).await;
+    assert!(m.balanced);
+    assert!(m.groups_ready);
+    assert_eq!(m.scheduler_tasks, 0);
+    assert_eq!(m.ongoing_jobs, 0);
+    assert!(m.stable);
     let stats = m
         .nodes
         .iter()
