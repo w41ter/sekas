@@ -232,7 +232,7 @@ pub(super) async fn layout(
 }
 
 pub(super) fn observations(report: &CaseReport, names: &[&str]) -> BTreeMap<String, f64> {
-    names.iter().map(|name| ((*name).to_owned(), report.counter_delta_contains(name))).collect()
+    names.iter().map(|name| ((*name).to_owned(), report.counter_delta(name))).collect()
 }
 
 pub(super) async fn raw_versions(

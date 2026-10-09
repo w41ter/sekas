@@ -17,11 +17,21 @@ use std::fs;
 use std::path::Path;
 
 use anyhow::{Context as _, Result, anyhow, bail};
-use prometheus::proto::{Metric, MetricFamily};
+use prometheus::proto::Metric;
 use serde::{Deserialize, Serialize};
 
 use super::config::LabConfig;
 use super::{LabContext, WorkloadReport};
+
+// These counters answer the storage and topology scenarios' questions. Keep
+// series separate until after subtraction so one replica's reset cannot hide
+// another replica's progress.
+const OBSERVED_COUNTERS: &[&str] = &[
+    "node_mvcc_gc_delete_versions_total",
+    "raftgroup_send_snapshot_bytes_total",
+    "raftgroup_download_snapshot_bytes_total",
+    "raftgroup_apply_snapshot_total",
+];
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct MetricInterval {
@@ -29,38 +39,6 @@ pub(crate) struct MetricInterval {
     to: String,
     duration_ms: u128,
     counters: BTreeMap<String, f64>,
-    histograms: BTreeMap<String, HistogramSummary>,
-}
-
-impl MetricInterval {
-    fn from_marks(start: &MetricMark, end: &MetricMark) -> Self {
-        let start_map = flatten_metric_families(&start.metrics);
-        let end_map = flatten_metric_families(&end.metrics);
-        let mut counters = BTreeMap::new();
-        let mut histograms = BTreeMap::new();
-        for (key, current) in end_map {
-            match current {
-                FlatMetric::Counter(v) => {
-                    let prev = start_map.get(&key).and_then(FlatMetric::counter).unwrap_or(0.0);
-                    counters.insert(key, (v - prev).max(0.0));
-                }
-                FlatMetric::Gauge(v) => {
-                    counters.insert(format!("gauge:{key}"), v);
-                }
-                FlatMetric::Histogram(h) => {
-                    let prev = start_map.get(&key).and_then(FlatMetric::histogram);
-                    histograms.insert(key, h.diff(prev));
-                }
-            }
-        }
-        MetricInterval {
-            from: start.name.clone(),
-            to: end.name.clone(),
-            duration_ms: end.at_unix_ms.saturating_sub(start.at_unix_ms),
-            counters,
-            histograms,
-        }
-    }
 }
 
 #[derive(Default)]
@@ -70,147 +48,47 @@ pub(crate) struct MetricsRecorder {
 
 impl MetricsRecorder {
     pub(crate) fn mark(&mut self, name: String) {
-        self.marks.push(MetricMark {
-            name,
-            at_unix_ms: crate::perf_lab::unix_millis(),
-            metrics: prometheus::gather(),
-        });
+        let counters = prometheus::gather()
+            .iter()
+            .filter(|family| OBSERVED_COUNTERS.contains(&family.get_name()))
+            .flat_map(|family| {
+                family.get_metric().iter().filter(|metric| metric.has_counter()).map(|metric| {
+                    (metric_key(family.get_name(), metric), metric.get_counter().get_value())
+                })
+            })
+            .collect();
+        self.marks.push(MetricMark { name, at_unix_ms: crate::perf_lab::unix_millis(), counters });
     }
 
     pub(crate) fn intervals(&self) -> Vec<MetricInterval> {
-        self.marks.windows(2).map(|pair| MetricInterval::from_marks(&pair[0], &pair[1])).collect()
+        self.marks
+            .windows(2)
+            .map(|pair| {
+                let [start, end] = pair else { unreachable!() };
+                MetricInterval {
+                    from: start.name.clone(),
+                    to: end.name.clone(),
+                    duration_ms: end.at_unix_ms.saturating_sub(start.at_unix_ms),
+                    counters: end
+                        .counters
+                        .iter()
+                        .map(|(key, value)| {
+                            (
+                                key.clone(),
+                                (value - start.counters.get(key).unwrap_or(&0.0)).max(0.0),
+                            )
+                        })
+                        .collect(),
+                }
+            })
+            .collect()
     }
 }
 
 struct MetricMark {
     name: String,
     at_unix_ms: u128,
-    metrics: Vec<MetricFamily>,
-}
-
-#[derive(Clone)]
-enum FlatMetric {
-    Counter(f64),
-    Gauge(f64),
-    Histogram(FlatHistogram),
-}
-
-impl FlatMetric {
-    fn counter(&self) -> Option<f64> {
-        match self {
-            FlatMetric::Counter(v) => Some(*v),
-            FlatMetric::Gauge(_) | FlatMetric::Histogram(_) => None,
-        }
-    }
-
-    fn histogram(&self) -> Option<&FlatHistogram> {
-        match self {
-            FlatMetric::Histogram(v) => Some(v),
-            FlatMetric::Counter(_) | FlatMetric::Gauge(_) => None,
-        }
-    }
-}
-
-#[derive(Clone)]
-struct FlatHistogram {
-    sample_count: u64,
-    sample_sum: f64,
-    buckets: Vec<(f64, u64)>,
-}
-
-impl FlatHistogram {
-    fn diff(&self, previous: Option<&FlatHistogram>) -> HistogramSummary {
-        let prev_count = previous.map(|v| v.sample_count).unwrap_or_default();
-        let prev_sum = previous.map(|v| v.sample_sum).unwrap_or_default();
-        let buckets = self
-            .buckets
-            .iter()
-            .enumerate()
-            .map(|(idx, (upper, count))| {
-                let prev = previous
-                    .and_then(|h| h.buckets.get(idx))
-                    .map(|(_, count)| *count)
-                    .unwrap_or_default();
-                (*upper, count.saturating_sub(prev))
-            })
-            .collect::<Vec<_>>();
-        HistogramSummary::from_buckets(
-            self.sample_count.saturating_sub(prev_count),
-            (self.sample_sum - prev_sum).max(0.0),
-            &buckets,
-        )
-    }
-}
-
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
-pub(crate) struct HistogramSummary {
-    pub(crate) count: u64,
-    pub(crate) avg_us: u64,
-    pub(crate) p50_us: u64,
-    pub(crate) p95_us: u64,
-    pub(crate) p99_us: u64,
-    pub(crate) p999_us: u64,
-    pub(crate) max_us: u64,
-}
-
-impl HistogramSummary {
-    fn from_buckets(count: u64, sample_sum_seconds: f64, buckets: &[(f64, u64)]) -> Self {
-        if count == 0 {
-            return HistogramSummary::default();
-        }
-        let value = |percentile: f64| -> u64 {
-            let target = (percentile * count as f64).ceil() as u64;
-            buckets
-                .iter()
-                .find(|(_, cumulative)| *cumulative >= target)
-                .map(|(upper, _)| seconds_to_us(*upper))
-                .unwrap_or_default()
-        };
-        let max = buckets
-            .iter()
-            .find(|(_, cumulative)| *cumulative >= count)
-            .map(|(upper, _)| seconds_to_us(*upper))
-            .unwrap_or_default();
-        HistogramSummary {
-            count,
-            avg_us: seconds_to_us(sample_sum_seconds / count as f64),
-            p50_us: value(0.50),
-            p95_us: value(0.95),
-            p99_us: value(0.99),
-            p999_us: value(0.999),
-            max_us: max,
-        }
-    }
-}
-
-fn flatten_metric_families(metrics: &[MetricFamily]) -> BTreeMap<String, FlatMetric> {
-    let mut out = BTreeMap::new();
-    for family in metrics {
-        for metric in family.get_metric() {
-            let key = metric_key(family.get_name(), metric);
-            if metric.has_counter() {
-                out.insert(key, FlatMetric::Counter(metric.get_counter().get_value()));
-            } else if metric.has_gauge() {
-                out.insert(key, FlatMetric::Gauge(metric.get_gauge().get_value()));
-            } else if metric.has_histogram() {
-                let h = metric.get_histogram();
-                let buckets = h
-                    .get_bucket()
-                    .iter()
-                    .map(|bucket| (bucket.get_upper_bound(), bucket.get_cumulative_count()))
-                    .collect();
-                out.insert(
-                    key,
-                    FlatMetric::Histogram(FlatHistogram {
-                        sample_count: h.get_sample_count(),
-                        sample_sum: h.get_sample_sum(),
-                        buckets,
-                    }),
-                );
-            }
-        }
-    }
-    out
+    counters: BTreeMap<String, f64>,
 }
 
 fn metric_key(name: &str, metric: &Metric) -> String {
@@ -242,11 +120,14 @@ pub(crate) struct SuiteReport {
 }
 
 impl CaseReport {
-    pub(crate) fn counter_delta_contains(&self, name: &str) -> f64 {
+    pub(crate) fn counter_delta(&self, name: &str) -> f64 {
         self.metric_intervals
             .iter()
             .flat_map(|interval| interval.counters.iter())
-            .filter(|(key, _)| key.contains(name))
+            .filter(|(key, _)| {
+                key.as_str() == name
+                    || key.strip_prefix(name).is_some_and(|suffix| suffix.starts_with('{'))
+            })
             .map(|(_, value)| *value)
             .sum()
     }
@@ -441,10 +322,6 @@ struct ComparisonCheck {
     direction: String,
 }
 
-fn seconds_to_us(seconds: f64) -> u64 {
-    (seconds * 1_000_000.0).max(0.0) as u64
-}
-
 fn failure_rate(report: &WorkloadReport) -> f64 {
     if report.operations == 0 { 0.0 } else { report.failures as f64 / report.operations as f64 }
 }
@@ -452,6 +329,52 @@ fn failure_rate(report: &WorkloadReport) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn counter_intervals_preserve_resets_new_series_and_phase_boundaries() {
+        let mark = |name: &str, at_unix_ms, values: &[(&str, f64)]| MetricMark {
+            name: name.into(),
+            at_unix_ms,
+            counters: values.iter().map(|(key, value)| ((*key).into(), *value)).collect(),
+        };
+        let recorder = MetricsRecorder {
+            marks: vec![
+                mark("baseline", 10, &[("gc{node=1}", 10.0), ("gc{node=2}", 20.0)]),
+                mark(
+                    "event",
+                    20,
+                    &[("gc{node=1}", 2.0), ("gc{node=2}", 25.0), ("gc{node=3}", 3.0)],
+                ),
+                mark(
+                    "recovery",
+                    30,
+                    &[("gc{node=1}", 4.0), ("gc{node=2}", 26.0), ("gc{node=3}", 4.0)],
+                ),
+            ],
+        };
+        let intervals = recorder.intervals();
+        assert_eq!(intervals.len(), 2);
+        assert_eq!(
+            (&*intervals[0].from, &*intervals[0].to, intervals[0].duration_ms),
+            ("baseline", "event", 10)
+        );
+        assert_eq!(intervals[0].counters.values().sum::<f64>(), 8.0);
+        assert_eq!(intervals[1].counters.values().sum::<f64>(), 4.0);
+        // Historical v2 reports can still be read; removed diagnostics are ignored.
+        let mut legacy = serde_json::to_value(&intervals[0]).unwrap();
+        legacy["histograms"] = serde_json::json!({"rpc": {"count": 1}});
+        legacy["counters"]["gauge:gc"] = serde_json::json!(123.0);
+        legacy["counters"]["gc_other"] = serde_json::json!(456.0);
+        let report = CaseReport {
+            case: "test".into(),
+            run_id: "test".into(),
+            config: LabConfig::default(),
+            workloads: vec![],
+            derived: BTreeMap::new(),
+            metric_intervals: vec![serde_json::from_value(legacy).unwrap()],
+        };
+        assert_eq!(report.counter_delta("gc"), 8.0);
+    }
 
     #[test]
     fn comparison_checks_failure_rates_event_durations_and_profiles() {

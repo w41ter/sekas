@@ -100,55 +100,6 @@ pub(super) enum CaseKind {
     MetadataScale,
 }
 
-pub(super) const ALL_CASES: &[CaseKind] = &[
-    CaseKind::PointHit,
-    CaseKind::PointMiss,
-    CaseKind::Insert,
-    CaseKind::Update,
-    CaseKind::Delete,
-    CaseKind::RangeScan,
-    CaseKind::CrossShardScan,
-    CaseKind::LatestVersions,
-    CaseKind::SnapshotPoint,
-    CaseKind::SnapshotScan,
-    CaseKind::TombstoneRead,
-    CaseKind::ReadOnlyLocal,
-    CaseKind::ReadOnlyDistributed,
-    CaseKind::BlindLocal,
-    CaseKind::BlindDistributed,
-    CaseKind::ReadWriteLocal,
-    CaseKind::ReadWriteDistributed,
-    CaseKind::LargeTxn,
-    CaseKind::Hotset,
-    CaseKind::SiConflict,
-    CaseKind::SiConflictRetry,
-    CaseKind::LongShortTxn,
-    CaseKind::GcBacklog,
-    CaseKind::GcSteady,
-    CaseKind::RetentionBoundary,
-    CaseKind::InsertCompaction,
-    CaseKind::ChurnCompaction,
-    CaseKind::ReadUpdate,
-    CaseKind::ReadScan,
-    CaseKind::SmallLargeTxn,
-    CaseKind::HotCold,
-    CaseKind::ImportOnline,
-    CaseKind::LeaderTransfer,
-    CaseKind::DataLeaderFailover,
-    CaseKind::FollowerRecovery,
-    CaseKind::ReplicaAdd,
-    CaseKind::ReplicaRemove,
-    CaseKind::SnapshotCatchup,
-    CaseKind::ShardMigration,
-    CaseKind::SplitMerge,
-    CaseKind::RootFailover,
-    CaseKind::Concurrency,
-    CaseKind::OfferedLoad,
-    CaseKind::GroupScale,
-    CaseKind::NodeScale,
-    CaseKind::MetadataScale,
-];
-
 impl CaseKind {
     pub(super) fn name(self) -> &'static str {
         match self {
@@ -201,7 +152,7 @@ impl CaseKind {
         }
     }
     pub(super) fn from_report_name(name: &str) -> Option<Self> {
-        ALL_CASES.iter().copied().find(|case| case.name() == name)
+        Self::value_variants().iter().copied().find(|case| case.name() == name)
     }
 }
 
@@ -365,9 +316,8 @@ mod tests {
     #[test]
     fn registry_has_unique_names_and_all_themes() {
         let names: std::collections::HashSet<_> =
-            ALL_CASES.iter().map(|case| case.name()).collect();
-        assert_eq!(names.len(), ALL_CASES.len());
-        assert_eq!(ALL_CASES, CaseKind::value_variants());
+            CaseKind::value_variants().iter().map(|case| case.name()).collect();
+        assert_eq!(names.len(), CaseKind::value_variants().len());
         for (theme, count) in [
             (Theme::Basic, 7),
             (Theme::Mvcc, 4),
@@ -379,7 +329,10 @@ mod tests {
             (Theme::Capacity, 5),
         ] {
             assert_eq!(
-                ALL_CASES.iter().filter(|kind| Case::build(**kind).theme() == theme).count(),
+                CaseKind::value_variants()
+                    .iter()
+                    .filter(|kind| Case::build(**kind).theme() == theme)
+                    .count(),
                 count
             );
         }

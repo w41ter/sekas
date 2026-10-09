@@ -27,8 +27,8 @@ use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
-use cases::{ALL_CASES, Case, CaseKind, Theme};
-use clap::Parser;
+use cases::{Case, CaseKind, Theme};
+use clap::{Parser, ValueEnum};
 pub(crate) use cluster::LabContext;
 use workload::WorkloadReport;
 
@@ -76,7 +76,7 @@ impl Command {
             return Ok(vec![Case::build(case)]);
         }
 
-        Ok(ALL_CASES
+        Ok(CaseKind::value_variants()
             .iter()
             .copied()
             .map(Case::build)

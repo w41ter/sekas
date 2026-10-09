@@ -7,7 +7,16 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 
 use super::Outcome;
-use crate::perf_lab::report::HistogramSummary;
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub(crate) struct HistogramSummary {
+    pub(crate) count: u64,
+    pub(crate) avg_us: u64,
+    pub(crate) p50_us: u64,
+    pub(crate) p95_us: u64,
+    pub(crate) p99_us: u64,
+    pub(crate) p999_us: u64,
+    pub(crate) max_us: u64,
+}
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
