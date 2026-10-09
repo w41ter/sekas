@@ -104,6 +104,37 @@ impl Database {
         txn.get(table_id, key).await
     }
 
+    /// Get the value visible at the supplied snapshot version.
+    ///
+    /// Versions newer than `version` are ignored. An absent key or a visible
+    /// tombstone returns `None`. The snapshot must still be retained by the
+    /// server; this call does not pin historical versions against GC.
+    #[inline]
+    pub async fn get_with_version(
+        &self,
+        table_id: u64,
+        key: Vec<u8>,
+        version: u64,
+    ) -> AppResult<Option<Vec<u8>>> {
+        let value = self.get_raw_value_with_version(table_id, key, version).await?;
+        Ok(value.and_then(|v| v.content))
+    }
+
+    /// Get the raw value visible at the supplied snapshot version, including
+    /// its version and any tombstone. The snapshot must still be retained by
+    /// the server; this call does not pin historical versions against GC.
+    #[inline]
+    pub async fn get_raw_value_with_version(
+        &self,
+        table_id: u64,
+        key: Vec<u8>,
+        version: u64,
+    ) -> AppResult<Option<Value>> {
+        Txn::new(self.clone())
+            .get_raw_value_at_version(table_id, key, Default::default(), Some(version))
+            .await
+    }
+
     /// A helper function to get the raw value (version, tombstone ...) of a
     /// key.
     #[inline]

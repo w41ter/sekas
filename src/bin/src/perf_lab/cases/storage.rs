@@ -92,7 +92,7 @@ impl StorageCase {
             );
             // Check within retention without a warmup that could consume the retention
             // window.
-            let handle = spawn_workload(db.clone(), lab.client.clone(), spec);
+            let handle = spawn_workload(db.clone(), spec);
             let within = Duration::from_millis((lab.config.workload.gc_retention_ms / 4).max(1));
             lab.mark("retained_start");
             tokio::time::sleep(within).await;
@@ -122,7 +122,7 @@ impl StorageCase {
                 target.clone(),
                 Operation::Read { present: false, version: Some(snapshot), expected: None },
             );
-            let handle = spawn_workload(db.clone(), lab.client.clone(), spec);
+            let handle = spawn_workload(db.clone(), spec);
             tokio::time::sleep(Duration::from_millis(100)).await;
             let report = handle.stop().await;
             validate(lab, &report)?;
@@ -133,7 +133,7 @@ impl StorageCase {
             let baseline_count = metric_counter("node_mvcc_gc_delete_versions_total");
             let spec = workload(lab, "foreground_during_gc", target.clone(), Operation::Put);
             lab.mark("gc_start");
-            let handle = spawn_workload(db.clone(), lab.client.clone(), spec);
+            let handle = spawn_workload(db.clone(), spec);
             handle.phase("accumulation");
             let (_, mut probe) = fixture(lab, "gc_immutable_probe", false).await?;
             probe.keys = 1;

@@ -77,7 +77,10 @@ impl ShardClient {
             limit_bytes: limit_bytes as u64,
             exclude_start_key: true,
             exclude_end_key: false,
-            start_key: last_key,
+            // Entering the pulling step persists an empty checkpoint before any
+            // key is ingested. None asks the server to start at the shard range
+            // boundary; Some(empty) would be outside a nonzero-start shard.
+            start_key: initial_pull_cursor(last_key),
             end_key: None,
             include_raw_data: true,
             ignore_txn_intent: true,
@@ -120,5 +123,23 @@ impl ShardClient {
         let mut client = GroupClient::lazy(self.group_id, self.client.clone());
         client.request(&req).await?;
         Ok(())
+    }
+}
+
+fn initial_pull_cursor(last_key: Option<Vec<u8>>) -> Option<Vec<u8>> {
+    last_key.filter(|key| !key.is_empty())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn initial_migration_checkpoint_uses_shard_boundary() {
+        assert_eq!(initial_pull_cursor(Some(vec![])), None);
+        assert_eq!(initial_pull_cursor(None), None);
+        assert_eq!(
+            initial_pull_cursor(Some(b"key-after-boundary".to_vec())),
+            Some(b"key-after-boundary".to_vec())
+        );
     }
 }

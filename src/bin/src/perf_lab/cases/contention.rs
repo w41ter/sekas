@@ -10,6 +10,9 @@ use crate::perf_lab::LabContext;
 use crate::perf_lab::report::{CaseReport, case_report};
 use crate::perf_lab::workload::{Operation, TxnMode, spawn_workload};
 
+// Hot-key matrix shared by the contention cases.
+const HOTSET_SIZES: &[u64] = &[1, 16, 1024];
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum ContentionCase {
     Hotset,
@@ -22,7 +25,7 @@ impl ContentionCase {
     pub(super) async fn run(self, name: &str, lab: &mut LabContext) -> Result<CaseReport> {
         let mut reports = Vec::new();
         let mut derived = BTreeMap::new();
-        for hotset in lab.config.workload.hotset_sizes.clone() {
+        for &hotset in HOTSET_SIZES {
             let (db, mut target) = fixture(lab, &format!("hotset_{hotset}"), false).await?;
             target.keys = hotset;
             seed_target(&db, &target, &vec![b's'; lab.config.workload.value_size]).await?;
@@ -49,7 +52,7 @@ impl ContentionCase {
                 let mut short = spec.clone();
                 short.name = format!("short_hotset_{hotset}");
                 short.hold = Duration::ZERO;
-                let background = spawn_workload(db.clone(), lab.client.clone(), short);
+                let background = spawn_workload(db.clone(), short);
                 spec.name = format!("long_hotset_{hotset}");
                 spec.hold = Duration::from_millis(lab.config.workload.conflict_hold_ms.max(1) * 10);
                 spec.concurrency = 1;

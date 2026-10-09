@@ -10,6 +10,13 @@ use crate::perf_lab::LabContext;
 use crate::perf_lab::report::{CaseReport, case_report};
 use crate::perf_lab::workload::{Operation, TxnMode, spawn_workload};
 
+// Each interference case owns its background load parameters.
+const READ_UPDATE_WRITE_RATIOS: &[f64] = &[0.05, 0.5];
+const READ_UPDATE_OFFERED_QPS: f64 = 100.0;
+const READ_SCAN_LIMIT: u64 = 1024;
+const SMALL_LARGE_TXN_KEY_COUNTS: &[u64] = &[64, 256, 1024];
+const INTERFERENCE_RATIOS: &[f64] = &[0.5];
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum MixedCase {
     ReadUpdate,
@@ -23,12 +30,9 @@ impl MixedCase {
     pub(super) async fn run(self, name: &str, lab: &mut LabContext) -> Result<CaseReport> {
         let mut reports = Vec::new();
         let mut derived = BTreeMap::new();
-        let ratios = if self == Self::ReadUpdate {
-            lab.config.workload.write_ratios.clone()
-        } else {
-            vec![0.5]
-        };
-        for ratio in ratios {
+        let ratios =
+            if self == Self::ReadUpdate { READ_UPDATE_WRITE_RATIOS } else { INTERFERENCE_RATIOS };
+        for &ratio in ratios {
             let stage = format!("ratio_{ratio}");
             let (db, target) = fixture(lab, &stage, true).await?;
             let (_, background_target) = fixture(lab, &format!("background_{stage}"), true).await?;
@@ -53,17 +57,14 @@ impl MixedCase {
             derived.insert(format!("{stage}.baseline_p99_us"), baseline.latency.p99_us as f64);
             let operation = match self {
                 Self::ReadScan => Operation::Scan {
-                    limit: lab.config.workload.scan_limits.iter().copied().max().unwrap(),
+                    limit: READ_SCAN_LIMIT,
                     version: None,
                     expected_rows: None,
                     expected: None,
                 },
                 Self::SmallLargeTxn => Operation::Transaction {
                     mode: TxnMode::Blind,
-                    keys: lab
-                        .config
-                        .workload
-                        .large_txn_key_counts
+                    keys: SMALL_LARGE_TXN_KEY_COUNTS
                         .iter()
                         .copied()
                         .filter(|keys| *keys <= background_target.keys)
@@ -90,7 +91,7 @@ impl MixedCase {
             if self == Self::ReadUpdate {
                 // Offered request counts define the ratio; achieved read/write rates remain
                 // separate.
-                let total = lab.config.workload.offered_qps[0];
+                let total = READ_UPDATE_OFFERED_QPS;
                 foreground.offered_qps = Some(total * (1.0 - ratio));
                 background.offered_qps = Some(total * ratio);
                 if ratio == 0.0 || ratio == 1.0 {
@@ -108,7 +109,7 @@ impl MixedCase {
                 background.hot_probability = 0.9;
                 background.hot_keys = 1;
             }
-            let handle = spawn_workload(db.clone(), lab.client.clone(), background);
+            let handle = spawn_workload(db.clone(), background);
             let result = measure(lab, &db, foreground).await;
             let background_report = handle.stop().await;
             validate(lab, &background_report)?;

@@ -26,16 +26,12 @@ pub(super) async fn fixture(
         "fixture requires an unsplit table"
     );
     if seed {
-        if lab.config.workload.read_working_set == crate::perf_lab::config::ReadWorkingSet::Disk {
-            seed_disk_target(&db, &target, lab.config.workload.value_size).await?;
-        } else {
-            seed_target(&db, &target, &vec![b's'; lab.config.workload.value_size]).await?;
-        }
+        seed_random_target(&db, &target, lab.config.workload.value_size).await?;
     }
     Ok((db, target))
 }
 
-async fn seed_disk_target(db: &Database, target: &Target, value_size: usize) -> Result<()> {
+async fn seed_random_target(db: &Database, target: &Target, value_size: usize) -> Result<()> {
     use rand::rngs::SmallRng;
     use rand::{RngCore, SeedableRng};
     let mut rng = SmallRng::seed_from_u64(0x5ECA5);
@@ -54,7 +50,7 @@ async fn seed_disk_target(db: &Database, target: &Target, value_size: usize) -> 
         }
         txn.commit().await?;
     }
-    ensure!(db.get(target.table, target.key(0)).await? == first, "disk seed mismatch");
+    ensure!(db.get(target.table, target.key(0)).await? == first, "random seed mismatch");
     Ok(())
 }
 
@@ -100,7 +96,6 @@ pub(super) fn workload(
         allow_conflicts: false,
         allow_overload: false,
         disjoint_keys: false,
-        router: lab.router.clone(),
     }
 }
 
@@ -125,13 +120,13 @@ pub(super) async fn measure_for(
                 target.prefix.push_str("warmup-");
             }
         }
-        let warmup = spawn_workload(db.clone(), lab.client.clone(), warmup_spec);
+        let warmup = spawn_workload(db.clone(), warmup_spec);
         tokio::time::sleep(Duration::from_secs(lab.config.workload.warmup_secs)).await;
         let report = warmup.stop().await;
         validate(lab, &report)?;
     }
     lab.mark(format!("{}_start", spec.name));
-    let handle = spawn_workload(db.clone(), lab.client.clone(), spec.clone());
+    let handle = spawn_workload(db.clone(), spec.clone());
     let deadline = Instant::now() + duration;
     while !handle.finished() && Instant::now() < deadline {
         tokio::time::sleep(

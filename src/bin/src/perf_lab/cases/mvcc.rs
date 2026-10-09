@@ -9,6 +9,9 @@ use crate::perf_lab::LabContext;
 use crate::perf_lab::report::{CaseReport, case_report};
 use crate::perf_lab::workload::Operation;
 
+// Version-depth matrix shared by the MVCC cases.
+const VERSION_COUNTS: &[u64] = &[1, 100, 1000];
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum MvccCase {
     LatestVersions,
@@ -21,7 +24,7 @@ impl MvccCase {
     pub(super) async fn run(self, name: &str, lab: &mut LabContext) -> Result<CaseReport> {
         let mut reports = Vec::new();
         let mut derived = BTreeMap::new();
-        for versions in lab.config.workload.version_counts.clone() {
+        for &versions in VERSION_COUNTS {
             let (db, mut target) = fixture(lab, &format!("{}_v{versions}", name), false).await?;
             // Keep this matrix bounded independently of the read working-set profile.
             target.keys = target.keys.min(64);

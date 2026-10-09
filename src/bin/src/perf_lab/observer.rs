@@ -40,10 +40,19 @@ impl LabContext {
                     continue;
                 }
                 if path.extension().is_some_and(|e| e == "sst") {
-                    out.sst_bytes += entry.metadata()?.len();
+                    // Compaction can remove an SST after the directory was listed.
+                    match entry.metadata() {
+                        Ok(metadata) => out.sst_bytes += metadata.len(),
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                        Err(error) => return Err(error.into()),
+                    }
                 }
                 if path.file_name().is_some_and(|n| n.to_string_lossy().starts_with("LOG")) {
-                    let content = fs::read_to_string(&path)?;
+                    let content = match fs::read_to_string(&path) {
+                        Ok(content) => content,
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                        Err(error) => return Err(error.into()),
+                    };
                     for line in content.lines() {
                         if let Some((_, json)) = line.split_once("EVENT_LOG_v1 ")
                             && let Ok(value) = serde_json::from_str::<serde_json::Value>(json)

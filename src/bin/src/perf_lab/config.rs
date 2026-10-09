@@ -93,40 +93,9 @@ impl LabConfig {
             self.cluster.root.liveness_threshold_sec > self.cluster.root.heartbeat_timeout_sec,
             "liveness_threshold_sec must exceed heartbeat_timeout_sec"
         );
-        for values in [
-            &w.version_counts,
-            &w.txn_key_counts,
-            &w.large_txn_key_counts,
-            &w.group_counts,
-            &w.hotset_sizes,
-            &w.scan_limits,
-            &w.metadata_counts,
-        ] {
-            ensure!(
-                !values.is_empty() && values.iter().all(|v| *v > 0),
-                "matrix values must be nonempty and positive"
-            );
-        }
-        ensure!(
-            w.txn_key_counts.iter().all(|n| *n <= w.key_space),
-            "txn_key_counts must not exceed key_space"
-        );
-        ensure!(
-            !w.concurrency_levels.is_empty() && w.concurrency_levels.iter().all(|v| *v > 0),
-            "concurrency_levels must be positive"
-        );
-        ensure!(
-            !w.offered_qps.is_empty() && w.offered_qps.iter().all(|v| v.is_finite() && *v > 0.0),
-            "offered_qps must be finite and positive"
-        );
         ensure!(
             w.gc_retention_ms > 0 && w.gc_interval_ms > 0,
             "GC retention and interval must be positive"
-        );
-        ensure!(
-            w.write_ratios.iter().all(|v| v.is_finite() && *v > 0.0 && *v < 1.0)
-                && !w.write_ratios.is_empty(),
-            "write_ratios must be between zero and one (exclusive)"
         );
         ensure!(
             (0.0..=1.0).contains(&self.report.max_failure_rate),
@@ -176,7 +145,14 @@ impl Default for ClusterConfig {
             nodes: 3,
             cpus_per_node: 2,
             enable_proxy_service: false,
-            db: DbConfig { max_background_jobs: 2, max_sub_compactions: 1, ..DbConfig::default() },
+            db: DbConfig {
+                block_cache_size: 1 << 20,
+                write_buffer_size: 256 << 10,
+                max_write_buffer_number: 3,
+                max_background_jobs: 2,
+                max_sub_compactions: 1,
+                ..DbConfig::default()
+            },
             node: NodeConfig::default(),
             raft: RaftConfig { tick_interval_ms: 100, ..RaftConfig::default() },
             root: RootConfig {
@@ -192,18 +168,9 @@ impl Default for ClusterConfig {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "kebab-case")]
-pub(crate) enum ReadWorkingSet {
-    #[default]
-    Memory,
-    Disk,
-}
-
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub(crate) struct WorkloadConfig {
-    pub(crate) read_working_set: ReadWorkingSet,
     pub(crate) database: String,
     pub(crate) concurrency: usize,
     pub(crate) duration_secs: u64,
@@ -211,16 +178,6 @@ pub(crate) struct WorkloadConfig {
     pub(crate) cooldown_secs: u64,
     pub(crate) value_size: usize,
     pub(crate) key_space: u64,
-    pub(crate) version_counts: Vec<u64>,
-    pub(crate) txn_key_counts: Vec<u64>,
-    pub(crate) large_txn_key_counts: Vec<u64>,
-    pub(crate) group_counts: Vec<u64>,
-    pub(crate) hotset_sizes: Vec<u64>,
-    pub(crate) scan_limits: Vec<u64>,
-    pub(crate) concurrency_levels: Vec<usize>,
-    pub(crate) offered_qps: Vec<f64>,
-    pub(crate) write_ratios: Vec<f64>,
-    pub(crate) metadata_counts: Vec<u64>,
     pub(crate) request_timeout_secs: u64,
     pub(crate) event_timeout_secs: u64,
     pub(crate) storage_duration_secs: u64,
@@ -233,24 +190,13 @@ pub(crate) struct WorkloadConfig {
 impl Default for WorkloadConfig {
     fn default() -> Self {
         WorkloadConfig {
-            read_working_set: ReadWorkingSet::Memory,
             database: "perf_lab".to_owned(),
             concurrency: 32,
             duration_secs: 30,
             warmup_secs: 5,
             cooldown_secs: 5,
-            value_size: 128,
-            key_space: 10_000,
-            version_counts: vec![1, 100, 1000],
-            txn_key_counts: vec![1, 8, 32],
-            large_txn_key_counts: vec![64, 256, 1024],
-            group_counts: vec![1, 2, 4],
-            hotset_sizes: vec![1, 16, 1024],
-            scan_limits: vec![16, 128, 1024],
-            concurrency_levels: vec![1, 4, 16, 64],
-            offered_qps: vec![100.0, 1000.0, 5000.0],
-            write_ratios: vec![0.05, 0.5],
-            metadata_counts: vec![1, 10, 100],
+            value_size: 8192,
+            key_space: 4096,
             request_timeout_secs: 10,
             event_timeout_secs: 60,
             storage_duration_secs: 120,
@@ -303,17 +249,51 @@ impl Default for LogConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
     #[test]
-    fn rejects_invalid_workload_and_matrix_parameters() {
+    fn example_configs_use_only_common_workload_parameters() {
+        for contents in [
+            include_str!("../../../../conf/perf-lab-smoke.toml"),
+            include_str!("../../../../conf/perf-lab-snapshot.toml"),
+            include_str!("../../../../conf/perf-lab-disk.toml"),
+        ] {
+            let config: LabConfig = toml::from_str(contents).unwrap();
+            config.validate().unwrap();
+        }
+    }
+
+    #[test]
+    fn rejects_removed_case_parameters_in_workload_config_and_reports() {
+        for name in [
+            "version_counts",
+            "txn_key_counts",
+            "large_txn_key_counts",
+            "group_counts",
+            "hotset_sizes",
+            "scan_limits",
+            "write_ratios",
+            "concurrency_levels",
+            "offered_qps",
+            "metadata_counts",
+        ] {
+            let contents = format!("[workload]\n{name} = [1]");
+            let error = toml::from_str::<LabConfig>(&contents).unwrap_err();
+            assert!(error.to_string().contains(name));
+
+            let mut report_config = serde_json::to_value(LabConfig::default()).unwrap();
+            report_config["workload"][name] = serde_json::json!([1]);
+            assert!(serde_json::from_value::<LabConfig>(report_config).is_err());
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_common_workload_parameters() {
         let mut cfg = LabConfig::default();
         assert!(cfg.validate().is_ok());
         cfg.workload.key_space = 0;
         assert!(cfg.validate().is_err());
         cfg.workload.key_space = 10_000;
-        cfg.workload.offered_qps = vec![f64::NAN];
-        assert!(cfg.validate().is_err());
-        cfg.workload.offered_qps = vec![100.0];
-        cfg.workload.group_counts = vec![];
+        cfg.workload.request_timeout_secs = 0;
         assert!(cfg.validate().is_err());
     }
 }

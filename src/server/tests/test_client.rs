@@ -155,3 +155,44 @@ async fn client_request_to_offline_leader() {
         }
     }
 }
+
+#[sekas_macro::test]
+async fn client_get_with_version() {
+    let mut ctx = TestContext::new(fn_name!());
+    let nodes = ctx.bootstrap_servers(3).await;
+    let c = ClusterClient::new(nodes).await;
+    let client = c.app_client().await;
+    let db = client.create_database("test_db".to_owned()).await.unwrap();
+    let table = db.create_table("test_table".to_owned()).await.unwrap();
+    c.assert_table_ready(table.id).await;
+
+    let key = b"key".to_vec();
+    let absent = db.begin_txn().start_version().await.unwrap();
+    db.put(table.id, key.clone(), b"old".to_vec()).await.unwrap();
+    let old = db.get_raw_value(table.id, key.clone()).await.unwrap().unwrap();
+    let snapshot = db.begin_txn().start_version().await.unwrap();
+    db.put(table.id, key.clone(), b"new".to_vec()).await.unwrap();
+    assert_eq!(db.get(table.id, key.clone()).await.unwrap(), Some(b"new".to_vec()));
+    assert_eq!(db.get_with_version(table.id, key.clone(), absent).await.unwrap(), None);
+    assert_eq!(
+        db.get_with_version(table.id, key.clone(), old.version).await.unwrap(),
+        Some(b"old".to_vec())
+    );
+    assert_eq!(
+        db.get_raw_value_with_version(table.id, key.clone(), snapshot).await.unwrap(),
+        Some(old)
+    );
+
+    db.delete(table.id, key.clone()).await.unwrap();
+    let deleted = db.begin_txn().start_version().await.unwrap();
+    db.put(table.id, key.clone(), b"reborn".to_vec()).await.unwrap();
+    assert_eq!(db.get_with_version(table.id, key.clone(), deleted).await.unwrap(), None);
+    let tombstone =
+        db.get_raw_value_with_version(table.id, key.clone(), deleted).await.unwrap().unwrap();
+    assert_eq!(tombstone.content, None);
+    assert_eq!(
+        db.get_with_version(table.id, key.clone(), snapshot).await.unwrap(),
+        Some(b"old".to_vec())
+    );
+    assert_eq!(db.get(table.id, key).await.unwrap(), Some(b"reborn".to_vec()));
+}

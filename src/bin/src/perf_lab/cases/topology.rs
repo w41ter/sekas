@@ -58,7 +58,7 @@ impl TopologyCase {
             let extra_node = prepare_replica_change(self, lab, group).await?;
 
             lab.mark(format!("{stage}_baseline"));
-            let handle = spawn_workload(db.clone(), lab.client.clone(), spec);
+            let handle = spawn_workload(db.clone(), spec);
             handle.phase("baseline");
             tokio::time::sleep(Duration::from_secs(lab.config.workload.warmup_secs.max(1))).await;
             handle.phase("disturbance");
@@ -260,7 +260,6 @@ async fn fail_root(
     // Metadata RPCs and ordinary SI traffic both depend on root availability.
     let metadata = spawn_workload(
         db.clone(),
-        lab.client.clone(),
         workload(lab, &format!("metadata_{stage}"), target.clone(), Operation::Metadata),
     );
     lab.stop_server(node).await?;

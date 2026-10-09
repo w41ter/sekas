@@ -591,6 +591,16 @@ impl Txn {
         key: Vec<u8>,
         options: TxnReadOptions,
     ) -> AppResult<Option<Value>> {
+        self.get_raw_value_at_version(table_id, key, options, None).await
+    }
+
+    pub(crate) async fn get_raw_value_at_version(
+        &self,
+        table_id: u64,
+        key: Vec<u8>,
+        options: TxnReadOptions,
+        version: Option<u64>,
+    ) -> AppResult<Option<Value>> {
         CLIENT_DATABASE_BYTES_TOTAL.rx.inc_by(key.len() as u64);
         CLIENT_DATABASE_REQUEST_TOTAL.get.inc();
         record_latency!(&CLIENT_DATABASE_REQUEST_DURATION_SECONDS.get);
@@ -605,7 +615,7 @@ impl Txn {
         let mut retry_state = RetryState::with_deadline_opt(self.deadline);
 
         loop {
-            match self.get_inner(table_id, &key, retry_state.timeout()).await {
+            match self.get_inner(table_id, &key, retry_state.timeout(), version).await {
                 Ok(value) => {
                     CLIENT_DATABASE_BYTES_TOTAL.tx.inc_by(
                         value
@@ -627,9 +637,13 @@ impl Txn {
         table_id: u64,
         user_key: &[u8],
         timeout: Option<Duration>,
+        version: Option<u64>,
     ) -> crate::Result<Option<Value>> {
         self.has_snapshot_read.store(true, Ordering::Release);
-        let start_version = self.get_read_version().await?;
+        let start_version = match version {
+            Some(version) => version,
+            None => self.get_read_version().await?,
+        };
         let router = self.db.client.router();
         let (group, shard) = router.find_shard(table_id, user_key)?;
         let req = Request::Get(ShardGetRequest {
@@ -820,6 +834,7 @@ impl Txn {
                 table_id,
                 key,
                 self.deadline.map(|d| d.saturating_duration_since(Instant::now())),
+                None,
             )
             .await?;
         for local_write in local_writes {

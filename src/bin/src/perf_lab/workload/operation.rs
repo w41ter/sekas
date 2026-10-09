@@ -5,12 +5,7 @@ use std::time::Duration;
 
 use rand::Rng;
 use rand::rngs::SmallRng;
-use sekas_api::server::v1::ShardGetRequest;
-use sekas_api::server::v1::group_request_union::Request;
-use sekas_api::server::v1::group_response_union::Response;
-use sekas_client::{
-    AppError, AppResult, Database, GroupClient, Range, RangeRequest, SekasClient, WriteBuilder,
-};
+use sekas_client::{AppError, AppResult, Database, Range, RangeRequest, WriteBuilder};
 use tokio_stream::StreamExt;
 
 use super::{Operation, Outcome, Target, TxnMode, Workload};
@@ -36,7 +31,6 @@ fn check_value(
 
 pub(super) async fn execute(
     db: &Database,
-    client: &SekasClient,
     spec: &Workload,
     rng: &mut SmallRng,
     worker: usize,
@@ -55,20 +49,7 @@ pub(super) async fn execute(
         Operation::Read { present, version, expected } => {
             let key = target.key(index);
             let value = if let Some(version) = version {
-                let (group, shard) = spec.router.find_shard(target.table, &key)?;
-                let mut group = GroupClient::new(group, client.clone());
-                group.set_timeout(spec.timeout);
-                match group
-                    .request(&Request::Get(ShardGetRequest {
-                        shard_id: shard.id,
-                        start_version: *version,
-                        user_key: key,
-                    }))
-                    .await?
-                {
-                    Response::Get(response) => response.value.and_then(|v| v.content),
-                    _ => return Err(invalid("unexpected get response")),
-                }
+                db.get_with_version(target.table, key, *version).await?
             } else {
                 db.get(target.table, key).await?
             };
@@ -208,11 +189,13 @@ fn transaction_keys(targets: &[Target], keys: usize, offset: u64) -> Vec<(u64, V
         })
         .collect()
 }
+
 fn payload(rng: &mut SmallRng, size: usize) -> Vec<u8> {
     let mut value = vec![0; size];
     rng.fill(&mut value[..]);
     value
 }
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use sekas_client::{AppError, Database, Router, SekasClient};
+use sekas_client::{AppError, Database};
 use stats::Stats;
 pub(crate) use stats::WorkloadReport;
 use tokio::task::JoinHandle;
@@ -75,7 +75,6 @@ pub(crate) struct Workload {
     pub(crate) allow_conflicts: bool,
     pub(crate) allow_overload: bool,
     pub(crate) disjoint_keys: bool,
-    pub(crate) router: Router,
 }
 
 pub(crate) struct WorkloadHandle {
@@ -108,15 +107,15 @@ impl Drop for WorkloadHandle {
     }
 }
 
-pub(crate) fn spawn_workload(db: Database, client: SekasClient, spec: Workload) -> WorkloadHandle {
+pub(crate) fn spawn_workload(db: Database, spec: Workload) -> WorkloadHandle {
     let stop = Arc::new(AtomicBool::new(false));
     let mut initial = Stats::new(&spec.name, expected_errors(&spec));
     initial.parameters = parameters(&spec);
     let stats = Arc::new(Mutex::new(initial));
     let tasks = if let Some(qps) = spec.offered_qps {
-        vec![scheduler::spawn_open_loop(db, client, spec, stop.clone(), stats.clone(), qps)]
+        vec![scheduler::spawn_open_loop(db, spec, stop.clone(), stats.clone(), qps)]
     } else {
-        scheduler::spawn_closed_loop(db, client, spec, stop.clone(), stats.clone())
+        scheduler::spawn_closed_loop(db, spec, stop.clone(), stats.clone())
     };
     WorkloadHandle { stop, stats, tasks }
 }

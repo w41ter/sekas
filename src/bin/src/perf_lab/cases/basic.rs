@@ -9,6 +9,9 @@ use crate::perf_lab::LabContext;
 use crate::perf_lab::report::{CaseReport, case_report};
 use crate::perf_lab::workload::Operation;
 
+// Range-scan case parameters.
+const SCAN_LIMITS: &[u64] = &[16, 128, 1024];
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum BasicCase {
     PointHit,
@@ -24,9 +27,7 @@ impl BasicCase {
     pub(super) async fn run(self, name: &str, lab: &mut LabContext) -> Result<CaseReport> {
         let (db, target) =
             fixture(lab, name, self != Self::PointMiss && self != Self::Insert).await?;
-        if lab.config.workload.read_working_set == crate::perf_lab::config::ReadWorkingSet::Disk
-            && matches!(self, Self::PointHit | Self::RangeScan | Self::CrossShardScan)
-        {
+        if matches!(self, Self::PointHit | Self::RangeScan | Self::CrossShardScan) {
             let db_config = &lab.config.cluster.db;
             let bytes = target.keys as u128 * lab.config.workload.value_size as u128;
             let memory_budget = db_config.block_cache_size as u128 * 4
@@ -35,11 +36,11 @@ impl BasicCase {
                     * 2;
             ensure!(
                 bytes > memory_budget,
-                "disk read profile requires a working set larger than cache and write buffers"
+                "read case requires a working set larger than cache and write buffers"
             );
             ensure!(
                 lab.storage_stats()?.sst_bytes > db_config.block_cache_size as u64,
-                "disk read fixture did not flush beyond block cache"
+                "read fixture did not flush beyond block cache"
             );
         }
         let mut reports = Vec::new();
@@ -71,7 +72,7 @@ impl BasicCase {
                 );
                 reports.push(measure(lab, &db, spec).await?);
             } else {
-                for limit in lab.config.workload.scan_limits.clone() {
+                for &limit in SCAN_LIMITS {
                     let spec = workload(
                         lab,
                         &format!("scan_{limit}"),

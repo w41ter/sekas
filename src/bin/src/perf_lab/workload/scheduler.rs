@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
-use sekas_client::{Database, SekasClient};
+use sekas_client::Database;
 use tokio::task::JoinHandle;
 
 use super::operation::execute;
@@ -16,7 +16,6 @@ use super::{Operation, Outcome, Workload, classify_error};
 
 pub(super) fn spawn_open_loop(
     db: Database,
-    client: SekasClient,
     spec: Workload,
     stop: Arc<AtomicBool>,
     stats: Arc<Mutex<Stats>>,
@@ -45,17 +44,13 @@ pub(super) fn spawn_open_loop(
             match permits.clone().try_acquire_owned() {
                 Ok(permit) => {
                     let db = db.clone();
-                    let client = client.clone();
                     let spec = spec.clone();
                     let stats = stats.clone();
                     let seed = rng.r#gen();
                     running.spawn(async move {
                         let _permit = permit;
                         let mut rng = SmallRng::seed_from_u64(seed);
-                        run_one(
-                            &db, &client, &spec, &mut rng, 0, sequence, scheduled, &phase, &stats,
-                        )
-                        .await;
+                        run_one(&db, &spec, &mut rng, 0, sequence, scheduled, &phase, &stats).await;
                     });
                 }
                 Err(_) => stats.lock().unwrap().observe(
@@ -78,7 +73,6 @@ pub(super) fn spawn_open_loop(
 
 pub(super) fn spawn_closed_loop(
     db: Database,
-    client: SekasClient,
     spec: Workload,
     stop: Arc<AtomicBool>,
     stats: Arc<Mutex<Stats>>,
@@ -86,7 +80,6 @@ pub(super) fn spawn_closed_loop(
     let mut tasks = Vec::new();
     for worker in 0..spec.concurrency {
         let db = db.clone();
-        let client = client.clone();
         let spec = spec.clone();
         let stop = stop.clone();
         let stats = stats.clone();
@@ -100,18 +93,8 @@ pub(super) fn spawn_closed_loop(
                     break;
                 }
                 let phase = stats.lock().unwrap().current.clone();
-                run_one(
-                    &db,
-                    &client,
-                    &spec,
-                    &mut rng,
-                    worker,
-                    sequence,
-                    Instant::now(),
-                    &phase,
-                    &stats,
-                )
-                .await;
+                run_one(&db, &spec, &mut rng, worker, sequence, Instant::now(), &phase, &stats)
+                    .await;
                 sequence += 1;
             }
         }));
@@ -122,7 +105,6 @@ pub(super) fn spawn_closed_loop(
 #[allow(clippy::too_many_arguments)]
 async fn run_one(
     db: &Database,
-    client: &SekasClient,
     spec: &Workload,
     rng: &mut SmallRng,
     worker: usize,
@@ -136,7 +118,7 @@ async fn run_one(
     // no unused values.
     let result = tokio::time::timeout_at(
         (started + spec.timeout).into(),
-        execute(db, client, spec, rng, worker, sequence, &mut outcome),
+        execute(db, spec, rng, worker, sequence, &mut outcome),
     )
     .await;
     let result = match result {

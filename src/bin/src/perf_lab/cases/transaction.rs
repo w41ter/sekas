@@ -9,6 +9,13 @@ use crate::perf_lab::LabContext;
 use crate::perf_lab::report::{CaseReport, case_report};
 use crate::perf_lab::workload::{Operation, TxnMode};
 
+// Transaction case matrices. Key counts are totals across all participants.
+const LOCAL_GROUP_COUNTS: &[u64] = &[1];
+const DISTRIBUTED_GROUP_COUNTS: &[u64] = &[2, 4];
+const LARGE_TXN_GROUP_COUNTS: &[u64] = &[1, 2, 4];
+const TXN_KEY_COUNTS: &[u64] = &[1, 8, 32];
+const LARGE_TXN_KEY_COUNTS: &[u64] = &[64, 256, 1024];
+
 #[derive(Clone, Copy)]
 pub(super) struct TransactionCase {
     pub(super) mode: TxnMode,
@@ -32,16 +39,9 @@ pub(super) enum KeyMatrix {
 impl TransactionCase {
     pub(super) async fn run(self, name: &str, lab: &mut LabContext) -> Result<CaseReport> {
         let groups = match self.placement {
-            Placement::Local => vec![1],
-            Placement::Distributed => lab
-                .config
-                .workload
-                .group_counts
-                .iter()
-                .copied()
-                .filter(|count| *count > 1)
-                .collect(),
-            Placement::Matrix => lab.config.workload.group_counts.clone(),
+            Placement::Local => LOCAL_GROUP_COUNTS,
+            Placement::Distributed => DISTRIBUTED_GROUP_COUNTS,
+            Placement::Matrix => LARGE_TXN_GROUP_COUNTS,
         };
         anyhow::ensure!(
             !groups.is_empty(),
@@ -49,13 +49,13 @@ impl TransactionCase {
         );
         let mut reports = Vec::new();
         let mut derived = BTreeMap::new();
-        for groups in groups {
+        for &groups in groups {
             let key_counts = if self.key_matrix == KeyMatrix::Large {
-                lab.config.workload.large_txn_key_counts.clone()
+                LARGE_TXN_KEY_COUNTS
             } else {
-                lab.config.workload.txn_key_counts.clone()
+                TXN_KEY_COUNTS
             };
-            for keys in key_counts {
+            for &keys in key_counts {
                 if keys < groups || keys > (lab.config.workload.key_space / groups) * groups {
                     continue;
                 }

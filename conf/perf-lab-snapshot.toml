@@ -1,4 +1,4 @@
-runner_threads = 4
+runner_threads = 8
 
 [environment]
 root_dir = "./target/sekas-perf-lab-snapshot"
@@ -46,7 +46,9 @@ snap_file_size = 68719476736
 engine_slow_io_threshold_ms = 1000
 
 [cluster.db]
-block_cache_size = 8388608
+block_cache_size = 33554432     # 32MB
+write_buffer_size = 16777216    # 16MB
+max_write_buffer_number = 2
 max_background_jobs = 2
 max_sub_compactions = 1
 mvcc_gc_retention_ms = 0
@@ -54,11 +56,11 @@ mvcc_gc_retention_ms = 0
 [workload]
 database = "perf_lab_snapshot"
 concurrency = 4
-duration_secs = 5
-warmup_secs = 2
+duration_secs = 30
+warmup_secs = 5
 cooldown_secs = 5
-value_size = 4096
-key_space = 4096
+value_size = 8192               # 8KB
+key_space = 131072              # 128K, 128K * 8KB = 1GB
 
 [report]
 out_dir = "target/perf-lab-snapshot"

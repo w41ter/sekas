@@ -11,6 +11,15 @@ use crate::perf_lab::config::LabConfig;
 use crate::perf_lab::report::{CaseReport, case_report};
 use crate::perf_lab::workload::{Operation, TxnMode};
 
+// Capacity case parameters; scale cases do not borrow the concurrency matrix.
+const CONCURRENCY_LEVELS: &[usize] = &[1, 4, 16, 64];
+const OFFERED_QPS: &[f64] = &[100.0, 1000.0, 5000.0];
+const GROUP_SCALE_GROUP_COUNTS: &[u64] = &[1, 2, 4];
+const GROUP_SCALE_CONCURRENCY: usize = 64;
+const NODE_SCALE_GROUP_COUNT: usize = 4;
+const NODE_SCALE_CONCURRENCY: usize = 64;
+const METADATA_COUNTS: &[u64] = &[1, 10, 100];
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum CapacityCase {
     Concurrency,
@@ -43,7 +52,7 @@ impl CapacityCase {
                         template.targets = targets.clone();
                     }
                     if self == Self::Concurrency {
-                        for concurrency in lab.config.workload.concurrency_levels.clone() {
+                        for &concurrency in CONCURRENCY_LEVELS {
                             let mut spec = template.clone();
                             spec.name = format!("{name}_concurrency_{concurrency}");
                             spec.concurrency = concurrency;
@@ -53,7 +62,7 @@ impl CapacityCase {
                         // Overload/deadline errors are expected in this capacity probe, but
                         // validation errors are not.
 
-                        for qps in lab.config.workload.offered_qps.clone() {
+                        for &qps in OFFERED_QPS {
                             let mut spec = template.clone();
                             spec.name = format!("{name}_offered_{qps}");
                             spec.offered_qps = Some(qps);
@@ -71,7 +80,7 @@ impl CapacityCase {
                 }
             }
             Self::GroupScale => {
-                for groups in lab.config.workload.group_counts.clone() {
+                for &groups in GROUP_SCALE_GROUP_COUNTS {
                     let (db, targets) =
                         layout(lab, &format!("scale_{groups}"), groups as usize).await?;
                     let mut spec = workload(
@@ -81,19 +90,16 @@ impl CapacityCase {
                         Operation::Put,
                     );
                     spec.targets = targets;
-                    spec.concurrency =
-                        *lab.config.workload.concurrency_levels.iter().max().unwrap();
+                    spec.concurrency = GROUP_SCALE_CONCURRENCY;
                     reports.push(measure(lab, &db, spec).await?);
                 }
             }
             Self::NodeScale => {
-                let participants =
-                    lab.config.workload.group_counts.iter().copied().max().unwrap().max(2);
-                let (db, targets) = layout(lab, "node_scale", participants as usize).await?;
+                let (db, targets) = layout(lab, "node_scale", NODE_SCALE_GROUP_COUNT).await?;
                 let mut spec =
                     workload(lab, "before_scale_out", targets[0].clone(), Operation::Put);
                 spec.targets = targets.clone();
-                spec.concurrency = *lab.config.workload.concurrency_levels.iter().max().unwrap();
+                spec.concurrency = NODE_SCALE_CONCURRENCY;
                 let before = measure(lab, &db, spec.clone()).await?;
                 let started = Instant::now();
                 let node = lab.add_server().await?;
@@ -130,7 +136,7 @@ impl CapacityCase {
                 reports.extend([before, after]);
             }
             Self::MetadataScale => {
-                for count in lab.config.workload.metadata_counts.clone() {
+                for &count in METADATA_COUNTS {
                     let db = lab.client.create_database(format!("metadata_scale_{count}")).await?;
                     for i in 0..count {
                         lab.table(&db, &format!("table_{i}")).await?;
