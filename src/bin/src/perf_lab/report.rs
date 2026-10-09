@@ -154,24 +154,6 @@ pub(crate) struct HistogramSummary {
 }
 
 impl HistogramSummary {
-    pub(crate) fn from_latencies(latencies: &[u64]) -> Self {
-        if latencies.is_empty() {
-            return HistogramSummary::default();
-        }
-        let mut values = latencies.to_vec();
-        values.sort_unstable();
-        let sum = values.iter().sum::<u64>();
-        HistogramSummary {
-            count: values.len() as u64,
-            avg_us: sum / values.len() as u64,
-            p50_us: percentile_sorted(&values, 0.50),
-            p95_us: percentile_sorted(&values, 0.95),
-            p99_us: percentile_sorted(&values, 0.99),
-            p999_us: percentile_sorted(&values, 0.999),
-            max_us: *values.last().unwrap(),
-        }
-    }
-
     fn from_buckets(count: u64, sample_sum_seconds: f64, buckets: &[(f64, u64)]) -> Self {
         if count == 0 {
             return HistogramSummary::default();
@@ -252,8 +234,11 @@ pub(crate) struct CaseReport {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct SuiteReport {
+    pub(crate) schema_version: u32,
     pub(crate) run_id: String,
     pub(crate) reports: Vec<CaseReport>,
+    #[serde(default)]
+    pub(crate) errors: BTreeMap<String, String>,
 }
 
 impl CaseReport {
@@ -274,12 +259,41 @@ pub(crate) fn case_report(
     mut derived: BTreeMap<String, f64>,
 ) -> CaseReport {
     for workload in &workloads {
-        derived.insert(format!("{}.qps", workload.name), workload.qps);
-        derived.insert(format!("{}.avg_us", workload.name), workload.latency.avg_us as f64);
-        derived.insert(format!("{}.p99_us", workload.name), workload.latency.p99_us as f64);
-        derived.insert(format!("{}.failure_rate", workload.name), failure_rate(workload));
+        let prefix = &workload.name;
+        for (key, value) in &workload.parameters {
+            derived.insert(format!("{prefix}.params.{key}"), *value);
+        }
+        derived.insert(format!("{prefix}.qps"), workload.qps);
+        derived.insert(format!("{prefix}.attempt_qps"), workload.attempt_qps);
+        derived.insert(format!("{prefix}.avg_us"), workload.latency.avg_us as f64);
+        derived.insert(format!("{prefix}.p99_us"), workload.latency.p99_us as f64);
+        derived.insert(format!("{prefix}.success.avg_us"), workload.success_latency.avg_us as f64);
+        derived.insert(format!("{prefix}.success.p99_us"), workload.success_latency.p99_us as f64);
+        derived.insert(format!("{prefix}.max_success_gap_us"), workload.max_success_gap_us as f64);
+        derived.insert(format!("{prefix}.failure_rate"), failure_rate(workload));
+        derived.insert(
+            format!("{prefix}.unexpected_failure_rate"),
+            workload.unexpected_failures() as f64 / workload.operations.max(1) as f64,
+        );
+        derived.insert(
+            format!("{prefix}.conflict_rate"),
+            workload.conflicts as f64 / workload.attempts.max(1) as f64,
+        );
+        derived.insert(
+            format!("{prefix}.attempts_per_success"),
+            workload.attempts as f64 / workload.successes.max(1) as f64,
+        );
+        let seconds = (workload.duration_ms as f64 / 1000.0).max(0.001);
+        derived.insert(format!("{prefix}.rows_per_sec"), workload.rows as f64 / seconds);
+        derived.insert(format!("{prefix}.bytes_per_sec"), workload.bytes as f64 / seconds);
+        for phase in &workload.phase_summaries {
+            let phase_prefix = format!("{prefix}.phase.{}", phase.name);
+            derived.insert(format!("{phase_prefix}.qps"), phase.qps);
+            derived.insert(format!("{phase_prefix}.avg_us"), phase.latency.avg_us as f64);
+            derived.insert(format!("{phase_prefix}.p99_us"), phase.latency.p99_us as f64);
+        }
         for (kind, count) in &workload.errors {
-            derived.insert(format!("{}.errors.{kind}", workload.name), *count as f64);
+            derived.insert(format!("{prefix}.errors.{kind}"), *count as f64);
         }
     }
     CaseReport {
@@ -299,12 +313,35 @@ pub(crate) fn compare_with_baseline(
     let Some(baseline) = read_baseline_for_case(baseline_path, &current.case)? else {
         return Ok(None);
     };
+    let comparable = |config: &LabConfig| {
+        serde_json::json!({
+            "build_profile": config.build_profile,
+            "runner_threads": config.runner_threads, "cluster": config.cluster,
+            "workload": config.workload
+        })
+    };
+    if comparable(&current.config) != comparable(&baseline.config) {
+        bail!(
+            "{} baseline workload/cluster configuration differs; regenerate baseline with the same profile",
+            current.case
+        );
+    }
     let mut checks = Vec::new();
     for (metric, value) in &current.derived {
         let Some(base) = baseline.derived.get(metric) else {
             continue;
         };
-        if metric.ends_with(".qps") {
+        if metric.contains(".params.") && value != base {
+            bail!(
+                "{} workload parameter {} differs from baseline; regenerate baseline",
+                current.case,
+                metric
+            );
+        }
+        if (metric.ends_with(".qps") && !metric.ends_with(".attempt_qps"))
+            || metric.ends_with(".rows_per_sec")
+            || metric.ends_with(".bytes_per_sec")
+        {
             let drop_percent =
                 if *base <= f64::EPSILON { 0.0 } else { ((*base - *value) / *base) * 100.0 };
             checks.push(ComparisonCheck {
@@ -316,7 +353,11 @@ pub(crate) fn compare_with_baseline(
                 failed: drop_percent > current.config.report.max_qps_drop_percent,
                 direction: "drop".to_owned(),
             });
-        } else if metric.ends_with(".avg_us") || metric.ends_with(".p99_us") {
+        } else if metric.ends_with(".avg_us")
+            || metric.ends_with(".p99_us")
+            || metric.ends_with("_duration_ms")
+            || metric.ends_with(".max_success_gap_us")
+        {
             let increase_percent =
                 if *base <= f64::EPSILON { 0.0 } else { ((*value - *base) / *base) * 100.0 };
             checks.push(ComparisonCheck {
@@ -327,6 +368,16 @@ pub(crate) fn compare_with_baseline(
                 threshold_percent: current.config.report.max_latency_increase_percent,
                 failed: increase_percent > current.config.report.max_latency_increase_percent,
                 direction: "increase".to_owned(),
+            });
+        } else if metric.ends_with(".unexpected_failure_rate") {
+            checks.push(ComparisonCheck {
+                metric: metric.clone(),
+                baseline: *base,
+                current: *value,
+                delta_percent: (*value - *base) * 100.0,
+                threshold_percent: current.config.report.max_failure_rate * 100.0,
+                failed: *value > current.config.report.max_failure_rate,
+                direction: "absolute".to_owned(),
             });
         }
     }
@@ -340,6 +391,12 @@ pub(crate) fn read_baseline_reports(path: &Path) -> Result<Vec<CaseReport>> {
         .with_context(|| format!("parse baseline suite {}", path.display()))?;
     if suite.reports.is_empty() {
         bail!("baseline {} contains no reports", path.display());
+    }
+    if suite.schema_version != 2 {
+        bail!("perf-lab baseline schema changed; regenerate a version 2 baseline");
+    }
+    if !suite.errors.is_empty() {
+        bail!("perf-lab baseline contains failed cases; use a successful suite");
     }
     Ok(suite.reports)
 }
@@ -384,11 +441,6 @@ struct ComparisonCheck {
     direction: String,
 }
 
-fn percentile_sorted(values: &[u64], percentile: f64) -> u64 {
-    let idx = ((values.len() as f64 * percentile).ceil() as usize).saturating_sub(1);
-    values[idx.min(values.len() - 1)]
-}
-
 fn seconds_to_us(seconds: f64) -> u64 {
     (seconds * 1_000_000.0).max(0.0) as u64
 }
@@ -400,6 +452,52 @@ fn failure_rate(report: &WorkloadReport) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn comparison_checks_failure_rates_event_durations_and_profiles() {
+        let config = LabConfig::default();
+        let report = CaseReport {
+            case: "leader-transfer".into(),
+            run_id: "test".into(),
+            config,
+            workloads: vec![],
+            derived: BTreeMap::from([
+                ("write.unexpected_failure_rate".into(), 0.0),
+                ("event_duration_ms".into(), 100.0),
+            ]),
+            metric_intervals: vec![],
+        };
+        let path =
+            std::env::temp_dir().join(format!("perf-lab-checks-{}.json", std::process::id()));
+        fs::write(
+            &path,
+            serde_json::to_vec(&SuiteReport {
+                schema_version: 2,
+                run_id: "test".into(),
+                reports: vec![report.clone()],
+                errors: BTreeMap::new(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        let mut current = report;
+        current.derived.insert("write.unexpected_failure_rate".into(), 0.01);
+        current.derived.insert("event_duration_ms".into(), 120.0);
+        let comparison = compare_with_baseline(&current, &path).unwrap().unwrap();
+        assert_eq!(comparison.checks.len(), 2);
+        assert!(comparison.checks.iter().all(|check| check.failed));
+        current.config.workload.concurrency += 1;
+        assert!(compare_with_baseline(&current, &path).is_err());
+        let failed_suite = SuiteReport {
+            schema_version: 2,
+            run_id: "failed".into(),
+            reports: vec![current],
+            errors: BTreeMap::from([("gc-backlog".into(), "GC did not reclaim versions".into())]),
+        };
+        fs::write(&path, serde_json::to_vec(&failed_suite).unwrap()).unwrap();
+        assert!(read_baseline_reports(&path).is_err());
+        fs::remove_file(path).unwrap();
+    }
 
     #[test]
     fn average_latency_uses_latency_regression_threshold() {
@@ -420,7 +518,12 @@ mod tests {
             std::process::id(),
             std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
         ));
-        let mut suite = SuiteReport { run_id: "baseline".to_owned(), reports: vec![baseline] };
+        let mut suite = SuiteReport {
+            schema_version: 2,
+            run_id: "baseline".to_owned(),
+            reports: vec![baseline],
+            errors: BTreeMap::new(),
+        };
         fs::write(&path, serde_json::to_vec(&suite).unwrap()).unwrap();
         let mut current = suite.reports[0].clone();
         let mut comparisons = Vec::new();

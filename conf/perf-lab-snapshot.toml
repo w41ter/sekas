@@ -46,14 +46,13 @@ snap_file_size = 68719476736
 engine_slow_io_threshold_ms = 1000
 
 [cluster.db]
+block_cache_size = 8388608
 max_background_jobs = 2
 max_sub_compactions = 1
 mvcc_gc_retention_ms = 0
 
 [workload]
 database = "perf_lab_snapshot"
-table = "t1"
-second_table = "t2"
 concurrency = 4
 duration_secs = 5
 warmup_secs = 2

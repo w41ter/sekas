@@ -1,97 +1,118 @@
 // Copyright 2026-present The Sekas Authors.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-// http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-
+// Licensed under the Apache License, Version 2.0.
 use std::collections::BTreeMap;
-use std::time::Duration;
 
 use anyhow::{Result, ensure};
 
+use super::support::*;
+use crate::perf_lab::LabContext;
 use crate::perf_lab::report::{CaseReport, case_report};
-use crate::perf_lab::workload::{WorkloadKind, spawn_workload};
-use crate::perf_lab::{LabContext, PerfCase};
+use crate::perf_lab::workload::Operation;
 
-pub(crate) struct SingleKeyUpdate;
-
-impl PerfCase for SingleKeyUpdate {
-    fn name(&self) -> &'static str {
-        "single-key-update"
-    }
-
-    async fn run(&self, lab: &mut LabContext) -> Result<CaseReport> {
-        let db = lab.database().await?;
-        let table = lab.table(&db, &lab.config.workload.table).await?;
-        let key = b"single-key".to_vec();
-        lab.mark("start");
-        let workload = spawn_workload(
-            db,
-            "single_key_update",
-            WorkloadKind::FixedKeyPut { table: table.id, key },
-            lab.config.workload.concurrency,
-            lab.config.workload.value_size,
-            lab.config.workload.key_space,
-        );
-        tokio::time::sleep(Duration::from_secs(lab.config.workload.duration_secs)).await;
-        lab.mark("end");
-        let report = workload.stop().await;
-        Ok(case_report(lab, self.name(), vec![report], BTreeMap::new()))
-    }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum BasicCase {
+    PointHit,
+    PointMiss,
+    Insert,
+    Update,
+    Delete,
+    RangeScan,
+    CrossShardScan,
 }
 
-pub(crate) struct BatchTxnCommit;
-
-impl PerfCase for BatchTxnCommit {
-    fn name(&self) -> &'static str {
-        "batch-txn-commit"
-    }
-
-    async fn run(&self, lab: &mut LabContext) -> Result<CaseReport> {
-        let db = lab.database().await?;
-        let left = lab.table(&db, &lab.config.workload.table).await?;
-        let right = lab.table(&db, &lab.config.workload.second_table).await?;
-        // A probe represents the whole workload only while each table has one shard.
-        for table_id in [left.id, right.id] {
-            let (_, shard) = lab.group_for_key(table_id, b"").await?;
+impl BasicCase {
+    pub(super) async fn run(self, name: &str, lab: &mut LabContext) -> Result<CaseReport> {
+        let (db, target) =
+            fixture(lab, name, self != Self::PointMiss && self != Self::Insert).await?;
+        if lab.config.workload.read_working_set == crate::perf_lab::config::ReadWorkingSet::Disk
+            && matches!(self, Self::PointHit | Self::RangeScan | Self::CrossShardScan)
+        {
+            let db_config = &lab.config.cluster.db;
+            let bytes = target.keys as u128 * lab.config.workload.value_size as u128;
+            let memory_budget = db_config.block_cache_size as u128 * 4
+                + db_config.write_buffer_size as u128
+                    * db_config.max_write_buffer_number as u128
+                    * 2;
             ensure!(
-                shard
-                    .range
-                    .as_ref()
-                    .is_some_and(|range| range.start.is_empty() && range.end.is_empty()),
-                "batch-txn-commit requires a single shard per table; use a fresh cluster"
+                bytes > memory_budget,
+                "disk read profile requires a working set larger than cache and write buffers"
+            );
+            ensure!(
+                lab.storage_stats()?.sst_bytes > db_config.block_cache_size as u64,
+                "disk read fixture did not flush beyond block cache"
             );
         }
-        let (left_group, right_group) = lab
-            .ensure_different_group(
-                (left.id, b"left-00000000000000000000"),
-                (right.id, b"right-00000000000000000000"),
-            )
-            .await?;
-        lab.mark("start");
-        let workload = spawn_workload(
-            db,
-            "batch_txn_commit",
-            WorkloadKind::BatchTxnCommit { left_table: left.id, right_table: right.id },
-            lab.config.workload.concurrency,
-            lab.config.workload.value_size,
-            lab.config.workload.key_space,
+        let mut reports = Vec::new();
+        let mut derived = BTreeMap::new();
+        derived.insert("fixture.live_keys".into(), target.keys as f64);
+        derived.insert(
+            "fixture.payload_bytes".into(),
+            (target.keys as f64) * lab.config.workload.value_size as f64,
         );
-        tokio::time::sleep(Duration::from_secs(lab.config.workload.duration_secs)).await;
-        lab.mark("end");
-        let report = workload.stop().await;
-        let derived = BTreeMap::from([
-            ("left_group_id".to_owned(), left_group as f64),
-            ("right_group_id".to_owned(), right_group as f64),
-        ]);
-        Ok(case_report(lab, self.name(), vec![report], derived))
+        if matches!(self, Self::RangeScan | Self::CrossShardScan) {
+            if self == Self::CrossShardScan {
+                ensure_groups(lab, 2).await?;
+                ensure!(target.keys >= 2, "cross-shard-scan needs at least two keys");
+                lab.split_shard_for_key(target.table, &target.key(target.keys / 2)).await?;
+                lab.migrate_shard_to_new_group(target.table, &target.key(target.keys / 2)).await?;
+                let left = lab.group_for_key(target.table, &target.key(0)).await?.0;
+                let right = lab.group_for_key(target.table, &target.key(target.keys - 1)).await?.0;
+                ensure!(left != right, "cross-shard scan requires two groups");
+                let spec = workload(
+                    lab,
+                    "cross_shard_full_scan",
+                    target.clone(),
+                    Operation::Scan {
+                        limit: target.keys,
+                        version: None,
+                        expected_rows: Some(target.keys),
+                        expected: None,
+                    },
+                );
+                reports.push(measure(lab, &db, spec).await?);
+            } else {
+                for limit in lab.config.workload.scan_limits.clone() {
+                    let spec = workload(
+                        lab,
+                        &format!("scan_{limit}"),
+                        target.clone(),
+                        Operation::Scan {
+                            limit,
+                            version: None,
+                            expected_rows: Some(limit.min(target.keys)),
+                            expected: None,
+                        },
+                    );
+                    reports.push(measure(lab, &db, spec).await?);
+                }
+            }
+        } else {
+            let operation = match self {
+                Self::PointHit => Operation::Read { present: true, version: None, expected: None },
+                Self::PointMiss => {
+                    Operation::Read { present: false, version: None, expected: None }
+                }
+                Self::Insert => Operation::Insert,
+                Self::Update => Operation::Put,
+                Self::Delete => Operation::Delete,
+                Self::RangeScan | Self::CrossShardScan => {
+                    unreachable!("scans handled above")
+                }
+            };
+            let report_target = target.clone();
+            let mut spec = workload(lab, name, target, operation);
+            if self == Self::Delete {
+                spec.concurrency = spec.concurrency.min(spec.targets[0].keys as usize);
+            }
+            let report = measure(lab, &db, spec).await?;
+            if self == Self::Delete && report.successes == lab.config.workload.key_space {
+                ensure!(
+                    db.get(report_target.table, report_target.key(0)).await?.is_none(),
+                    "deleted key remained visible"
+                );
+            }
+            reports.push(report);
+        }
+        Ok(case_report(lab, name, reports, derived))
     }
 }

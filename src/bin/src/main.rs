@@ -132,7 +132,7 @@ fn main() -> Result<()> {
             Ok(())
         }
         SubCommand::Checker(cmd) => cmd.run().map_err(|err| Error::InvalidData(err.to_string())),
-        SubCommand::PerfLab(cmd) => cmd.run().map_err(|err| Error::InvalidData(err.to_string())),
+        SubCommand::PerfLab(cmd) => cmd.run().map_err(|err| Error::InvalidData(format!("{err:#}"))),
         SubCommand::Shell(cmd) => {
             cmd.run();
             Ok(())

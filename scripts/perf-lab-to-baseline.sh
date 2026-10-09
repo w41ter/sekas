@@ -65,7 +65,8 @@ if [[ -e "$output" && "$force" != true ]]; then
 fi
 
 if ! jq -e '
-    type == "object" and
+    type == "object" and (.schema_version == 2) and
+    ((.errors // {}) | length == 0) and
     (.run_id | type == "string" or type == "number") and
     (.reports | type == "array" and length > 0) and
     all(.reports[];
@@ -87,12 +88,13 @@ tmp=$(mktemp "${output}.tmp.XXXXXX")
 trap 'rm -f "$tmp"' EXIT
 
 jq '{
+    schema_version,
     run_id: ("baseline-" + (.run_id | tostring)),
     reports: [
         .reports[] | {
             case,
             run_id: (.run_id | tostring),
-            config: {},
+            config,
             workloads: [],
             derived,
             metric_intervals: []
