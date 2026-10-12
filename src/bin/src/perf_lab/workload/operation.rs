@@ -78,7 +78,7 @@ pub(super) async fn execute(
             out.rows = 1;
         }
         Operation::Delete => {
-            let key = target.key(worker as u64 + sequence * spec.concurrency as u64);
+            let key = target.key(worker as u64 + sequence * spec.load.concurrency() as u64);
             db.delete(target.table, key).await?;
             out.rows = 1;
         }
@@ -138,7 +138,7 @@ async fn execute_transaction(
     // Consecutive distinct keys; each participating table/group gets at least one.
     let keys = (*keys).max(spec.targets.len());
     let offset = if spec.disjoint_keys {
-        let partition = target.keys / spec.concurrency as u64;
+        let partition = target.keys / spec.load.concurrency() as u64;
         let needed = keys.div_ceil(spec.targets.len()) as u64;
         worker as u64 * partition + rng.gen_range(0..=partition - needed)
     } else {

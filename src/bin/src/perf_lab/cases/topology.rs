@@ -8,11 +8,11 @@ use sekas_api::server::v1::ReplicaRole;
 use sekas_client::Database;
 
 use super::support::*;
-use crate::perf_lab::LabContext;
 use crate::perf_lab::config::LabConfig;
 use crate::perf_lab::observer::metric_counter;
-use crate::perf_lab::report::{CaseReport, case_report};
+use crate::perf_lab::report::{CaseReport, case_report, latency_check, workload_checks};
 use crate::perf_lab::workload::{Operation, Target, TxnMode, WorkloadReport, spawn_workload};
+use crate::perf_lab::{LabContext, RunProfile};
 
 type Metrics = BTreeMap<String, f64>;
 
@@ -42,25 +42,44 @@ impl TopologyCase {
     pub(super) async fn run(self, name: &str, lab: &mut LabContext) -> Result<CaseReport> {
         let mut reports = Vec::new();
         let mut derived = Metrics::new();
+        let fixture_spec = fixture_spec(
+            lab,
+            FixtureSpec { keys: 512, value_size: 1024 },
+            FixtureSpec { keys: 4096, value_size: 4096 },
+            FixtureSpec { keys: 16_384, value_size: 8192 },
+            FixtureSpec { keys: 65_536, value_size: 8192 },
+        );
+        let foreground_qps = match lab.config.profile {
+            RunProfile::Smoke => 20.0,
+            RunProfile::Regression => 100.0,
+            RunProfile::Characterization => 500.0,
+            RunProfile::Stress => 2000.0,
+        };
         for (stage, operation) in [
             ("point_write", Operation::Put),
             ("distributed_txn", Operation::Transaction { mode: TxnMode::ReadWrite, keys: 2 }),
         ] {
-            let (db, targets) = layout(lab, stage, 2).await?;
+            let (db, targets) = layout(lab, stage, 2, fixture_spec).await?;
             let target = &targets[0];
             let (group, _) = lab.group_for_key(target.table, &target.key(0)).await?;
             let leader = lab.group_leader(group).await?;
-            let mut spec = workload(lab, stage, target.clone(), operation);
+            let mut spec = workload(
+                lab,
+                stage,
+                target.clone(),
+                operation,
+                fixture_spec.value_size,
+                open_loop(foreground_qps, 32),
+            );
             if matches!(spec.operation, Operation::Transaction { .. }) {
                 spec.targets = targets.clone();
-                spec.concurrency = 1;
             }
             let extra_node = prepare_replica_change(self, lab, group).await?;
 
             lab.mark(format!("{stage}_baseline"));
             let handle = spawn_workload(db.clone(), spec);
             handle.phase("baseline");
-            tokio::time::sleep(Duration::from_secs(lab.config.workload.warmup_secs.max(1))).await;
+            tokio::time::sleep(Duration::from_secs(lab.config.execution.warmup_secs.max(1))).await;
             handle.phase("disturbance");
             lab.mark(format!("{stage}_event_start"));
             let started = Instant::now();
@@ -90,7 +109,8 @@ impl TopologyCase {
             lab.mark(format!("{stage}_event_end"));
 
             handle.phase("recovery");
-            tokio::time::sleep(Duration::from_secs(lab.config.workload.cooldown_secs.max(1))).await;
+            tokio::time::sleep(Duration::from_secs(lab.config.execution.cooldown_secs.max(1)))
+                .await;
             let report = handle.stop().await;
             validate(lab, &report)?;
             reports.push(report);
@@ -105,7 +125,20 @@ impl TopologyCase {
                 remove_replica(lab, group, extra_node.unwrap()).await?;
             }
         }
-        let mut report = case_report(lab, name, reports, derived);
+        let mut checks = workload_checks(&reports, false, false);
+        for report in &reports {
+            checks.push(latency_check(format!("{}.max_success_gap_us", report.name)));
+            if report.phase_summaries.iter().any(|phase| phase.name == "disturbance") {
+                checks.push(latency_check(format!("{}.phase.disturbance.p99_us", report.name)));
+            }
+        }
+        checks.extend(
+            derived
+                .keys()
+                .filter(|metric| metric.ends_with("event_duration_ms"))
+                .map(|metric| latency_check(metric.clone())),
+        );
+        let mut report = case_report(lab, name, reports, derived, checks);
         report.derived.extend(observations(
             &report,
             &[
@@ -182,7 +215,7 @@ async fn recover_follower(
         .ok_or_else(|| anyhow::anyhow!("group {group_id} has no follower voter"))?
         .clone();
     lab.stop_server(follower.node_id).await?;
-    tokio::time::sleep(Duration::from_secs(lab.config.workload.duration_secs)).await;
+    tokio::time::sleep(Duration::from_secs(lab.config.execution.duration_secs)).await;
     let marker = b"recovery-proof".to_vec();
     let value = b"written-while-offline".to_vec();
     db.put(target.table, marker.clone(), value.clone()).await?;
@@ -214,7 +247,7 @@ async fn remove_replica(lab: &LabContext, group: u64, node: u64) -> Result<Metri
         .remove_extra_replica(
             group,
             node,
-            Duration::from_secs(lab.config.workload.event_timeout_secs),
+            Duration::from_secs(lab.config.execution.event_timeout_secs),
         )
         .await?;
     Ok(Metrics::from([("remove_duration_ms".into(), millis(duration))]))
@@ -260,7 +293,14 @@ async fn fail_root(
     // Metadata RPCs and ordinary SI traffic both depend on root availability.
     let metadata = spawn_workload(
         db.clone(),
-        workload(lab, &format!("metadata_{stage}"), target.clone(), Operation::Metadata),
+        workload(
+            lab,
+            &format!("metadata_{stage}"),
+            target.clone(),
+            Operation::Metadata,
+            0,
+            open_loop(50.0, 16),
+        ),
     );
     lab.stop_server(node).await?;
     wait_new_leader(lab, 0, old).await?;
@@ -285,7 +325,7 @@ fn millis(duration: Duration) -> f64 {
 }
 
 async fn wait_new_leader(lab: &LabContext, group: u64, old: u64) -> Result<()> {
-    let deadline = Instant::now() + Duration::from_secs(lab.config.workload.event_timeout_secs);
+    let deadline = Instant::now() + Duration::from_secs(lab.config.execution.event_timeout_secs);
     while Instant::now() < deadline {
         if lab
             .router
@@ -300,7 +340,7 @@ async fn wait_new_leader(lab: &LabContext, group: u64, old: u64) -> Result<()> {
 }
 
 async fn wait_snapshot(lab: &LabContext, before: f64) -> Result<()> {
-    let deadline = Instant::now() + Duration::from_secs(lab.config.workload.event_timeout_secs);
+    let deadline = Instant::now() + Duration::from_secs(lab.config.execution.event_timeout_secs);
     while Instant::now() < deadline {
         if metric_counter("raftgroup_apply_snapshot_total") > before {
             return Ok(());

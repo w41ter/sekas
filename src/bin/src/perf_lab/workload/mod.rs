@@ -15,6 +15,23 @@ use stats::Stats;
 pub(crate) use stats::WorkloadReport;
 use tokio::task::JoinHandle;
 
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum LoadModel {
+    Once,
+    ClosedLoop { concurrency: usize },
+    OpenLoop { offered_qps: f64, max_inflight: usize },
+}
+
+impl LoadModel {
+    pub(crate) fn concurrency(self) -> usize {
+        match self {
+            Self::Once => 1,
+            Self::ClosedLoop { concurrency } => concurrency,
+            Self::OpenLoop { max_inflight, .. } => max_inflight,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct Target {
     pub(crate) table: u64,
@@ -64,10 +81,9 @@ pub(crate) struct Workload {
     pub(crate) name: String,
     pub(crate) operation: Operation,
     pub(crate) targets: Vec<Target>,
-    pub(crate) concurrency: usize,
+    pub(crate) load: LoadModel,
     pub(crate) value_size: usize,
     pub(crate) timeout: Duration,
-    pub(crate) offered_qps: Option<f64>,
     pub(crate) hold: Duration,
     pub(crate) retries: usize,
     pub(crate) hot_probability: f64,
@@ -112,10 +128,13 @@ pub(crate) fn spawn_workload(db: Database, spec: Workload) -> WorkloadHandle {
     let mut initial = Stats::new(&spec.name, expected_errors(&spec));
     initial.parameters = parameters(&spec);
     let stats = Arc::new(Mutex::new(initial));
-    let tasks = if let Some(qps) = spec.offered_qps {
-        vec![scheduler::spawn_open_loop(db, spec, stop.clone(), stats.clone(), qps)]
-    } else {
-        scheduler::spawn_closed_loop(db, spec, stop.clone(), stats.clone())
+    let tasks = match spec.load {
+        LoadModel::OpenLoop { offered_qps, .. } => {
+            vec![scheduler::spawn_open_loop(db, spec, stop.clone(), stats.clone(), offered_qps)]
+        }
+        LoadModel::Once | LoadModel::ClosedLoop { .. } => {
+            scheduler::spawn_closed_loop(db, spec, stop.clone(), stats.clone())
+        }
     };
     WorkloadHandle { stop, stats, tasks }
 }
@@ -130,7 +149,6 @@ struct Outcome {
 
 fn parameters(spec: &Workload) -> BTreeMap<String, f64> {
     let mut params = BTreeMap::from([
-        ("concurrency".to_owned(), spec.concurrency as f64),
         ("value_size".to_owned(), spec.value_size as f64),
         ("tables".to_owned(), spec.targets.len() as f64),
         ("live_key_space".to_owned(), spec.targets.iter().map(|t| t.keys as f64).sum()),
@@ -139,8 +157,19 @@ fn parameters(spec: &Workload) -> BTreeMap<String, f64> {
         ("hot_probability".to_owned(), spec.hot_probability),
         ("hot_keys".to_owned(), spec.hot_keys as f64),
     ]);
-    if let Some(qps) = spec.offered_qps {
-        params.insert("offered_qps".to_owned(), qps);
+    match spec.load {
+        LoadModel::Once => {
+            params.insert("load.once".to_owned(), 1.0);
+        }
+        LoadModel::ClosedLoop { concurrency } => {
+            params.insert("load.closed_loop".to_owned(), 1.0);
+            params.insert("concurrency".to_owned(), concurrency as f64);
+        }
+        LoadModel::OpenLoop { offered_qps, max_inflight } => {
+            params.insert("load.open_loop".to_owned(), 1.0);
+            params.insert("offered_qps".to_owned(), offered_qps);
+            params.insert("max_inflight".to_owned(), max_inflight as f64);
+        }
     }
     match spec.operation {
         Operation::Scan { limit, version, .. } => {

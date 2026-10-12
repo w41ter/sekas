@@ -8,7 +8,9 @@ use anyhow::{Result, bail, ensure};
 use super::support::*;
 use crate::perf_lab::LabContext;
 use crate::perf_lab::config::LabConfig;
-use crate::perf_lab::report::{CaseReport, case_report};
+use crate::perf_lab::report::{
+    CaseReport, case_report, latency_check, throughput_check, workload_checks,
+};
 use crate::perf_lab::workload::{Operation, TxnMode};
 
 // Capacity case parameters; scale cases do not borrow the concurrency matrix.
@@ -39,15 +41,29 @@ impl CapacityCase {
     pub(super) async fn run(self, name: &str, lab: &mut LabContext) -> Result<CaseReport> {
         let mut reports = Vec::new();
         let mut derived = BTreeMap::new();
+        let fixture_spec = fixture_spec(
+            lab,
+            FixtureSpec { keys: 512, value_size: 1024 },
+            FixtureSpec { keys: 8192, value_size: 4096 },
+            FixtureSpec { keys: 32_768, value_size: 8192 },
+            FixtureSpec { keys: 131_072, value_size: 8192 },
+        );
         match self {
             Self::Concurrency | Self::OfferedLoad => {
-                let (db, targets) = layout(lab, "capacity", 2).await?;
+                let (db, targets) = layout(lab, "capacity", 2, fixture_spec).await?;
                 for (name, operation) in [
                     ("read", Operation::Read { present: true, version: None, expected: None }),
                     ("update", Operation::Put),
                     ("distributed_txn", Operation::Transaction { mode: TxnMode::Blind, keys: 2 }),
                 ] {
-                    let mut template = workload(lab, name, targets[0].clone(), operation);
+                    let mut template = workload(
+                        lab,
+                        name,
+                        targets[0].clone(),
+                        operation,
+                        fixture_spec.value_size,
+                        closed_loop(1),
+                    );
                     if name == "distributed_txn" {
                         template.targets = targets.clone();
                     }
@@ -55,8 +71,15 @@ impl CapacityCase {
                         for &concurrency in CONCURRENCY_LEVELS {
                             let mut spec = template.clone();
                             spec.name = format!("{name}_concurrency_{concurrency}");
-                            spec.concurrency = concurrency;
-                            reports.push(measure(lab, &db, spec).await?);
+                            spec.load = closed_loop(concurrency);
+                            spec.allow_overload = true;
+                            let report = measure(lab, &db, spec).await?;
+                            ensure!(
+                                !report.errors.contains_key("validation")
+                                    && !report.errors.contains_key("internal"),
+                                "capacity probe encountered invalid data"
+                            );
+                            reports.push(report);
                         }
                     } else {
                         // Overload/deadline errors are expected in this capacity probe, but
@@ -65,7 +88,7 @@ impl CapacityCase {
                         for &qps in OFFERED_QPS {
                             let mut spec = template.clone();
                             spec.name = format!("{name}_offered_{qps}");
-                            spec.offered_qps = Some(qps);
+                            spec.load = open_loop(qps, 128);
                             spec.allow_overload = true;
                             let report = measure(lab, &db, spec).await?;
                             ensure!(
@@ -82,24 +105,32 @@ impl CapacityCase {
             Self::GroupScale => {
                 for &groups in GROUP_SCALE_GROUP_COUNTS {
                     let (db, targets) =
-                        layout(lab, &format!("scale_{groups}"), groups as usize).await?;
+                        layout(lab, &format!("scale_{groups}"), groups as usize, fixture_spec)
+                            .await?;
                     let mut spec = workload(
                         lab,
                         &format!("groups_{groups}"),
                         targets[0].clone(),
                         Operation::Put,
+                        fixture_spec.value_size,
+                        closed_loop(GROUP_SCALE_CONCURRENCY),
                     );
                     spec.targets = targets;
-                    spec.concurrency = GROUP_SCALE_CONCURRENCY;
                     reports.push(measure(lab, &db, spec).await?);
                 }
             }
             Self::NodeScale => {
-                let (db, targets) = layout(lab, "node_scale", NODE_SCALE_GROUP_COUNT).await?;
-                let mut spec =
-                    workload(lab, "before_scale_out", targets[0].clone(), Operation::Put);
+                let (db, targets) =
+                    layout(lab, "node_scale", NODE_SCALE_GROUP_COUNT, fixture_spec).await?;
+                let mut spec = workload(
+                    lab,
+                    "before_scale_out",
+                    targets[0].clone(),
+                    Operation::Put,
+                    fixture_spec.value_size,
+                    closed_loop(NODE_SCALE_CONCURRENCY),
+                );
                 spec.targets = targets.clone();
-                spec.concurrency = NODE_SCALE_CONCURRENCY;
                 let before = measure(lab, &db, spec.clone()).await?;
                 let started = Instant::now();
                 let node = lab.add_server().await?;
@@ -122,7 +153,7 @@ impl CapacityCase {
                     lab.remove_extra_replica(
                         group,
                         old_leader_node,
-                        Duration::from_secs(lab.config.workload.event_timeout_secs),
+                        Duration::from_secs(lab.config.execution.event_timeout_secs),
                     )
                     .await?;
                 }
@@ -149,14 +180,16 @@ impl CapacityCase {
                     let target = crate::perf_lab::workload::Target {
                         table: table.id,
                         prefix: "key-".into(),
-                        keys: lab.config.workload.key_space,
+                        keys: fixture_spec.keys,
                     };
-                    seed_target(&db, &target, &vec![b's'; lab.config.workload.value_size]).await?;
+                    seed_target(&db, &target, &vec![b's'; fixture_spec.value_size]).await?;
                     let spec = workload(
                         lab,
                         &format!("metadata_{count}"),
                         target.clone(),
                         Operation::Metadata,
+                        fixture_spec.value_size,
+                        closed_loop(16),
                     );
                     reports.push(measure(lab, &db, spec).await?);
                     let spec = workload(
@@ -164,10 +197,12 @@ impl CapacityCase {
                         &format!("data_read_{count}"),
                         target,
                         Operation::Read { present: true, version: None, expected: None },
+                        fixture_spec.value_size,
+                        closed_loop(16),
                     );
                     reports.push(measure(lab, &db, spec).await?);
                     let deadline = Instant::now()
-                        + Duration::from_secs(lab.config.workload.event_timeout_secs);
+                        + Duration::from_secs(lab.config.execution.event_timeout_secs);
                     let started = Instant::now();
                     lab.table(&db, "new_table").await?;
                     if Instant::now() > deadline {
@@ -183,6 +218,34 @@ impl CapacityCase {
                 }
             }
         }
-        Ok(case_report(lab, name, reports, derived))
+        let mut checks = workload_checks(&reports, false, false);
+        match self {
+            Self::Concurrency | Self::OfferedLoad => {
+                let peak = reports.iter().map(|report| report.qps).fold(0.0, f64::max);
+                derived.insert("capacity.peak_qps".into(), peak);
+                checks.push(throughput_check("capacity.peak_qps"));
+            }
+            Self::GroupScale => {
+                for report in &reports {
+                    checks.push(throughput_check(format!("{}.qps", report.name)));
+                }
+            }
+            Self::NodeScale => {
+                checks.push(throughput_check("scale_out.throughput_ratio"));
+                checks.push(latency_check("scale_out.event_duration_ms"));
+            }
+            Self::MetadataScale => {
+                for report in &reports {
+                    checks.push(latency_check(format!("{}.p99_us", report.name)));
+                }
+                checks.extend(
+                    derived
+                        .keys()
+                        .filter(|metric| metric.ends_with(".create_duration_ms"))
+                        .map(|metric| latency_check(metric.clone())),
+                );
+            }
+        }
+        Ok(case_report(lab, name, reports, derived, checks))
     }
 }

@@ -1,3 +1,4 @@
+profile = "smoke"
 runner_threads = 2
 
 [environment]
@@ -54,27 +55,20 @@ max_background_jobs = 2
 max_sub_compactions = 1
 mvcc_gc_retention_ms = 1
 
-[workload]
+[execution]
 database = "perf_lab_smoke"
-concurrency = 2
 duration_secs = 1
 warmup_secs = 0
 cooldown_secs = 1
-value_size = 1024
-key_space = 512
 request_timeout_secs = 10
 event_timeout_secs = 40
 storage_duration_secs = 12
 gc_retention_ms = 1000
 gc_interval_ms = 100
-conflict_hold_ms = 5
-retry_limit = 4
 
 [report]
 out_dir = "target/perf-lab-smoke"
 fail_on_regression = false
-max_qps_drop_percent = 5.0
-max_latency_increase_percent = 10.0
 
 [log]
 enabled = true

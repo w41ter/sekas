@@ -38,15 +38,12 @@ use super::config::LabConfig;
 use super::report::CaseReport;
 use super::workload::TxnMode;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
-pub(super) enum Theme {
-    Basic,
-    Mvcc,
-    Transaction,
-    Contention,
-    Storage,
-    Mixed,
-    Topology,
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub(super) enum CaseCategory {
+    Sentinel,
+    Scenario,
+    Operational,
     Capacity,
 }
 
@@ -153,6 +150,57 @@ impl CaseKind {
     }
     pub(super) fn from_report_name(name: &str) -> Option<Self> {
         Self::value_variants().iter().copied().find(|case| case.name() == name)
+    }
+
+    pub(super) fn description(self) -> &'static str {
+        match self {
+            Self::PointHit => "point reads from a disk-sized populated working set",
+            Self::PointMiss => "point reads for keys that do not exist",
+            Self::Insert => "new-key write throughput and latency",
+            Self::Update => "existing-key update throughput and latency",
+            Self::Delete => "finite deletion pass with visibility verification",
+            Self::RangeScan => "bounded single-shard range scan latency",
+            Self::CrossShardScan => "complete range scan across two shards and groups",
+            Self::LatestVersions => "latest-value reads across MVCC version depths",
+            Self::SnapshotPoint => "historical point reads across MVCC version depths",
+            Self::SnapshotScan => "historical scan visibility across tombstones and new keys",
+            Self::TombstoneRead => "latest and historical reads through tombstones",
+            Self::ReadOnlyLocal => "read-only transactions placed in one group",
+            Self::ReadOnlyDistributed => "read-only transactions spanning groups",
+            Self::BlindLocal => "blind-write transactions placed in one group",
+            Self::BlindDistributed => "blind-write transactions spanning groups",
+            Self::ReadWriteLocal => "read-write transactions placed in one group",
+            Self::ReadWriteDistributed => "read-write transactions spanning groups",
+            Self::LargeTxn => "large transaction matrix across participant groups",
+            Self::Hotset => "writes against progressively larger hot key sets",
+            Self::SiConflict => "snapshot-isolation conflicts under fixed contention",
+            Self::SiConflictRetry => "snapshot-isolation conflict retry effectiveness",
+            Self::LongShortTxn => "long transactions competing with short transactions",
+            Self::GcBacklog => "foreground writes while an MVCC GC backlog is reclaimed",
+            Self::GcSteady => "foreground writes during sustained MVCC GC activity",
+            Self::RetentionBoundary => "snapshot visibility before and after GC retention",
+            Self::InsertCompaction => "insert traffic during flush and compaction activity",
+            Self::ChurnCompaction => "update-delete churn during compaction activity",
+            Self::ReadUpdate => "fixed-rate read and update mixture",
+            Self::ReadScan => "foreground reads under background scan interference",
+            Self::SmallLargeTxn => "small transactions under large-transaction interference",
+            Self::HotCold => "cold reads under hot-key write interference",
+            Self::ImportOnline => "foreground reads during online insert traffic",
+            Self::LeaderTransfer => "foreground availability during leader transfer",
+            Self::DataLeaderFailover => "foreground availability during data leader failure",
+            Self::FollowerRecovery => "foreground availability while a follower recovers",
+            Self::ReplicaAdd => "foreground availability while adding a replica",
+            Self::ReplicaRemove => "foreground availability while removing a replica",
+            Self::SnapshotCatchup => "foreground availability during snapshot catch-up",
+            Self::ShardMigration => "foreground availability during shard migration",
+            Self::SplitMerge => "foreground availability during split and merge",
+            Self::RootFailover => "data and metadata availability during root failover",
+            Self::Concurrency => "throughput and latency over a concurrency curve",
+            Self::OfferedLoad => "throughput and latency over an offered-load curve",
+            Self::GroupScale => "throughput as the number of groups increases",
+            Self::NodeScale => "throughput before and after explicit node scale-out",
+            Self::MetadataScale => "metadata and data latency as table count increases",
+        }
     }
 }
 
@@ -263,17 +311,23 @@ impl Case {
         self.kind.name()
     }
 
-    pub(super) fn theme(&self) -> Theme {
+    pub(super) fn category(&self) -> CaseCategory {
         match self.scenario {
-            Scenario::Basic(_) => Theme::Basic,
-            Scenario::Mvcc(_) => Theme::Mvcc,
-            Scenario::Transaction(_) => Theme::Transaction,
-            Scenario::Contention(_) => Theme::Contention,
-            Scenario::Storage(_) => Theme::Storage,
-            Scenario::Mixed(_) => Theme::Mixed,
-            Scenario::Topology(_) => Theme::Topology,
-            Scenario::Capacity(_) => Theme::Capacity,
+            Scenario::Basic(_) | Scenario::Mvcc(_) | Scenario::Transaction(_) => {
+                CaseCategory::Sentinel
+            }
+            Scenario::Contention(_) | Scenario::Mixed(_) => CaseCategory::Scenario,
+            Scenario::Storage(_) | Scenario::Topology(_) => CaseCategory::Operational,
+            Scenario::Capacity(_) => CaseCategory::Capacity,
         }
+    }
+
+    pub(super) fn version(&self) -> u32 {
+        1
+    }
+
+    pub(super) fn description(&self) -> &'static str {
+        self.kind.description()
     }
 
     pub(super) fn configure(&self, cfg: &mut LabConfig) {
@@ -314,24 +368,20 @@ impl Case {
 mod tests {
     use super::*;
     #[test]
-    fn registry_has_unique_names_and_all_themes() {
+    fn registry_has_unique_names_and_all_categories() {
         let names: std::collections::HashSet<_> =
             CaseKind::value_variants().iter().map(|case| case.name()).collect();
         assert_eq!(names.len(), CaseKind::value_variants().len());
-        for (theme, count) in [
-            (Theme::Basic, 7),
-            (Theme::Mvcc, 4),
-            (Theme::Transaction, 7),
-            (Theme::Contention, 4),
-            (Theme::Storage, 5),
-            (Theme::Mixed, 5),
-            (Theme::Topology, 9),
-            (Theme::Capacity, 5),
+        for (category, count) in [
+            (CaseCategory::Sentinel, 18),
+            (CaseCategory::Scenario, 9),
+            (CaseCategory::Operational, 14),
+            (CaseCategory::Capacity, 5),
         ] {
             assert_eq!(
                 CaseKind::value_variants()
                     .iter()
-                    .filter(|kind| Case::build(**kind).theme() == theme)
+                    .filter(|kind| Case::build(**kind).category() == category)
                     .count(),
                 count
             );

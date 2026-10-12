@@ -27,26 +27,41 @@ use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
-use cases::{Case, CaseKind, Theme};
+use cases::{Case, CaseCategory, CaseKind};
 use clap::{Parser, ValueEnum};
 pub(crate) use cluster::LabContext;
+use serde::{Deserialize, Serialize};
 use workload::WorkloadReport;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, ValueEnum)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum RunProfile {
+    Smoke,
+    #[default]
+    Regression,
+    Characterization,
+    Stress,
+}
 
 #[derive(Debug, Parser)]
 #[clap(about = "Run in-process performance lab scenarios")]
 pub struct Command {
+    /// Select the execution scale. Case semantics remain owned by each case.
+    #[clap(long, value_enum)]
+    profile: Option<RunProfile>,
+
     /// The built-in case to run.
     ///
-    /// When omitted, run the selected theme (basic by default).
+    /// When omitted, run the selected category (sentinel by default).
     #[clap(long, value_enum)]
     case: Option<CaseKind>,
 
-    /// Run one theme. Mutually exclusive with --case and --all.
+    /// Run one semantic category. Mutually exclusive with --case and --all.
     #[clap(long, value_enum, conflicts_with_all = &["case", "all"])]
-    theme: Option<Theme>,
+    category: Option<CaseCategory>,
 
-    /// Run all themes, including long storage and capacity scenarios.
-    #[clap(long, conflicts_with_all = &["case", "theme"])]
+    /// Run all categories, including long operational and capacity scenarios.
+    #[clap(long, conflicts_with_all = &["case", "category"])]
     all: bool,
 
     /// Sets a custom config file.
@@ -80,7 +95,9 @@ impl Command {
             .iter()
             .copied()
             .map(Case::build)
-            .filter(|case| self.all || case.theme() == self.theme.unwrap_or(Theme::Basic))
+            .filter(|case| {
+                self.all || case.category() == self.category.unwrap_or(CaseCategory::Sentinel)
+            })
             .collect())
     }
 }
@@ -96,14 +113,21 @@ fn run_id() -> String {
 mod tests {
     use super::*;
     #[test]
-    fn selection_defaults_to_basic_and_rejects_ambiguous_flags() {
+    fn selection_defaults_to_sentinel_and_rejects_ambiguous_flags() {
         let command = Command::try_parse_from(["perf-lab"]).unwrap();
-        assert!(command.build_cases().unwrap().iter().all(|case| case.theme() == Theme::Basic));
-        let command = Command::try_parse_from(["perf-lab", "--theme", "mvcc"]).unwrap();
-        assert_eq!(command.build_cases().unwrap().len(), 4);
+        assert!(
+            command
+                .build_cases()
+                .unwrap()
+                .iter()
+                .all(|case| case.category() == CaseCategory::Sentinel)
+        );
+        let command = Command::try_parse_from(["perf-lab", "--category", "operational"]).unwrap();
+        assert_eq!(command.build_cases().unwrap().len(), 14);
         assert!(Command::try_parse_from(["perf-lab", "--case", "update", "--all"]).is_err());
         assert!(
-            Command::try_parse_from(["perf-lab", "--theme", "basic", "--case", "update"]).is_err()
+            Command::try_parse_from(["perf-lab", "--category", "sentinel", "--case", "update",])
+                .is_err()
         );
     }
 }

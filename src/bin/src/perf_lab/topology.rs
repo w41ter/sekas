@@ -287,7 +287,7 @@ impl LabContext {
         shard: u64,
     ) -> Result<()> {
         let deadline =
-            Instant::now() + Duration::from_secs(self.config.workload.event_timeout_secs);
+            Instant::now() + Duration::from_secs(self.config.execution.event_timeout_secs);
         while Instant::now() < deadline {
             // Use the pre-migration epoch and an accurate-epoch RPC. The new
             // descriptor proves removal without issuing an invalid current-epoch

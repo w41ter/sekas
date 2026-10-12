@@ -8,7 +8,7 @@ endif
 GRCOV := $(shell command -v grcov 2> /dev/null)
 PERF_LAB_CONF ?= conf/perf-lab-snapshot.toml
 PERF_LAB_BASELINE ?=
-PERF_LAB_THEME ?= basic
+PERF_LAB_CATEGORY ?= sentinel
 PERF_LAB_OUT_DIR ?= target/perf-lab
 
 .PHONY: build
@@ -40,11 +40,11 @@ test:
 	$(V)cargo test --workspace -- $(FILTER)
 
 .PHONY: perf-lab
-## perf-lab : Run a theme; optionally compare PERF_LAB_BASELINE
+## perf-lab : Run a semantic category; optionally compare PERF_LAB_BASELINE
 perf-lab:
 	$(V)cargo run --release --bin sekas -- perf-lab \
 		--conf $(PERF_LAB_CONF) \
-		--theme $(PERF_LAB_THEME) \
+		--category $(PERF_LAB_CATEGORY) \
 		$(if $(PERF_LAB_BASELINE),--baseline $(PERF_LAB_BASELINE)) \
 		--out-dir $(PERF_LAB_OUT_DIR) \
 		--fail-on-regression

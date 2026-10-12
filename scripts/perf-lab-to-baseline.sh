@@ -65,13 +65,17 @@ if [[ -e "$output" && "$force" != true ]]; then
 fi
 
 if ! jq -e '
-    type == "object" and (.schema_version == 2) and
+    type == "object" and (.schema_version == 3) and
     ((.errors // {}) | length == 0) and
     (.run_id | type == "string" or type == "number") and
     (.reports | type == "array" and length > 0) and
     all(.reports[];
         type == "object" and
         (.case | type == "string" and length > 0) and
+        (.scenario_version | type == "number") and
+        (.category | type == "string" and length > 0) and
+        (.semantic_parameters | type == "object") and
+        (.regression_checks | type == "array" and length > 0) and
         (.run_id | type == "string" or type == "number") and
         (.derived | type == "object" and length > 0) and
         all(.derived[]; type == "number")
@@ -93,8 +97,13 @@ jq '{
     reports: [
         .reports[] | {
             case,
+            scenario_version,
+            category,
+            description,
             run_id: (.run_id | tostring),
             config,
+            semantic_parameters,
+            regression_checks,
             workloads: [],
             derived,
             metric_intervals: []

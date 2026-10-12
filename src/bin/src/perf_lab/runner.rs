@@ -123,7 +123,7 @@ fn write_suite_report(
     fs::create_dir_all(out_dir)
         .with_context(|| format!("create report dir {}", out_dir.display()))?;
     let suite = SuiteReport {
-        schema_version: 2,
+        schema_version: 3,
         run_id: run_id.to_owned(),
         reports: reports.to_vec(),
         errors: errors.clone(),

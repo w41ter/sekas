@@ -6,11 +6,11 @@ use std::time::{Duration, Instant};
 use anyhow::{Result, ensure};
 
 use super::support::*;
-use crate::perf_lab::LabContext;
 use crate::perf_lab::config::LabConfig;
 use crate::perf_lab::observer::metric_counter;
-use crate::perf_lab::report::{CaseReport, case_report};
+use crate::perf_lab::report::{CaseReport, case_report, workload_checks};
 use crate::perf_lab::workload::{Operation, spawn_workload};
+use crate::perf_lab::{LabContext, RunProfile};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum StorageCase {
@@ -27,21 +27,34 @@ impl StorageCase {
             self,
             Self::GcBacklog | Self::GcSteady | Self::RetentionBoundary | Self::ChurnCompaction
         ) {
-            cfg.cluster.root.mvcc_gc_retention_ms = cfg.workload.gc_retention_ms;
-            cfg.cluster.node.mvcc_gc_retention_ms = cfg.workload.gc_retention_ms;
-            cfg.cluster.node.mvcc_gc_interval_ms = cfg.workload.gc_interval_ms;
+            cfg.cluster.root.mvcc_gc_retention_ms = cfg.execution.gc_retention_ms;
+            cfg.cluster.node.mvcc_gc_retention_ms = cfg.execution.gc_retention_ms;
+            cfg.cluster.node.mvcc_gc_interval_ms = cfg.execution.gc_interval_ms;
         }
         if matches!(self, Self::InsertCompaction | Self::ChurnCompaction) {
             cfg.cluster.db.write_buffer_size = 256 * 1024;
             cfg.cluster.db.target_file_size_base = 256 * 1024;
             cfg.cluster.db.max_bytes_for_level_base = 1024 * 1024;
             cfg.cluster.db.level0_file_num_compaction_trigger = 2;
-            cfg.cluster.db.mvcc_gc_retention_ms = cfg.workload.gc_retention_ms;
+            cfg.cluster.db.mvcc_gc_retention_ms = cfg.execution.gc_retention_ms;
         }
     }
 
     pub(super) async fn run(self, name: &str, lab: &mut LabContext) -> Result<CaseReport> {
-        let (db, mut target) = fixture(lab, name, true).await?;
+        let fixture_spec = fixture_spec(
+            lab,
+            FixtureSpec { keys: 512, value_size: 1024 },
+            FixtureSpec { keys: 4096, value_size: 4096 },
+            FixtureSpec { keys: 16_384, value_size: 8192 },
+            FixtureSpec { keys: 65_536, value_size: 8192 },
+        );
+        let load = match lab.config.profile {
+            RunProfile::Smoke => closed_loop(2),
+            RunProfile::Regression => open_loop(200.0, 32),
+            RunProfile::Characterization => open_loop(1000.0, 64),
+            RunProfile::Stress => closed_loop(64),
+        };
+        let (db, mut target) = fixture(lab, name, true, fixture_spec).await?;
         let mut derived = BTreeMap::new();
         let mut reports = Vec::new();
         if matches!(self, Self::InsertCompaction | Self::ChurnCompaction) {
@@ -51,13 +64,15 @@ impl StorageCase {
                 "storage_pressure",
                 target.clone(),
                 if self == Self::InsertCompaction { Operation::Insert } else { Operation::Churn },
+                fixture_spec.value_size,
+                load,
             );
             reports.push(
                 measure_for(
                     lab,
                     &db,
                     spec,
-                    Duration::from_secs(lab.config.workload.storage_duration_secs),
+                    Duration::from_secs(lab.config.execution.storage_duration_secs),
                 )
                 .await?,
             );
@@ -78,22 +93,24 @@ impl StorageCase {
             );
         } else if self == Self::RetentionBoundary {
             target.keys = 1;
-            let old = vec![b'o'; lab.config.workload.value_size];
+            let old = vec![b'o'; fixture_spec.value_size];
             seed_target(&db, &target, &old).await?;
             let snapshot = db.begin_txn().start_version().await?;
-            seed_target(&db, &target, &vec![b'n'; lab.config.workload.value_size]).await?;
-            seed_target(&db, &target, &vec![b'p'; lab.config.workload.value_size]).await?;
+            seed_target(&db, &target, &vec![b'n'; fixture_spec.value_size]).await?;
+            seed_target(&db, &target, &vec![b'p'; fixture_spec.value_size]).await?;
             let started = Instant::now();
             let spec = workload(
                 lab,
                 "retained_snapshot",
                 target.clone(),
                 Operation::Read { present: true, version: Some(snapshot), expected: Some(old) },
+                fixture_spec.value_size,
+                closed_loop(1),
             );
             // Check within retention without a warmup that could consume the retention
             // window.
             let handle = spawn_workload(db.clone(), spec);
-            let within = Duration::from_millis((lab.config.workload.gc_retention_ms / 4).max(1));
+            let within = Duration::from_millis((lab.config.execution.gc_retention_ms / 4).max(1));
             lab.mark("retained_start");
             tokio::time::sleep(within).await;
             let report = handle.stop().await;
@@ -101,11 +118,11 @@ impl StorageCase {
             reports.push(report);
             lab.mark("retained_end");
             ensure!(
-                started.elapsed().as_millis() < u128::from(lab.config.workload.gc_retention_ms),
+                started.elapsed().as_millis() < u128::from(lab.config.execution.gc_retention_ms),
                 "retention window expired during verification; increase gc_retention_ms"
             );
             let deadline =
-                Instant::now() + Duration::from_secs(lab.config.workload.event_timeout_secs);
+                Instant::now() + Duration::from_secs(lab.config.execution.event_timeout_secs);
             loop {
                 if !raw_versions(lab, &target).await?.iter().any(|v| v.version <= snapshot) {
                     break;
@@ -121,6 +138,8 @@ impl StorageCase {
                 "expired_snapshot",
                 target.clone(),
                 Operation::Read { present: false, version: Some(snapshot), expected: None },
+                fixture_spec.value_size,
+                closed_loop(1),
             );
             let handle = spawn_workload(db.clone(), spec);
             tokio::time::sleep(Duration::from_millis(100)).await;
@@ -131,21 +150,28 @@ impl StorageCase {
         } else {
             target.keys = target.keys.min(64);
             let baseline_count = metric_counter("node_mvcc_gc_delete_versions_total");
-            let spec = workload(lab, "foreground_during_gc", target.clone(), Operation::Put);
+            let spec = workload(
+                lab,
+                "foreground_during_gc",
+                target.clone(),
+                Operation::Put,
+                fixture_spec.value_size,
+                load,
+            );
             lab.mark("gc_start");
             let handle = spawn_workload(db.clone(), spec);
             handle.phase("accumulation");
-            let (_, mut probe) = fixture(lab, "gc_immutable_probe", false).await?;
+            let (_, mut probe) = fixture(lab, "gc_immutable_probe", false, fixture_spec).await?;
             probe.keys = 1;
             for _ in 0..16 {
-                seed_target(&db, &probe, &vec![b'v'; lab.config.workload.value_size]).await?;
+                seed_target(&db, &probe, &vec![b'v'; fixture_spec.value_size]).await?;
             }
             let before = raw_versions(lab, &probe).await?.len();
             ensure!(before > 1, "GC probe did not accumulate versions; increase gc_retention_ms");
             derived.insert("gc.probe_versions_before".into(), before as f64);
             handle.phase("gc_window");
             let deadline =
-                Instant::now() + Duration::from_secs(lab.config.workload.event_timeout_secs);
+                Instant::now() + Duration::from_secs(lab.config.execution.event_timeout_secs);
             loop {
                 let after = raw_versions(lab, &probe).await?.len();
                 if after < before {
@@ -159,11 +185,11 @@ impl StorageCase {
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
             if self == Self::GcSteady {
-                tokio::time::sleep(Duration::from_secs(lab.config.workload.storage_duration_secs))
+                tokio::time::sleep(Duration::from_secs(lab.config.execution.storage_duration_secs))
                     .await;
             }
             handle.phase("recovery");
-            tokio::time::sleep(Duration::from_secs(lab.config.workload.cooldown_secs)).await;
+            tokio::time::sleep(Duration::from_secs(lab.config.execution.cooldown_secs)).await;
             let report = handle.stop().await;
             validate(lab, &report)?;
             reports.push(report);
@@ -172,7 +198,8 @@ impl StorageCase {
             ensure!(deleted > 0.0, "GC activity missing");
             derived.insert("gc.deleted_versions".into(), deleted);
         }
-        let mut report = case_report(lab, name, reports, derived);
+        let checks = workload_checks(&reports, false, true);
+        let mut report = case_report(lab, name, reports, derived, checks);
         report.derived.extend(observations(&report, &["node_mvcc_gc_delete_versions_total"]));
         Ok(report)
     }

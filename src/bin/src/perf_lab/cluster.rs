@@ -104,7 +104,7 @@ impl LabContext {
         self.client = SekasClient::build(
             ClientOptions {
                 connect_timeout: Some(Duration::from_millis(500)),
-                timeout: Some(Duration::from_secs(self.config.workload.request_timeout_secs)),
+                timeout: Some(Duration::from_secs(self.config.execution.request_timeout_secs)),
             },
             self.router.clone(),
             root_client,
@@ -211,7 +211,7 @@ impl LabContext {
         bail!("root group has no leader");
     }
 
-    async fn wait_cluster_stable(&self) -> Result<()> {
+    pub(crate) async fn wait_cluster_stable(&self) -> Result<()> {
         let scheduler_interval =
             Duration::from_secs(self.config.cluster.root.schedule_interval_sec.max(1));
         let heartbeat_interval = self.config.cluster.root.heartbeat_interval();
@@ -276,10 +276,10 @@ impl LabContext {
     }
 
     pub(crate) async fn database(&self) -> Result<Database> {
-        match self.client.create_database(self.config.workload.database.clone()).await {
+        match self.client.create_database(self.config.execution.database.clone()).await {
             Ok(db) => Ok(db),
             Err(AppError::AlreadyExists(_)) => {
-                Ok(self.client.open_database(self.config.workload.database.clone()).await?)
+                Ok(self.client.open_database(self.config.execution.database.clone()).await?)
             }
             Err(err) => Err(err.into()),
         }

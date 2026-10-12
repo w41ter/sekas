@@ -7,26 +7,57 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail, ensure};
 use sekas_client::{Database, WriteBuilder};
 
-use crate::perf_lab::LabContext;
 use crate::perf_lab::report::CaseReport;
-use crate::perf_lab::workload::{Operation, Target, Workload, WorkloadReport, spawn_workload};
+use crate::perf_lab::workload::{
+    LoadModel, Operation, Target, Workload, WorkloadReport, spawn_workload,
+};
+use crate::perf_lab::{LabContext, RunProfile};
+
+#[derive(Clone, Copy)]
+pub(super) struct FixtureSpec {
+    pub(super) keys: u64,
+    pub(super) value_size: usize,
+}
+
+pub(super) fn fixture_spec(
+    lab: &LabContext,
+    smoke: FixtureSpec,
+    regression: FixtureSpec,
+    characterization: FixtureSpec,
+    stress: FixtureSpec,
+) -> FixtureSpec {
+    match lab.config.profile {
+        RunProfile::Smoke => smoke,
+        RunProfile::Regression => regression,
+        RunProfile::Characterization => characterization,
+        RunProfile::Stress => stress,
+    }
+}
+
+pub(super) fn closed_loop(concurrency: usize) -> LoadModel {
+    LoadModel::ClosedLoop { concurrency }
+}
+
+pub(super) fn open_loop(offered_qps: f64, max_inflight: usize) -> LoadModel {
+    LoadModel::OpenLoop { offered_qps, max_inflight }
+}
 
 pub(super) async fn fixture(
     lab: &LabContext,
     name: &str,
     seed: bool,
+    fixture_spec: FixtureSpec,
 ) -> Result<(Database, Target)> {
     let db = lab.database().await?;
     let table = lab.table(&db, name).await?;
-    let target =
-        Target { table: table.id, prefix: "key-".to_owned(), keys: lab.config.workload.key_space };
+    let target = Target { table: table.id, prefix: "key-".to_owned(), keys: fixture_spec.keys };
     let (_, shard) = lab.group_for_key(target.table, &target.key(0)).await?;
     ensure!(
         shard.range.as_ref().is_some_and(|r| r.start.is_empty() && r.end.is_empty()),
         "fixture requires an unsplit table"
     );
     if seed {
-        seed_random_target(&db, &target, lab.config.workload.value_size).await?;
+        seed_random_target(&db, &target, fixture_spec.value_size).await?;
     }
     Ok((db, target))
 }
@@ -79,16 +110,16 @@ pub(super) fn workload(
     name: &str,
     target: Target,
     operation: Operation,
+    value_size: usize,
+    load: LoadModel,
 ) -> Workload {
-    let cfg = &lab.config.workload;
     Workload {
         name: name.to_owned(),
         operation,
         targets: vec![target],
-        concurrency: cfg.concurrency,
-        value_size: cfg.value_size,
-        timeout: Duration::from_secs(cfg.request_timeout_secs),
-        offered_qps: None,
+        load,
+        value_size,
+        timeout: Duration::from_secs(lab.config.execution.request_timeout_secs),
         hold: Duration::ZERO,
         retries: 0,
         hot_probability: 0.0,
@@ -104,7 +135,7 @@ pub(super) async fn measure(
     db: &Database,
     spec: Workload,
 ) -> Result<WorkloadReport> {
-    measure_for(lab, db, spec, Duration::from_secs(lab.config.workload.duration_secs)).await
+    measure_for(lab, db, spec, Duration::from_secs(lab.config.execution.duration_secs)).await
 }
 
 pub(super) async fn measure_for(
@@ -113,7 +144,10 @@ pub(super) async fn measure_for(
     spec: Workload,
     duration: Duration,
 ) -> Result<WorkloadReport> {
-    if lab.config.workload.warmup_secs > 0 && !matches!(spec.operation, Operation::Delete) {
+    if lab.config.execution.warmup_secs > 0
+        && !matches!(spec.operation, Operation::Delete)
+        && !matches!(spec.load, LoadModel::Once)
+    {
         let mut warmup_spec = spec.clone();
         if matches!(spec.operation, Operation::Insert) {
             for target in &mut warmup_spec.targets {
@@ -121,7 +155,7 @@ pub(super) async fn measure_for(
             }
         }
         let warmup = spawn_workload(db.clone(), warmup_spec);
-        tokio::time::sleep(Duration::from_secs(lab.config.workload.warmup_secs)).await;
+        tokio::time::sleep(Duration::from_secs(lab.config.execution.warmup_secs)).await;
         let report = warmup.stop().await;
         validate(lab, &report)?;
     }
@@ -140,20 +174,16 @@ pub(super) async fn measure_for(
     Ok(report)
 }
 
-pub(super) fn validate(lab: &LabContext, report: &WorkloadReport) -> Result<()> {
+pub(super) fn validate(_lab: &LabContext, report: &WorkloadReport) -> Result<()> {
     ensure!(report.operations > 0, "{} produced no operations", report.name);
     let unexpected = report.unexpected_failures();
     ensure!(
         report.successes > 0 || (report.failures == report.operations && unexpected == 0),
-        "{} produced no successes and unexpected errors",
-        report.name
-    );
-    ensure!(
-        unexpected as f64 / report.operations as f64 <= lab.config.report.max_failure_rate,
-        "{} unexpected failures: {:?}",
+        "{} produced no successes; errors: {:?}",
         report.name,
         report.errors
     );
+    ensure!(unexpected == 0, "{} unexpected failures: {:?}", report.name, report.errors);
     Ok(())
 }
 
@@ -178,7 +208,7 @@ pub(super) async fn user_groups(lab: &LabContext) -> Result<Vec<u64>> {
 }
 
 pub(super) async fn ensure_groups(lab: &mut LabContext, count: usize) -> Result<Vec<u64>> {
-    let deadline = Instant::now() + Duration::from_secs(lab.config.workload.event_timeout_secs);
+    let deadline = Instant::now() + Duration::from_secs(lab.config.execution.event_timeout_secs);
     loop {
         let groups = user_groups(lab).await?;
         if groups.len() >= count {
@@ -198,21 +228,22 @@ pub(super) async fn layout(
     lab: &mut LabContext,
     name: &str,
     participants: usize,
+    fixture_spec: FixtureSpec,
 ) -> Result<(Database, Vec<Target>)> {
     ensure!(
-        participants > 0 && participants as u64 <= lab.config.workload.key_space,
+        participants > 0 && participants as u64 <= fixture_spec.keys,
         "layout needs at least one key per participating group"
     );
     let groups = ensure_groups(lab, participants).await?;
     let mut targets = Vec::new();
     let db = lab.database().await?;
     for (i, group) in groups.iter().enumerate() {
-        let (_, mut target) = fixture(lab, &format!("{name}_{i}"), false).await?;
-        target.keys = (lab.config.workload.key_space / participants as u64).max(1);
+        let (_, mut target) = fixture(lab, &format!("{name}_{i}"), false, fixture_spec).await?;
+        target.keys = (fixture_spec.keys / participants as u64).max(1);
         lab.migrate_shard_to_group(target.table, &target.key(0), *group)
             .await
             .with_context(|| format!("place table {} in group {group}", target.table))?;
-        seed_target(&db, &target, &vec![b's'; lab.config.workload.value_size]).await?;
+        seed_target(&db, &target, &vec![b's'; fixture_spec.value_size]).await?;
         targets.push(target);
     }
     let mut actual = BTreeSet::new();

@@ -12,7 +12,7 @@ use tokio::task::JoinHandle;
 
 use super::operation::execute;
 use super::stats::Stats;
-use super::{Operation, Outcome, Workload, classify_error};
+use super::{LoadModel, Operation, Outcome, Workload, classify_error};
 
 pub(super) fn spawn_open_loop(
     db: Database,
@@ -22,7 +22,7 @@ pub(super) fn spawn_open_loop(
     qps: f64,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
-        let permits = Arc::new(tokio::sync::Semaphore::new(spec.concurrency));
+        let permits = Arc::new(tokio::sync::Semaphore::new(spec.load.concurrency()));
         let mut running = tokio::task::JoinSet::new();
         let origin = Instant::now();
         let mut sequence = 0_u64;
@@ -78,7 +78,8 @@ pub(super) fn spawn_closed_loop(
     stats: Arc<Mutex<Stats>>,
 ) -> Vec<JoinHandle<()>> {
     let mut tasks = Vec::new();
-    for worker in 0..spec.concurrency {
+    let concurrency = spec.load.concurrency();
+    for worker in 0..concurrency {
         let db = db.clone();
         let spec = spec.clone();
         let stop = stop.clone();
@@ -88,7 +89,7 @@ pub(super) fn spawn_closed_loop(
             let mut sequence = 0;
             while !stop.load(Ordering::Acquire) {
                 if matches!(spec.operation, Operation::Delete)
-                    && worker as u64 + sequence * spec.concurrency as u64 >= spec.targets[0].keys
+                    && worker as u64 + sequence * concurrency as u64 >= spec.targets[0].keys
                 {
                     break;
                 }
@@ -96,6 +97,9 @@ pub(super) fn spawn_closed_loop(
                 run_one(&db, &spec, &mut rng, worker, sequence, Instant::now(), &phase, &stats)
                     .await;
                 sequence += 1;
+                if matches!(spec.load, LoadModel::Once) {
+                    break;
+                }
             }
         }));
     }
