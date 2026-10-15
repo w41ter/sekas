@@ -32,6 +32,7 @@ use sekas_api::Epoch;
 use sekas_api::server::v1::group_request_union::Request;
 use sekas_api::server::v1::group_response_union::Response;
 use sekas_api::server::v1::*;
+use sekas_client::trace::{TraceFutureExt, local_span, span_name};
 use serde::Serialize;
 
 use self::eval::acquire_row_latches;
@@ -214,9 +215,13 @@ impl Replica {
             return Err(Error::GroupNotFound(self.info.group_id));
         }
 
-        let _acl_guard = self.take_acl_guard(request).await;
-        self.check_request_early(exec_ctx, request)?;
-        self.evaluate_command(exec_ctx, request).await
+        let _acl_guard =
+            self.take_acl_guard(request).in_trace(span_name::REPLICA_TAKE_ACL_GUARD).await;
+        {
+            let _span = local_span(span_name::REPLICA_CHECK_REQUEST_EARLY);
+            self.check_request_early(exec_ctx, request)?;
+        }
+        self.evaluate_command(exec_ctx, request).in_trace(span_name::REPLICA_EVALUATE_COMMAND).await
     }
 
     /// Execute group request. instead of be blocked, it will returns
@@ -261,8 +266,14 @@ impl Replica {
 
     /// Check if the leader still hold the lease?
     pub async fn check_lease(&self) -> Result<()> {
-        self.check_leader_early()?;
-        self.raft_group.read(ReadPolicy::ReadIndex).await?;
+        {
+            let _span = local_span(span_name::REPLICA_CHECK_LEADER_EARLY);
+            self.check_leader_early()?;
+        }
+        self.raft_group
+            .read(ReadPolicy::ReadIndex)
+            .in_trace(span_name::REPLICA_CHECK_LEASE_READ_INDEX)
+            .await?;
         Ok(())
     }
 
@@ -478,8 +489,13 @@ impl Replica {
                 (None, Response::QueryIntent(resp), forwards, None)
             }
             Request::Get(req) => {
-                self.local_txn_mgr.before_read(req.start_version).await;
-                let value = eval::get(exec_ctx, &self.group_engine, &self.latch_mgr, req).await?;
+                self.local_txn_mgr
+                    .before_read(req.start_version)
+                    .in_trace(span_name::REPLICA_LOCAL_TXN_BEFORE_READ)
+                    .await;
+                let value = eval::get(exec_ctx, &self.group_engine, &self.latch_mgr, req)
+                    .in_trace(span_name::REPLICA_EVAL_GET)
+                    .await?;
                 let resp = ShardGetResponse { value };
                 (None, Response::Get(resp), vec![], None)
             }

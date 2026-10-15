@@ -20,6 +20,8 @@ use sekas_api::server::v1::*;
 use tonic::IntoRequest;
 use tonic::transport::Channel;
 
+use crate::trace::inject_trace_context;
+
 #[derive(Debug, Clone)]
 pub struct Client {
     client: node_client::NodeClient<Channel>,
@@ -98,7 +100,7 @@ impl Client {
         req: impl IntoRequest<GroupRequest>,
     ) -> Result<tonic::Streaming<GroupResponse>, tonic::Status> {
         let mut client = self.client.clone();
-        let res = client.group(req).await?;
+        let res = client.group(inject_trace_context(req)).await?;
         Ok(res.into_inner())
     }
 
@@ -107,7 +109,7 @@ impl Client {
         req: impl IntoRequest<GroupRequest>,
     ) -> Result<GroupResponse, tonic::Status> {
         let mut client = self.client.clone();
-        let res = client.unary_group(req).await?;
+        let res = client.unary_group(inject_trace_context(req)).await?;
         Ok(res.into_inner())
     }
 

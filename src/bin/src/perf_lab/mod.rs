@@ -109,6 +109,13 @@ fn run_id() -> String {
     format!("{}", unix_millis())
 }
 
+fn trace_every_n() -> Option<u64> {
+    std::env::var("SEKAS_PERF_LAB_TRACE_EVERY_N")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| *value > 0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

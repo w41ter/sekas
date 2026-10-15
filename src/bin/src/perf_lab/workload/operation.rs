@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use rand::Rng;
 use rand::rngs::SmallRng;
+use sekas_client::trace::TraceFutureExt;
 use sekas_client::{AppError, AppResult, Database, Range, RangeRequest, WriteBuilder};
 use tokio_stream::StreamExt;
 
@@ -48,10 +49,16 @@ pub(super) async fn execute(
     match &spec.operation {
         Operation::Read { present, version, expected } => {
             let key = target.key(index);
+            let traced = spec
+                .trace_every_n
+                .is_some_and(|n| sequence.checked_rem(n).is_some_and(|rem| rem == 0));
+            let trace_name = || format!("sekas.client.perf_lab.{}.{}.get", spec.name, sequence);
             let value = if let Some(version) = version {
-                db.get_with_version(target.table, key, *version).await?
+                db.get_with_version(target.table, key, *version)
+                    .trace_when_with(traced, trace_name)
+                    .await?
             } else {
-                db.get(target.table, key).await?
+                db.get(target.table, key).trace_when_with(traced, trace_name).await?
             };
             out.bytes = check_value(value, *present, expected.as_ref())?;
             out.rows = u64::from(*present);

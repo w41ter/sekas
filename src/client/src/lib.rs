@@ -28,6 +28,7 @@ mod range;
 mod retry;
 mod rpc;
 mod shard_client;
+pub mod trace;
 mod txn;
 mod txn_table;
 

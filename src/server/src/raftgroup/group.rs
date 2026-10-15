@@ -16,6 +16,7 @@ use std::time::Instant;
 
 use futures::channel::{mpsc, oneshot};
 use sekas_api::server::v1::ChangeReplicas;
+use sekas_client::trace::{TraceFutureExt, local_span, span_name};
 
 use super::metrics::*;
 use super::worker::{RaftGroupState, Request};
@@ -74,8 +75,17 @@ impl RaftGroup {
         } else {
             record_latency!(take_read_metrics(policy));
             let (sender, receiver) = oneshot::channel();
-            self.send(Request::Read { policy, sender })?;
-            receiver.await?
+            {
+                let _span = local_span(span_name::RAFTGROUP_READ_ENQUEUE);
+                self.send(Request::Read { policy, sender })?;
+            }
+            receiver
+                .in_trace(match policy {
+                    ReadPolicy::LeaseRead => span_name::RAFTGROUP_LEASE_READ_WAIT_RESULT,
+                    ReadPolicy::ReadIndex => span_name::RAFTGROUP_READ_INDEX_WAIT_RESULT,
+                    ReadPolicy::Relaxed => unreachable!(),
+                })
+                .await?
         }
     }
 

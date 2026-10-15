@@ -16,6 +16,7 @@
 use log::trace;
 use prost::Message;
 use sekas_api::server::v1::*;
+use sekas_client::trace::{local_span, span_name};
 use sekas_schema::system::txn::TXN_INTENT_VERSION;
 
 use super::LatchManager;
@@ -56,7 +57,10 @@ async fn read_key<T: LatchManager>(
     start_version: u64,
 ) -> Result<Option<Value>> {
     let snapshot_mode = SnapshotMode::Key { key };
-    let mut snapshot = engine.snapshot(shard_id, snapshot_mode)?;
+    let mut snapshot = {
+        let _span = local_span(span_name::ENGINE_SNAPSHOT_KEY);
+        engine.snapshot(shard_id, snapshot_mode)?
+    };
     if let Some(iter) = snapshot.next() {
         for entry in iter? {
             let entry = entry?;

@@ -24,6 +24,7 @@ use sekas_api::server::v1::group_request_union::Request as ShardRequest;
 use sekas_api::server::v1::group_response_union::Response as ShardResponse;
 use sekas_api::server::v1::watch_key_response::WatchResult;
 use sekas_api::server::v1::*;
+use sekas_client::trace::{maybe_in_span, span_from_tonic_request, span_name};
 use sekas_schema::system::txn::{TXN_INTENT_VERSION, TXN_MAX_VERSION};
 use tonic::{Request, Response, Status};
 
@@ -214,17 +215,25 @@ impl node_server::Node for Server {
         &self,
         request: Request<GroupRequest>,
     ) -> Result<Response<GroupResponse>, Status> {
-        let response = handle_unary_group_request(self.clone(), request.into_inner()).await;
-        Ok(Response::new(response))
+        let span = span_from_tonic_request(&request, span_name::GRPC_NODE_UNARY_GROUP);
+        let request = request.into_inner();
+        maybe_in_span(span, async move {
+            Ok(Response::new(handle_unary_group_request(self.clone(), request).await))
+        })
+        .await
     }
 
     async fn group(
         &self,
         request: Request<GroupRequest>,
     ) -> Result<Response<Self::GroupStream>, Status> {
+        let span = span_from_tonic_request(&request, span_name::GRPC_NODE_GROUP);
         let group_response_stream =
             Box::pin(handle_group_request(self.clone(), request.into_inner()));
-        Ok(Response::new(GroupStream { inner: group_response_stream }))
+        maybe_in_span(span, async move {
+            Ok(Response::new(GroupStream { inner: group_response_stream }))
+        })
+        .await
     }
 
     async fn admin(

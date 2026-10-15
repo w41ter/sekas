@@ -185,6 +185,7 @@ pub(super) fn workload(
         allow_conflicts: false,
         allow_overload: false,
         disjoint_keys: false,
+        trace_every_n: crate::perf_lab::trace_every_n(),
     }
 }
 

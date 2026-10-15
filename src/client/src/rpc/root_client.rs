@@ -36,6 +36,7 @@ use crate::metrics::{
     ROOT_CLIENT_GET_CLIENT_DURATION_SECONDS, ROOT_CLIENT_RPC_DURATION_SECONDS,
 };
 use crate::rpc::{ConnManager, NodeClient};
+use crate::trace::inject_trace_context;
 use crate::{Error as ClientError, Result};
 
 macro_rules! extract_admin_response {
@@ -105,7 +106,7 @@ impl Client {
         let res = self
             .invoke(|mut client| {
                 let req = req.clone();
-                async move { client.report(req).await }
+                async move { client.report(inject_trace_context(req)).await }
             })
             .await?;
         Ok(res.into_inner())
@@ -115,7 +116,7 @@ impl Client {
         let res = self
             .invoke(|mut client| {
                 let req = req.clone();
-                async move { client.admin(req).await }
+                async move { client.admin(inject_trace_context(req)).await }
             })
             .await?;
         Ok(res.into_inner())
@@ -203,7 +204,7 @@ impl Client {
         let res = self
             .invoke(|mut client| {
                 let req = req.clone();
-                async move { client.join(req).await }
+                async move { client.join(inject_trace_context(req)).await }
             })
             .await?;
         Ok(res.into_inner())
@@ -218,7 +219,7 @@ impl Client {
                 if let Some(deadline) = timeout {
                     req.set_timeout(deadline);
                 }
-                async move { client.alloc_txn_id(req).await }
+                async move { client.alloc_txn_id(inject_trace_context(req)).await }
             })
             .await?;
         ROOT_CLIENT_ALLOC_TXN_ID_DURATION_SECONDS.observe(total_start.elapsed().as_secs_f64());
@@ -235,7 +236,7 @@ impl Client {
         let res = self
             .invoke(|mut client| {
                 let req = req.clone();
-                async move { client.watch(req).await }
+                async move { client.watch(inject_trace_context(req)).await }
             })
             .await?;
         Ok(res.into_inner())
@@ -245,7 +246,7 @@ impl Client {
         let resp = self
             .invoke(|mut client| {
                 let req = req.clone();
-                async move { client.alloc_replica(req).await }
+                async move { client.alloc_replica(inject_trace_context(req)).await }
             })
             .await?;
         Ok(resp.into_inner())

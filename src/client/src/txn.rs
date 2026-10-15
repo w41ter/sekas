@@ -30,6 +30,7 @@ use crate::metrics::*;
 use crate::range::RangeStream;
 use crate::retry::RetryState;
 use crate::rpc::RouterGroupState;
+use crate::trace::{TraceFutureExt, local_span, span_name};
 use crate::{
     AppResult, Database, Error, RangeRequest, Result, SekasClient, TxnStateTable, record_latency,
 };
@@ -642,10 +643,13 @@ impl Txn {
         self.has_snapshot_read.store(true, Ordering::Release);
         let start_version = match version {
             Some(version) => version,
-            None => self.get_read_version().await?,
+            None => self.get_read_version().in_trace(span_name::CLIENT_GET_READ_VERSION).await?,
         };
         let router = self.db.client.router();
-        let (group, shard) = router.find_shard(table_id, user_key)?;
+        let (group, shard) = {
+            let _span = local_span(span_name::CLIENT_ROUTER_FIND_SHARD);
+            router.find_shard(table_id, user_key)?
+        };
         let req = Request::Get(ShardGetRequest {
             shard_id: shard.id,
             start_version,
@@ -659,7 +663,7 @@ impl Txn {
 
         let mut group_client = GroupClient::new(group, self.db.client.clone());
         group_client.set_timeout_opt(timeout);
-        match group_client.request(&req).await? {
+        match group_client.request(&req).in_trace(span_name::CLIENT_GROUP_REQUEST_GET).await? {
             Response::Get(ShardGetResponse { value }) => Ok(value),
             _ => Err(crate::Error::Internal("invalid response type, Get is required".into())),
         }

@@ -91,6 +91,7 @@ pub(crate) struct Workload {
     pub(crate) allow_conflicts: bool,
     pub(crate) allow_overload: bool,
     pub(crate) disjoint_keys: bool,
+    pub(crate) trace_every_n: Option<u64>,
 }
 
 pub(crate) struct WorkloadHandle {

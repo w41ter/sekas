@@ -29,6 +29,10 @@ impl Command {
         let cfg = LabConfig::load(&self)?;
         let suite_id = run_id();
         init_logging(&cfg, &suite_id)?;
+        let tracing_enabled = super::trace_every_n().is_some();
+        if tracing_enabled {
+            sekas_client::trace::init_console_reporter();
+        }
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .worker_threads(cfg.runner_threads)
@@ -83,6 +87,9 @@ impl Command {
             }
 
             write_suite_report(&suite_id, &reports, &errors, &out_dir)?;
+            if tracing_enabled {
+                sekas_client::trace::flush();
+            }
             if !errors.is_empty() {
                 bail!(
                     "perf-lab cases failed: {}",
