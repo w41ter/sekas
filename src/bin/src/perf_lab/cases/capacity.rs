@@ -182,7 +182,7 @@ impl CapacityCase {
                         prefix: "key-".into(),
                         keys: fixture_spec.keys,
                     };
-                    seed_target(&db, &target, &vec![b's'; fixture_spec.value_size]).await?;
+                    seed_target(lab, &db, &target, &vec![b's'; fixture_spec.value_size]).await?;
                     let spec = workload(
                         lab,
                         &format!("metadata_{count}"),

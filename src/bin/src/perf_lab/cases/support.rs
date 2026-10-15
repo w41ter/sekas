@@ -5,7 +5,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail, ensure};
-use sekas_client::{Database, WriteBuilder};
+use sekas_api::server::v1::group_request_union::Request;
+use sekas_api::server::v1::group_response_union::Response;
+use sekas_api::server::v1::{LocalTxnWriteRequest, ShardWriteRequest, write_result};
+use sekas_client::{Database, Error as ClientError, WriteBuilder};
+use sekas_rock::time::timestamp_nanos;
 
 use crate::perf_lab::report::CaseReport;
 use crate::perf_lab::workload::{
@@ -85,15 +89,41 @@ async fn seed_random_target(db: &Database, target: &Target, value_size: usize) -
     Ok(())
 }
 
-pub(super) async fn seed_target(db: &Database, target: &Target, value: &[u8]) -> Result<()> {
+pub(super) async fn seed_target(
+    lab: &LabContext,
+    db: &Database,
+    target: &Target,
+    value: &[u8],
+) -> Result<()> {
     for offset in (0..target.keys).step_by(64) {
-        let mut txn = db.begin_txn();
+        let (group_id, shard) = lab.group_for_key(target.table, &target.key(offset)).await?;
+        let mut puts = Vec::new();
         for index in offset..(offset + 64).min(target.keys) {
-            txn.put(target.table, WriteBuilder::new(target.key(index)).ensure_put(value.to_vec()));
+            puts.push(WriteBuilder::new(target.key(index)).ensure_put(value.to_vec()));
         }
-        txn.commit()
+        let request =
+            Request::Write(ShardWriteRequest { shard_id: shard.id, puts, ..Default::default() });
+        let response = lab
+            .group(group_id)
+            .request(&request)
             .await
-            .with_context(|| format!("seed commit table {} offset {offset}", target.table))?;
+            .with_context(|| format!("seed write table {} offset {offset}", target.table))?;
+        let Response::Write(response) = response else {
+            bail!(
+                "seed write table {} offset {offset} returned an unexpected response",
+                target.table
+            );
+        };
+        ensure!(
+            response.puts.len() == (offset + 64).min(target.keys).saturating_sub(offset) as usize
+                && response
+                    .puts
+                    .iter()
+                    .all(|result| matches!(result.result, Some(write_result::Result::Response(_)))),
+            "seed write table {} offset {offset} was not fully applied: {:?}",
+            target.table,
+            response.puts
+        );
     }
     ensure!(
         db.get(target.table, target.key(0))
@@ -103,6 +133,34 @@ pub(super) async fn seed_target(db: &Database, target: &Target, value: &[u8]) ->
         "seed value mismatch"
     );
     Ok(())
+}
+
+async fn wait_shard_local_txn_ready(lab: &LabContext, target: &Target) -> Result<()> {
+    let deadline = Instant::now() + Duration::from_secs(lab.config.execution.event_timeout_secs);
+    loop {
+        let key = target.key(0);
+        let (group_id, shard) = lab.group_for_key(target.table, &key).await?;
+        let request = Request::LocalTxnWrite(LocalTxnWriteRequest {
+            commit_version: timestamp_nanos(),
+            writes: vec![ShardWriteRequest {
+                shard_id: shard.id,
+                puts: vec![WriteBuilder::new(key).ensure_nop()],
+                ..Default::default()
+            }],
+        });
+        match lab.group(group_id).request(&request).await {
+            Ok(Response::LocalTxnWrite(_)) => return Ok(()),
+            Ok(response) => bail!("local transaction readiness returned {response:?}"),
+            Err(
+                ClientError::LocalTxnNotAllowed
+                | ClientError::EpochNotMatch(_)
+                | ClientError::GroupNotAccessable(_),
+            ) if Instant::now() < deadline => {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            Err(err) => return Err(err.into()),
+        }
+    }
 }
 
 pub(super) fn workload(
@@ -217,7 +275,10 @@ pub(super) async fn ensure_groups(lab: &mut LabContext, count: usize) -> Result<
         if Instant::now() >= deadline {
             bail!("only {} ready groups, need {count}", groups.len());
         }
-        if lab.nodes.len() < count.max(3) {
+        // The allocator's desired group count includes the root group.  To
+        // obtain `count` user groups, the lab therefore needs at least one
+        // additional node beyond that count.
+        if lab.nodes.len() < count.saturating_add(1).max(3) {
             lab.add_server().await?;
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -237,14 +298,24 @@ pub(super) async fn layout(
     let groups = ensure_groups(lab, participants).await?;
     let mut targets = Vec::new();
     let db = lab.database().await?;
+    let seed_value = vec![b's'; fixture_spec.value_size];
     for (i, group) in groups.iter().enumerate() {
         let (_, mut target) = fixture(lab, &format!("{name}_{i}"), false, fixture_spec).await?;
         target.keys = (fixture_spec.keys / participants as u64).max(1);
         lab.migrate_shard_to_group(target.table, &target.key(0), *group)
             .await
             .with_context(|| format!("place table {} in group {group}", target.table))?;
-        seed_target(&db, &target, &vec![b's'; fixture_spec.value_size]).await?;
         targets.push(target);
+    }
+    // Hold the final placement at the same global steady-state boundary used
+    // by the rest of perf-lab before starting the measured workload.
+    lab.wait_cluster_stable().await?;
+    for target in &targets {
+        // Fixture setup uses committed shard writes instead of transactions:
+        // a newly moved shard may still forward briefly, and fixture creation
+        // must not leave asynchronous intents for the measured workload.
+        seed_target(lab, &db, target, &seed_value).await?;
+        wait_shard_local_txn_ready(lab, target).await?;
     }
     let mut actual = BTreeSet::new();
     for target in &targets {

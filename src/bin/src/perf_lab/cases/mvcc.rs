@@ -43,10 +43,10 @@ impl MvccCase {
             // Keep this matrix bounded independently of the read working-set profile.
             target.keys = target.keys.min(64);
             let old = vec![b'o'; fixture_spec.value_size];
-            seed_target(&db, &target, &old).await?;
+            seed_target(lab, &db, &target, &old).await?;
             let snapshot = db.begin_txn().start_version().await?;
             for _ in 1..versions {
-                seed_target(&db, &target, &vec![b'n'; fixture_spec.value_size]).await?;
+                seed_target(lab, &db, &target, &vec![b'n'; fixture_spec.value_size]).await?;
             }
             let latest =
                 if versions == 1 { old.clone() } else { vec![b'n'; fixture_spec.value_size] };

@@ -94,10 +94,10 @@ impl StorageCase {
         } else if self == Self::RetentionBoundary {
             target.keys = 1;
             let old = vec![b'o'; fixture_spec.value_size];
-            seed_target(&db, &target, &old).await?;
+            seed_target(lab, &db, &target, &old).await?;
             let snapshot = db.begin_txn().start_version().await?;
-            seed_target(&db, &target, &vec![b'n'; fixture_spec.value_size]).await?;
-            seed_target(&db, &target, &vec![b'p'; fixture_spec.value_size]).await?;
+            seed_target(lab, &db, &target, &vec![b'n'; fixture_spec.value_size]).await?;
+            seed_target(lab, &db, &target, &vec![b'p'; fixture_spec.value_size]).await?;
             let started = Instant::now();
             let spec = workload(
                 lab,
@@ -164,7 +164,7 @@ impl StorageCase {
             let (_, mut probe) = fixture(lab, "gc_immutable_probe", false, fixture_spec).await?;
             probe.keys = 1;
             for _ in 0..16 {
-                seed_target(&db, &probe, &vec![b'v'; fixture_spec.value_size]).await?;
+                seed_target(lab, &db, &probe, &vec![b'v'; fixture_spec.value_size]).await?;
             }
             let before = raw_versions(lab, &probe).await?.len();
             ensure!(before > 1, "GC probe did not accumulate versions; increase gc_retention_ms");

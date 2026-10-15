@@ -42,7 +42,7 @@ impl ContentionCase {
             let (db, mut target) =
                 fixture(lab, &format!("hotset_{hotset}"), false, fixture_spec).await?;
             target.keys = hotset;
-            seed_target(&db, &target, &vec![b's'; fixture_spec.value_size]).await?;
+            seed_target(lab, &db, &target, &vec![b's'; fixture_spec.value_size]).await?;
             let conflict = self != Self::Hotset;
             let mut spec = workload(
                 lab,
