@@ -13,6 +13,9 @@ members = [
     "src/schema",
     "src/server",
 
+    # tools
+    "tools/machine-bench",
+
     # layers
     "layers/etcd",
 
