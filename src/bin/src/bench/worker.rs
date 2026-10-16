@@ -34,7 +34,7 @@ pub struct Job {
 pub struct Generator {
     cfg: AppConfig,
     range: std::ops::Range<u64>,
-    rng: SmallRng,
+    rng: StdRng,
 }
 
 #[derive(Debug, Clone)]
@@ -45,11 +45,11 @@ pub enum NextOp {
 
 impl Generator {
     pub fn new(seed: u64, cfg: AppConfig, range: std::ops::Range<u64>) -> Generator {
-        Generator { cfg, range, rng: SmallRng::seed_from_u64(seed) }
+        Generator { cfg, range, rng: StdRng::seed_from_u64(seed) }
     }
 
     pub fn next_op(&mut self) -> NextOp {
-        let v = self.rng.gen_range(0..100) as f64 / 100.0;
+        let v = self.rng.random_range(0..100) as f64 / 100.0;
         let key = self.next_key();
         if v < self.cfg.data.write {
             let value = self.next_bytes(self.cfg.data.value.clone());
@@ -61,7 +61,7 @@ impl Generator {
 
     fn next_bytes(&mut self, range: std::ops::Range<usize>) -> Vec<u8> {
         const BYTES: &[u8; 62] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-        let len = self.rng.gen_range(range);
+        let len = self.rng.random_range(range);
         let mut buf = vec![0u8; len];
         self.rng.fill(buf.as_mut_slice());
         buf.iter_mut().for_each(|v| *v = BYTES[(*v % 62) as usize]);
@@ -69,7 +69,7 @@ impl Generator {
     }
 
     fn next_key(&mut self) -> Vec<u8> {
-        let index = self.rng.gen_range(self.range.clone());
+        let index = self.rng.random_range(self.range.clone());
         format!("{}{index:0leading$}", self.cfg.key.prefix, leading = self.cfg.key.leading)
             .into_bytes()
     }

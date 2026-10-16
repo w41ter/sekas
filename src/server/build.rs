@@ -26,7 +26,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     config.extern_path(".sekas.server.v1", "::sekas_api::server::v1");
     config.extern_path(".sekas.v1", "::sekas_api::v1");
     config.extern_path(".eraftpb", "::raft::eraftpb");
-    tonic_build::configure().compile_with_config(
+    tonic_prost_build::configure().compile_with_config(
         config,
         &["proto/v1/metadata.proto", "proto/v1/raft.proto"],
         &["proto", "proto/include", "../api/"],

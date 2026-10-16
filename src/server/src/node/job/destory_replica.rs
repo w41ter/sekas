@@ -59,10 +59,10 @@ async fn destory_replica(
 #[cfg(test)]
 mod tests {
     use sekas_rock::fs::create_dir_all_if_not_exists;
-    use tempdir::TempDir;
 
     use super::*;
     use crate::bootstrap::open_engine_with_default_config;
+    use crate::testutil::TempDir;
 
     #[sekas_macro::test]
     async fn destory_replica_ignore_not_existed_column_families() {

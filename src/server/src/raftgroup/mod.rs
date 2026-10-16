@@ -127,7 +127,7 @@ fn encode_to_conf_change(change_replicas: ChangeReplicas) -> ConfChangeV2 {
 
     let mut conf_changes = vec![];
     for c in &change_replicas.changes {
-        let change_type = match ChangeReplicaType::from_i32(c.change_type) {
+        let change_type = match ChangeReplicaType::try_from(c.change_type).ok() {
             Some(ChangeReplicaType::Add) => ConfChangeType::AddNode,
             Some(ChangeReplicaType::Remove) => ConfChangeType::RemoveNode,
             Some(ChangeReplicaType::AddLearner) => ConfChangeType::AddLearnerNode,
@@ -155,7 +155,7 @@ pub fn conf_state_from_group_descriptor(desc: &GroupDesc) -> ConfState {
     let mut cs = ConfState::default();
     let mut in_joint = false;
     for replica in desc.replicas.iter() {
-        match ReplicaRole::from_i32(replica.role).unwrap_or(ReplicaRole::Voter) {
+        match ReplicaRole::try_from(replica.role).unwrap_or(ReplicaRole::Voter) {
             ReplicaRole::Voter => {
                 cs.voters.push(replica.id);
             }

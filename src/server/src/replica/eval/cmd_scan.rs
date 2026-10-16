@@ -261,11 +261,11 @@ async fn resolve_txn<T: LatchManager>(
 #[cfg(test)]
 mod tests {
     use sekas_rock::fn_name;
-    use tempdir::TempDir;
 
     use super::*;
     use crate::engine::{WriteBatch, WriteStates, create_group_engine};
     use crate::replica::eval::latch::local::LocalLatchManager;
+    use crate::testutil::TempDir;
 
     const SHARD_ID: u64 = 1;
 

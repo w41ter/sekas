@@ -10,9 +10,10 @@ description = "The Sekas API."
 [dependencies]
 crc32fast.workspace = true
 tonic.workspace = true
+tonic-prost.workspace = true
 prost.workspace = true
 prost-types.workspace = true
 
 [build-dependencies]
-tonic-build.workspace = true
+tonic-prost-build.workspace = true
 protoc-build.workspace = true

@@ -216,7 +216,13 @@ impl ProxyServer {
     ) -> Result<PutResponse, Status> {
         let table = Table::new(self.client.clone(), desc, None);
         table
-            .put(req.key, req.value, Some(req.ttl), PutOperation::from_i32(req.op), req.conditions)
+            .put(
+                req.key,
+                req.value,
+                Some(req.ttl),
+                PutOperation::try_from(req.op).ok(),
+                req.conditions,
+            )
             .await?;
         Ok(PutResponse {})
     }

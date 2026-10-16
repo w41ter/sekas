@@ -23,7 +23,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         std::env::set_var("PROTOC_INCLUDE", protoc_build::PROTOC_INCLUDE);
     }
 
-    tonic_build::configure().compile(
+    tonic_prost_build::configure().compile_protos(
         &[
             "sekas/server/v1/catalog.proto",
             "sekas/server/v1/error.proto",

@@ -109,11 +109,11 @@ mod tests {
     use std::sync::Mutex;
 
     use sekas_rock::fn_name;
-    use tempdir::TempDir;
 
     use super::*;
     use crate::engine::{WriteBatch, WriteStates, create_group_engine};
     use crate::replica::eval;
+    use crate::testutil::TempDir;
 
     #[derive(Default)]
     struct NopLatchGuard {}

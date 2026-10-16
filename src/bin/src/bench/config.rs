@@ -38,7 +38,7 @@ pub struct AppConfig {
 impl Default for AppConfig {
     fn default() -> Self {
         AppConfig {
-            num_threads: num_cpus::get(),
+            num_threads: std::thread::available_parallelism().map(usize::from).unwrap_or(1),
             report_interval: Duration::from_secs(10),
             operation: 100000,
             addrs: vec!["0.0.0.0:21805".into()],

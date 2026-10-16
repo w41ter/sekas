@@ -7,7 +7,7 @@ publish = false
 
 [dependencies]
 anyhow = "1.0"
-clap = { version = "3.2", features = ["derive"] }
+clap = { version = "4.6", features = ["derive"] }
 crc32fast.workspace = true
 libc.workspace = true
 serde.workspace = true

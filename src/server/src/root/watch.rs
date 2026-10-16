@@ -144,7 +144,7 @@ impl Stream for Watcher {
         }
         if let Some(err) = inner.err.take() {
             inner.dropped = true;
-            return Poll::Ready(Some(Err(err.into())));
+            return Poll::Ready(Some(Err(err)));
         }
         if !inner.updates.is_empty() || !inner.deletes.is_empty() {
             let resp = WatchResponse {

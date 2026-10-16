@@ -120,7 +120,7 @@ async fn log_writer_main(
         let mut senders = vec![sender];
         estimated_size = estimate_size(estimated_size, log_batch.approximate_size());
         while log_batch.approximate_size() + (estimated_size as usize) <= max_io_batch_size {
-            let Ok(Some(mut req)) = receiver.try_next() else {
+            let Ok(mut req) = receiver.try_recv() else {
                 break;
             };
             RAFTGROUP_LOG_WRITER_QUEUE_DURATION_SECONDS.observe(elapsed_seconds(req.enqueued_at));

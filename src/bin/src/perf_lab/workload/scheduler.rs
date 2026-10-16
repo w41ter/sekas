@@ -5,8 +5,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use rand::rngs::SmallRng;
-use rand::{Rng, SeedableRng};
+use rand::rngs::StdRng;
+use rand::{RngExt, SeedableRng};
 use sekas_client::Database;
 use tokio::task::JoinHandle;
 
@@ -26,7 +26,7 @@ pub(super) fn spawn_open_loop(
         let mut running = tokio::task::JoinSet::new();
         let origin = Instant::now();
         let mut sequence = 0_u64;
-        let mut rng = SmallRng::seed_from_u64(0x5ECA5);
+        let mut rng = StdRng::seed_from_u64(0x5ECA5);
         while !stop.load(Ordering::Acquire) {
             let scheduled = origin + Duration::from_secs_f64(sequence as f64 / qps);
             while Instant::now() < scheduled && !stop.load(Ordering::Acquire) {
@@ -46,10 +46,10 @@ pub(super) fn spawn_open_loop(
                     let db = db.clone();
                     let spec = spec.clone();
                     let stats = stats.clone();
-                    let seed = rng.r#gen();
+                    let seed = rng.random();
                     running.spawn(async move {
                         let _permit = permit;
-                        let mut rng = SmallRng::seed_from_u64(seed);
+                        let mut rng = StdRng::seed_from_u64(seed);
                         run_one(&db, &spec, &mut rng, 0, sequence, scheduled, &phase, &stats).await;
                     });
                 }
@@ -85,7 +85,7 @@ pub(super) fn spawn_closed_loop(
         let stop = stop.clone();
         let stats = stats.clone();
         tasks.push(tokio::spawn(async move {
-            let mut rng = SmallRng::seed_from_u64(worker as u64 + 0x5ECA5);
+            let mut rng = StdRng::seed_from_u64(worker as u64 + 0x5ECA5);
             let mut sequence = 0;
             while !stop.load(Ordering::Acquire) {
                 if matches!(spec.operation, Operation::Delete)
@@ -110,7 +110,7 @@ pub(super) fn spawn_closed_loop(
 async fn run_one(
     db: &Database,
     spec: &Workload,
-    rng: &mut SmallRng,
+    rng: &mut StdRng,
     worker: usize,
     sequence: u64,
     started: Instant,

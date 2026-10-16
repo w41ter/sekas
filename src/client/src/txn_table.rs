@@ -638,8 +638,7 @@ fn parse_txn_record(
         return Ok(None);
     }
 
-    let mut txn_record = TxnRecord::default();
-    txn_record.start_version = start_version;
+    let mut txn_record = TxnRecord { start_version, ..Default::default() };
     let mut has_heartbeat = false;
     let mut has_state = false;
     for value_set in values {

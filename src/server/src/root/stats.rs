@@ -81,7 +81,7 @@ impl ClusterStats {
             for shard in &group_stats.shard_stats {
                 let shard_id = shard.shard_id;
                 let table_stats = table_set.tables.entry(shard.table_id).or_default();
-                table_stats.shards.insert(shard_id, shard.clone());
+                table_stats.shards.insert(shard_id, *shard);
                 table_stats.shard_indexes.insert(shard_id, group_stats.group_id);
             }
         }

@@ -273,7 +273,7 @@ impl GroupClient {
                     "group {} issue rpc to {}: with retryable status: {}",
                     self.group_id,
                     self.access_node_id.unwrap_or_default(),
-                    status.to_string(),
+                    status,
                 );
                 self.access_node_id = None;
                 Ok(())
@@ -286,7 +286,7 @@ impl GroupClient {
                     "group {} issue rpc to {}: with transport status: {}",
                     self.group_id,
                     self.access_node_id.unwrap_or_default(),
-                    status.to_string(),
+                    status,
                 );
                 self.access_node_id = None;
                 Ok(())

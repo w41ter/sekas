@@ -21,11 +21,10 @@ sekas-runtime = { path = "../runtime", version = "0.5" }
 
 lazy_static.workspace = true
 log.workspace = true
-num_cpus.workspace = true
 paste.workspace = true
 prometheus.workspace = true
-rand = { workspace = true, features = ["small_rng"] }
-reqwest = { version = "0.11", default-features = false, features = ["json"] }
+rand.workspace = true
+reqwest = { version = "0.13", default-features = false, features = ["json"] }
 rustyline.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -35,8 +34,7 @@ toml.workspace = true
 tracing.workspace = true
 
 anyhow = "1.0"
-atty = "0.2"
-clap = { version = "3.2", features = ["derive"] }
-config = { version = "0.13", features = ["toml"] }
-tabled = "0.15"
+clap = { version = "4.6", features = ["derive"] }
+config = { version = "0.15", features = ["toml"] }
+tabled = "0.22"
 tracing-subscriber = { version = "0.3", features = ["std", "env-filter"] }

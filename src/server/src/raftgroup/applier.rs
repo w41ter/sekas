@@ -272,7 +272,7 @@ impl ReplicaCache {
     pub fn batch_insert(&mut self, replicas: &[ReplicaDesc]) {
         let cache = &mut self.replicas;
         for replica in replicas {
-            cache.insert(replica.id, replica.clone());
+            cache.insert(replica.id, *replica);
         }
     }
 

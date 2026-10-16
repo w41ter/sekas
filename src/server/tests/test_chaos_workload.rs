@@ -23,7 +23,7 @@ use helper::init::setup_panic_hook;
 use sekas_chaos::{OperationWeights, SekasExecutor, SizeRange, WorkloadConfig, WorkloadRunner};
 use sekas_rock::fn_name;
 
-#[ctor::ctor]
+#[ctor::ctor(unsafe)]
 fn init() {
     setup_panic_hook();
     tracing_subscriber::fmt::init();

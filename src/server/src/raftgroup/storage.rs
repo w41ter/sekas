@@ -85,7 +85,7 @@ impl Storage {
 
         let mut first_index = engine.first_index(replica_id).unwrap_or(1);
         let mut last_index = engine.last_index(replica_id).unwrap_or(0);
-        if let Some(truncated) = local_state.last_truncated.clone() {
+        if let Some(truncated) = local_state.last_truncated {
             if first_index <= last_index {
                 if truncated.index + 1 != first_index {
                     panic!(
@@ -232,7 +232,7 @@ impl Storage {
 
     #[inline]
     fn last_truncated_entry_id(&self) -> EntryId {
-        self.local_state.last_truncated.clone().unwrap_or_default()
+        self.local_state.last_truncated.unwrap_or_default()
     }
 
     #[inline]
@@ -355,7 +355,7 @@ impl raft::Storage for Storage {
         if !self.is_creating_snapshot.get() {
             if let Some(snap_info) = self.snap_mgr.latest_snap(self.replica_id) {
                 let snap_meta = &snap_info.meta;
-                let apply_state = snap_meta.apply_state.clone().unwrap();
+                let apply_state = snap_meta.apply_state.unwrap();
                 if apply_state.index >= request_index {
                     return Ok(snap_info.to_raft_snapshot());
                 }
@@ -577,10 +577,10 @@ mod tests {
     use log::info;
     use raft_engine::Config;
     use sekas_rock::fn_name;
-    use tempdir::TempDir;
 
     use super::*;
     use crate::serverpb::v1::{AddShard, SyncOp};
+    use crate::testutil::TempDir;
 
     fn mocked_entries(select_term: Option<u64>) -> Vec<(u64, u64)> {
         let entries = vec![

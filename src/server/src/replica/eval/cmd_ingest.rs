@@ -46,10 +46,10 @@ pub async fn ingest_value_set(
 mod tests {
     use sekas_api::server::v1::Value;
     use sekas_rock::fn_name;
-    use tempdir::TempDir;
 
     use super::*;
     use crate::engine::{WriteStates, create_group_engine};
+    use crate::testutil::TempDir;
 
     const SHARD_ID: u64 = 1;
 

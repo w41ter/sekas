@@ -21,7 +21,7 @@ use crate::helper::client::*;
 use crate::helper::context::*;
 use crate::helper::init::setup_panic_hook;
 
-#[ctor::ctor]
+#[ctor::ctor(unsafe)]
 fn init() {
     setup_panic_hook();
     tracing_subscriber::fmt::init();

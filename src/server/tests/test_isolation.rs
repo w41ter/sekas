@@ -30,7 +30,7 @@ const DB: &str = "DB";
 const TABLE_A: &str = "TABLE_A";
 const TABLE_B: &str = "TABLE_B";
 
-#[ctor::ctor]
+#[ctor::ctor(unsafe)]
 fn init() {
     setup_panic_hook();
     tracing_subscriber::fmt::init();

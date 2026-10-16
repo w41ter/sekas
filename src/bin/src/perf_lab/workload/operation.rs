@@ -3,8 +3,8 @@
 
 use std::time::Duration;
 
-use rand::Rng;
-use rand::rngs::SmallRng;
+use rand::RngExt;
+use rand::rngs::StdRng;
 use sekas_client::trace::TraceFutureExt;
 use sekas_client::{AppError, AppResult, Database, Range, RangeRequest, WriteBuilder};
 use tokio_stream::StreamExt;
@@ -33,19 +33,19 @@ fn check_value(
 pub(super) async fn execute(
     db: &Database,
     spec: &Workload,
-    rng: &mut SmallRng,
+    rng: &mut StdRng,
     worker: usize,
     sequence: u64,
     out: &mut Outcome,
 ) -> AppResult<()> {
     out.attempts = 1;
-    let target = &spec.targets[rng.gen_range(0..spec.targets.len())];
-    let space = if rng.gen_bool(spec.hot_probability) {
+    let target = &spec.targets[rng.random_range(0..spec.targets.len())];
+    let space = if rng.random_bool(spec.hot_probability) {
         spec.hot_keys.min(target.keys)
     } else {
         target.keys
     };
-    let index = rng.gen_range(0..space);
+    let index = rng.random_range(0..space);
     match &spec.operation {
         Operation::Read { present, version, expected } => {
             let key = target.key(index);
@@ -76,7 +76,7 @@ pub(super) async fn execute(
         }
         Operation::Churn => {
             let key = target.key(index);
-            if rng.gen_bool(0.25) {
+            if rng.random_bool(0.25) {
                 db.delete(target.table, key).await?;
             } else {
                 db.put(target.table, key, payload(rng, spec.value_size)).await?;
@@ -94,7 +94,7 @@ pub(super) async fn execute(
             let begin = if version.is_some() || *limit >= target.keys {
                 0
             } else {
-                rng.gen_range(0..=target.keys - count)
+                rng.random_range(0..=target.keys - count)
             };
             let mut stream = db
                 .range(RangeRequest {
@@ -134,7 +134,7 @@ pub(super) async fn execute(
 async fn execute_transaction(
     db: &Database,
     spec: &Workload,
-    rng: &mut SmallRng,
+    rng: &mut StdRng,
     worker: usize,
     target: &Target,
     out: &mut Outcome,
@@ -147,9 +147,9 @@ async fn execute_transaction(
     let offset = if spec.disjoint_keys {
         let partition = target.keys / spec.load.concurrency() as u64;
         let needed = keys.div_ceil(spec.targets.len()) as u64;
-        worker as u64 * partition + rng.gen_range(0..=partition - needed)
+        worker as u64 * partition + rng.random_range(0..=partition - needed)
     } else {
-        rng.gen_range(0..target.keys)
+        rng.random_range(0..target.keys)
     };
     let writes = transaction_keys(&spec.targets, keys, offset);
     let value = (!matches!(mode, TxnMode::ReadOnly)).then(|| payload(rng, spec.value_size));
@@ -173,7 +173,7 @@ async fn execute_transaction(
                     }
                     out.attempts += 1;
                     // Deterministic stagger avoids synchronized retry storms.
-                    tokio::time::sleep(Duration::from_micros(rng.gen_range(100..2000))).await;
+                    tokio::time::sleep(Duration::from_micros(rng.random_range(100..2000))).await;
                     continue;
                 }
                 result => {
@@ -197,7 +197,7 @@ fn transaction_keys(targets: &[Target], keys: usize, offset: u64) -> Vec<(u64, V
         .collect()
 }
 
-fn payload(rng: &mut SmallRng, size: usize) -> Vec<u8> {
+fn payload(rng: &mut StdRng, size: usize) -> Vec<u8> {
     let mut value = vec![0; size];
     rng.fill(&mut value[..]);
     value

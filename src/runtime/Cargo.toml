@@ -23,12 +23,10 @@ thiserror.workspace = true
 tokio.workspace = true
 tonic.workspace = true
 tracing.workspace = true
-num_cpus.workspace = true
 rand.workspace = true
 serde.workspace = true
 
-const-str = "0.4"
-hyper = "0.14"
+const-str = "1.1"
 libc = "0.2"
 pin-project = "1"
 tokio-util = { version = "0.7", features = ["time"] }

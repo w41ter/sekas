@@ -18,8 +18,8 @@ use std::time::Instant;
 
 use futures::StreamExt;
 use log::info;
-use rand::prelude::SmallRng;
-use rand::{Rng, SeedableRng};
+use rand::rngs::StdRng;
+use rand::{RngExt, SeedableRng};
 use sekas_api::server::v1::ReplicaRole;
 use sekas_client::{AppError, ClientOptions, RangeRequest, SekasClient, WriteBuilder};
 use sekas_rock::fn_name;
@@ -29,7 +29,7 @@ use crate::helper::context::*;
 use crate::helper::init::setup_panic_hook;
 use crate::helper::runtime::*;
 
-#[ctor::ctor]
+#[ctor::ctor(unsafe)]
 fn init() {
     setup_panic_hook();
     tracing_subscriber::fmt::init();
@@ -209,9 +209,9 @@ async fn cluster_rw_with_shard_moving() {
 fn cluster_rw_single_server_large_read_write() {
     const DEFAULT_KEY_COUNT: usize = 655_350;
 
-    fn next_bytes(rng: &mut SmallRng, range: std::ops::Range<usize>) -> Vec<u8> {
+    fn next_bytes(rng: &mut StdRng, range: std::ops::Range<usize>) -> Vec<u8> {
         const BYTES: &[u8; 62] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-        let len = rng.gen_range(range);
+        let len = rng.random_range(range);
         let mut buf = vec![0u8; len];
         rng.fill(buf.as_mut_slice());
         buf.iter_mut().for_each(|v| *v = BYTES[(*v % 62) as usize]);
@@ -249,7 +249,7 @@ fn cluster_rw_single_server_large_read_write() {
             "large_rw setup: {setup_elapsed:?}, keys: {key_count}, write_batch_size: {write_batch_size}, read_one_txn: {read_one_txn}"
         );
 
-        let mut rng = SmallRng::seed_from_u64(0);
+        let mut rng = StdRng::seed_from_u64(0);
         let leading = 10;
         let write_started_at = Instant::now();
         for batch_start in (0..key_count).step_by(write_batch_size) {
@@ -268,7 +268,7 @@ fn cluster_rw_single_server_large_read_write() {
                 txn.commit().await.unwrap();
             }
             let done = batch_end;
-            if progress_interval > 0 && done % progress_interval == 0 {
+            if progress_interval > 0 && done.is_multiple_of(progress_interval) {
                 let elapsed = write_started_at.elapsed();
                 println!("large_rw write progress: {done}/{key_count}, elapsed: {elapsed:?}");
             }

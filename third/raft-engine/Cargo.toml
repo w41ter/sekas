@@ -29,7 +29,7 @@ crc32fast = "1.2"
 crossbeam = "0.8"
 fail = "0.5"
 fs2 = "0.4"
-hashbrown = "0.14"
+hashbrown = "0.17"
 hex = "0.4"
 if_chain = "1.0"
 lazy_static = "1.3"
@@ -40,8 +40,8 @@ log = { version = "0.4", features = [
 ] }
 lz4-sys = "1.9"
 memmap2 = { version = "0.9", optional = true }
-nix = "0.26"
-num-derive = "0.4"
+nix = { version = "0.31", features = ["fs"] }
+num-derive = "0.5"
 num-traits = "0.2"
 parking_lot = "0.12"
 prometheus = { workspace = true }
@@ -51,18 +51,18 @@ rhai = { version = "1.7", features = ["sync"], optional = true }
 scopeguard = "1.1"
 serde = { version = "1.0", features = ["derive"] }
 serde_repr = "0.1"
-strum = { version = "0.26.2", features = ["derive"] }
-thiserror = "1.0"
-prost = { version = "0.11", optional = true }
+strum = { version = "0.28", features = ["derive"] }
+thiserror.workspace = true
+prost = { workspace = true, optional = true }
 
 [dev-dependencies]
-criterion = "0.4"
-ctor = "0.2"
-env_logger = "0.10"
-rand = "0.8"
-rand_distr = "0.4"
+criterion = "0.8"
+ctor = "1.0"
+env_logger = "0.11"
+rand.workspace = true
+rand_distr = "0.6"
 tempfile = "3.6"
-toml = "0.8"
+toml.workspace = true
 
 [features]
 default = ["internals", "scripting"]

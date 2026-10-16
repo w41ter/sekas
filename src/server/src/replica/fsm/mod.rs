@@ -254,7 +254,7 @@ impl GroupStateMachine {
         move_shard: MoveShard,
         group_desc: &mut GroupDesc,
     ) -> Result<()> {
-        let event = MoveShardEvent::from_i32(move_shard.event).expect("unknown moving shard event");
+        let event = MoveShardEvent::try_from(move_shard.event).expect("unknown moving shard event");
         if let Some(desc) = move_shard.desc.as_ref() {
             info!(
                 "apply moving shard event. replica={}, group={}, desc={}, event={:?}",
@@ -549,7 +549,7 @@ fn apply_simple_change(local_id: u64, desc: &mut GroupDesc, change: &ChangeRepli
     let node_id = change.node_id;
     let exist = find_replica_mut(desc, replica_id);
     check_not_in_joint_state(&exist);
-    match ChangeReplicaType::from_i32(change.change_type) {
+    match ChangeReplicaType::try_from(change.change_type).ok() {
         Some(ChangeReplicaType::Add) => {
             info!("group {group_id} replica {local_id} add voter {replica_id}");
             if let Some(replica) = exist {
@@ -593,8 +593,8 @@ fn apply_enter_joint(local_id: u64, desc: &mut GroupDesc, changes: &[ChangeRepli
         let node_id = change.node_id;
         let exist = find_replica_mut(desc, replica_id);
         check_not_in_joint_state(&exist);
-        let exist_role = exist.as_ref().and_then(|r| ReplicaRole::from_i32(r.role));
-        let change = ChangeReplicaType::from_i32(change.change_type)
+        let exist_role = exist.as_ref().and_then(|r| ReplicaRole::try_from(r.role).ok());
+        let change = ChangeReplicaType::try_from(change.change_type)
             .expect("such change replica operation isn't supported");
 
         match (exist_role, change) {
@@ -640,7 +640,7 @@ fn apply_enter_joint(local_id: u64, desc: &mut GroupDesc, changes: &[ChangeRepli
 fn apply_leave_joint(local_id: u64, desc: &mut GroupDesc) {
     let group_id = desc.id;
     for replica in &mut desc.replicas {
-        let role = match ReplicaRole::from_i32(replica.role) {
+        let role = match ReplicaRole::try_from(replica.role).ok() {
             Some(ReplicaRole::IncomingVoter) => ReplicaRole::Voter,
             Some(ReplicaRole::DemotingVoter) => ReplicaRole::Learner,
             _ => continue,
@@ -655,7 +655,7 @@ fn group_role_digest(desc: &GroupDesc) -> String {
     let mut voters = vec![];
     let mut learners = vec![];
     for r in &desc.replicas {
-        match ReplicaRole::from_i32(r.role) {
+        match ReplicaRole::try_from(r.role).ok() {
             Some(ReplicaRole::Voter | ReplicaRole::IncomingVoter | ReplicaRole::DemotingVoter) => {
                 voters.push(r.id)
             }
@@ -671,7 +671,7 @@ fn change_replicas_digest(changes: &[ChangeReplica]) -> String {
     let mut remove_replicas = vec![];
     let mut add_learners = vec![];
     for cc in changes {
-        match ChangeReplicaType::from_i32(cc.change_type) {
+        match ChangeReplicaType::try_from(cc.change_type).ok() {
             Some(ChangeReplicaType::Add) => add_voters.push(cc.replica_id),
             Some(ChangeReplicaType::AddLearner) => add_learners.push(cc.replica_id),
             Some(ChangeReplicaType::Remove) => remove_replicas.push(cc.replica_id),
@@ -689,7 +689,7 @@ fn check_not_in_joint_state(exist: &Option<&mut ReplicaDesc>) {
     if matches!(
         exist
             .as_ref()
-            .and_then(|rep| ReplicaRole::from_i32(rep.role))
+            .and_then(|rep| ReplicaRole::try_from(rep.role).ok())
             .unwrap_or(ReplicaRole::Voter),
         ReplicaRole::IncomingVoter | ReplicaRole::DemotingVoter
     ) {
@@ -787,7 +787,7 @@ mod tests {
 
     fn group_replicas(desc: &GroupDesc) -> Vec<(u64, ReplicaRole)> {
         let mut result: Vec<(u64, ReplicaRole)> =
-            desc.replicas.iter().map(|r| (r.id, ReplicaRole::from_i32(r.role).unwrap())).collect();
+            desc.replicas.iter().map(|r| (r.id, ReplicaRole::try_from(r.role).unwrap())).collect();
 
         result.sort_unstable();
         result

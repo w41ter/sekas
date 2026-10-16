@@ -595,7 +595,7 @@ mod tests {
         owner.executor().block_on(async {
             use raft_engine::Config;
 
-            let dir = tempdir::TempDir::new("raftgroup-recover-snapshot").unwrap();
+            let dir = crate::testutil::TempDir::new("raftgroup-recover-snapshot").unwrap();
             let cfg = Config {
                 dir: dir.path().join("db").to_str().unwrap().to_owned(),
                 ..Default::default()
@@ -645,7 +645,7 @@ mod tests {
         owner.executor().block_on(async {
             use raft_engine::Config;
 
-            let dir = tempdir::TempDir::new("raftgroup-recover-staled-snapshot").unwrap();
+            let dir = crate::testutil::TempDir::new("raftgroup-recover-staled-snapshot").unwrap();
             let cfg = Config {
                 dir: dir.path().join("db").to_str().unwrap().to_owned(),
                 ..Default::default()
@@ -707,7 +707,7 @@ mod tests {
         owner.executor().block_on(async {
             use raft_engine::Config;
 
-            let dir = tempdir::TempDir::new("raftgroup-partial-recover-snapshot").unwrap();
+            let dir = crate::testutil::TempDir::new("raftgroup-partial-recover-snapshot").unwrap();
             let cfg = Config {
                 dir: dir.path().join("db").to_str().unwrap().to_owned(),
                 ..Default::default()
@@ -828,7 +828,7 @@ mod tests {
         owner.executor().block_on(async {
             use raft_engine::Config;
 
-            let dir = tempdir::TempDir::new("raftgroup-partial-recover-snapshot").unwrap();
+            let dir = crate::testutil::TempDir::new("raftgroup-partial-recover-snapshot").unwrap();
             let cfg = Config {
                 dir: dir.path().join("db").to_str().unwrap().to_owned(),
                 ..Default::default()

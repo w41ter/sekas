@@ -17,8 +17,8 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
-use rand::prelude::SmallRng;
-use rand::{Rng, SeedableRng};
+use rand::rngs::StdRng;
+use rand::{RngExt, SeedableRng};
 use serde::{Deserialize, Serialize};
 use tokio::task::JoinHandle;
 
@@ -630,9 +630,9 @@ async fn run_reader(
     events: Arc<EventLog>,
     stats: Arc<AtomicStats>,
 ) -> Option<WorkloadFailure> {
-    let mut rng = SmallRng::seed_from_u64(reader_seed(config.seed, reader));
+    let mut rng = StdRng::seed_from_u64(reader_seed(config.seed, reader));
     while !stop.requested() {
-        let writer = &writers[rng.gen_range(0..writers.len())];
+        let writer = &writers[rng.random_range(0..writers.len())];
         let before = writer.progress.load();
         if !before.stable {
             tokio::task::yield_now().await;
@@ -695,20 +695,20 @@ async fn run_reader(
 fn select_reader_target(
     writer: &WriterShared,
     config: &WorkloadConfig,
-    rng: &mut SmallRng,
+    rng: &mut StdRng,
     progress: ProgressSnapshot,
 ) -> Option<Observation> {
     let model = writer.model.read().unwrap();
     if model.completed() != progress.completed {
         return None;
     }
-    let recent_keys = if rng.gen_ratio(1, 5) {
+    let recent_keys = if rng.random_ratio(1, 5) {
         let recent = writer.recent.lock().unwrap();
         if recent.is_empty() {
             None
         } else {
             Some(
-                recent[rng.gen_range(0..recent.len())]
+                recent[rng.random_range(0..recent.len())]
                     .after
                     .values
                     .keys()
@@ -725,9 +725,9 @@ fn select_reader_target(
         let width = if config.verify_width.min == config.verify_width.max {
             config.verify_width.min
         } else {
-            rng.gen_range(config.verify_width.min..=config.verify_width.max)
+            rng.random_range(config.verify_width.min..=config.verify_width.max)
         };
-        let start = rng.gen_range(0..=model.slot_count() - width);
+        let start = rng.random_range(0..=model.slot_count() - width);
         Some(model.range(start, width))
     }
 }

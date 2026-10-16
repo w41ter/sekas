@@ -237,7 +237,7 @@ mod tests {
     use crate::log_batch::MessageExt;
     use raft::eraftpb::Entry;
 
-    #[ctor::ctor]
+    #[ctor::ctor(unsafe)]
     fn init() {
         env_logger::init();
     }

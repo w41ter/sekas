@@ -282,9 +282,9 @@ pub async fn create_group_engine(
 mod tests {
     use raft_engine::LogBatch;
     use sekas_rock::fn_name;
-    use tempdir::TempDir;
 
     use super::*;
+    use crate::testutil::TempDir;
 
     #[test]
     fn reopen_raw_db_with_families() {

@@ -82,8 +82,8 @@ impl LabContext {
 pub(super) fn metric_counter(name: &str) -> f64 {
     prometheus::gather()
         .iter()
-        .filter(|f| f.get_name() == name)
+        .filter(|f| f.name() == name)
         .flat_map(|f| f.get_metric())
-        .map(|m| m.get_counter().get_value())
+        .map(|m| m.get_counter().value())
         .sum()
 }

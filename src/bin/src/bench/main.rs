@@ -12,13 +12,12 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+use std::io::IsTerminal;
 use std::sync::mpsc;
 use std::time::Duration;
 
 use clap::Parser;
 use log::{debug, info};
-use rand::RngCore;
-use rand::rngs::OsRng;
 use sekas_client::{AppError, ClientOptions, Database, SekasClient, TableDesc};
 use sekas_runtime::sync::WaitGroup;
 use sekas_runtime::{Shutdown, ShutdownNotifier};
@@ -54,7 +53,7 @@ impl Command {
             EnvFilter::try_from_default_env().or_else(|_| EnvFilter::try_new("info")).unwrap();
         tracing_subscriber::fmt()
             .with_env_filter(filter_layer)
-            .with_ansi(atty::is(atty::Stream::Stderr))
+            .with_ansi(std::io::stderr().is_terminal())
             .init();
 
         let cfg = load_config(self).unwrap();
@@ -81,7 +80,7 @@ impl Command {
             send.send(()).unwrap_or_default();
         });
 
-        let base_seed = cfg.seed.unwrap_or_else(|| OsRng.next_u64());
+        let base_seed = cfg.seed.unwrap_or_else(rand::random);
 
         info!("spawn {} workers with base seed {base_seed}", cfg.worker.num_worker);
         let report_waiter = spawn_reporter(&ctx, cfg.clone());

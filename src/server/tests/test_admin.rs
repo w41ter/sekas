@@ -27,7 +27,7 @@ use crate::helper::client::{ClusterClient, node_client_with_retry};
 use crate::helper::context::*;
 use crate::helper::init::setup_panic_hook;
 
-#[ctor::ctor]
+#[ctor::ctor(unsafe)]
 fn init() {
     setup_panic_hook();
     tracing_subscriber::fmt::init();

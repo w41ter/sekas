@@ -184,7 +184,7 @@ impl Root {
 
         let replica_to_row = |replica: ReplicaDesc| -> Row {
             let role =
-                ReplicaRole::from_i32(replica.role).unwrap_or_default().as_str_name().to_owned();
+                ReplicaRole::try_from(replica.role).unwrap_or_default().as_str_name().to_owned();
             Row { values: vec![replica.id.into(), replica.node_id.into(), role.into()] }
         };
         let rows = group.replicas.into_iter().map(replica_to_row).collect::<Vec<_>>();
@@ -258,7 +258,7 @@ impl Root {
 
         let node_to_row = |node: NodeDesc| -> Row {
             let capacity = node.capacity.unwrap_or_default();
-            let status = NodeStatus::from_i32(node.status).unwrap_or_default();
+            let status = NodeStatus::try_from(node.status).unwrap_or_default();
             Row {
                 values: vec![
                     node.id.into(),

@@ -375,7 +375,7 @@ impl Root {
             .await?
             .ok_or_else(|| crate::Error::InvalidArgument("node not found".into()))?;
 
-        let current_status = NodeStatus::from_i32(node_desc.status).unwrap();
+        let current_status = NodeStatus::try_from(node_desc.status).unwrap();
         if !matches!(current_status, NodeStatus::Active) {
             return Err(crate::Error::InvalidArgument("node already cordoned".into()));
         }
@@ -391,7 +391,7 @@ impl Root {
             .await?
             .ok_or_else(|| crate::Error::InvalidArgument("node not found".into()))?;
 
-        let current_status = NodeStatus::from_i32(node_desc.status).unwrap();
+        let current_status = NodeStatus::try_from(node_desc.status).unwrap();
         if !matches!(
             current_status,
             NodeStatus::Cordoned | NodeStatus::Drained | NodeStatus::Decommissioned
@@ -420,7 +420,7 @@ impl Root {
             .await?
             .ok_or_else(|| crate::Error::InvalidArgument("node not found".into()))?;
 
-        let current_status = NodeStatus::from_i32(node_desc.status).unwrap();
+        let current_status = NodeStatus::try_from(node_desc.status).unwrap();
         if !matches!(current_status, NodeStatus::Cordoned) {
             return Err(crate::Error::InvalidArgument(
                 "only in cordoned status node can be drain".into(),
@@ -442,7 +442,7 @@ impl Root {
             .await?
             .ok_or_else(|| crate::Error::InvalidArgument("node not found".into()))?;
 
-        let current_status = NodeStatus::from_i32(node_desc.status).unwrap();
+        let current_status = NodeStatus::try_from(node_desc.status).unwrap();
 
         Ok(current_status)
     }
@@ -1069,7 +1069,6 @@ mod root_test {
     use sekas_api::server::v1::watch_response::{UpdateEvent, update_event};
     use sekas_api::server::v1::{DatabaseDesc, GroupDesc};
     use sekas_rock::fn_name;
-    use tempdir::TempDir;
 
     use super::Config;
     use crate::Error;
@@ -1079,6 +1078,7 @@ mod root_test {
     use crate::node::Node;
     use crate::root::Root;
     use crate::serverpb::v1::NodeIdent;
+    use crate::testutil::TempDir;
     use crate::transport::TransportManager;
 
     async fn create_root_and_node(config: &Config, node_ident: &NodeIdent) -> (Root, Node) {

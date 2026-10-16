@@ -28,7 +28,7 @@ use crate::helper::context::*;
 use crate::helper::init::setup_panic_hook;
 use crate::helper::runtime::*;
 
-#[ctor::ctor]
+#[ctor::ctor(unsafe)]
 fn init() {
     setup_panic_hook();
     tracing_subscriber::fmt::init();
@@ -231,7 +231,7 @@ async fn move_shard_single_replica_empty_shard() {
     let group_desc_1 = GroupDesc {
         id: group_id_1,
         shards: vec![shard_desc.clone()],
-        replicas: vec![replica_desc_1.clone()],
+        replicas: vec![replica_desc_1],
         ..Default::default()
     };
     c.create_replica(node_1_id, replica_1, group_desc_1.clone()).await;
@@ -242,7 +242,7 @@ async fn move_shard_single_replica_empty_shard() {
     let group_desc_2 = GroupDesc {
         id: group_id_2,
         shards: vec![],
-        replicas: vec![replica_desc_2.clone()],
+        replicas: vec![replica_desc_2],
         ..Default::default()
     };
     c.create_replica(node_2_id, replica_2, group_desc_2.clone()).await;
@@ -281,7 +281,7 @@ async fn move_shard_single_replica() {
     let group_desc_1 = GroupDesc {
         id: group_id_1,
         shards: vec![shard_desc.clone()],
-        replicas: vec![replica_desc_1.clone()],
+        replicas: vec![replica_desc_1],
         ..Default::default()
     };
     c.create_replica(node_1_id, replica_1, group_desc_1.clone()).await;
@@ -295,7 +295,7 @@ async fn move_shard_single_replica() {
     let group_desc_2 = GroupDesc {
         id: group_id_2,
         shards: vec![],
-        replicas: vec![replica_desc_2.clone()],
+        replicas: vec![replica_desc_2],
         ..Default::default()
     };
     c.create_replica(node_2_id, replica_2, group_desc_2.clone()).await;
@@ -726,7 +726,7 @@ async fn move_shard_receive_forward_request_after_shard_migrated() {
     let group_desc_1 = GroupDesc {
         id: group_id_1,
         shards: vec![shard_desc.clone()],
-        replicas: vec![replica_desc_1.clone()],
+        replicas: vec![replica_desc_1],
         ..Default::default()
     };
     c.create_replica(node_1_id, replica_1, group_desc_1.clone()).await;
@@ -737,7 +737,7 @@ async fn move_shard_receive_forward_request_after_shard_migrated() {
     let group_desc_2 = GroupDesc {
         id: group_id_2,
         shards: vec![],
-        replicas: vec![replica_desc_2.clone()],
+        replicas: vec![replica_desc_2],
         ..Default::default()
     };
     c.create_replica(node_2_id, replica_2, group_desc_2.clone()).await;

@@ -109,7 +109,7 @@ impl StateEngine {
             |_, replica_meta: ReplicaMeta| {
                 let replica_id = replica_meta.replica_id;
                 let group_id = replica_meta.group_id;
-                let local_state = ReplicaLocalState::from_i32(replica_meta.state)
+                let local_state = ReplicaLocalState::try_from(replica_meta.state)
                     .expect("invalid ReplicaLocalState value");
                 replica_states.push((group_id, replica_id, local_state));
                 true
@@ -153,10 +153,10 @@ mod keys {
 #[cfg(test)]
 mod tests {
     use sekas_rock::fn_name;
-    use tempdir::TempDir;
 
     use super::*;
     use crate::engine::open_raft_engine;
+    use crate::testutil::TempDir;
 
     #[sekas_macro::test]
     async fn save_and_load_node_ident() {

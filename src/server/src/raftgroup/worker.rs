@@ -151,7 +151,7 @@ impl<'a> super::node::AdvanceTemplate for AdvanceImpl<'a> {
                 .or_insert_with(|| Channel::new(self.trans_mgr.clone()))
                 .send_message(RaftMessage {
                     group_id: self.group_id,
-                    from_replica: Some(self.desc.clone()),
+                    from_replica: Some(self.desc),
                     to_replica: Some(to_replica),
                     messages: msgs,
                 });
@@ -217,7 +217,7 @@ where
     ) -> Result<Self> {
         let desc = ReplicaDesc { id: replica_id, node_id, ..Default::default() };
         let mut replica_cache = ReplicaCache::default();
-        replica_cache.insert(desc.clone());
+        replica_cache.insert(desc);
         replica_cache.batch_insert(&state_machine.descriptor().replicas);
         let raft_node = RaftNode::new(group_id, replica_id, raft_mgr, state_machine).await?;
 
@@ -316,7 +316,7 @@ where
     fn consume_requests(&mut self, ctx: &mut WorkerContext) -> Result<()> {
         record_latency!(&RAFTGROUP_WORKER_CONSUME_REQUESTS_DURATION_SECONDS);
         record_perf_point(&mut ctx.perf_ctx.consume_requests);
-        while let Ok(Some(request)) = self.request_receiver.try_next() {
+        while let Ok(request) = self.request_receiver.try_recv() {
             self.handle_request(ctx, request)?;
             if ctx.accumulated_bytes >= self.cfg.max_io_batch_size as usize {
                 break;
@@ -332,7 +332,7 @@ where
         let mut template = AdvanceImpl {
             replica_id: self.desc.id,
             group_id: self.group_id,
-            desc: self.desc.clone(),
+            desc: self.desc,
             channels: &mut self.channels,
             trans_mgr: &self.trans_mgr,
             snap_mgr: &self.snap_mgr,
@@ -410,7 +410,7 @@ where
                         .or_insert_with(|| Channel::new(self.trans_mgr.clone()))
                         .send_message(RaftMessage {
                             group_id: self.group_id,
-                            from_replica: Some(self.desc.clone()),
+                            from_replica: Some(self.desc),
                             to_replica: Some(to_replica),
                             messages: vec![msg],
                         });
@@ -435,7 +435,7 @@ where
 
     fn handle_msg(&mut self, ctx: &mut WorkerContext, raft_msg: RaftMessage) -> Result<()> {
         let from_replica = raft_msg.from_replica.unwrap();
-        self.replica_cache.insert(from_replica.clone());
+        self.replica_cache.insert(from_replica);
         for msg in raft_msg.messages {
             if msg.get_msg_type() == MessageType::MsgSnapshot {
                 // TODO(walter) In order to avoid useless downloads, should check whether this
@@ -445,7 +445,7 @@ where
                     self.request_sender.clone(),
                     self.snap_mgr.clone(),
                     self.trans_mgr.clone(),
-                    from_replica.clone(),
+                    from_replica,
                     msg,
                 );
                 self.task_group.add_task(handle);

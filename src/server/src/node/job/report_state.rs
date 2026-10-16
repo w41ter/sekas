@@ -65,8 +65,8 @@ async fn wait_state_updates(
         let mut size = update.encoded_len();
         let mut updates = vec![update];
         while size < 32 * 1024 {
-            match receiver.try_next() {
-                Ok(Some(update)) => {
+            match receiver.try_recv() {
+                Ok(update) => {
                     size += update.encoded_len();
                     updates.push(update);
                 }

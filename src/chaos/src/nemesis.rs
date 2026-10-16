@@ -15,8 +15,8 @@
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
-use rand::prelude::SmallRng;
-use rand::{Rng, SeedableRng};
+use rand::rngs::StdRng;
+use rand::{RngExt, SeedableRng};
 use serde::{Deserialize, Serialize};
 
 use crate::cluster::{
@@ -144,7 +144,7 @@ pub trait Nemesis: Send {
 
 pub struct RandomNemesis {
     config: NemesisConfig,
-    rng: SmallRng,
+    rng: StdRng,
     start: Instant,
     next_sequence: u64,
     events: VecDeque<ChaosEvent>,
@@ -155,7 +155,7 @@ impl RandomNemesis {
     pub fn new(config: NemesisConfig) -> Result<Self, String> {
         config.validate()?;
         Ok(Self {
-            rng: SmallRng::seed_from_u64(config.seed),
+            rng: StdRng::seed_from_u64(config.seed),
             start: Instant::now(),
             next_sequence: 0,
             events: VecDeque::with_capacity(config.max_recorded_events),
@@ -269,7 +269,7 @@ impl Nemesis for RandomNemesis {
             if total == 0 {
                 return None;
             }
-            let mut selected = self.rng.gen_range(0..total);
+            let mut selected = self.rng.random_range(0..total);
             for (weight, action) in candidates {
                 if selected < weight as u64 {
                     return Some(action);

@@ -18,8 +18,8 @@ use std::time::Duration;
 
 use log::info;
 use sekas_runtime::{ExecutorConfig, ExecutorOwner, ShutdownNotifier};
+use sekas_server::testutil::TempDir;
 use sekas_server::*;
-use tempdir::TempDir;
 
 use super::client::node_client_with_retry;
 use super::socket::next_n_avail_port;

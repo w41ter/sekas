@@ -317,7 +317,7 @@ impl ReplicaSnapManager {
 impl SnapshotInfo {
     pub fn to_raft_snapshot(&self) -> Snapshot {
         let snap_meta = &self.meta;
-        let apply_state = snap_meta.apply_state.clone().unwrap();
+        let apply_state = snap_meta.apply_state.unwrap();
         let conf_state =
             super::conf_state_from_group_descriptor(snap_meta.group_desc.as_ref().unwrap());
         let raft_meta = SnapshotMetadata {
@@ -390,11 +390,11 @@ mod tests {
     use sekas_api::server::v1::GroupDesc;
     use sekas_runtime::ExecutorOwner;
     use sekas_runtime::time::sleep;
-    use tempdir::TempDir;
 
     use super::*;
     use crate::raftgroup::SnapshotBuilder;
     use crate::serverpb::v1::ApplyState;
+    use crate::testutil::TempDir;
 
     struct SimpleSnapshotBuilder {
         index: u64,

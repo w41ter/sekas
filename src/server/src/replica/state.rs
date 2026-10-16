@@ -146,7 +146,7 @@ impl LeaseStateObserver {
         let prev_role = lease_state.replica_state.role;
         let epoch = lease_state.descriptor.epoch;
         lease_state.leader_id = leader_id;
-        lease_state.replica_state = replica_state.clone();
+        lease_state.replica_state = replica_state;
         let desc = if role == RaftRole::Leader {
             info!(
                 "replica {} node {} become leader of group {} at term {term} epoch {}",

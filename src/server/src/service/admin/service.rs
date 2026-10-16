@@ -16,9 +16,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
-use tonic::body::BoxBody;
-use tonic::codegen::{BoxFuture, Service, empty_body, http};
-use tonic::transport::NamedService;
+use tonic::body::Body;
+use tonic::codegen::{BoxFuture, Service, http};
+use tonic::server::NamedService;
 
 #[crate::async_trait]
 pub(super) trait HttpHandle: Send + Sync {
@@ -50,7 +50,7 @@ impl<B> Service<http::Request<B>> for AdminService
 where
     B: Send,
 {
-    type Response = http::Response<tonic::body::BoxBody>;
+    type Response = http::Response<Body>;
     type Error = std::convert::Infallible;
     type Future = BoxFuture<Self::Response, Self::Error>;
 
@@ -109,13 +109,13 @@ impl Router {
         &self,
         path: &str,
         params: HashMap<String, String>,
-    ) -> Result<http::Response<BoxBody>, std::convert::Infallible> {
+    ) -> Result<http::Response<Body>, std::convert::Infallible> {
         let handle = match self.handles.get(path) {
             Some(handle) => handle,
             None => {
                 return Ok(http::Response::builder()
                     .status(http::StatusCode::NOT_FOUND)
-                    .body(empty_body())
+                    .body(Body::empty())
                     .unwrap());
             }
         };
@@ -132,8 +132,6 @@ impl Router {
     }
 }
 
-fn boxed(body: String) -> BoxBody {
-    use http_body::Body;
-
-    body.map_err(|_| panic!("")).boxed_unsync()
+fn boxed(body: String) -> Body {
+    Body::new(http_body_util::Full::new(bytes::Bytes::from(body)))
 }

@@ -81,7 +81,7 @@ impl MoveShardController {
             while let Some(state) = receiver.next().await {
                 debug!(
                     "on move shard step: {:?}. group={group_id}, replica={replica_id}",
-                    MoveShardStep::from_i32(state.step)
+                    MoveShardStep::try_from(state.step).ok()
                 );
                 let desc = state.get_move_shard_desc();
                 if coord.is_none() || coord.as_ref().unwrap().desc != *desc {
@@ -135,7 +135,7 @@ impl MoveShardControllerShared {
 
 impl MoveShardCoordinator {
     async fn next_step(&mut self, state: MoveShardState) {
-        let step = MoveShardStep::from_i32(state.step).unwrap();
+        let step = MoveShardStep::try_from(state.step).unwrap();
         if self.is_dest_group() {
             match step {
                 MoveShardStep::Prepare => {

@@ -1,6 +1,7 @@
 use std::alloc::{Layout, alloc_zeroed, dealloc};
 use std::fs::{File, OpenOptions};
 use std::os::fd::AsRawFd;
+#[cfg(target_os = "linux")]
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -112,12 +113,23 @@ fn prepare_test_file(disk_dir: &Path, file_size_mib: u64) -> Result<TestFile> {
 }
 
 fn open_direct(path: &Path, dsync: bool) -> Result<File> {
-    let mut options = OpenOptions::new();
-    options
-        .read(true)
-        .write(true)
-        .custom_flags(libc::O_DIRECT | if dsync { libc::O_DSYNC } else { 0 });
-    options.open(path).with_context(|| format!("open {} with O_DIRECT", path.display()))
+    #[cfg(target_os = "linux")]
+    {
+        let mut options = OpenOptions::new();
+        options
+            .read(true)
+            .write(true)
+            .custom_flags(libc::O_DIRECT | if dsync { libc::O_DSYNC } else { 0 });
+        return options
+            .open(path)
+            .with_context(|| format!("open {} with O_DIRECT", path.display()));
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (path, dsync);
+        anyhow::bail!("O_DIRECT benchmark is only supported on Linux")
+    }
 }
 
 fn direct_io(
@@ -198,10 +210,7 @@ fn fdatasync_write(
             write_all_at(&file, &payload, block * BLOCK_SIZE as u64)?;
             block = (block + 1) % total_blocks;
         }
-        // SAFETY: fd refers to the open writable file for the entire call.
-        if unsafe { libc::fdatasync(file.as_raw_fd()) } != 0 {
-            return Err(std::io::Error::last_os_error()).context("fdatasync");
-        }
+        file.sync_data().context("sync file data")?;
         Ok(())
     })
 }

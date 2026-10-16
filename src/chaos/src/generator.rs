@@ -15,9 +15,9 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-use rand::prelude::SmallRng;
+use rand::rngs::StdRng;
 use rand::seq::index;
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 use serde::{Deserialize, Serialize};
 
 use crate::WriterModel;
@@ -37,8 +37,8 @@ impl SizeRange {
         Self { min, max }
     }
 
-    fn choose(self, rng: &mut SmallRng) -> usize {
-        if self.min == self.max { self.min } else { rng.gen_range(self.min..=self.max) }
+    fn choose(self, rng: &mut StdRng) -> usize {
+        if self.min == self.max { self.min } else { rng.random_range(self.min..=self.max) }
     }
 
     fn validate(self, name: &str, upper: Option<usize>) -> Result<(), String> {
@@ -181,30 +181,30 @@ impl DeterministicGenerator {
         Self { config }
     }
 
-    fn rng(&self, seed: u64, id: OperationId) -> SmallRng {
-        SmallRng::seed_from_u64(mix_seed(seed, id.writer.0 as u64, id.sequence))
+    fn rng(&self, seed: u64, id: OperationId) -> StdRng {
+        StdRng::seed_from_u64(mix_seed(seed, id.writer.0 as u64, id.sequence))
     }
 
-    fn select_slots(&self, rng: &mut SmallRng, count: usize, available: usize) -> Vec<usize> {
+    fn select_slots(&self, rng: &mut StdRng, count: usize, available: usize) -> Vec<usize> {
         index::sample(rng, available, count.min(available)).into_vec()
     }
 
     fn mutation(
         &self,
-        rng: &mut SmallRng,
+        rng: &mut StdRng,
         id: OperationId,
         model: &WriterModel,
         slot: usize,
     ) -> Mutation {
         let key = model.slot(slot).clone();
-        if rng.gen_ratio(1, 4) {
+        if rng.random_ratio(1, 4) {
             Mutation::Delete(key)
         } else {
             Mutation::Put(KeyValue { key, value: self.value(rng, id, slot) })
         }
     }
 
-    fn value(&self, rng: &mut SmallRng, id: OperationId, slot: usize) -> Vec<u8> {
+    fn value(&self, rng: &mut StdRng, id: OperationId, slot: usize) -> Vec<u8> {
         let size = self.config.value_size.choose(rng);
         let mut payload = vec![0; size];
         rng.fill(payload.as_mut_slice());
@@ -233,12 +233,12 @@ impl OperationGenerator for DeterministicGenerator {
         debug_assert_eq!(id.writer, model.writer());
         debug_assert_eq!(id.sequence, model.completed());
         let mut rng = self.rng(seed, id);
-        let selected = rng.gen_range(0..self.config.operation_weights.total());
+        let selected = rng.random_range(0..self.config.operation_weights.total());
         let weights = self.config.operation_weights;
         let data_slots = self.config.data_slots();
 
         if selected < weights.put {
-            let slot = rng.gen_range(0..data_slots);
+            let slot = rng.random_range(0..data_slots);
             let key = model.slot(slot).clone();
             let value = self.value(&mut rng, id, slot);
             let before = model.observe_keys([key.clone()]);
@@ -246,7 +246,7 @@ impl OperationGenerator for DeterministicGenerator {
                 Observation { values: BTreeMap::from([(key.clone(), Some(value.clone()))]) };
             OperationPlan { id, operation: Operation::Put(KeyValue { key, value }), before, after }
         } else if selected < weights.put + weights.delete {
-            let key = model.slot(rng.gen_range(0..data_slots)).clone();
+            let key = model.slot(rng.random_range(0..data_slots)).clone();
             let before = model.observe_keys([key.clone()]);
             let after = Observation { values: BTreeMap::from([(key.clone(), None)]) };
             OperationPlan { id, operation: Operation::Delete(key), before, after }
@@ -274,7 +274,7 @@ impl OperationGenerator for DeterministicGenerator {
                 .and_then(|value| value.as_slice().try_into().ok())
                 .map(i64::from_be_bytes)
                 .unwrap_or_default();
-            let delta = if rng.gen_ratio(1, 2) { 1 } else { -1 };
+            let delta = if rng.random_ratio(1, 2) { 1 } else { -1 };
             let after_value = before_value.saturating_add(delta).to_be_bytes().to_vec();
             let before = model.observe_keys([key.clone()]);
             let after = Observation { values: BTreeMap::from([(key.clone(), Some(after_value))]) };

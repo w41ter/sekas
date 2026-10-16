@@ -118,6 +118,7 @@ async fn write_intent_forward_part(
     }))
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn write_intent_inner<T: LatchGuard>(
     _exec_ctx: &ExecCtx,
     write_ctx: &mut WriteEvalContext<'_>,
@@ -561,13 +562,13 @@ mod tests {
     use log::info;
     use sekas_client::WriteBuilder;
     use sekas_rock::fn_name;
-    use tempdir::TempDir;
 
     use super::*;
     use crate::engine::{WriteBatch, WriteStates, create_group_engine};
     use crate::replica::eval::LatchManager;
     use crate::replica::eval::latch::local::LocalLatchManager;
     use crate::replica::pending::PendingMutationOverlay;
+    use crate::testutil::TempDir;
 
     #[derive(Default)]
     struct NotifyLatchGuard {

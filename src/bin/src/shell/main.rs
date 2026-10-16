@@ -14,7 +14,7 @@
 // limitations under the License.
 
 use std::collections::HashMap;
-use std::io::Write;
+use std::io::{IsTerminal, Write};
 use std::time::Duration;
 
 use anyhow::{Context, Error};
@@ -35,11 +35,11 @@ pub struct Command {
     addrs: Vec<String>,
 
     /// Sets the connection timeout.
-    #[clap(long, parse(try_from_str = parse_duration))]
+    #[clap(long, value_parser = parse_duration)]
     connection_timeout: Option<Duration>,
 
     /// Sets the rpc timeout.
-    #[clap(long, parse(try_from_str = parse_duration))]
+    #[clap(long, value_parser = parse_duration)]
     rpc_timeout: Option<Duration>,
 
     /// Sets the log level.
@@ -56,7 +56,7 @@ impl Command {
     pub fn run(self) {
         tracing_subscriber::fmt()
             .with_max_level(self.log_level.unwrap_or(tracing::Level::ERROR))
-            .with_ansi(atty::is(atty::Stream::Stderr))
+            .with_ansi(std::io::stderr().is_terminal())
             .init();
 
         let runtime = tokio::runtime::Builder::new_current_thread()

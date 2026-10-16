@@ -18,7 +18,6 @@ use std::future::Future;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use derivative::Derivative;
 use log::trace;
 use prost::Message;
 use sekas_api::server::v1::admin_request::Request;
@@ -69,10 +68,7 @@ pub struct Client {
     shared: Arc<ClientShared>,
 }
 
-#[derive(Derivative)]
-#[derivative(Debug)]
 struct ClientShared {
-    #[derivative(Debug = "ignore")]
     discovery: Arc<dyn ServiceDiscovery>,
     conn_manager: ConnManager,
     core: Mutex<ClientCore>,
@@ -80,6 +76,16 @@ struct ClientShared {
     // Only one task is allowed to refresh root descriptor at a time.
     // The value is the latest epoch refreshed from nodes.
     refresh_descriptor_lock: Mutex<u64>,
+}
+
+impl std::fmt::Debug for ClientShared {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ClientShared")
+            .field("conn_manager", &self.conn_manager)
+            .field("core", &self.core)
+            .field("refresh_descriptor_lock", &self.refresh_descriptor_lock)
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -215,7 +221,7 @@ impl Client {
         let req = AllocTxnIdRequest { num_required };
         let res = self
             .invoke_with_timeout(timeout, |mut client| {
-                let mut req = tonic::Request::new(req.clone());
+                let mut req = tonic::Request::new(req);
                 if let Some(deadline) = timeout {
                     req.set_timeout(deadline);
                 }
@@ -244,10 +250,9 @@ impl Client {
 
     pub async fn alloc_replica(&self, req: AllocReplicaRequest) -> Result<AllocReplicaResponse> {
         let resp = self
-            .invoke(|mut client| {
-                let req = req.clone();
-                async move { client.alloc_replica(inject_trace_context(req)).await }
-            })
+            .invoke(
+                |mut client| async move { client.alloc_replica(inject_trace_context(req)).await },
+            )
             .await?;
         Ok(resp.into_inner())
     }

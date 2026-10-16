@@ -179,7 +179,7 @@ impl ClusterClient {
     }
 
     pub async fn get_group_any_follower(&self, group_id: u64) -> Option<ReplicaDesc> {
-        use rand::{Rng, thread_rng};
+        use rand::RngExt;
 
         if let Some(leader_id) = self.get_group_leader(group_id).await
             && let Ok(state) = self.router.find_group(group_id)
@@ -193,8 +193,8 @@ impl ClusterClient {
             if replicas.is_empty() {
                 return None;
             }
-            let index = thread_rng().gen_range(0..replicas.len());
-            return Some(replicas[index].clone());
+            let index = rand::rng().random_range(0..replicas.len());
+            return Some(replicas[index]);
         }
         None
     }
@@ -341,7 +341,7 @@ impl ClusterClient {
                 piggyback_response::Info::CollectGroupDetail(resp) => {
                     for state in &resp.replica_states {
                         if state.group_id == group_id {
-                            return Ok(Some(state.clone()));
+                            return Ok(Some(*state));
                         }
                     }
                 }

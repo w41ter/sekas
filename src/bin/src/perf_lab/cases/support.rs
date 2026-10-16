@@ -67,9 +67,9 @@ pub(super) async fn fixture(
 }
 
 async fn seed_random_target(db: &Database, target: &Target, value_size: usize) -> Result<()> {
-    use rand::rngs::SmallRng;
-    use rand::{RngCore, SeedableRng};
-    let mut rng = SmallRng::seed_from_u64(0x5ECA5);
+    use rand::rngs::StdRng;
+    use rand::{RngExt, SeedableRng};
+    let mut rng = StdRng::seed_from_u64(0x5ECA5);
     let mut first = None;
     // Distinct high-entropy values keep compression from turning the disk
     // working set into a tiny repeated-value fixture.
@@ -77,7 +77,7 @@ async fn seed_random_target(db: &Database, target: &Target, value_size: usize) -
         let mut txn = db.begin_txn();
         for index in offset..(offset + 64).min(target.keys) {
             let mut value = vec![0; value_size];
-            rng.fill_bytes(&mut value);
+            rng.fill(&mut value[..]);
             if index == 0 {
                 first = Some(value.clone());
             }

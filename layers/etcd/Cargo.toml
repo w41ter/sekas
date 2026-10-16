@@ -16,9 +16,10 @@ crc32fast.workspace = true
 futures.workspace = true
 log.workspace = true
 tonic.workspace = true
+tonic-prost.workspace = true
 prost.workspace = true
 prost-types.workspace = true
 
 [build-dependencies]
-tonic-build.workspace = true
+tonic-prost-build.workspace = true
 protoc-build.workspace = true

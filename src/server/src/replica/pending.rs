@@ -181,7 +181,7 @@ impl ProposalOutcome {
     fn from_error(err: Error) -> Self {
         match err {
             Error::NotLeader(group_id, term, leader) => {
-                ProposalOutcome::NotLeader(group_id, term, leader.clone())
+                ProposalOutcome::NotLeader(group_id, term, leader)
             }
             Error::GroupNotReady(group_id) => ProposalOutcome::GroupNotReady(group_id),
             Error::ServiceIsBusy(reason) => ProposalOutcome::ServiceIsBusy(reason),

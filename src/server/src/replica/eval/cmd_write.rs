@@ -142,12 +142,12 @@ mod tests {
     use sekas_api::server::v1::Value;
     use sekas_client::WriteBuilder;
     use sekas_rock::fn_name;
-    use tempdir::TempDir;
 
     use super::*;
     use crate::engine::{GroupEngine, WriteBatch, WriteStates, create_group_engine};
     use crate::replica::pending::PendingMutationOverlay;
     use crate::replica::write_view::WriteEvalContext;
+    use crate::testutil::TempDir;
 
     const SHARD_ID: u64 = 1;
 

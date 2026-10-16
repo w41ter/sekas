@@ -279,13 +279,7 @@ impl DurableGroup {
         let mut matched_indexes = matched_indexes.into_iter().collect::<Vec<_>>();
         matched_indexes.sort_unstable_by_key(|&(_, index)| index);
         outgoing_voters.extend(matched_indexes.into_iter().take(num_required).map(|(id, _)| {
-            (
-                id,
-                online_voters
-                    .get(&id)
-                    .expect("matched_indexes only contains online voters")
-                    .clone(),
-            )
+            (id, *online_voters.get(&id).expect("matched_indexes only contains online voters"))
         }));
     }
 }
@@ -314,23 +308,23 @@ impl Task for DurableGroup {
             }
 
             stats.peers.push(r.id);
-            match ReplicaRole::from_i32(r.role).unwrap() {
+            match ReplicaRole::try_from(r.role).unwrap() {
                 ReplicaRole::IncomingVoter | ReplicaRole::DemotingVoter => {
                     // in joint config change.
                     return TaskState::Pending(Some(Duration::from_secs(1)));
                 }
                 ReplicaRole::Voter => {
                     if lost_peers.contains(&r.id) {
-                        stats.offline_voters.insert(r.id, r.clone());
+                        stats.offline_voters.insert(r.id, *r);
                     } else {
-                        stats.online_voters.insert(r.id, r.clone());
+                        stats.online_voters.insert(r.id, *r);
                     }
                 }
                 ReplicaRole::Learner => {
                     if lost_peers.contains(&r.id) {
-                        stats.offline_learners.insert(r.id, r.clone());
+                        stats.offline_learners.insert(r.id, *r);
                     } else {
-                        stats.online_learners.insert(r.id, r.clone());
+                        stats.online_learners.insert(r.id, *r);
                     }
                 }
             }

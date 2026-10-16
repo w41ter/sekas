@@ -20,8 +20,8 @@ sekas-schema = { path = "../schema", version = "0.5" }
 sekas-etcd-proxy = { path = "../../layers/etcd", optional = true }
 
 async-stream.workspace = true
+bytes.workspace = true
 crc32fast.workspace = true
-derivative.workspace = true
 fastrace.workspace = true
 futures.workspace = true
 lazy_static.workspace = true
@@ -33,22 +33,22 @@ prost.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tonic.workspace = true
+tonic-prost.workspace = true
 tracing.workspace = true
-num_cpus.workspace = true
 rand.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 
-const-str = "0.4"
-dashmap = "5.4"
-http-body = "0.4"
-hyper = "0.14"
+const-str = "1.1"
+dashmap = "6.2"
+http-body-util = "0.1"
 libc = "0.2"
 pest = "2.7"
 pin-project = "1"
 uuid = { version = "1.1", features = ["v4"] }
-sysinfo = "0.26"
+sysinfo = "0.39"
 tokio-util = { version = "0.7", features = ["time"] }
+tempfile = "3.27"
 url = "2.3"
 
 [dependencies.raft]
@@ -64,11 +64,11 @@ features = ["prost", "std_fs"]
 [dependencies.rocksdb]
 git = "https://github.com/w41ter/rust-rocksdb.git"
 features = ["multi-threaded-cf", "serde1"]
-branch = "master"
+rev = "d5a418d8614642073169349678bf2ac71ecde393"
 
 [build-dependencies]
 prost-build.workspace = true
-tonic-build.workspace = true
+tonic-prost-build.workspace = true
 protoc-build.workspace = true
 
 [features]
@@ -78,11 +78,10 @@ layer_etcd = ["dep:sekas-etcd-proxy"]
 sekas-chaos = { path = "../chaos", version = "0.5" }
 sekas-checker = { path = "../checker", version = "0.5" }
 
-ctor = "0.1"
+ctor = "1.0"
 quote = "1.0"
-rand = { workspace = true, features = ["small_rng"] }
-reqwest = { version = "0.11", features = ["json"] }
-socket2 = "0.5"
-syn = "2.0"
-tempdir = "0.3"
+rand.workspace = true
+reqwest = { version = "0.13", features = ["json"] }
+socket2 = "0.6"
+syn = "3.0"
 tracing-subscriber = { version = "0.3", features = ["std", "env-filter"] }

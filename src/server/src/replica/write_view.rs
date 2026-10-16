@@ -20,9 +20,6 @@ use super::pending::{
     CommitFence, PendingMutationEntry, PendingMutationKind, PendingMutationOverlay,
 };
 use crate::engine::{GroupEngine, SnapshotMode};
-use crate::raftgroup::metrics::{
-    REPLICA_WRITE_VIEW_COMMITTED_VALUES_DURATION_SECONDS, REPLICA_WRITE_VIEW_COMMITTED_VALUES_SIZE,
-};
 use crate::{Error, Result};
 
 #[derive(Clone)]
@@ -236,11 +233,11 @@ impl WriteEvalContext<'_> {
 mod tests {
     use sekas_api::server::v1::Value;
     use sekas_rock::fn_name;
-    use tempdir::TempDir;
 
     use super::*;
     use crate::engine::{WriteBatch, WriteStates, create_group_engine};
     use crate::replica::pending::PendingMutation;
+    use crate::testutil::TempDir;
 
     const SHARD_ID: u64 = 1;
 

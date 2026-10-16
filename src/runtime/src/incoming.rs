@@ -16,28 +16,33 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use futures::Stream;
-use hyper::server::accept::Accept;
-use hyper::server::conn::{AddrIncoming, AddrStream};
-use tokio::net::TcpListener;
+use tokio::net::{TcpListener, TcpStream};
 
 #[derive(Debug)]
 pub struct TcpIncoming {
-    inner: AddrIncoming,
+    inner: TcpListener,
+    nodelay: bool,
 }
 
 impl TcpIncoming {
     pub fn from_listener(listener: TcpListener, nodelay: bool) -> Self {
-        let mut incoming =
-            AddrIncoming::from_listener(listener).expect("TcpIncoming::from_listener");
-        incoming.set_nodelay(nodelay);
-        TcpIncoming { inner: incoming }
+        TcpIncoming { inner: listener, nodelay }
     }
 }
 
 impl Stream for TcpIncoming {
-    type Item = Result<AddrStream, std::io::Error>;
+    type Item = Result<TcpStream, std::io::Error>;
 
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        Pin::new(&mut self.inner).poll_accept(cx)
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        match self.inner.poll_accept(cx) {
+            Poll::Ready(Ok((stream, _))) => {
+                if let Err(error) = stream.set_nodelay(self.nodelay) {
+                    return Poll::Ready(Some(Err(error)));
+                }
+                Poll::Ready(Some(Ok(stream)))
+            }
+            Poll::Ready(Err(error)) => Poll::Ready(Some(Err(error))),
+            Poll::Pending => Poll::Pending,
+        }
     }
 }

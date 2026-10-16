@@ -15,4 +15,4 @@ sekas-rock = { path = "../rock" }
 sekas-runtime = { path = "../runtime" }
 
 quote = "1.0"
-syn = "2.0"
+syn = "3.0"

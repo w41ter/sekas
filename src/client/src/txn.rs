@@ -906,17 +906,6 @@ fn can_retry_local_txn(err: &Error) -> bool {
     matches!(err, Error::NotFound(_) | Error::EpochNotMatch(_) | Error::GroupNotAccessable(_))
 }
 
-#[cfg(test)]
-mod local_txn_retry_tests {
-    use super::*;
-
-    #[test]
-    fn group_not_accessable_is_retryable_for_local_txn() {
-        assert!(can_retry_local_txn(&Error::GroupNotAccessable(1)));
-        assert!(!can_retry_local_txn(&Error::DeadlineExceeded("timeout".into())));
-    }
-}
-
 fn push_local_txn_group(
     group_state: &mut Option<RouterGroupState>,
     target_group: RouterGroupState,
@@ -1707,7 +1696,7 @@ async fn watch_key(ctx: &mut WatchContext, db: &Database, timeout: Option<Durati
 
         while let Some(resp) = stream.next().await {
             let resp = resp?;
-            match WatchResult::from_i32(resp.result) {
+            match WatchResult::try_from(resp.result).ok() {
                 Some(WatchResult::ShardMoved) => {
                     // The stream will be closed immediately.
                 }
@@ -1728,5 +1717,16 @@ async fn watch_key(ctx: &mut WatchContext, db: &Database, timeout: Option<Durati
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod local_txn_retry_tests {
+    use super::*;
+
+    #[test]
+    fn group_not_accessable_is_retryable_for_local_txn() {
+        assert!(can_retry_local_txn(&Error::GroupNotAccessable(1)));
+        assert!(!can_retry_local_txn(&Error::DeadlineExceeded("timeout".into())));
     }
 }

@@ -117,7 +117,7 @@ impl RootCollector {
                     .iter()
                     .filter(|n| {
                         !matches!(
-                            NodeStatus::from_i32(n.status).unwrap(),
+                            NodeStatus::try_from(n.status).unwrap(),
                             NodeStatus::Decommissioning | NodeStatus::Decommissioned
                         )
                     })
@@ -127,7 +127,7 @@ impl RootCollector {
                 info.nodes
                     .iter()
                     .filter(|n| {
-                        matches!(NodeStatus::from_i32(n.status).unwrap(), NodeStatus::Active)
+                        matches!(NodeStatus::try_from(n.status).unwrap(), NodeStatus::Active)
                     })
                     .count() as i64,
             );

@@ -31,7 +31,7 @@ pub(super) fn eval_conditions(
 }
 
 fn eval_condition(cond: &WriteCondition, value: Option<&Value>) -> Result<bool> {
-    let Some(r#type) = WriteConditionType::from_i32(cond.r#type) else {
+    let Ok(r#type) = WriteConditionType::try_from(cond.r#type) else {
         return Err(Error::InvalidArgument(format!("Invalid WriteConditionType {}", cond.r#type)));
     };
     if let Some(value) = value {

@@ -37,6 +37,8 @@ mod transport;
 pub mod node;
 pub mod raftgroup;
 pub mod serverpb;
+#[doc(hidden)]
+pub mod testutil;
 
 pub(crate) use tonic::async_trait;
 
@@ -48,7 +50,7 @@ pub use crate::service::Server;
 
 #[cfg(test)]
 mod tests {
-    #[ctor::ctor]
+    #[ctor::ctor(unsafe)]
     fn init() {
         tracing_subscriber::fmt::init();
     }

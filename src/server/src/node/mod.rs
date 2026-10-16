@@ -626,7 +626,7 @@ impl Node {
         if let Some(replica) = self.replica_route_table.find(group_id) {
             if !replica.replica_info().is_terminated() {
                 if let Some(ms) = replica.move_shard_state() {
-                    let mut state = match MoveShardStep::from_i32(ms.step) {
+                    let mut state = match MoveShardStep::try_from(ms.step).ok() {
                         Some(MoveShardStep::Prepare) => State::Prepare,
                         Some(MoveShardStep::Moved) => State::Moved,
                         Some(MoveShardStep::Moving) => State::Moving,
@@ -873,11 +873,11 @@ mod tests {
     use sekas_api::server::v1::report_request::GroupUpdates;
     use sekas_rock::fn_name;
     use sekas_schema::system::txn::TXN_MAX_VERSION;
-    use tempdir::TempDir;
 
     use super::*;
     use crate::RaftConfig;
     use crate::constants::INITIAL_EPOCH;
+    use crate::testutil::TempDir;
 
     const TABLE_ID: u64 = 1;
     const NODE_ID: u64 = 2;

@@ -42,7 +42,10 @@ impl Default for LabConfig {
         LabConfig {
             profile: RunProfile::Regression,
             build_profile: build_profile(),
-            runner_threads: num_cpus::get().max(2),
+            runner_threads: std::thread::available_parallelism()
+                .map(usize::from)
+                .unwrap_or(1)
+                .max(2),
             environment: EnvironmentConfig::default(),
             cluster: ClusterConfig::default(),
             execution: ExecutionConfig::default(),

@@ -658,10 +658,10 @@ pub mod remote {
         use futures::channel::mpsc;
         use sekas_client::{ClientOptions, SekasClient};
         use sekas_rock::fn_name;
-        use tempdir::TempDir;
 
         use super::*;
         use crate::engine::create_group_engine;
+        use crate::testutil::TempDir;
 
         #[sekas_macro::test]
         async fn acquire_and_release_latches() {

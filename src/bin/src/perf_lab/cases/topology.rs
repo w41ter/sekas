@@ -207,13 +207,12 @@ async fn recover_follower(
     leader: u64,
 ) -> Result<Metrics> {
     let group = lab.router.find_group(group_id)?;
-    let follower = group
+    let follower = *group
         .replicas
         .values()
         .filter(|r| r.id != leader && r.role == ReplicaRole::Voter as i32)
         .min_by_key(|r| r.node_id)
-        .ok_or_else(|| anyhow::anyhow!("group {group_id} has no follower voter"))?
-        .clone();
+        .ok_or_else(|| anyhow::anyhow!("group {group_id} has no follower voter"))?;
     lab.stop_server(follower.node_id).await?;
     tokio::time::sleep(Duration::from_secs(lab.config.execution.duration_secs)).await;
     let marker = b"recovery-proof".to_vec();

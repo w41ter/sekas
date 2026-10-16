@@ -22,7 +22,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         std::env::set_var("PROTOC_INCLUDE", protoc_build::PROTOC_INCLUDE);
     }
 
-    tonic_build::configure().compile(
+    tonic_prost_build::configure().compile_protos(
         &["proto/auth.proto", "proto/kv.proto", "proto/record.proto", "proto/version.proto"],
         &["."],
     )?;

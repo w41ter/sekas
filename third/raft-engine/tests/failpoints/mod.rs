@@ -11,7 +11,7 @@ use fail::FailGuard;
 use raft_engine::*;
 use util::*;
 
-#[ctor::ctor]
+#[ctor::ctor(unsafe)]
 fn init() {
     env_logger::init();
 }

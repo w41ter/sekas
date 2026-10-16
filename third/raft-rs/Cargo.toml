@@ -30,16 +30,16 @@ thiserror.workspace = true
 rand.workspace = true
 
 fxhash = "0.2.1"
-fail = { version = "0.4", optional = true }
+fail = { version = "0.5", optional = true }
 getset = "0.1.1"
-protobuf = "2"
+protobuf = "2.28"
 slog = "2.2"
 slog-envlogger = { version = "2.1.0", optional = true }
 slog-stdlog = { version = "4", optional = true }
 slog-term = { version = "2.4.0", optional = true }
 
 [dev-dependencies]
-criterion = "0.3"
+criterion = "0.8"
 regex = "1"
 slog-async = "2.3.0"
 slog-envlogger = "2.1.0"
@@ -47,4 +47,4 @@ slog-stdlog = "4"
 slog-term = "2.4.0"
 anyhow = "1.0.40"
 datadriven = { path = "datadriven", version = "0.1.0" }
-itertools = "0.10.0"
+itertools = "0.15"

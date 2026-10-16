@@ -20,6 +20,8 @@ mod checker;
 mod perf_lab;
 mod shell;
 
+use std::io::IsTerminal;
+
 use clap::{Parser, Subcommand};
 use log::info;
 use sekas_server::{Error, Result};
@@ -84,7 +86,7 @@ impl StartCommand {
             EnvFilter::try_from_default_env().or_else(|_| EnvFilter::try_new("info")).unwrap();
         tracing_subscriber::fmt()
             .with_env_filter(filter_layer)
-            .with_ansi(atty::is(atty::Stream::Stderr))
+            .with_ansi(std::io::stderr().is_terminal())
             .init();
 
         let mut config = match load_config(&self) {
@@ -101,7 +103,8 @@ impl StartCommand {
         }
 
         if config.cpu_nums == 0 {
-            config.cpu_nums = num_cpus::get() as u32;
+            config.cpu_nums =
+                std::thread::available_parallelism().map(usize::from).unwrap_or(1) as u32;
         }
 
         info!("{config:#?}");

@@ -55,7 +55,7 @@ fn write_not_executed() -> WriteResult {
     ))
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub(crate) struct WriteEvalResult {
     writes: Vec<WriteEvalOp>,
     op: Option<Box<SyncOp>>,
@@ -136,11 +136,5 @@ impl WriteEvalResult {
     pub fn into_eval_result_without_writes(self) -> EvalResult {
         debug_assert!(self.writes.is_empty());
         EvalResult { batch: None, op: self.op }
-    }
-}
-
-impl Default for WriteEvalResult {
-    fn default() -> Self {
-        WriteEvalResult { writes: Vec::new(), op: None }
     }
 }

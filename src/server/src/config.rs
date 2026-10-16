@@ -472,14 +472,14 @@ fn adaptive_block_cache_size() -> usize {
         return 32 << 20;
     }
 
-    use sysinfo::{RefreshKind, System, SystemExt};
-    let info = System::new_with_specifics(RefreshKind::new().with_memory());
+    use sysinfo::{MemoryRefreshKind, RefreshKind, System};
+    let info = System::new_with_specifics(
+        RefreshKind::nothing().with_memory(MemoryRefreshKind::everything()),
+    );
     (info.total_memory() / 2) as usize
 }
 
 fn adaptive_max_background_jobs() -> i32 {
-    use std::cmp::{max, min};
-
-    #[allow(clippy::manual_clamp)]
-    max(min(num_cpus::get() as i32, 8), 2)
+    let cpus = std::thread::available_parallelism().map(usize::from).unwrap_or(1) as i32;
+    cpus.clamp(2, 8)
 }

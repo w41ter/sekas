@@ -53,6 +53,6 @@ pub(crate) fn environment(disk_dir: &Path) -> Result<Environment> {
         disk_dir,
         disk_device: metadata.dev(),
         filesystem_type: format!("0x{:x}", stat.f_type),
-        filesystem_block_size: stat.f_bsize,
+        filesystem_block_size: stat.f_bsize.into(),
     })
 }

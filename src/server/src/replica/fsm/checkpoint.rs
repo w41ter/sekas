@@ -44,7 +44,7 @@ impl SnapshotBuilder for GroupSnapshotBuilder {
             }
         }
 
-        let apply_state = iter.apply_state().clone();
+        let apply_state = *iter.apply_state();
         let descriptor = iter.descriptor().clone();
         Ok((apply_state, descriptor))
     }
@@ -147,11 +147,11 @@ mod tests {
     use std::sync::Arc;
 
     use sekas_api::server::v1::ShardDesc;
-    use tempdir::TempDir;
 
     use super::*;
     use crate::EngineConfig;
     use crate::engine::{WriteBatch, WriteStates};
+    use crate::testutil::TempDir;
 
     async fn create_engine(dir: &Path, group_id: u64, shard_id: u64) -> GroupEngine {
         use crate::bootstrap::open_engine_with_default_config;

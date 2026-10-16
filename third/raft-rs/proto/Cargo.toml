@@ -24,4 +24,4 @@ protobuf-build = { version = "0.15.1", default-features = false }
 bytes = { workspace = true, optional = true }
 lazy_static = { workspace = true, optional = true }
 prost = { workspace = true }
-protobuf = { version = "2" }
+protobuf = { version = "2.28" }

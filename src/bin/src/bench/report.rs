@@ -52,23 +52,23 @@ impl From<prometheus::proto::Metric> for Histogram {
             let cnt = (percent * h.get_sample_count() as f64) + 0.5;
             h.get_bucket()
                 .iter()
-                .find(|b| b.get_cumulative_count() as f64 >= cnt)
-                .map(|b| us(b.get_upper_bound()))
+                .find(|b| b.cumulative_count() as f64 >= cnt)
+                .map(|b| us(b.upper_bound()))
                 .unwrap_or_default()
         };
 
         let max = h
             .get_bucket()
             .iter()
-            .find(|v| v.get_cumulative_count() == h.get_sample_count())
-            .map(|v| us(v.get_upper_bound()))
+            .find(|v| v.cumulative_count() == h.get_sample_count())
+            .map(|v| us(v.upper_bound()))
             .unwrap_or_default();
 
         let min = h
             .get_bucket()
             .iter()
-            .take_while(|v| v.get_cumulative_count() == 0)
-            .map(|v| us(v.get_upper_bound()))
+            .take_while(|v| v.cumulative_count() == 0)
+            .map(|v| us(v.upper_bound()))
             .last()
             .unwrap_or_default();
 
@@ -142,13 +142,13 @@ fn histogram_diff(
         .iter()
         .zip(earlier.get_histogram().get_bucket().iter())
         .map(|(b1, b2)| {
-            let cumulative_count = b1.get_cumulative_count() - b2.get_cumulative_count();
+            let cumulative_count = b1.cumulative_count() - b2.cumulative_count();
             let mut b = prometheus::proto::Bucket::default();
             b.set_cumulative_count(cumulative_count);
-            b.set_upper_bound(b1.get_upper_bound());
+            b.set_upper_bound(b1.upper_bound());
             b
         })
-        .for_each(|v| h.mut_bucket().push(v));
+        .for_each(|v| h.bucket.push(v));
 
     m.set_histogram(h);
     m

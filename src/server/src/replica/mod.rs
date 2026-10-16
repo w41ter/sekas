@@ -157,6 +157,7 @@ impl Replica {
     }
 
     /// Open the existed replica of raft group.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         info: Arc<ReplicaInfo>,
         lease_state: Arc<Mutex<LeaseState>>,
@@ -317,7 +318,7 @@ impl Replica {
 
     #[inline]
     pub fn replica_state(&self) -> ReplicaState {
-        self.lease_state.lock().unwrap().replica_state.clone()
+        self.lease_state.lock().unwrap().replica_state
     }
 
     #[inline]
@@ -749,7 +750,7 @@ impl ReplicaInfo {
     #[inline]
     pub fn local_state(&self) -> ReplicaLocalState {
         use std::sync::atomic::Ordering;
-        ReplicaLocalState::from_i32(self.local_state.load(Ordering::Acquire)).unwrap()
+        ReplicaLocalState::try_from(self.local_state.load(Ordering::Acquire)).unwrap()
     }
 
     #[inline]

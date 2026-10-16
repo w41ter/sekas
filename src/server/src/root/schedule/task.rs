@@ -124,7 +124,7 @@ impl BackgroundJob {
 
         match self.job.as_ref().unwrap() {
             Job::CreateTable(c) => {
-                let state = format!("{:?}", CreateTableJobStatus::from_i32(c.status).unwrap());
+                let state = format!("{:?}", CreateTableJobStatus::try_from(c.status).unwrap());
                 let wait_create = c.wait_create.len();
                 let wait_cleanup = c.wait_cleanup.len();
                 json!({
@@ -136,7 +136,7 @@ impl BackgroundJob {
                 })
             }
             Job::CreateOneGroup(c) => {
-                let status = format!("{:?}", CreateOneGroupStatus::from_i32(c.status).unwrap());
+                let status = format!("{:?}", CreateOneGroupStatus::try_from(c.status).unwrap());
                 let wait_create = c.wait_create.len();
                 let wait_cleanup = c.wait_cleanup.len();
                 let retired = c.create_retry;

@@ -90,13 +90,19 @@ pub(crate) struct Snapshot<'a> {
     core: SnapshotCore<'a>,
 }
 
-#[derive(derivative::Derivative)]
-#[derivative(Debug)]
 pub(crate) struct SnapshotCore<'a> {
-    #[derivative(Debug = "ignore")]
     db_iter: rocksdb::DBIterator<'a>,
     current_key: Option<Vec<u8>>,
     cached_entry: Option<MvccEntry>,
+}
+
+impl std::fmt::Debug for SnapshotCore<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SnapshotCore")
+            .field("current_key", &self.current_key)
+            .field("cached_entry", &self.cached_entry)
+            .finish_non_exhaustive()
+    }
 }
 
 /// Traverse multi-version of a single key.
@@ -1166,9 +1172,9 @@ fn shortest_separator_prefix(left: &[u8], right: &[u8]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use sekas_rock::fn_name;
-    use tempdir::TempDir;
 
     use super::*;
+    use crate::testutil::TempDir;
 
     async fn create_engine(group_id: u64, shard_id: u64, path: &Path) -> GroupEngine {
         create_engine_with_range(group_id, shard_id, vec![], vec![], path).await

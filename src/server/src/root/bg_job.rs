@@ -210,7 +210,7 @@ impl Jobs {
     ) -> Result<()> {
         let mut create_table = create_table.to_owned();
         loop {
-            let status = CreateTableJobStatus::from_i32(create_table.status).unwrap();
+            let status = CreateTableJobStatus::try_from(create_table.status).unwrap();
             let _timer = Self::record_create_table_step(&status);
             match status {
                 CreateTableJobStatus::Creating => {
@@ -379,7 +379,7 @@ impl Jobs {
     ) -> Result<()> {
         let mut create_group = create_group.to_owned();
         loop {
-            let status = CreateOneGroupStatus::from_i32(create_group.status).unwrap();
+            let status = CreateOneGroupStatus::try_from(create_group.status).unwrap();
             let _timer = Self::record_create_group_step(&status);
             match status {
                 CreateOneGroupStatus::Init => {
@@ -552,7 +552,7 @@ impl Jobs {
         create_group: CreateOneGroupJob,
     ) -> Result<()> {
         if matches!(
-            CreateOneGroupStatus::from_i32(create_group.status).unwrap(),
+            CreateOneGroupStatus::try_from(create_group.status).unwrap(),
             CreateOneGroupStatus::Finish
         ) {
             self.core
@@ -862,7 +862,7 @@ impl JobCore {
         }
         match job.unwrap().job.as_ref().unwrap() {
             background_job::Job::CreateTable(job) => {
-                match CreateTableJobStatus::from_i32(job.status).unwrap() {
+                match CreateTableJobStatus::try_from(job.status).unwrap() {
                     CreateTableJobStatus::Finish => Ok(()),
                     CreateTableJobStatus::Abort => Err(crate::Error::InvalidArgument(format!(
                         "create table fail {}",
@@ -872,7 +872,7 @@ impl JobCore {
                 }
             }
             background_job::Job::CreateOneGroup(job) => {
-                match CreateOneGroupStatus::from_i32(job.status).unwrap() {
+                match CreateOneGroupStatus::try_from(job.status).unwrap() {
                     CreateOneGroupStatus::Finish => Ok(()),
                     CreateOneGroupStatus::Abort => {
                         Err(crate::Error::InvalidArgument("create group fail".into()))

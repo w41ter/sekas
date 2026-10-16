@@ -24,8 +24,8 @@ use helper::context::TestContext;
 use helper::init::setup_panic_hook;
 use helper::runtime::spawn;
 use log::info;
-use rand::prelude::SmallRng;
-use rand::{Rng, SeedableRng};
+use rand::rngs::StdRng;
+use rand::{RngExt, SeedableRng};
 use sekas_checker::history::{Call, CallResult, History, KvOp};
 use sekas_checker::report::RunReport;
 use sekas_checker::{CheckOutcome, LinearizabilityChecker};
@@ -34,7 +34,7 @@ use sekas_rock::fn_name;
 use sekas_runtime::ExecutorOwner;
 use tokio::sync::{Barrier, Mutex};
 
-#[ctor::ctor]
+#[ctor::ctor(unsafe)]
 fn init() {
     setup_panic_hook();
     tracing_subscriber::fmt::init();
@@ -137,11 +137,11 @@ async fn run_kv_workload(
         let keys = keys.clone();
         let start = start.clone();
         handles.push(spawn(async move {
-            let mut rng = SmallRng::seed_from_u64(seed + process as u64);
+            let mut rng = StdRng::seed_from_u64(seed + process as u64);
             start.wait().await;
             for seq in 0..ops_per_worker {
-                let key = keys[rng.gen_range(0..keys.len())].clone();
-                let action = match rng.gen_range(0..10) {
+                let key = keys[rng.random_range(0..keys.len())].clone();
+                let action = match rng.random_range(0..10) {
                     0..=3 => KvAction::Get,
                     4..=8 => KvAction::Put,
                     _ => KvAction::Delete,

@@ -1,5 +1,6 @@
 // Copyright 2019 TiKV Project Authors. Licensed under Apache-2.0.
 
+#![allow(deprecated)]
 // We use `default` method a lot to be support prost and rust-protobuf at the
 // same time. And reassignment can be optimized by compiler.
 #![allow(clippy::field_reassign_with_default)]

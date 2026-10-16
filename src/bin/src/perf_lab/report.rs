@@ -49,15 +49,16 @@ pub(crate) struct MetricsRecorder {
 
 impl MetricsRecorder {
     pub(crate) fn mark(&mut self, name: String) {
-        let counters = prometheus::gather()
-            .iter()
-            .filter(|family| OBSERVED_COUNTERS.contains(&family.get_name()))
-            .flat_map(|family| {
-                family.get_metric().iter().filter(|metric| metric.has_counter()).map(|metric| {
-                    (metric_key(family.get_name(), metric), metric.get_counter().get_value())
+        let counters =
+            prometheus::gather()
+                .iter()
+                .filter(|family| OBSERVED_COUNTERS.contains(&family.name()))
+                .flat_map(|family| {
+                    family.get_metric().iter().filter(|metric| metric.counter.is_some()).map(
+                        |metric| (metric_key(family.name(), metric), metric.get_counter().value()),
+                    )
                 })
-            })
-            .collect();
+                .collect();
         self.marks.push(MetricMark { name, at_unix_ms: crate::perf_lab::unix_millis(), counters });
     }
 
@@ -96,7 +97,7 @@ fn metric_key(name: &str, metric: &Metric) -> String {
     let labels = metric
         .get_label()
         .iter()
-        .map(|label| format!("{}={}", label.get_name(), label.get_value()))
+        .map(|label| format!("{}={}", label.name(), label.value()))
         .collect::<Vec<_>>();
     if labels.is_empty() { name.to_owned() } else { format!("{name}{{{}}}", labels.join(",")) }
 }
