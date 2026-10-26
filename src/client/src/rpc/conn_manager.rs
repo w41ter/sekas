@@ -13,6 +13,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -59,7 +60,7 @@ impl ConnManager {
             return Ok(info.channel.clone());
         }
 
-        let remote = addr.parse().map_err(|e| Error::Internal(Box::new(e)))?;
+        let remote = addr.parse::<SocketAddr>().map_err(|e| Error::Internal(Box::new(e)))?;
         let mut builder = RpcChannel::grpc(remote).connection_tag(self.connection_tag);
         if let Some(connect_timeout) = self.connect_timeout {
             builder = builder.connect_timeout(connect_timeout);

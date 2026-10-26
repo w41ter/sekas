@@ -105,6 +105,7 @@ pub(super) async fn execute(
                         end: Some(target.key(target.keys)),
                     },
                     limit: *limit,
+                    total_limit: *limit,
                     ..Default::default()
                 })
                 .await?;

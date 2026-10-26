@@ -12,6 +12,7 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 use futures::StreamExt;
@@ -159,8 +160,11 @@ impl StreamingTask {
         let node_id = self.request.to.node_id;
         let node_desc = resolve_address(&*self.resolver, self.request.to.node_id).await?;
         let tag = raft_connection_tag(from_id, target_id);
-        let channel =
-            RpcChannel::grpc_endpoint(node_desc.addr).await?.connection_tag(tag).build()?;
+        let remote = node_desc
+            .addr
+            .parse::<SocketAddr>()
+            .map_err(|error| crate::Error::InvalidArgument(error.to_string()))?;
+        let channel = RpcChannel::grpc(remote).connection_tag(tag).build()?;
         let client = RaftClient::new(channel);
         let (mut sender, response) = client.send_message().start().into_parts();
         tokio::pin!(response);
@@ -200,7 +204,11 @@ pub async fn retrive_snapshot(
 ) -> Result<impl futures::Stream<Item = Result<SnapshotChunk, vaelo::Error>>> {
     let node_desc = resolve_address(&*trans_mgr.resolver, target_replica.node_id).await?;
     let tag = ConnectionTag::new(0x4000_0000_0000_0000 | target_replica.id);
-    let channel = RpcChannel::grpc_endpoint(node_desc.addr).await?.connection_tag(tag).build()?;
+    let remote = node_desc
+        .addr
+        .parse::<SocketAddr>()
+        .map_err(|error| crate::Error::InvalidArgument(error.to_string()))?;
+    let channel = RpcChannel::grpc(remote).connection_tag(tag).build()?;
     let client = RaftClient::new(channel);
     let request = SnapshotRequest { replica_id: target_replica.id, snapshot_id };
     let resp = client.retrieve_snapshot(request).await?;

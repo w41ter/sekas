@@ -44,6 +44,7 @@ impl OverlayTestCluster {
     async fn new(name: &str) -> Self {
         let barrier = Arc::new(TestingBarrier::new());
         let mut ctx = TestContext::new(name);
+        ctx.set_replicas_per_group(1);
         ctx.mut_replica_testing_knobs().after_overlay_insert = Some(barrier.clone());
         let node_addr = ctx.next_listen_address();
         ctx.spawn_server(1, &node_addr, true, vec![]);

@@ -38,6 +38,7 @@ fn init() {
 #[sekas_macro::test]
 async fn cluster_rw_with_single_node() {
     let mut ctx = TestContext::new(fn_name!());
+    ctx.set_replicas_per_group(1);
     let node_1_addr = ctx.next_listen_address();
     ctx.spawn_server(1, &node_1_addr, true, vec![]);
 
@@ -237,6 +238,7 @@ fn cluster_rw_single_server_large_read_write() {
             .is_some_and(|v| matches!(v.as_str(), "1" | "true" | "TRUE"));
         let started_at = Instant::now();
         let mut ctx = TestContext::new("rw_test__single_server_large_read_write");
+        ctx.set_replicas_per_group(1);
         let nodes = ctx.bootstrap_servers(1).await;
         let c = ClusterClient::new(nodes).await;
         let app = c.app_client().await;
@@ -468,6 +470,7 @@ async fn cluster_rw_entire_range() {
         version: None,
         range: sekas_client::Range::all(),
         limit: 10,
+        total_limit: 0,
         limit_bytes: 0,
         buffered_requests: 1,
     };
@@ -491,6 +494,16 @@ async fn cluster_rw_entire_range() {
         }
     }
     assert_eq!(index, 100);
+
+    let mut limited_stream = db
+        .range(RangeRequest { table_id: co.id, limit: 10, total_limit: 25, ..Default::default() })
+        .await
+        .unwrap();
+    let mut limited_count = 0;
+    while let Some(values) = limited_stream.next().await {
+        limited_count += values.unwrap().len();
+    }
+    assert_eq!(limited_count, 25);
 }
 
 #[sekas_macro::test]
@@ -520,6 +533,7 @@ async fn cluster_rw_range_with_many_shard() {
         version: None,
         range: sekas_client::Range::all(),
         limit: 10,
+        total_limit: 0,
         limit_bytes: 0,
         buffered_requests: 1,
     };

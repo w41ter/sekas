@@ -13,6 +13,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::net::SocketAddr;
 use std::pin::Pin;
 use std::time::Duration;
 
@@ -35,11 +36,10 @@ impl Client {
     }
 
     pub async fn connect(addr: String) -> Result<Self, Status> {
-        let channel = RpcChannel::grpc_endpoint(addr)
-            .await
-            .map_err(rpc_status)?
-            .build()
-            .map_err(rpc_status)?;
+        let remote = addr
+            .parse::<SocketAddr>()
+            .map_err(|error| Status::invalid_argument(error.to_string()))?;
+        let channel = RpcChannel::grpc(remote).build().map_err(rpc_status)?;
         let client = node_client::NodeClient::new(channel);
         let client = Self { client };
         client.get_root().await?;

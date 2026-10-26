@@ -72,6 +72,7 @@ async fn admin_balance_init_cluster() {
 #[sekas_macro::test]
 async fn admin_update_database_and_table() {
     let mut ctx = TestContext::new(fn_name!());
+    ctx.set_replicas_per_group(1);
     let nodes = ctx.bootstrap_servers(1).await;
     let addrs = nodes.values().cloned().collect::<Vec<_>>();
     let c = SekasClient::new(ClientOptions::default(), addrs).await.unwrap();
@@ -99,6 +100,7 @@ async fn admin_update_database_and_table() {
 #[sekas_macro::test]
 async fn admin_delete() {
     let mut ctx = TestContext::new(fn_name!());
+    ctx.set_replicas_per_group(1);
     ctx.mut_replica_testing_knobs().disable_scheduler_orphan_replica_detecting_intervals = true;
     let nodes = ctx.bootstrap_servers(1).await;
     let addrs = nodes.values().cloned().collect::<Vec<_>>();
@@ -129,6 +131,7 @@ async fn admin_delete() {
 #[sekas_macro::test]
 async fn admin_delete_purges_table_shards() {
     let mut ctx = TestContext::new(fn_name!());
+    ctx.set_replicas_per_group(1);
     ctx.mut_replica_testing_knobs().disable_scheduler_orphan_replica_detecting_intervals = true;
     let nodes = ctx.bootstrap_servers(1).await;
     let c = ClusterClient::new(nodes.clone()).await;
@@ -260,9 +263,20 @@ fn table_key(database_id: u64, table_name: &str) -> Vec<u8> {
 }
 
 async fn current_metadata(nodes: Vec<String>) -> diagnosis::Metadata {
+    use vaelo::http::BodyExt as _;
+
     let root_addr = find_root(nodes).await;
-    let resp = reqwest::get(format!("http://{root_addr}/admin/metadata")).await.unwrap();
-    let content = resp.bytes().await.unwrap();
+    let remote = root_addr.parse().unwrap();
+    let client = vaelo::http::Client::http1(remote).build().unwrap();
+    let request = vaelo::http::Request::builder()
+        .method(vaelo::http::Method::GET)
+        .uri("/admin/metadata")
+        .body(vaelo::http::Empty::new())
+        .unwrap();
+    let response = client.request(request).timeout(Duration::from_secs(30)).await.unwrap();
+    assert!(response.status().is_success(), "GET /admin/metadata returned {}", response.status());
+    let content = response.into_body().collect().await.unwrap();
+    let content = content.chunks().flatten().copied().collect::<Vec<_>>();
     let json_res = serde_json::from_slice(&content);
     json_res.unwrap_or_else(|_| panic!("decode json fail: {:?}", content))
 }

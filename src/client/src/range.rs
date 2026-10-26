@@ -49,8 +49,13 @@ pub struct RangeRequest {
     pub version: Option<u64>,
     /// The range to scan.
     pub range: Range,
-    /// The num keys to limit.
+    /// The maximum number of keys to return in each underlying scan request.
+    /// A range stream continues requesting subsequent batches until the range
+    /// is exhausted. Zero means no per-request limit.
     pub limit: u64,
+    /// The maximum number of keys to return across the entire range stream.
+    /// Zero means no total limit.
+    pub total_limit: u64,
     /// The total bytes of key-value pairs to limit.
     pub limit_bytes: u64,
     /// The max number of buffered requests. This is an internal option, do NOT
@@ -84,10 +89,11 @@ struct RangeScanner {
     table_id: u64,
     /// The target version to request.
     version: u64,
-    /// The num of keys to limit for the whole range, 0 means unlimited.
+    /// The maximum number of keys to return in each scan request.
     limit: u64,
-    /// Remaining keys to scan when `limit` is non-zero.
-    remaining_limit: Option<u64>,
+    /// The number of keys that may still be returned by this range stream.
+    /// `None` means the stream has no total key limit.
+    remaining_total: Option<u64>,
     /// The num of bytes to limit.
     limit_bytes: u64,
 
@@ -112,6 +118,7 @@ impl Default for RangeRequest {
             version: None,
             range: Range::all(),
             limit: 0,
+            total_limit: 0,
             limit_bytes: 0,
             buffered_requests: 1,
         }
@@ -151,7 +158,7 @@ impl RangeStream {
             table_id: request.table_id,
             version: request.version.unwrap_or(TXN_MAX_VERSION),
             limit: request.limit,
-            remaining_limit: (request.limit > 0).then_some(request.limit),
+            remaining_total: (request.total_limit != 0).then_some(request.total_limit),
             limit_bytes: request.limit_bytes,
             cursor_key,
             end_key,
@@ -207,15 +214,16 @@ impl RangeScanner {
         shard_desc: &ShardDesc,
     ) -> crate::Result<()> {
         loop {
-            if self.remaining_limit == Some(0) {
+            if self.remaining_total == Some(0) {
                 self.state = ScannerState::Finished;
                 return Ok(());
             }
+
             let begin_key = self.cursor_key.clone();
             let req = ShardScanRequest {
                 shard_id: shard_desc.id,
                 start_version: self.version,
-                limit: self.remaining_limit.unwrap_or(self.limit),
+                limit: request_limit(self.limit, self.remaining_total),
                 limit_bytes: self.limit_bytes,
                 start_key: Some(begin_key),
                 end_key: self.end_key.clone(),
@@ -230,24 +238,21 @@ impl RangeScanner {
                     ));
                 }
             };
-            if let Some(last_value) = scan_resp.data.last() {
+            let mut data = scan_resp.data;
+            if let Some(remaining) = self.remaining_total {
+                data.truncate(usize::try_from(remaining).unwrap_or(usize::MAX));
+                self.remaining_total = Some(remaining.saturating_sub(data.len() as u64));
+            }
+            if let Some(last_value) = data.last() {
                 self.cursor_key = lexical_next_boundary(&last_value.user_key);
             }
-            let limit_reached = self
-                .remaining_limit
-                .as_mut()
-                .map(|remaining| {
-                    *remaining = remaining.saturating_sub(scan_resp.data.len() as u64);
-                    *remaining == 0
-                })
-                .unwrap_or(false);
-            if self.sender.send(Ok(scan_resp.data)).await.is_err() {
+            if self.sender.send(Ok(data)).await.is_err() {
                 self.state = ScannerState::Cancelled;
                 return Ok(());
             }
 
             self.num_scanned += 1;
-            if limit_reached {
+            if self.remaining_total == Some(0) {
                 self.state = ScannerState::Finished;
                 return Ok(());
             }
@@ -256,6 +261,14 @@ impl RangeScanner {
                 return Ok(());
             }
         }
+    }
+}
+
+fn request_limit(batch_limit: u64, remaining_total: Option<u64>) -> u64 {
+    match (batch_limit, remaining_total) {
+        (0, Some(remaining)) => remaining,
+        (limit, Some(remaining)) => limit.min(remaining),
+        (limit, None) => limit,
     }
 }
 
@@ -288,6 +301,15 @@ mod tests {
         assert!(is_entire_range_scanned(None, &[]));
         assert!(!is_entire_range_scanned(None, b"test"));
         assert!(!is_entire_range_scanned(Some(b"test"), b"tes"));
+    }
+
+    #[test]
+    fn request_limit_combines_batch_and_total_limits() {
+        assert_eq!(request_limit(0, None), 0);
+        assert_eq!(request_limit(10, None), 10);
+        assert_eq!(request_limit(0, Some(25)), 25);
+        assert_eq!(request_limit(10, Some(25)), 10);
+        assert_eq!(request_limit(10, Some(4)), 4);
     }
 
     #[test]

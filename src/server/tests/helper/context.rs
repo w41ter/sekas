@@ -129,6 +129,10 @@ impl TestContext {
         self.root_cfg.schedule_interval_sec = secs;
     }
 
+    pub fn set_replicas_per_group(&mut self, replicas: usize) {
+        self.root_cfg.replicas_per_group = replicas;
+    }
+
     pub fn set_shard_chunk_size(&mut self, size: usize) {
         self.node_cfg.shard_chunk_size = size;
     }

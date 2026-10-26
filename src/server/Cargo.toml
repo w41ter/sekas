@@ -41,7 +41,6 @@ vaelo.workspace = true
 
 const-str = "1.1"
 dashmap = "6.2"
-http-body-util = "0.1"
 libc = "0.2"
 pest = "2.7"
 pin-project = "1"
@@ -80,7 +79,6 @@ sekas-checker = { path = "../checker", version = "0.5" }
 ctor = "1.0"
 quote = "1.0"
 rand.workspace = true
-reqwest = { version = "0.13", features = ["json"] }
 socket2 = "0.6"
 syn = "3.0"
 tracing-subscriber = { version = "0.3", features = ["std", "env-filter"] }

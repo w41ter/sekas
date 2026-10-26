@@ -39,7 +39,7 @@ pub(crate) struct LabContext {
     conn_manager: ConnManager,
     pub(crate) router: Router,
     pub(super) client: SekasClient,
-    http_client: reqwest::Client,
+    http_clients: HashMap<u64, vaelo::http::Client>,
     pub(super) metrics: MetricsRecorder,
 }
 
@@ -67,10 +67,7 @@ impl LabContext {
             ))
             .await,
             client: SekasClient::new(ClientOptions::default(), vec![]).await?,
-            http_client: reqwest::Client::builder()
-                .timeout(Duration::from_secs(2))
-                .build()
-                .context("build perf-lab HTTP client")?,
+            http_clients: HashMap::new(),
             metrics: MetricsRecorder::default(),
         };
         lab.start_cluster().await?;
@@ -93,6 +90,7 @@ impl LabContext {
             let join_list = if id == 0 { vec![] } else { vec![root_addr.clone()] };
             self.spawn_server(id, addr.clone(), id == 0, join_list)?;
             node_client_with_retry(&addr).await?;
+            self.http_clients.insert(id, admin_http_client(&addr)?);
             self.nodes.insert(id, addr);
         }
 
@@ -197,6 +195,7 @@ impl LabContext {
             .ok_or_else(|| anyhow!("no live seed node"))?;
         self.spawn_server(node_id, addr.clone(), false, vec![root_addr])?;
         node_client_with_retry(&addr).await?;
+        self.http_clients.insert(node_id, admin_http_client(&addr)?);
         self.nodes.insert(node_id, addr);
         Ok(node_id)
     }
@@ -252,16 +251,31 @@ impl LabContext {
     }
 
     async fn root_metadata(&self) -> Result<diagnosis::Metadata> {
-        let mut addrs = self.nodes.values().collect::<Vec<_>>();
-        addrs.sort_unstable();
+        use vaelo::http::BodyExt as _;
+
+        let mut nodes = self.nodes.iter().collect::<Vec<_>>();
+        nodes.sort_unstable_by_key(|(_, addr)| *addr);
         let mut last_err = None;
-        for addr in addrs {
+        for (node_id, addr) in nodes {
             let url = format!("http://{addr}/admin/metadata");
-            match self.http_client.get(&url).send().await {
+            let Some(client) = self.http_clients.get(node_id) else {
+                last_err = Some(anyhow!("missing HTTP client for node {node_id} at {addr}"));
+                continue;
+            };
+            let request = vaelo::http::Request::builder()
+                .method(vaelo::http::Method::GET)
+                .uri("/admin/metadata")
+                .body(vaelo::http::Empty::new())
+                .context("build root metadata HTTP request")?;
+            match client.request(request).timeout(Duration::from_secs(2)).await {
                 Ok(response) if response.status().is_success() => {
-                    return response
-                        .json::<diagnosis::Metadata>()
+                    let content = response
+                        .into_body()
+                        .collect()
                         .await
+                        .with_context(|| format!("read root metadata from {url}"))?;
+                    let content = content.chunks().flatten().copied().collect::<Vec<_>>();
+                    return serde_json::from_slice(&content)
                         .with_context(|| format!("decode root metadata from {url}"));
                 }
                 Ok(response) => {
@@ -311,6 +325,14 @@ impl LabContext {
         node_client_with_retry(&addr).await?;
         Ok(())
     }
+}
+
+fn admin_http_client(addr: &str) -> Result<vaelo::http::Client> {
+    let remote = addr.parse().with_context(|| format!("parse admin HTTP address {addr}"))?;
+    vaelo::http::Client::http1(remote)
+        .connect_timeout(Duration::from_secs(2))
+        .build()
+        .with_context(|| format!("build admin HTTP client for {addr}"))
 }
 
 async fn node_client_with_retry(addr: &str) -> Result<NodeClient> {

@@ -484,12 +484,17 @@ fn linearizable_kv_with_shard_moving_long_run() {
         let nemesis = async {
             for _ in 0..nemesis_rounds {
                 sekas_runtime::time::sleep(Duration::from_millis(nemesis_interval_ms)).await;
-                let source_state =
-                    c.find_router_group_state_by_key(table_id, &target_key).await.unwrap();
+                let Some(source_state) =
+                    c.find_router_group_state_by_key(table_id, &target_key).await
+                else {
+                    continue;
+                };
                 if source_state.id == 2 {
                     continue;
                 }
-                let shard_desc = c.get_shard_desc(table_id, &target_key).await.unwrap();
+                let Some(shard_desc) = c.get_shard_desc(table_id, &target_key).await else {
+                    continue;
+                };
                 let mut target = c.group(2);
                 let result =
                     target.accept_shard(source_state.id, source_state.epoch, &shard_desc).await;
