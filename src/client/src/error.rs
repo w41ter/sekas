@@ -1,48 +1,35 @@
 // Copyright 2023-present The Sekas Authors.
-// Copyright 2022 The Engula Authors.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-// http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Licensed under the Apache License, Version 2.0.
 
 use std::error::Error as StdError;
 
+use prost::Message;
 use sekas_api::server::v1::{GroupDesc, ReplicaDesc, RootDesc, Value};
+use vaelo::{Status, StatusCode};
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 pub type AppResult<T> = std::result::Result<T, AppError>;
+
+pub fn rpc_status(error: vaelo::Error) -> Status {
+    error.remote_status().cloned().unwrap_or_else(|| Status::unavailable(error.to_string()))
+}
 
 #[derive(thiserror::Error, Debug)]
 pub enum AppError {
     #[error("{0} not found")]
     NotFound(String),
-
     #[error("{0} already exists")]
     AlreadyExists(String),
-
     #[error("invalid argument {0}")]
     InvalidArgument(String),
-
     #[error("deadline exceeded {0}")]
     DeadlineExceeded(String),
-
     #[error("cas condition {1} not satisfied, operation index {0}")]
     CasFailed(u64, u64, Option<Value>),
-
     #[error("the txn is conflict with others")]
     TxnConflict,
-
     #[error("network: {0}")]
-    Network(tonic::Status),
-
+    Network(Status),
     #[error("internal {0}")]
     Internal(Box<dyn StdError + Send + Sync + 'static>),
 }
@@ -51,81 +38,56 @@ pub enum AppError {
 pub enum Error {
     #[error("invalid argument {0}")]
     InvalidArgument(String),
-
     #[error("deadline exceeded {0}")]
     DeadlineExceeded(String),
-
     #[error("{0} already exists")]
     AlreadyExists(String),
-
     #[error("{0} not found")]
     NotFound(String),
-
     #[error("{0} is exhausted")]
     ResourceExhausted(String),
-
     #[error("cas condition {1} not satisfied, operation index {0}")]
     CasFailed(u64, u64, Option<Value>),
-
     #[error("the txn is conflict with others")]
     TxnConflict,
-
     #[error("the local txn is not allowed")]
     LocalTxnNotAllowed,
-
     #[error("group epoch not match")]
     EpochNotMatch(GroupDesc),
-
     #[error("group {0} not found")]
     GroupNotFound(u64),
-
     #[error("not root leader")]
     NotRootLeader(RootDesc, u64, Option<ReplicaDesc>),
-
     #[error("not leader of group {0}")]
-    NotLeader(
-        // group_id
-        u64,
-        // term
-        u64,
-        Option<ReplicaDesc>,
-    ),
-
-    /// This indicates that the `GroupClient` has not been able to access the
-    /// group leader after retries many times.
+    NotLeader(u64, u64, Option<ReplicaDesc>),
     #[error("group {0} not accessable")]
     GroupNotAccessable(u64),
-
     #[error("transport {0}")]
-    Transport(tonic::Status),
-
+    Transport(Status),
     #[error("connect {0}")]
-    Connect(tonic::Status),
-
+    Connect(Status),
     #[error("rpc {0}")]
-    Rpc(tonic::Status),
-
+    Rpc(Status),
     #[error("internal {0}")]
     Internal(Box<dyn StdError + Send + Sync + 'static>),
 }
 
-impl From<tonic::Status> for Error {
-    fn from(status: tonic::Status) -> Self {
-        use tonic::Code;
-
+impl From<Status> for Error {
+    fn from(status: Status) -> Self {
         match status.code() {
-            Code::Ok => panic!("invalid argument"),
-            Code::InvalidArgument => Error::InvalidArgument(status.message().into()),
-            Code::Cancelled if status.message().contains("Timeout expired") => {
-                Error::DeadlineExceeded(status.message().into())
+            StatusCode::Ok => panic!("invalid OK status"),
+            StatusCode::InvalidArgument => Self::InvalidArgument(status.message().into()),
+            StatusCode::Canceled if status.message().contains("Timeout expired") => {
+                Self::DeadlineExceeded(status.message().into())
             }
-            Code::AlreadyExists => Error::AlreadyExists(status.message().into()),
-            Code::ResourceExhausted => Error::ResourceExhausted(status.message().into()),
-            Code::NotFound => Error::NotFound(status.message().into()),
-            Code::Internal => Error::Internal(status.message().into()),
-            Code::Unknown => from_source_or_details(status),
-            Code::Unavailable => from_source(status),
-            _ => Error::Rpc(status),
+            StatusCode::DeadlineExceeded => Self::DeadlineExceeded(status.message().into()),
+            StatusCode::AlreadyExists => Self::AlreadyExists(status.message().into()),
+            StatusCode::ResourceExhausted => Self::ResourceExhausted(status.message().into()),
+            StatusCode::NotFound => Self::NotFound(status.message().into()),
+            StatusCode::Internal => Self::Internal(status.message().into()),
+            StatusCode::Unknown => from_source_or_details(status),
+            StatusCode::Unavailable => from_source(status),
+            _ => Self::Rpc(status),
         }
     }
 }
@@ -133,26 +95,30 @@ impl From<tonic::Status> for Error {
 impl From<sekas_api::server::v1::Error> for Error {
     fn from(err: sekas_api::server::v1::Error) -> Self {
         use sekas_api::server::v1::error_detail_union::Value;
-        use tonic::Status;
-
         if err.details.is_empty() {
             return Status::internal("ErrorDetails is empty").into();
         }
-
-        // Only convert first error detail.
         let detail = &err.details[0];
         let msg = detail.message.clone();
-        match detail.detail.as_ref().and_then(|u| u.value.clone()) {
-            Some(Value::GroupNotFound(v)) => Error::GroupNotFound(v.group_id),
-            Some(Value::NotLeader(v)) => Error::NotLeader(v.group_id, v.term, v.leader),
-            Some(Value::NotRoot(v)) => {
-                Error::NotRootLeader(v.root.unwrap_or_default(), v.term, v.leader)
+        match detail.detail.as_ref().and_then(|union| union.value.clone()) {
+            Some(Value::GroupNotFound(value)) => Self::GroupNotFound(value.group_id),
+            Some(Value::NotLeader(value)) => {
+                Self::NotLeader(value.group_id, value.term, value.leader)
             }
-            Some(Value::NotMatch(v)) => Error::EpochNotMatch(v.descriptor.unwrap_or_default()),
-            Some(Value::StatusCode(v)) => Status::new(v.into(), msg).into(),
-            Some(Value::CasFailed(v)) => Error::CasFailed(v.index, v.cond_index, v.prev_value),
-            Some(Value::TxnConflict(_)) => Error::TxnConflict,
-            Some(Value::LocalTxnNotAllowed(_)) => Error::LocalTxnNotAllowed,
+            Some(Value::NotRoot(value)) => {
+                Self::NotRootLeader(value.root.unwrap_or_default(), value.term, value.leader)
+            }
+            Some(Value::NotMatch(value)) => {
+                Self::EpochNotMatch(value.descriptor.unwrap_or_default())
+            }
+            Some(Value::StatusCode(value)) => {
+                Status::new(StatusCode::from_i32(value).unwrap_or(StatusCode::Unknown), msg).into()
+            }
+            Some(Value::CasFailed(value)) => {
+                Self::CasFailed(value.index, value.cond_index, value.prev_value)
+            }
+            Some(Value::TxnConflict(_)) => Self::TxnConflict,
+            Some(Value::LocalTxnNotAllowed(_)) => Self::LocalTxnNotAllowed,
             _ => Status::internal(format!("unknown error detail, msg: {msg}")).into(),
         }
     }
@@ -160,149 +126,72 @@ impl From<sekas_api::server::v1::Error> for Error {
 
 impl From<tokio::task::JoinError> for Error {
     fn from(value: tokio::task::JoinError) -> Self {
-        Error::Internal(value.into())
+        Self::Internal(value.into())
     }
 }
 
 impl From<Error> for AppError {
     fn from(err: Error) -> Self {
         match err {
-            Error::InvalidArgument(v) => AppError::InvalidArgument(v),
-            Error::DeadlineExceeded(v) => AppError::DeadlineExceeded(v),
-            Error::NotFound(v) => AppError::NotFound(v),
-            Error::AlreadyExists(v) => AppError::AlreadyExists(v),
+            Error::InvalidArgument(value) => Self::InvalidArgument(value),
+            Error::DeadlineExceeded(value) => Self::DeadlineExceeded(value),
+            Error::NotFound(value) => Self::NotFound(value),
+            Error::AlreadyExists(value) => Self::AlreadyExists(value),
             Error::CasFailed(index, cond_index, prev_value) => {
-                AppError::CasFailed(index, cond_index, prev_value)
+                Self::CasFailed(index, cond_index, prev_value)
             }
-            Error::TxnConflict => AppError::TxnConflict,
-            Error::Internal(v) => AppError::Internal(v),
-
-            Error::Transport(status) => AppError::Network(status),
-            Error::Connect(status) | Error::Rpc(status) => AppError::Network(status),
-
-            Error::EpochNotMatch(_)
-            | Error::ResourceExhausted(_)
-            | Error::GroupNotFound(_)
-            | Error::GroupNotAccessable(_)
-            | Error::NotRootLeader(..)
-            | Error::NotLeader(..)
-            | Error::LocalTxnNotAllowed => unreachable!("convert err {err:?} to `AppError`"),
+            Error::TxnConflict => Self::TxnConflict,
+            Error::Internal(value) => Self::Internal(value),
+            Error::Transport(status) | Error::Connect(status) | Error::Rpc(status) => {
+                Self::Network(status)
+            }
+            other => unreachable!("convert err {other:?} to AppError"),
         }
     }
 }
 
-impl From<AppError> for tonic::Status {
+impl From<AppError> for Status {
     fn from(err: AppError) -> Self {
-        use tonic::Status;
-
         match err {
-            AppError::NotFound(msg) => Status::not_found(msg),
-            AppError::AlreadyExists(msg) => Status::already_exists(msg),
-            AppError::InvalidArgument(msg) => Status::invalid_argument(msg),
-            AppError::DeadlineExceeded(msg) => Status::deadline_exceeded(msg),
-            AppError::CasFailed(_, _, _) => todo!("not supported"),
-            AppError::TxnConflict => todo!("not supported"),
-            AppError::Network(status) => status, // as proxy
-            AppError::Internal(err) => Status::internal(err.to_string()),
+            AppError::NotFound(message) => Status::not_found(message),
+            AppError::AlreadyExists(message) => Status::already_exists(message),
+            AppError::InvalidArgument(message) => Status::invalid_argument(message),
+            AppError::DeadlineExceeded(message) => Status::deadline_exceeded(message),
+            AppError::Network(status) => status,
+            AppError::Internal(error) => Status::internal(error.to_string()),
+            AppError::CasFailed(..) | AppError::TxnConflict => Status::internal(err.to_string()),
         }
     }
 }
 
-impl From<Error> for tonic::Status {
-    #[inline]
+impl From<Error> for Status {
     fn from(value: Error) -> Self {
-        let error: AppError = value.into();
-        error.into()
+        AppError::from(value).into()
     }
 }
 
-pub fn find_io_error(status: &tonic::Status) -> Option<&std::io::Error> {
-    use tonic::Code;
-    if status.code() == Code::Unavailable || status.code() == Code::Unknown {
-        find_source::<std::io::Error>(status)
-    } else {
-        None
-    }
+pub fn retryable_rpc_err(status: &Status) -> bool {
+    status.code() == StatusCode::Unavailable
+        && (status.message().contains("Connection refused")
+            || status.message().contains("connect timeout")
+            || status.message().contains("gRPC connection is unavailable")
+            || status.message().contains("gRPC connection closed"))
 }
 
-pub fn find_source<E: std::error::Error + 'static>(err: &tonic::Status) -> Option<&E> {
-    use std::error::Error;
-    let mut cause = err.source();
-    while let Some(err) = cause {
-        if let Some(typed) = err.downcast_ref() {
-            return Some(typed);
-        }
-        cause = err.source();
-    }
-    None
+pub fn transport_err(status: &Status) -> bool {
+    status.message().contains("connection reset") || status.message().contains("broken pipe")
 }
 
-pub fn retryable_io_err(err: &std::io::Error) -> bool {
-    use std::io::ErrorKind;
-
-    matches!(err.kind(), ErrorKind::ConnectionRefused)
-}
-
-pub fn retryable_rpc_err(status: &tonic::Status) -> bool {
-    use tonic::Code;
-    if status.code() == Code::Unavailable
-        && status.message().contains("error trying to connect: deadline has elapsed")
+pub fn from_source_or_details(status: Status) -> Error {
+    if !status.details().is_empty()
+        && let Ok(error) = sekas_api::server::v1::Error::decode(status.details())
     {
-        // connection timeout.
-        true
-    } else {
-        let mut cause = status.source();
-        while let Some(err) = cause {
-            if let Some(err) = err.downcast_ref::<std::io::Error>() {
-                return retryable_io_err(err);
-            } else if err.to_string().ends_with("operation was canceled: connection closed") {
-                // The request is dropped in an internal queue, which is guaranteed to have not
-                // been sent to the server. See https://github.com/hyperium/hyper/blob/bb3af17ce1a3841e9170adabcce595c7c8743ea7/src/client/dispatch.rs#L209 for details.
-                return true;
-            }
-            cause = err.source();
-        }
-        false
+        return error.into();
     }
-}
-
-pub fn transport_io_err(err: &std::io::Error) -> bool {
-    use std::io::ErrorKind;
-
-    matches!(err.kind(), ErrorKind::ConnectionReset | ErrorKind::BrokenPipe)
-}
-
-pub fn transport_err(status: &tonic::Status) -> bool {
-    // Cases:
-    // - transport error: <inner messages>: connection reset
-    // - transport error: <inner messages>: broken pipe
-    // - error trying to connect: tcp connect error: Connection reset by peer (os
-    //   error 104)
-    // - error reading a body from connection: connection reset
-    let mut cause = status.source();
-    while let Some(err) = cause {
-        if let Some(err) = err.downcast_ref::<std::io::Error>() {
-            return transport_io_err(err);
-        }
-        cause = err.source();
-    }
-    false
-}
-
-pub fn from_source_or_details(status: tonic::Status) -> Error {
-    use prost::Message;
-    use sekas_api::server::v1;
-
-    if !status.details().is_empty() {
-        if let Ok(err) = v1::Error::decode(status.details()) {
-            return err.into();
-        }
-    }
-
     from_source(status)
 }
 
-pub fn from_source(status: tonic::Status) -> Error {
+pub fn from_source(status: Status) -> Error {
     if retryable_rpc_err(&status) {
         Error::Connect(status)
     } else if transport_err(&status) {

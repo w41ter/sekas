@@ -19,6 +19,7 @@ use futures::channel::mpsc;
 use log::{debug, warn};
 use sekas_api::server::v1::{NodeDesc, ReplicaDesc};
 use sekas_runtime::{JoinHandle, TaskGroup};
+use vaelo::{ConnectionTag, RpcChannel};
 
 use crate::Result;
 use crate::node::route_table::RaftRouteTable;
@@ -142,8 +143,12 @@ impl ChannelManager {
 impl StreamingTask {
     async fn run(self) {
         let target_id = self.request.to.id;
+        let from_id = self.request.from.id;
         let raft_node = self.raft_node.clone();
-        if self.serve_streaming_request().await.is_err() {
+        if let Err(err) = self.serve_streaming_request().await {
+            warn!(
+                "raft stream from replica {from_id} to {target_id} stopped; report unreachable: {err}"
+            );
             raft_node.report_unreachable(target_id);
         }
     }
@@ -153,9 +158,35 @@ impl StreamingTask {
         let from_id = self.request.from.id;
         let node_id = self.request.to.node_id;
         let node_desc = resolve_address(&*self.resolver, self.request.to.node_id).await?;
-        let address = format!("http://{}", node_desc.addr);
-        let mut client = RaftClient::connect(address).await?;
-        if let Err(e) = client.send_message(self.request.receiver).await {
+        let tag = raft_connection_tag(from_id, target_id);
+        let channel =
+            RpcChannel::grpc_endpoint(node_desc.addr).await?.connection_tag(tag).build()?;
+        let client = RaftClient::new(channel);
+        let (mut sender, response) = client.send_message().start().into_parts();
+        tokio::pin!(response);
+        let mut receiver = self.request.receiver;
+        loop {
+            tokio::select! {
+                result = &mut response => {
+                    result?;
+                    return Ok(());
+                }
+                message = receiver.next() => match message {
+                    Some(message) => {
+                        tokio::select! {
+                            result = &mut response => {
+                                result?;
+                                return Ok(());
+                            }
+                            result = sender.send(message) => result?,
+                        }
+                    }
+                    None => break,
+                }
+            }
+        }
+        sender.finish().await?;
+        if let Err(e) = response.await {
             warn!("serve request to node {node_id} replica {target_id} from {from_id}: {e:?}");
         }
         Ok(())
@@ -166,13 +197,22 @@ pub async fn retrive_snapshot(
     trans_mgr: &ChannelManager,
     target_replica: ReplicaDesc,
     snapshot_id: Vec<u8>,
-) -> Result<impl futures::Stream<Item = Result<SnapshotChunk, tonic::Status>>> {
+) -> Result<impl futures::Stream<Item = Result<SnapshotChunk, vaelo::Error>>> {
     let node_desc = resolve_address(&*trans_mgr.resolver, target_replica.node_id).await?;
-    let address = format!("http://{}", node_desc.addr);
-    let mut client = RaftClient::connect(address).await?;
+    let tag = ConnectionTag::new(0x4000_0000_0000_0000 | target_replica.id);
+    let channel = RpcChannel::grpc_endpoint(node_desc.addr).await?.connection_tag(tag).build()?;
+    let client = RaftClient::new(channel);
     let request = SnapshotRequest { replica_id: target_replica.id, snapshot_id };
     let resp = client.retrieve_snapshot(request).await?;
     Ok(resp.into_inner())
+}
+
+fn raft_connection_tag(from_replica: u64, to_replica: u64) -> ConnectionTag {
+    ConnectionTag::new(
+        0x8000_0000_0000_0000
+            | ((from_replica.wrapping_mul(0x9e37_79b9_7f4a_7c15).rotate_left(17) ^ to_replica)
+                & 0x3fff_ffff_ffff_ffff),
+    )
 }
 
 async fn resolve_address(resolver: &dyn AddressResolver, node_id: u64) -> Result<NodeDesc> {

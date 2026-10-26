@@ -13,11 +13,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use sekas_api::server::v1::root_client::RootClient;
-use tonic::transport::{Channel, Endpoint};
+use vaelo::{ConnectionTag, RpcChannel};
+
+static NEXT_CONNECTION_TAG: AtomicU64 = AtomicU64::new(1);
 
 use super::NodeClient;
 use crate::{Error, Result};
@@ -25,6 +28,7 @@ use crate::{Error, Result};
 #[derive(Clone, Debug)]
 pub struct ConnManager {
     connect_timeout: Option<Duration>,
+    connection_tag: ConnectionTag,
     core: Arc<Mutex<Core>>,
 }
 
@@ -35,8 +39,7 @@ struct Core {
 
 #[derive(Debug)]
 struct ChannelInfo {
-    channel: Channel,
-    access: usize,
+    channel: RpcChannel,
 }
 
 impl ConnManager {
@@ -50,25 +53,19 @@ impl ConnManager {
         mgr
     }
 
-    // TODO(walter) add tags
-    pub fn get(&self, addr: String) -> Result<Channel> {
+    pub fn get(&self, addr: String) -> Result<RpcChannel> {
         let mut core = self.core.lock().unwrap();
-        if let Some(info) = core.channels.get_mut(&addr) {
-            info.access += 1;
+        if let Some(info) = core.channels.get(&addr) {
             return Ok(info.channel.clone());
         }
 
-        let channel = match Endpoint::new(format!("http://{}", addr)) {
-            Ok(endpoint) => {
-                if let Some(connect_timeout) = self.connect_timeout {
-                    endpoint.connect_timeout(connect_timeout).connect_lazy()
-                } else {
-                    endpoint.connect_lazy()
-                }
-            }
-            Err(e) => return Err(Error::Internal(Box::new(e))),
-        };
-        let info = ChannelInfo { channel: channel.clone(), access: 1 };
+        let remote = addr.parse().map_err(|e| Error::Internal(Box::new(e)))?;
+        let mut builder = RpcChannel::grpc(remote).connection_tag(self.connection_tag);
+        if let Some(connect_timeout) = self.connect_timeout {
+            builder = builder.connect_timeout(connect_timeout);
+        }
+        let channel = builder.build().map_err(|e| Error::Internal(Box::new(e)))?;
+        let info = ChannelInfo { channel: channel.clone() };
         core.channels.insert(addr, info);
         Ok(channel)
     }
@@ -80,7 +77,7 @@ impl ConnManager {
     }
 
     #[inline]
-    pub fn get_root_client(&self, addr: String) -> Result<RootClient<Channel>> {
+    pub fn get_root_client(&self, addr: String) -> Result<RootClient> {
         let channel = self.get(addr)?;
         Ok(RootClient::new(channel))
     }
@@ -89,30 +86,10 @@ impl ConnManager {
 impl Default for ConnManager {
     fn default() -> Self {
         let core = Arc::new(Mutex::new(Core { channels: HashMap::default() }));
-        let cloned_core = core.clone();
-
-        // FIXME
-        // 1. graceful shutdown
-        // 2. spawn in executor.
-        tokio::spawn(async move {
-            recycle_conn_main(cloned_core).await;
-        });
-        ConnManager { core, connect_timeout: None }
-    }
-}
-
-async fn recycle_conn_main(core: Arc<Mutex<Core>>) {
-    let mut interval = tokio::time::interval(Duration::from_secs(60));
-    loop {
-        interval.tick().await;
-        let mut core = core.lock().unwrap();
-        core.channels.retain(|_, v| {
-            if v.access == 0 {
-                false
-            } else {
-                v.access = 0;
-                true
-            }
-        });
+        ConnManager {
+            core,
+            connect_timeout: None,
+            connection_tag: ConnectionTag::new(NEXT_CONNECTION_TAG.fetch_add(1, Ordering::Relaxed)),
+        }
     }
 }

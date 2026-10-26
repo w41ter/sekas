@@ -50,7 +50,7 @@ fn write_ok(response: WriteResponse) -> WriteResult {
 
 fn write_not_executed() -> WriteResult {
     WriteResult::err(sekas_api::server::v1::Error::status(
-        tonic::Code::NotFound.into(),
+        vaelo::StatusCode::NotFound.as_i32(),
         "write entry is not executed",
     ))
 }

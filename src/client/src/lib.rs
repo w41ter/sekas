@@ -32,8 +32,8 @@ pub mod trace;
 mod txn;
 mod txn_table;
 
+use async_trait::async_trait;
 pub use sekas_api::server::v1::{DeleteRequest, PutRequest, TableDesc};
-use tonic::async_trait;
 
 pub use crate::app_client::{ClientOptions, SekasClient};
 pub use crate::database::Database;

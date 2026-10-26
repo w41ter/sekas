@@ -14,7 +14,7 @@
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-use tonic::{Request, Response, Status, Streaming};
+use vaelo::{Request, Response, Status, Streaming};
 
 use crate::etcd::v3::*;
 
@@ -32,7 +32,6 @@ impl futures::Stream for LeaseKeepAliveStream {
 
 pub struct Lease {}
 
-#[tonic::async_trait]
 impl lease_server::Lease for Lease {
     /// LeaseGrant creates a lease which expires if the server does not receive
     /// a keepAlive within a given time to live period. All keys attached to
@@ -62,7 +61,7 @@ impl lease_server::Lease for Lease {
     /// from the server to the client.
     async fn lease_keep_alive(
         &self,
-        _request: Request<Streaming<LeaseKeepAliveRequest>>,
+        _request: Request<Streaming<LeaseKeepAliveRequest, Status>>,
     ) -> Result<Response<Self::LeaseKeepAliveStream>> {
         todo!()
     }

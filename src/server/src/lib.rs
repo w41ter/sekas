@@ -40,7 +40,7 @@ pub mod serverpb;
 #[doc(hidden)]
 pub mod testutil;
 
-pub(crate) use tonic::async_trait;
+pub(crate) use async_trait::async_trait;
 
 pub use crate::bootstrap::run;
 pub use crate::config::*;

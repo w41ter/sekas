@@ -23,7 +23,6 @@ use sekas_api::server::v1::watch_response::delete_event::Event as DeleteEvent;
 use sekas_api::server::v1::watch_response::update_event::Event as UpdateEvent;
 use sekas_api::server::v1::*;
 use tokio::task::JoinHandle;
-use tonic::Streaming;
 
 use crate::rpc::RootClient;
 
@@ -274,7 +273,10 @@ async fn state_main(state: Arc<Mutex<State>>, root_client: RootClient) {
     }
 }
 
-async fn watch_events(state: &Mutex<State>, mut events: Streaming<WatchResponse>) {
+async fn watch_events(
+    state: &Mutex<State>,
+    mut events: impl futures::Stream<Item = Result<WatchResponse, vaelo::Status>> + Unpin,
+) {
     while let Some(event) = events.next().await {
         let (updates, deletes) = match event {
             Ok(resp) => (resp.updates, resp.deletes),

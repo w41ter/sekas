@@ -20,6 +20,7 @@ sekas-schema = { path = "../schema", version = "0.5" }
 sekas-etcd-proxy = { path = "../../layers/etcd", optional = true }
 
 async-stream.workspace = true
+async-trait.workspace = true
 bytes.workspace = true
 crc32fast.workspace = true
 fastrace.workspace = true
@@ -32,12 +33,11 @@ prometheus-static-metric.workspace = true
 prost.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
-tonic.workspace = true
-tonic-prost.workspace = true
 tracing.workspace = true
 rand.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+vaelo.workspace = true
 
 const-str = "1.1"
 dashmap = "6.2"
@@ -67,8 +67,7 @@ features = ["multi-threaded-cf", "serde1"]
 rev = "d5a418d8614642073169349678bf2ac71ecde393"
 
 [build-dependencies]
-prost-build.workspace = true
-tonic-prost-build.workspace = true
+vaelo-build.workspace = true
 protoc-build.workspace = true
 
 [features]

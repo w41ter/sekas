@@ -9,11 +9,10 @@ description = "The Sekas API."
 
 [dependencies]
 crc32fast.workspace = true
-tonic.workspace = true
-tonic-prost.workspace = true
 prost.workspace = true
 prost-types.workspace = true
+vaelo.workspace = true
 
 [build-dependencies]
-tonic-prost-build.workspace = true
+vaelo-build.workspace = true
 protoc-build.workspace = true

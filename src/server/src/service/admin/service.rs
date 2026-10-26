@@ -14,11 +14,8 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::task::{Context, Poll};
 
-use tonic::body::Body;
-use tonic::codegen::{BoxFuture, Service, http};
-use tonic::server::NamedService;
+use vaelo::http;
 
 #[crate::async_trait]
 pub(super) trait HttpHandle: Send + Sync {
@@ -44,34 +41,14 @@ impl AdminService {
     pub(super) fn new(inner: Router) -> Self {
         AdminService { inner: Arc::new(inner) }
     }
-}
 
-impl<B> Service<http::Request<B>> for AdminService
-where
-    B: Send,
-{
-    type Response = http::Response<Body>;
-    type Error = std::convert::Infallible;
-    type Future = BoxFuture<Self::Response, Self::Error>;
-
-    fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        Poll::Ready(Ok(()))
+    pub async fn call_path(
+        &self,
+        path: &str,
+        params: HashMap<String, String>,
+    ) -> http::Response<String> {
+        self.inner.call_text(path, params).await
     }
-
-    fn call(&mut self, req: http::Request<B>) -> Self::Future {
-        let inner = self.inner.clone();
-        let query_params = req
-            .uri()
-            .query()
-            .map(|q| url::form_urlencoded::parse(q.as_bytes()).into_owned().collect())
-            .unwrap_or_default();
-        let path = req.uri().path().to_owned();
-        Box::pin(async move { inner.call(&path, query_params).await })
-    }
-}
-
-impl NamedService for AdminService {
-    const NAME: &'static str = "admin";
 }
 
 impl Clone for AdminService {
@@ -105,33 +82,27 @@ impl Router {
         self
     }
 
-    pub async fn call(
+    async fn call_text(
         &self,
         path: &str,
         params: HashMap<String, String>,
-    ) -> Result<http::Response<Body>, std::convert::Infallible> {
+    ) -> http::Response<String> {
         let handle = match self.handles.get(path) {
             Some(handle) => handle,
             None => {
-                return Ok(http::Response::builder()
+                return http::Response::builder()
                     .status(http::StatusCode::NOT_FOUND)
-                    .body(Body::empty())
-                    .unwrap());
+                    .body(String::new())
+                    .unwrap();
             }
         };
 
-        let resp = match handle.call(path, &params).await {
-            Ok(resp) => resp.map(boxed),
+        match handle.call(path, &params).await {
+            Ok(resp) => resp,
             Err(e) => http::Response::builder()
                 .status(http::StatusCode::INTERNAL_SERVER_ERROR)
-                .body(boxed(e.to_string()))
+                .body(e.to_string())
                 .unwrap(),
-        };
-
-        Ok(resp)
+        }
     }
-}
-
-fn boxed(body: String) -> Body {
-    Body::new(http_body_util::Full::new(bytes::Bytes::from(body)))
 }

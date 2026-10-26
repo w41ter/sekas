@@ -195,13 +195,14 @@ async fn download_snap(
     save_snapshot(&snap_mgr, replica_id, chunk_stream).await
 }
 
-pub(super) async fn save_snapshot<S>(
+pub(super) async fn save_snapshot<S, E>(
     snap_mgr: &SnapManager,
     replica_id: u64,
     mut chunk_stream: S,
 ) -> Result<Vec<u8>>
 where
-    S: futures::Stream<Item = Result<SnapshotChunk, tonic::Status>> + Unpin,
+    S: futures::Stream<Item = std::result::Result<SnapshotChunk, E>> + Unpin,
+    E: Into<crate::Error>,
 {
     let base_dir = snap_mgr.create(replica_id);
     info!("replica {replica_id} save incoming snapshot chunk stream into {}", base_dir.display());
@@ -209,7 +210,7 @@ where
     std::fs::create_dir_all(&base_dir)?;
     let mut snap_builder = SnapshotBuilder::new(replica_id, &base_dir);
     while let Some(resp) = chunk_stream.next().await {
-        let chunk = resp?;
+        let chunk = resp.map_err(Into::into)?;
         snap_builder.append(chunk).await?;
     }
 

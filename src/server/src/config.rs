@@ -370,7 +370,7 @@ impl Default for DbConfig {
 
             block_size: 4 << 10,
             block_cache_size: adaptive_block_cache_size(),
-            write_buffer_size: 64 << 20,
+            write_buffer_size: 128 << 20,
             max_write_buffer_number: 5,
             min_write_buffer_number_to_merge: 1,
 

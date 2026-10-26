@@ -22,12 +22,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         std::env::set_var("PROTOC_INCLUDE", protoc_build::PROTOC_INCLUDE);
     }
 
-    let mut config = prost_build::Config::default();
+    let mut config = vaelo_build::configure();
     config.extern_path(".sekas.server.v1", "::sekas_api::server::v1");
     config.extern_path(".sekas.v1", "::sekas_api::v1");
     config.extern_path(".eraftpb", "::raft::eraftpb");
-    tonic_prost_build::configure().compile_with_config(
-        config,
+    config.compile_protos(
         &["proto/v1/metadata.proto", "proto/v1/raft.proto"],
         &["proto", "proto/include", "../api/"],
     )?;

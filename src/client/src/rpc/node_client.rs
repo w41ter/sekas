@@ -13,41 +13,50 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::pin::Pin;
 use std::time::Duration;
 
+use futures::{Stream, StreamExt};
 use prost::Message;
 use sekas_api::server::v1::*;
-use tonic::IntoRequest;
-use tonic::transport::Channel;
+use vaelo::{IntoRequest, RpcChannel, Status};
 
+use crate::error::rpc_status;
 use crate::trace::inject_trace_context;
 
 #[derive(Debug, Clone)]
 pub struct Client {
-    client: node_client::NodeClient<Channel>,
+    client: node_client::NodeClient,
 }
 
 impl Client {
-    pub fn new(channel: Channel) -> Self {
+    pub fn new(channel: RpcChannel) -> Self {
         Client { client: node_client::NodeClient::new(channel) }
     }
 
-    pub async fn connect(addr: String) -> Result<Self, tonic::transport::Error> {
-        let addr = format!("http://{}", addr);
-        let client = node_client::NodeClient::connect(addr).await?;
-        Ok(Self { client })
+    pub async fn connect(addr: String) -> Result<Self, Status> {
+        let channel = RpcChannel::grpc_endpoint(addr)
+            .await
+            .map_err(rpc_status)?
+            .build()
+            .map_err(rpc_status)?;
+        let client = node_client::NodeClient::new(channel);
+        let client = Self { client };
+        client.get_root().await?;
+        Ok(client)
     }
 
-    pub async fn get_root(&self) -> Result<RootDesc, tonic::Status> {
-        let mut client = self.client.clone();
+    pub async fn get_root(&self) -> Result<RootDesc, Status> {
+        let client = self.client.clone();
         let resp = client
             .admin(NodeAdminRequest {
                 request: Some(node_admin_request::Request::GetRoot(GetRootRequest::default())),
             })
-            .await?;
+            .await
+            .map_err(rpc_status)?;
         match resp.into_inner().response {
             Some(node_admin_response::Response::GetRoot(resp)) => Ok(resp.root.unwrap_or_default()),
-            _ => Err(tonic::Status::internal(
+            _ => Err(Status::internal(
                 "Invalid response type, `GetRootResponse` is required".to_owned(),
             )),
         }
@@ -58,38 +67,36 @@ impl Client {
         &self,
         replica_id: u64,
         group_desc: GroupDesc,
-    ) -> Result<(), tonic::Status> {
-        let mut client = self.client.clone();
+    ) -> Result<(), Status> {
+        let client = self.client.clone();
         let req = CreateReplicaRequest { replica_id, group: Some(group_desc) };
         let resp = client
             .admin(NodeAdminRequest {
                 request: Some(node_admin_request::Request::CreateReplica(req)),
             })
-            .await?;
+            .await
+            .map_err(rpc_status)?;
         match resp.into_inner().response {
             Some(node_admin_response::Response::CreateReplica(_)) => Ok(()),
-            _ => Err(tonic::Status::internal(
+            _ => Err(Status::internal(
                 "Invalid response type, `CreateReplicaResponse` is required".to_owned(),
             )),
         }
     }
 
     // NOTE: This method is always called by the root group.
-    pub async fn remove_replica(
-        &self,
-        replica_id: u64,
-        group: GroupDesc,
-    ) -> Result<(), tonic::Status> {
-        let mut client = self.client.clone();
+    pub async fn remove_replica(&self, replica_id: u64, group: GroupDesc) -> Result<(), Status> {
+        let client = self.client.clone();
         let req = RemoveReplicaRequest { replica_id, group: Some(group) };
         let resp = client
             .admin(NodeAdminRequest {
                 request: Some(node_admin_request::Request::RemoveReplica(req)),
             })
-            .await?;
+            .await
+            .map_err(rpc_status)?;
         match resp.into_inner().response {
             Some(node_admin_response::Response::RemoveReplica(_)) => Ok(()),
-            _ => Err(tonic::Status::internal(
+            _ => Err(Status::internal(
                 "Invalid response type, `RemoveReplicaResponse` is required".to_owned(),
             )),
         }
@@ -97,82 +104,125 @@ impl Client {
 
     pub async fn group_request(
         &self,
-        req: impl IntoRequest<GroupRequest>,
-    ) -> Result<tonic::Streaming<GroupResponse>, tonic::Status> {
-        let mut client = self.client.clone();
-        let res = client.group(inject_trace_context(req)).await?;
-        Ok(res.into_inner())
+        req: impl IntoTimedRequest<GroupRequest>,
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<GroupResponse, Status>> + Send>>, Status> {
+        let client = self.client.clone();
+        let (req, timeout) = req.into_timed_request();
+        let call = client.group(inject_trace_context(req));
+        let res = match timeout {
+            Some(timeout) => call.timeout(timeout).await,
+            None => call.await,
+        }
+        .map_err(rpc_status)?;
+        Ok(Box::pin(res.into_inner().map(|result| result.map_err(rpc_status))))
     }
 
     pub async fn unary_group_request(
         &self,
-        req: impl IntoRequest<GroupRequest>,
-    ) -> Result<GroupResponse, tonic::Status> {
-        let mut client = self.client.clone();
-        let res = client.unary_group(inject_trace_context(req)).await?;
+        req: impl IntoTimedRequest<GroupRequest>,
+    ) -> Result<GroupResponse, Status> {
+        let client = self.client.clone();
+        let (req, timeout) = req.into_timed_request();
+        let call = client.unary_group(inject_trace_context(req));
+        let res = match timeout {
+            Some(timeout) => call.timeout(timeout).await,
+            None => call.await,
+        }
+        .map_err(rpc_status)?;
         Ok(res.into_inner())
     }
 
-    pub async fn root_heartbeat(
+    /// Submits a unary group request without retaining a response observer.
+    pub fn detach_unary_group_request(&self, req: impl IntoTimedRequest<GroupRequest>) {
+        let client = self.client.clone();
+        let (req, timeout) = req.into_timed_request();
+        let call = client.unary_group(inject_trace_context(req));
+        match timeout {
+            Some(timeout) => call.timeout(timeout).start().detach(),
+            None => call.start().detach(),
+        }
+    }
+
+    pub async fn root_heartbeat(&self, req: HeartbeatRequest) -> Result<HeartbeatResponse, Status> {
+        self.root_heartbeat_inner(req, None).await
+    }
+
+    pub async fn root_heartbeat_timeout(
         &self,
         req: HeartbeatRequest,
-    ) -> Result<HeartbeatResponse, tonic::Status> {
-        let mut client = self.client.clone();
-        let resp = client
-            .admin(NodeAdminRequest { request: Some(node_admin_request::Request::Heartbeat(req)) })
-            .await?;
+        timeout: Duration,
+    ) -> Result<HeartbeatResponse, Status> {
+        self.root_heartbeat_inner(req, Some(timeout)).await
+    }
+
+    async fn root_heartbeat_inner(
+        &self,
+        req: HeartbeatRequest,
+        timeout: Option<Duration>,
+    ) -> Result<HeartbeatResponse, Status> {
+        let client = self.client.clone();
+        let call = client
+            .admin(NodeAdminRequest { request: Some(node_admin_request::Request::Heartbeat(req)) });
+        let resp = match timeout {
+            Some(timeout) => call.timeout(timeout).await,
+            None => call.await,
+        }
+        .map_err(rpc_status)?;
         match resp.into_inner().response {
             Some(node_admin_response::Response::Heartbeat(resp)) => Ok(resp),
-            _ => Err(tonic::Status::internal(
+            _ => Err(Status::internal(
                 "Invalid response type, `HeartbeatResponse` is required".to_owned(),
             )),
         }
     }
 
-    pub async fn forward(&self, req: ForwardRequest) -> Result<ForwardResponse, tonic::Status> {
-        let mut client = self.client.clone();
+    pub async fn forward(&self, req: ForwardRequest) -> Result<ForwardResponse, Status> {
+        let client = self.client.clone();
         let resp = client
             .move_shard(MoveShardRequest {
                 request: Some(move_shard_request::Request::Forward(req)),
             })
-            .await?;
+            .await
+            .map_err(rpc_status)?;
         match resp.into_inner().response {
             Some(move_shard_response::Response::Forward(resp)) => Ok(resp),
-            _ => Err(tonic::Status::internal(
+            _ => Err(Status::internal(
                 "Invalid response type, `ForwardResponse` is required".to_owned(),
             )),
         }
     }
 
-    pub async fn acquire_shard(&self, desc: MoveShardDesc) -> Result<(), tonic::Status> {
-        let mut client = self.client.clone();
+    pub async fn acquire_shard(&self, desc: MoveShardDesc) -> Result<(), Status> {
+        let client = self.client.clone();
         let resp = client
             .move_shard(MoveShardRequest {
                 request: Some(move_shard_request::Request::AcquireShard(AcquireShardRequest {
                     desc: Some(desc),
                 })),
             })
-            .await?;
+            .await
+            .map_err(rpc_status)?;
         match resp.into_inner().response {
             Some(move_shard_response::Response::AcquireShard(_)) => Ok(()),
-            _ => Err(tonic::Status::internal(
+            _ => Err(Status::internal(
                 "Invalid response type, `AcquireShardResponse` is required".to_owned(),
             )),
         }
     }
 
-    pub async fn move_out(&self, desc: MoveShardDesc) -> Result<(), tonic::Status> {
-        let mut client = self.client.clone();
+    pub async fn move_out(&self, desc: MoveShardDesc) -> Result<(), Status> {
+        let client = self.client.clone();
         let resp = client
             .move_shard(MoveShardRequest {
                 request: Some(move_shard_request::Request::MoveOut(MoveOutRequest {
                     desc: Some(desc),
                 })),
             })
-            .await?;
+            .await
+            .map_err(rpc_status)?;
         match resp.into_inner().response {
             Some(move_shard_response::Response::MoveOut(_)) => Ok(()),
-            _ => Err(tonic::Status::internal(
+            _ => Err(Status::internal(
                 "Invalid response type, `MoveOutResponse` is required".to_owned(),
             )),
         }
@@ -191,20 +241,24 @@ impl<T: Message> RpcTimeout<T> {
     }
 }
 
-impl<T: Message> IntoRequest<T> for RpcTimeout<T> {
-    fn into_request(self) -> tonic::Request<T> {
-        use tonic::Request;
+pub trait IntoTimedRequest<T> {
+    fn into_timed_request(self) -> (vaelo::Request<T>, Option<Duration>);
+}
 
-        let mut req = Request::new(self.msg);
-        if let Some(duration) = self.timeout {
-            req.set_timeout(duration);
-        }
-        req
+impl<T: Message> IntoTimedRequest<T> for RpcTimeout<T> {
+    fn into_timed_request(self) -> (vaelo::Request<T>, Option<Duration>) {
+        (vaelo::Request::new(self.msg), self.timeout)
+    }
+}
+
+impl<T: Message> IntoTimedRequest<T> for T {
+    fn into_timed_request(self) -> (vaelo::Request<T>, Option<Duration>) {
+        (self.into_request(), None)
     }
 }
 
 #[cfg(test)]
-#[cfg(target_os = "linux")]
+#[cfg(any())]
 mod timeout_error_tests {
     use std::net::SocketAddr;
 
@@ -258,7 +312,7 @@ mod timeout_error_tests {
 }
 
 #[cfg(test)]
-#[cfg(target_os = "linux")]
+#[cfg(any())]
 mod transport_error_tests {
     use std::error::Error;
     use std::io::ErrorKind;

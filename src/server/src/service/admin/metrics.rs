@@ -16,7 +16,7 @@ use std::collections::HashMap;
 
 use lazy_static::lazy_static;
 use prometheus::{IntCounter, TextEncoder, register_int_counter};
-use tonic::codegen::*;
+use vaelo::http;
 
 use crate::Server;
 use crate::root::RootCollector;

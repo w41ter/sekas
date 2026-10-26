@@ -1159,7 +1159,7 @@ mod root_test {
 
         hub.notify_error(Error::NotRootLeader(Default::default(), 0, None)).await;
         let err = w.next().await.unwrap().unwrap_err();
-        assert_eq!(err.code(), tonic::Code::Unknown);
+        assert_eq!(err.code(), vaelo::StatusCode::Unknown);
         assert_eq!(err.message(), "not root");
         assert!(w.next().await.is_none());
     }

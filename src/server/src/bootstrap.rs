@@ -65,35 +65,71 @@ async fn bootstrap_services(
     _transport_manager: &TransportManager,
     shutdown: Shutdown,
 ) -> Result<()> {
-    use sekas_runtime::TcpIncoming;
-    use tokio::net::TcpListener;
-    use tonic::transport::Server;
-
     use crate::service::admin::make_admin_service;
 
-    let listener = TcpListener::bind(&cfg.addr).await?;
-    let incoming = TcpIncoming::from_listener(listener, true);
-
-    let builder = Server::builder()
-        .accept_http1(true) // Support http1 for admin service.
+    let admin = make_admin_service(server.clone());
+    let mut builder = vaelo::ServerBuilder::new()
+        .rpc_protocols([vaelo::RpcProtocol::Grpc])
         .add_service(NodeServer::new(server.clone()))
         .add_service(RaftServer::new(server.clone()))
-        .add_service(RootServer::new(server.clone()))
-        .add_service(make_admin_service(server.clone()));
+        .add_service(RootServer::new(server.clone()));
+
+    for path in [
+        "/admin/metrics",
+        "/admin/job",
+        "/admin/metadata",
+        "/admin/health",
+        "/admin/cordon",
+        "/admin/uncordon",
+        "/admin/drain",
+        "/admin/node_status",
+        "/admin/monitor",
+    ] {
+        for method in [vaelo::http::Method::GET, vaelo::http::Method::POST] {
+            let admin = admin.clone();
+            builder = builder.route(method, path, move |request| {
+                let admin = admin.clone();
+                async move {
+                    let params = request
+                        .uri()
+                        .query()
+                        .map(|query| {
+                            url::form_urlencoded::parse(query.as_bytes()).into_owned().collect()
+                        })
+                        .unwrap_or_default();
+                    let path = request.uri().path().to_owned();
+                    let response = admin.call_path(&path, params).await;
+                    Ok::<_, vaelo::http::Error>(response.map(|body| {
+                        let mut buffer = vaelo::IoBufBuilder::new();
+                        bytes::BufMut::put_slice(&mut buffer, body.as_bytes());
+                        vaelo::http::Full::new(buffer.finish())
+                    }))
+                }
+            });
+        }
+    }
 
     #[cfg(feature = "layer_etcd")]
-    let builder = {
+    {
         let client = _transport_manager.build_client(sekas_client::ClientOptions::default());
         let kv_store = sekas_etcd_proxy::make_etcd_store(client);
-        builder.add_service(sekas_etcd_proxy::make_etcd_kv_service(kv_store.clone()))
-    };
+        builder = builder.add_service(sekas_etcd_proxy::make_etcd_kv_service(kv_store));
+    }
 
-    let server = builder.serve_with_incoming(incoming);
-
-    sekas_runtime::select! {
-        res = server => { res? }
-        _ = shutdown => {}
-    };
+    {
+        let bound = builder.bind(&cfg.addr).await?;
+        let handle = bound.handle();
+        let serve = bound.serve();
+        tokio::pin!(serve);
+        let result = tokio::select! {
+            result = &mut serve => result,
+            _ = shutdown => {
+                handle.shutdown();
+                serve.await
+            }
+        };
+        result?;
+    }
 
     Ok(())
 }

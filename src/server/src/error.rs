@@ -59,9 +59,6 @@ pub enum Error {
     #[error("raft engine {0}")]
     RaftEngine(#[from] raft_engine::Error),
 
-    #[error("transport {0}")]
-    Transport(#[from] tonic::transport::Error),
-
     #[error("io {0}")]
     Io(#[from] std::io::Error),
 
@@ -69,7 +66,10 @@ pub enum Error {
     RocksDb(#[from] rocksdb::Error),
 
     #[error("rpc {0}")]
-    Rpc(tonic::Status),
+    Rpc(vaelo::Status),
+
+    #[error("vaelo rpc {0}")]
+    Vaelo(#[from] vaelo::Error),
 
     #[error(transparent)]
     Shared(Arc<Error>),
@@ -151,11 +151,11 @@ impl From<sekas_runtime::JoinError> for Error {
     }
 }
 
-impl From<Error> for tonic::Status {
+impl From<Error> for vaelo::Status {
     fn from(e: Error) -> Self {
         use prost::Message;
         use sekas_api::server::v1;
-        use tonic::{Code, Status};
+        use vaelo::Status;
 
         match e {
             Error::InvalidArgument(msg) => Status::invalid_argument(msg),
@@ -163,42 +163,23 @@ impl From<Error> for tonic::Status {
             err @ Error::DatabaseNotFound(_) => Status::not_found(err.to_string()),
             err @ Error::AlreadyExists(_) => Status::already_exists(err.to_string()),
             Error::ResourceExhausted(msg) => Status::resource_exhausted(msg),
-            Error::CasFailed(index, cond_index, prev_value) => Status::with_details(
-                Code::Unknown,
-                "cas failed".to_string(),
-                v1::Error::cas_failed(index, cond_index, prev_value).encode_to_vec().into(),
-            ),
+            Error::CasFailed(index, cond_index, prev_value) => Status::unknown("cas failed")
+                .with_details(v1::Error::cas_failed(index, cond_index, prev_value).encode_to_vec()),
 
-            Error::GroupNotFound(group_id) => Status::with_details(
-                Code::Unknown,
-                e.to_string(),
-                v1::Error::group_not_found(group_id).encode_to_vec().into(),
-            ),
-            Error::NotLeader(group_id, term, leader) => Status::with_details(
-                Code::Unknown,
-                format!("not leader of group {}", group_id),
-                v1::Error::not_leader(group_id, term, leader).encode_to_vec().into(),
-            ),
-            Error::NotRootLeader(root, term, leader) => Status::with_details(
-                Code::Unknown,
-                "not root",
-                v1::Error::not_root_leader(root, term, leader).encode_to_vec().into(),
-            ),
-            Error::EpochNotMatch(desc) => Status::with_details(
-                Code::Unknown,
-                "epoch not match",
-                v1::Error::not_match(desc).encode_to_vec().into(),
-            ),
-            Error::TxnConflict => Status::with_details(
-                Code::Unknown,
-                "the txn is conflict",
-                v1::Error::txn_conflict().encode_to_vec().into(),
-            ),
-            Error::LocalTxnNotAllowed => Status::with_details(
-                Code::Unknown,
-                "the local txn is not allowed",
-                v1::Error::local_txn_not_allowed().encode_to_vec().into(),
-            ),
+            Error::GroupNotFound(group_id) => Status::unknown(e.to_string())
+                .with_details(v1::Error::group_not_found(group_id).encode_to_vec()),
+            Error::NotLeader(group_id, term, leader) => {
+                Status::unknown(format!("not leader of group {group_id}"))
+                    .with_details(v1::Error::not_leader(group_id, term, leader).encode_to_vec())
+            }
+            Error::NotRootLeader(root, term, leader) => Status::unknown("not root")
+                .with_details(v1::Error::not_root_leader(root, term, leader).encode_to_vec()),
+            Error::EpochNotMatch(desc) => Status::unknown("epoch not match")
+                .with_details(v1::Error::not_match(desc).encode_to_vec()),
+            Error::TxnConflict => Status::unknown("the txn is conflict")
+                .with_details(v1::Error::txn_conflict().encode_to_vec()),
+            Error::LocalTxnNotAllowed => Status::unknown("the local txn is not allowed")
+                .with_details(v1::Error::local_txn_not_allowed().encode_to_vec()),
 
             Error::Forward(_) => panic!("Forward only used inside node"),
             Error::PartialForward(_) => panic!("PartialForward only used inside node"),
@@ -209,7 +190,6 @@ impl From<Error> for tonic::Status {
             | Error::AbortScheduleTask(_)
             | Error::ClusterNotMatch
             | Error::InvalidData(_)
-            | Error::Transport(_)
             | Error::Io(_)
             | Error::RocksDb(_)
             | Error::Raft(_)
@@ -217,6 +197,7 @@ impl From<Error> for tonic::Status {
             | Error::ShardNotFound(_)
             | Error::NoAvaliableGroup
             | Error::Rpc(_)
+            | Error::Vaelo(_)
             | Error::Shared(_)) => Status::internal(err.to_string()),
         }
     }
@@ -234,8 +215,8 @@ impl From<prost::DecodeError> for Error {
     }
 }
 
-impl From<tonic::Status> for Error {
-    fn from(status: tonic::Status) -> Self {
+impl From<vaelo::Status> for Error {
+    fn from(status: vaelo::Status) -> Self {
         sekas_client::Error::from(status).into()
     }
 }
@@ -243,7 +224,7 @@ impl From<tonic::Status> for Error {
 impl From<Error> for sekas_api::server::v1::Error {
     fn from(err: Error) -> Self {
         use sekas_api::server::v1;
-        use tonic::Code;
+        use vaelo::StatusCode as Code;
 
         match err {
             Error::GroupNotFound(group_id) => v1::Error::group_not_found(group_id),
@@ -255,8 +236,8 @@ impl From<Error> for sekas_api::server::v1::Error {
             }
             Error::EpochNotMatch(desc) => v1::Error::not_match(desc),
 
-            Error::InvalidArgument(msg) => v1::Error::status(Code::InvalidArgument.into(), msg),
-            Error::DeadlineExceeded(msg) => v1::Error::status(Code::DeadlineExceeded.into(), msg),
+            Error::InvalidArgument(msg) => v1::Error::status(Code::InvalidArgument.as_i32(), msg),
+            Error::DeadlineExceeded(msg) => v1::Error::status(Code::DeadlineExceeded.as_i32(), msg),
             Error::CasFailed(index, cond_index, prev_value) => {
                 v1::Error::cas_failed(index, cond_index, prev_value)
             }
@@ -268,10 +249,9 @@ impl From<Error> for sekas_api::server::v1::Error {
             Error::ServiceIsBusy(_) => panic!("ServiceIsBusy only used inside node"),
             Error::GroupNotReady(_) => panic!("GroupNotReady only used inside node"),
             Error::AbortScheduleTask(_) => panic!("AbortScheduleTask only used inside node"),
-            Error::AlreadyExists(msg) => v1::Error::status(Code::AlreadyExists.into(), msg),
+            Error::AlreadyExists(msg) => v1::Error::status(Code::AlreadyExists.as_i32(), msg),
 
-            err @ (Error::Transport(_)
-            | Error::ResourceExhausted(_)
+            err @ (Error::ResourceExhausted(_)
             | Error::Raft(_)
             | Error::RaftEngine(_)
             | Error::RocksDb(_)
@@ -283,7 +263,8 @@ impl From<Error> for sekas_api::server::v1::Error {
             | Error::NoAvaliableGroup
             | Error::Canceled
             | Error::Rpc(_)
-            | Error::Shared(_)) => v1::Error::status(Code::Internal.into(), err.to_string()),
+            | Error::Shared(_)
+            | Error::Vaelo(_)) => v1::Error::status(Code::Internal.as_i32(), err.to_string()),
         }
     }
 }
@@ -324,9 +305,8 @@ impl From<sekas_client::Error> for Error {
             // nodes)
             sekas_client::Error::GroupNotAccessable(id) => Error::GroupNotReady(id),
 
-            // FIXME(walter) handle unknown errors.
-            sekas_client::Error::NotFound(v) => panic!("unknown not found: {v}"),
-            sekas_client::Error::Internal(v) => panic!("internal error: {v:?}"),
+            sekas_client::Error::NotFound(v) => Error::Rpc(vaelo::Status::not_found(v)),
+            sekas_client::Error::Internal(v) => Error::Rpc(vaelo::Status::internal(v.to_string())),
         }
     }
 }

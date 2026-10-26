@@ -21,7 +21,6 @@ prometheus-static-metric.workspace = true
 prost.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
-tonic.workspace = true
 tracing.workspace = true
 rand.workspace = true
 serde.workspace = true

@@ -34,7 +34,6 @@ use crate::trace::{TraceFutureExt, local_span, span_name};
 use crate::{
     AppResult, Database, Error, RangeRequest, Result, SekasClient, TxnStateTable, record_latency,
 };
-
 const TXN_CLEANUP_TIMEOUT: Duration = Duration::from_secs(5);
 const ASYNC_COMMIT_MAX_KEYS: usize = 63;
 const ASYNC_COMMIT_MAX_SIZE: usize = 64 * 1024;
@@ -999,7 +998,7 @@ impl WriteBatchContext {
 
         match resp {
             Ok(resp) => {
-                self.commit_intents();
+                self.detach_commit_intents();
                 Ok(resp)
             }
             Err(err) => self.finish_after_error(err).await,
@@ -1056,7 +1055,7 @@ impl WriteBatchContext {
             .commit_async_txn(self.start_version, self.commit_version)
             .await?;
         let resp = self.take_response(self.commit_version);
-        self.spawn_commit_intents();
+        self.detach_commit_intents();
         Ok(Some(resp))
     }
 
@@ -1249,11 +1248,11 @@ impl WriteBatchContext {
         Ok(groups)
     }
 
-    fn intent_key_groups(&self, target_done: bool) -> Result<Vec<IntentKeyGroup>> {
+    fn intent_key_groups(&self, target_done: Option<bool>) -> Result<Vec<IntentKeyGroup>> {
         let router = self.client.router();
         let mut groups: Vec<IntentKeyGroup> = Vec::new();
         for (context_index, write) in self.writes.iter().enumerate() {
-            if write.done != target_done {
+            if target_done.is_some_and(|target_done| write.done != target_done) {
                 continue;
             }
             let user_key = write.user_key();
@@ -1455,75 +1454,32 @@ impl WriteBatchContext {
             .await
     }
 
-    fn commit_intents(mut self) {
-        tokio::spawn(async move {
-            trace!(
-                "commit txn intents, start version: {}, commit version: {}",
-                self.start_version, self.commit_version
-            );
-            self.num_doing_writes = self.writes.len();
-            for write in &mut self.writes {
-                write.done = false;
+    fn detach_commit_intents(&self) {
+        // A successful commit must publish cleanup for every prepared intent;
+        // `done` only tracks progress in the synchronous retry paths below.
+        let groups = match self.intent_key_groups(None) {
+            Ok(groups) => groups,
+            Err(err) => {
+                warn!("txn {} build detached intent cleanup: {err}", self.start_version);
+                return;
             }
-
-            for i in [1, 3, 5] {
-                match self.commit_intents_inner(None).await {
-                    Ok(false) => break,
-                    Ok(true) => tokio::time::sleep(Duration::from_millis(i)).await,
-                    Err(err) => {
-                        warn!("txn {} commit intents: {}", self.start_version, err);
-                        break;
-                    }
-                }
-            }
-        });
-    }
-
-    fn spawn_commit_intents(&mut self) {
-        let mut ctx = WriteBatchContext {
-            client: self.client.clone(),
-            writes: self
-                .writes
-                .iter()
-                .map(|write| WriteContext {
-                    table_id: write.table_id,
-                    request: write.request.clone(),
-                    response: None,
-                    index: write.index,
-                    done: false,
-                })
-                .collect(),
-            num_doing_writes: self.writes.len(),
-            num_deletes: self.num_deletes,
-            start_version: self.start_version,
-            check_write_conflict: self.check_write_conflict,
-            commit_version: self.commit_version,
-            txn_started: true,
-            retry_state: RetryState::new(TXN_CLEANUP_TIMEOUT),
         };
-        tokio::spawn(async move {
-            loop {
-                match ctx.commit_intents_inner(Some(TXN_CLEANUP_TIMEOUT)).await {
-                    Ok(false) => break,
-                    Ok(true) => {
-                        if let Err(err) = ctx.retry_state.force_retry().await {
-                            warn!("txn {} async commit intents retry: {}", ctx.start_version, err);
-                            break;
-                        }
-                    }
-                    Err(err) => {
-                        if let Err(err) = ctx.retry_state.retry(err).await {
-                            warn!("txn {} async commit intents: {}", ctx.start_version, err);
-                            break;
-                        }
-                    }
-                }
+        for intent_group in groups {
+            let mut client = GroupClient::new(intent_group.group_state, self.client.clone());
+            client.set_timeout(TXN_CLEANUP_TIMEOUT);
+            let req = CommitIntentRequest {
+                start_version: self.start_version,
+                commit_version: self.commit_version,
+                shard_keys: intent_group.entries.into_iter().map(|entry| entry.shard_key).collect(),
+            };
+            if let Err(err) = client.detach_request(&Request::CommitIntent(req)) {
+                warn!("txn {} submit detached intent cleanup: {err}", self.start_version);
             }
-        });
+        }
     }
 
     async fn commit_intents_inner(&mut self, timeout: Option<Duration>) -> Result<bool> {
-        let groups = self.intent_key_groups(false)?;
+        let groups = self.intent_key_groups(Some(false))?;
         let mut handles = Vec::with_capacity(groups.len());
         for intent_group in groups {
             let mut client = GroupClient::new(intent_group.group_state, self.client.clone());
@@ -1598,7 +1554,7 @@ impl WriteBatchContext {
     }
 
     async fn clear_intents_inner(&mut self, timeout: Option<Duration>) -> Result<bool> {
-        let groups = self.intent_key_groups(true)?;
+        let groups = self.intent_key_groups(Some(true))?;
         let mut handles = Vec::with_capacity(groups.len());
         for intent_group in groups {
             let mut client = GroupClient::new(intent_group.group_state, self.client.clone());

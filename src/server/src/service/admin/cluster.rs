@@ -15,10 +15,9 @@
 use std::collections::HashMap;
 
 use serde_json::json;
-use tonic::async_trait;
-use tonic::codegen::http;
+use vaelo::http;
 
-use crate::{Result, Server};
+use crate::{Result, Server, async_trait};
 
 pub(super) struct CordonHandle {
     server: Server,

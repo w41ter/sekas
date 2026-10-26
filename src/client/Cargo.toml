@@ -15,6 +15,7 @@ sekas-runtime = { version = "0.5", path = "../runtime" }
 sekas-schema = { version = "0.5", path = "../schema" }
 
 async-stream.workspace = true
+async-trait.workspace = true
 crc32fast.workspace = true
 fastrace.workspace = true
 futures.workspace = true
@@ -27,8 +28,8 @@ prost.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tokio-stream.workspace = true
-tonic.workspace = true
 tracing.workspace = true
+vaelo.workspace = true
 
 [dev-dependencies]
 socket2 = "0.6"

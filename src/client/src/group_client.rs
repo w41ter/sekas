@@ -23,7 +23,7 @@ use sekas_api::server::v1::group_request_union::Request;
 use sekas_api::server::v1::group_response_union::Response;
 use sekas_api::server::v1::*;
 use sekas_schema::shard;
-use tonic::{Code, Status};
+use vaelo::{Status, StatusCode as Code};
 
 use crate::metrics::*;
 use crate::rpc::{NodeClient, RouterGroupState, RpcTimeout};
@@ -117,7 +117,7 @@ impl GroupClient {
     async fn invoke<F, O, V>(&mut self, op: F) -> Result<V>
     where
         F: Fn(InvokeContext, NodeClient) -> O,
-        O: Future<Output = Result<V, tonic::Status>>,
+        O: Future<Output = Result<V, Status>>,
     {
         self.invoke_with_opt(op, InvokeOpt::default()).await
     }
@@ -125,7 +125,7 @@ impl GroupClient {
     async fn invoke_with_opt<F, O, V>(&mut self, op: F, opt: InvokeOpt<'_>) -> Result<V>
     where
         F: Fn(InvokeContext, NodeClient) -> O,
-        O: Future<Output = Result<V, tonic::Status>>,
+        O: Future<Output = Result<V, Status>>,
     {
         let invoke_start = Instant::now();
         // Initial lazy connection
@@ -144,9 +144,9 @@ impl GroupClient {
             let ctx = InvokeContext { group_id, epoch: self.epoch, timeout };
             let resp = if let Some(deadline) = deadline {
                 let timeout = deadline.saturating_duration_since(Instant::now());
-                tokio::time::timeout(timeout, op(ctx, client))
-                    .await
-                    .map_err(|_| Error::DeadlineExceeded("issue rpc".to_owned()))?
+                tokio::time::timeout(timeout, op(ctx, client)).await.map_err(|_| {
+                    Error::DeadlineExceeded(format!("group {group_id} node {node_id} RPC future"))
+                })?
             } else {
                 op(ctx, client).await
             };
@@ -159,7 +159,7 @@ impl GroupClient {
                 }
             };
             if deadline.map(|v| v.elapsed() > Duration::ZERO).unwrap_or_default() {
-                return Err(Error::DeadlineExceeded("issue rpc".to_owned()));
+                return Err(Error::DeadlineExceeded(format!("group {group_id} retry budget")));
             }
             GROUP_CLIENT_RETRY_TOTAL.inc();
         }
@@ -249,7 +249,7 @@ impl GroupClient {
         None
     }
 
-    fn apply_status(&mut self, status: tonic::Status, opt: &InvokeOpt<'_>) -> Result<()> {
+    fn apply_status(&mut self, status: Status, opt: &InvokeOpt<'_>) -> Result<()> {
         match Error::from(status) {
             Error::GroupNotFound(_) => {
                 debug!(
@@ -295,7 +295,10 @@ impl GroupClient {
             e => {
                 if !matches!(
                     e,
-                    Error::CasFailed(_, _, _) | Error::InvalidArgument(_) | Error::TxnConflict
+                    Error::CasFailed(_, _, _)
+                        | Error::InvalidArgument(_)
+                        | Error::TxnConflict
+                        | Error::LocalTxnNotAllowed
                 ) {
                     warn!(
                         "group {} issue rpc to {}: epoch {} with unknown error {e:?}",
@@ -398,12 +401,34 @@ impl GroupClient {
         self.invoke_with_opt(op, opt).await
     }
 
+    /// Best-effort submission to the currently known group leader.
+    ///
+    /// This path deliberately does not observe the response or retry. It is
+    /// intended for idempotent maintenance work whose durable state already
+    /// allows later requests to repair any missed cleanup.
+    pub fn detach_request(&mut self, request: &Request) -> Result<()> {
+        if self.epoch == 0 {
+            self.initial_group_state()?;
+        }
+        self.next_access_index = 0;
+        let Some((_node_id, client)) = self.recommend_client() else {
+            return Err(Error::GroupNotAccessable(self.group_id));
+        };
+        let req = GroupRequest {
+            group_id: self.group_id,
+            epoch: self.epoch,
+            request: Some(GroupRequestUnion { request: Some(request.clone()) }),
+        };
+        client.detach_unary_group_request(RpcTimeout::new(self.timeout.take(), req));
+        Ok(())
+    }
+
     pub async fn watch_key(
         &mut self,
         shard_id: u64,
         user_key: &[u8],
         version: u64,
-    ) -> Result<impl futures::Stream<Item = Result<WatchKeyResponse, tonic::Status>>> {
+    ) -> Result<impl futures::Stream<Item = Result<WatchKeyResponse, Status>>> {
         let op = |ctx: InvokeContext, client: NodeClient| {
             let watch_key_req = WatchKeyRequest {
                 group_id: ctx.group_id,
@@ -438,7 +463,7 @@ impl GroupClient {
         if let Some(resp) = resp.response.and_then(|resp| resp.response) {
             Ok(resp)
         } else if let Some(err) = resp.error {
-            Err(Status::with_details(Code::Unknown, "response", err.encode_to_vec().into()))
+            Err(Status::new(Code::Unknown, "response").with_details(err.encode_to_vec()))
         } else {
             Err(Status::internal("Both response and error are None in GroupResponse".to_owned()))
         }

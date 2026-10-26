@@ -47,7 +47,7 @@ pub fn to_rocksdb_options(cfg: &DbConfig) -> rocksdb::Options {
     opts.set_level_compaction_dynamic_level_bytes(true);
 
     opts.set_level_zero_slowdown_writes_trigger(cfg.level0_slowdown_writes_trigger);
-    opts.set_level_zero_stop_writes_trigger(cfg.level0_slowdown_writes_trigger);
+    opts.set_level_zero_stop_writes_trigger(cfg.level0_stop_write_trigger);
     opts.set_soft_pending_compaction_bytes_limit(cfg.soft_pending_compaction_bytes_limit);
     opts.set_hard_pending_compaction_bytes_limit(cfg.hard_pending_compaction_bytes_limit);
 
@@ -73,4 +73,28 @@ pub fn to_rocksdb_options(cfg: &DbConfig) -> rocksdb::Options {
     opts.set_compaction_filter_factory(GroupCompactionFactory::new(cfg.mvcc_gc_retention_ms));
 
     opts
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn maps_distinct_level_zero_slowdown_and_stop_triggers() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = DbConfig {
+            level0_slowdown_writes_trigger: 17,
+            level0_stop_write_trigger: 31,
+            ..DbConfig::default()
+        };
+        let db = rocksdb::DB::open(&to_rocksdb_options(&cfg), dir.path()).unwrap();
+        drop(db);
+        let options_log = std::fs::read_to_string(dir.path().join("LOG")).unwrap();
+
+        assert!(
+            options_log.contains("Options.level0_slowdown_writes_trigger: 17"),
+            "{options_log}"
+        );
+        assert!(options_log.contains("Options.level0_stop_writes_trigger: 31"), "{options_log}");
+    }
 }

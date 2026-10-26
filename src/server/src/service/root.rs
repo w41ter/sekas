@@ -13,17 +13,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::pin::Pin;
+
+use log::debug;
 use sekas_api::server::v1::*;
-use sekas_client::trace::{maybe_in_span, span_from_tonic_request, span_name};
-use tonic::{Request, Response, Status};
+use sekas_client::trace::{maybe_in_span, span_from_rpc_request, span_name};
+use vaelo::{Request, Response, Status};
 
 use super::metrics::*;
-use crate::root::Watcher;
 use crate::{Error, Result, Server, record_latency};
 
-#[tonic::async_trait]
 impl root_server::Root for Server {
-    type WatchStream = Watcher;
+    type WatchStream = Pin<Box<dyn futures::Stream<Item = Result<WatchResponse, Status>> + Send>>;
 
     async fn admin(&self, req: Request<AdminRequest>) -> Result<Response<AdminResponse>, Status> {
         record_latency!(take_admin_request_metrics());
@@ -39,13 +40,14 @@ impl root_server::Root for Server {
         record_latency!(take_watch_request_metrics());
         let req = req.into_inner();
         let watcher = self.wrap(self.root.watch(req.cur_group_epochs).await).await?;
-        Ok(Response::new(watcher))
+        Ok(Response::new(Box::pin(watcher) as Self::WatchStream))
     }
 
     async fn join(
         &self,
         request: Request<JoinNodeRequest>,
     ) -> Result<Response<JoinNodeResponse>, Status> {
+        debug!("receive root join request over vaelo");
         record_latency!(take_join_request_metrics());
         let request = request.into_inner();
         let capacity = request
@@ -86,7 +88,7 @@ impl root_server::Root for Server {
         &self,
         request: Request<AllocTxnIdRequest>,
     ) -> Result<Response<AllocTxnIdResponse>, Status> {
-        let span = span_from_tonic_request(&request, span_name::GRPC_ROOT_ALLOC_TXN_ID);
+        let span = span_from_rpc_request(&request, span_name::GRPC_ROOT_ALLOC_TXN_ID);
         maybe_in_span(span, async move {
             record_latency!(take_alloc_txn_id_request_metrics());
             let req = request.into_inner();

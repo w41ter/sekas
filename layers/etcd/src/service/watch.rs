@@ -14,11 +14,11 @@
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-use tonic::{Request, Response, Streaming};
+use vaelo::{Request, Response, Streaming};
 
 use crate::etcd::v3::*;
 
-type Result<T> = std::result::Result<T, tonic::Status>;
+type Result<T> = std::result::Result<T, vaelo::Status>;
 
 pub struct Watch {}
 
@@ -32,7 +32,6 @@ impl futures::Stream for WatchStream {
     }
 }
 
-#[tonic::async_trait]
 impl watch_server::Watch for Watch {
     /// Server streaming response type for the Watch method.
     type WatchStream = WatchStream;
@@ -45,7 +44,7 @@ impl watch_server::Watch for Watch {
     /// compaction revision.
     async fn watch(
         &self,
-        _request: Request<Streaming<WatchRequest>>,
+        _request: Request<Streaming<WatchRequest, vaelo::Status>>,
     ) -> Result<Response<WatchStream>> {
         todo!()
     }

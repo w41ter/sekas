@@ -13,7 +13,7 @@
 // limitations under the License.
 use std::sync::Arc;
 
-use tonic::{Request, Response, Status};
+use vaelo::{Request, Response, Status};
 
 use crate::etcd::v3::*;
 use crate::store::KvStore;
@@ -30,7 +30,6 @@ impl Kv {
     }
 }
 
-#[tonic::async_trait]
 impl kv_server::Kv for Kv {
     /// Range gets the keys in the range from the key-value store.
     async fn range(&self, req: Request<RangeRequest>) -> Result<Response<RangeResponse>> {

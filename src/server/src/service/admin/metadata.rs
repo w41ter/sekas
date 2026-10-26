@@ -15,7 +15,7 @@
 
 use std::collections::HashMap;
 
-use tonic::codegen::*;
+use vaelo::http;
 
 use crate::Server;
 
@@ -49,10 +49,7 @@ impl super::service::HttpHandle for MetadataHandle {
                 }
                 let resp = http::Response::builder()
                     .status(http::StatusCode::PERMANENT_REDIRECT)
-                    .header(
-                        http::header::LOCATION,
-                        format!("http://{}{}", node.unwrap().addr, path),
-                    )
+                    .header("location", format!("http://{}{}", node.unwrap().addr, path))
                     .body("".into())
                     .unwrap();
                 return Ok(resp);

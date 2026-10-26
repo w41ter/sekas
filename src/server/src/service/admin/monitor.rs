@@ -15,11 +15,11 @@
 use std::collections::HashMap;
 
 use serde::Serialize;
-use tonic::codegen::*;
+use vaelo::http;
 
 use crate::raftgroup::perf_point_micros;
 use crate::replica::ReplicaPerfContext;
-use crate::{Error, Result, Server};
+use crate::{Error, Result, Server, async_trait};
 
 #[derive(Default, Debug, Clone, Serialize)]
 pub struct PerfContext {

@@ -36,8 +36,19 @@ pub fn dispatch_creating_snap_task(
     snap_mgr: SnapManager,
 ) -> JoinHandle<()> {
     let builder = state_machine.snapshot_builder();
+    let executor = sekas_runtime::current();
     sekas_runtime::spawn(async move {
-        match create_snapshot(replica_id, &snap_mgr, builder).await {
+        // Snapshot construction walks RocksDB iterators, builds SST files,
+        // hashes them, and fsyncs metadata. Those operations are inherently
+        // blocking and can take most of a short Raft election timeout. Keep
+        // them off the async workers so snapshot recovery cannot starve Raft
+        // ticks, heartbeats, or HTTP/2 flow-control progress.
+        let result = sekas_runtime::spawn_blocking(move || {
+            executor.block_on(create_snapshot(replica_id, &snap_mgr, builder))
+        })
+        .await
+        .unwrap_or_else(|error| Err(Error::InvalidData(format!("snapshot task failed: {error}"))));
+        match result {
             Ok(_) => {
                 info!("replica {replica_id} create snapshot success");
             }

@@ -14,7 +14,7 @@
 
 use std::collections::HashMap;
 
-use tonic::codegen::*;
+use vaelo::http;
 
 pub(super) struct HealthHandle;
 

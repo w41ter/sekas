@@ -43,6 +43,11 @@ use crate::raftgroup::monitor::record_perf_point;
 use crate::serverpb::v1::{EvalResult, RaftMessage};
 use crate::{RaftConfig, Result, record_latency};
 
+// A Ready can contain many individually bounded Raft messages. Grouping all
+// of them into one protobuf can exceed the RPC framework's default inbound
+// message limit even though every Raft message is valid on its own.
+const MAX_RAFT_TRANSPORT_MESSAGE_SIZE: usize = 4 * 1024 * 1024;
+
 pub enum Request {
     Read {
         policy: ReadPolicy,
@@ -131,11 +136,11 @@ struct AdvanceImpl<'a> {
 
 impl<'a> super::node::AdvanceTemplate for AdvanceImpl<'a> {
     fn send_messages(&mut self, msgs: Vec<Message>) {
-        let mut seperated_msgs: HashMap<u64, Vec<Message>> = HashMap::default();
+        let mut separated_msgs: HashMap<u64, Vec<Message>> = HashMap::default();
         for msg in msgs {
-            seperated_msgs.entry(msg.to).or_default().push(msg);
+            separated_msgs.entry(msg.to).or_default().push(msg);
         }
-        for (target_id, msgs) in seperated_msgs {
+        for (target_id, msgs) in separated_msgs {
             let to_replica = match self.replica_cache.get(target_id) {
                 Some(to_replica) => to_replica,
                 None => {
@@ -146,15 +151,13 @@ impl<'a> super::node::AdvanceTemplate for AdvanceImpl<'a> {
                     continue;
                 }
             };
-            self.channels
+            let channel = self
+                .channels
                 .entry(target_id)
-                .or_insert_with(|| Channel::new(self.trans_mgr.clone()))
-                .send_message(RaftMessage {
-                    group_id: self.group_id,
-                    from_replica: Some(self.desc),
-                    to_replica: Some(to_replica),
-                    messages: msgs,
-                });
+                .or_insert_with(|| Channel::new(self.trans_mgr.clone()));
+            for message in batch_raft_messages(self.group_id, self.desc, to_replica, msgs) {
+                channel.send_message(message);
+            }
         }
     }
 
@@ -170,6 +173,51 @@ impl<'a> super::node::AdvanceTemplate for AdvanceImpl<'a> {
     fn apply_snapshot<M: StateMachine>(&mut self, applier: &mut Applier<M>, snapshot: &Snapshot) {
         apply_snapshot(self.replica_id, self.snap_mgr, applier, snapshot);
     }
+}
+
+fn batch_raft_messages(
+    group_id: u64,
+    from_replica: ReplicaDesc,
+    to_replica: ReplicaDesc,
+    messages: Vec<Message>,
+) -> Vec<RaftMessage> {
+    use prost::Message as _;
+
+    let new_batch = || RaftMessage {
+        group_id,
+        from_replica: Some(from_replica),
+        to_replica: Some(to_replica),
+        messages: Vec::new(),
+    };
+    let mut batches = Vec::new();
+    let mut batch = new_batch();
+    let mut batch_len = batch.encoded_len();
+
+    for message in messages {
+        let message_len = message.encoded_len();
+        // `messages` is field 4, whose protobuf tag occupies one byte.
+        let field_len = 1 + prost::length_delimiter_len(message_len) + message_len;
+        if !batch.messages.is_empty()
+            && batch_len.saturating_add(field_len) > MAX_RAFT_TRANSPORT_MESSAGE_SIZE
+        {
+            batches.push(batch);
+            batch = new_batch();
+            batch_len = batch.encoded_len();
+        }
+        batch_len = batch_len.saturating_add(field_len);
+        batch.messages.push(message);
+    }
+
+    if !batch.messages.is_empty() {
+        if batch_len > MAX_RAFT_TRANSPORT_MESSAGE_SIZE {
+            warn!(
+                "raft message exceeds transport limit. group={group_id}, from={}, to={}, size={batch_len}",
+                from_replica.id, to_replica.id
+            );
+        }
+        batches.push(batch);
+    }
+    batches
 }
 
 /// A structure wraps raft node execution logics.
@@ -557,5 +605,33 @@ impl Drop for SlowIoGuard {
         if self.start.elapsed() >= Duration::from_millis(self.threshold) {
             warn!("raft engine slow io: {:?}", raft_engine::get_perf_context());
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use prost::Message as _;
+
+    use super::*;
+
+    #[test]
+    fn raft_transport_batches_stay_within_grpc_message_limit() {
+        let from = ReplicaDesc { id: 1, node_id: 1, ..Default::default() };
+        let to = ReplicaDesc { id: 2, node_id: 2, ..Default::default() };
+        let messages = (0..100)
+            .map(|index| Message { index, context: vec![0; 64 * 1024], ..Default::default() })
+            .collect::<Vec<_>>();
+
+        let batches = batch_raft_messages(7, from, to, messages);
+        assert!(batches.len() > 1);
+        assert!(batches.iter().all(|batch| batch.encoded_len() <= MAX_RAFT_TRANSPORT_MESSAGE_SIZE));
+        assert_eq!(
+            batches
+                .into_iter()
+                .flat_map(|batch| batch.messages)
+                .map(|message| message.index)
+                .collect::<Vec<_>>(),
+            (0..100).collect::<Vec<_>>()
+        );
     }
 }

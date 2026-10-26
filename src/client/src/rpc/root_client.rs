@@ -15,9 +15,11 @@
 
 use std::collections::HashMap;
 use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use futures::StreamExt;
 use log::trace;
 use prost::Message;
 use sekas_api::server::v1::admin_request::Request;
@@ -25,11 +27,10 @@ use sekas_api::server::v1::admin_response::Response;
 use sekas_api::server::v1::root_client::RootClient;
 use sekas_api::server::v1::*;
 use tokio::sync::Mutex;
-use tonic::transport::Channel;
-use tonic::{Code, Status, Streaming};
+use vaelo::{Status, StatusCode as Code};
 
 use crate::discovery::ServiceDiscovery;
-use crate::error::retryable_rpc_err;
+use crate::error::{retryable_rpc_err, rpc_status};
 use crate::metrics::{
     ROOT_CLIENT_ALLOC_TXN_ID_DURATION_SECONDS, ROOT_CLIENT_CORE_LOCK_DURATION_SECONDS,
     ROOT_CLIENT_GET_CLIENT_DURATION_SECONDS, ROOT_CLIENT_RPC_DURATION_SECONDS,
@@ -110,9 +111,9 @@ impl Client {
 
     pub async fn report(&self, req: &ReportRequest) -> Result<ReportResponse> {
         let res = self
-            .invoke(|mut client| {
+            .invoke(|client| {
                 let req = req.clone();
-                async move { client.report(inject_trace_context(req)).await }
+                async move { client.report(inject_trace_context(req)).await.map_err(rpc_status) }
             })
             .await?;
         Ok(res.into_inner())
@@ -120,9 +121,9 @@ impl Client {
 
     pub async fn admin(&self, req: AdminRequest) -> Result<AdminResponse> {
         let res = self
-            .invoke(|mut client| {
+            .invoke(|client| {
                 let req = req.clone();
-                async move { client.admin(inject_trace_context(req)).await }
+                async move { client.admin(inject_trace_context(req)).await.map_err(rpc_status) }
             })
             .await?;
         Ok(res.into_inner())
@@ -208,9 +209,9 @@ impl Client {
 
     pub async fn join_node(&self, req: JoinNodeRequest) -> Result<JoinNodeResponse> {
         let res = self
-            .invoke(|mut client| {
+            .invoke(|client| {
                 let req = req.clone();
-                async move { client.join(inject_trace_context(req)).await }
+                async move { client.join(inject_trace_context(req)).await.map_err(rpc_status) }
             })
             .await?;
         Ok(res.into_inner())
@@ -220,12 +221,16 @@ impl Client {
         let total_start = Instant::now();
         let req = AllocTxnIdRequest { num_required };
         let res = self
-            .invoke_with_timeout(timeout, |mut client| {
-                let mut req = tonic::Request::new(req);
-                if let Some(deadline) = timeout {
-                    req.set_timeout(deadline);
+            .invoke_with_timeout(timeout, |client| {
+                let req = inject_trace_context(req.clone());
+                async move {
+                    let call = client.alloc_txn_id(req);
+                    match timeout {
+                        Some(timeout) => call.timeout(timeout).await,
+                        None => call.await,
+                    }
+                    .map_err(rpc_status)
                 }
-                async move { client.alloc_txn_id(inject_trace_context(req)).await }
             })
             .await?;
         ROOT_CLIENT_ALLOC_TXN_ID_DURATION_SECONDS.observe(total_start.elapsed().as_secs_f64());
@@ -237,21 +242,26 @@ impl Client {
     pub async fn watch(
         &self,
         cur_group_epochs: HashMap<u64, u64>,
-    ) -> Result<Streaming<WatchResponse>> {
+    ) -> Result<Pin<Box<dyn futures::Stream<Item = Result<WatchResponse, Status>> + Send>>> {
         let req = WatchRequest { cur_group_epochs };
         let res = self
-            .invoke(|mut client| {
+            .invoke(|client| {
                 let req = req.clone();
-                async move { client.watch(inject_trace_context(req)).await }
+                async move { client.watch(inject_trace_context(req)).await.map_err(rpc_status) }
             })
             .await?;
-        Ok(res.into_inner())
+        Ok(Box::pin(res.into_inner().map(|result| result.map_err(rpc_status))))
     }
 
     pub async fn alloc_replica(&self, req: AllocReplicaRequest) -> Result<AllocReplicaResponse> {
         let resp = self
             .invoke(
-                |mut client| async move { client.alloc_replica(inject_trace_context(req)).await },
+                |client| {
+                    let req = req.clone();
+                    async move {
+                        client.alloc_replica(inject_trace_context(req)).await.map_err(rpc_status)
+                    }
+                },
             )
             .await?;
         Ok(resp.into_inner())
@@ -259,7 +269,7 @@ impl Client {
 
     async fn invoke<F, O, V>(&self, op: F) -> Result<V>
     where
-        F: Fn(root_client::RootClient<Channel>) -> O,
+        F: Fn(root_client::RootClient) -> O,
         O: Future<Output = Result<V, Status>>,
     {
         self.invoke_with_timeout(None, op).await
@@ -267,7 +277,7 @@ impl Client {
 
     async fn invoke_with_timeout<F, O, V>(&self, timeout: Option<Duration>, op: F) -> Result<V>
     where
-        F: Fn(root_client::RootClient<Channel>) -> O,
+        F: Fn(root_client::RootClient) -> O,
         O: Future<Output = Result<V, Status>>,
     {
         let mut interval = 1;
@@ -370,7 +380,7 @@ impl Client {
             core = self.refresh_client_core(core).await?;
 
             if deadline.map(|v| v.elapsed() > Duration::ZERO).unwrap_or_default() {
-                return Err(crate::Error::DeadlineExceeded("issue rpc".to_owned()));
+                return Err(crate::Error::DeadlineExceeded("root RPC retry budget".to_owned()));
             }
 
             tokio::time::sleep(Duration::from_millis(interval)).await;
@@ -424,7 +434,7 @@ impl Client {
     }
 
     #[inline]
-    fn get_root_client(&self, addr: String) -> Result<RootClient<Channel>> {
+    fn get_root_client(&self, addr: String) -> Result<RootClient> {
         let root_client = self.shared.conn_manager.get_root_client(addr)?;
         Ok(root_client)
     }
@@ -513,7 +523,7 @@ impl AdminRequestBuilder {
     }
 }
 
-fn extract_root_descriptor(status: &tonic::Status) -> Option<(RootDesc, u64, Option<ReplicaDesc>)> {
+fn extract_root_descriptor(status: &Status) -> Option<(RootDesc, u64, Option<ReplicaDesc>)> {
     use error_detail_union::Value;
     if status.code() == Code::Unknown && !status.details().is_empty() {
         if let Ok(err) = Error::decode(status.details()) {
@@ -536,26 +546,30 @@ fn extract_root_descriptor(status: &tonic::Status) -> Option<(RootDesc, u64, Opt
     None
 }
 
-async fn invoke<F, O, V>(client: root_client::RootClient<Channel>, op: &F) -> Result<V, RootError>
+async fn invoke<F, O, V>(client: root_client::RootClient, op: &F) -> Result<V, RootError>
 where
-    F: Fn(root_client::RootClient<Channel>) -> O,
+    F: Fn(root_client::RootClient) -> O,
     O: Future<Output = Result<V, Status>>,
 {
+    trace!("invoke root RPC over vaelo");
     match op(client).await {
         Ok(res) => Ok(res),
-        Err(status) => match status.code() {
-            Code::Ok => unreachable!(),
-            Code::DeadlineExceeded => Err(RootError::NotAvailable),
-            Code::Cancelled if status.message().contains("Timeout expired") => {
-                Err(RootError::NotAvailable)
+        Err(status) => {
+            trace!("root RPC over vaelo failed: {status:?}");
+            match status.code() {
+                Code::Ok => unreachable!(),
+                Code::DeadlineExceeded => Err(RootError::NotAvailable),
+                Code::Canceled if status.message().contains("Timeout expired") => {
+                    Err(RootError::NotAvailable)
+                }
+                Code::Unavailable if retryable_rpc_err(&status) => Err(RootError::NotAvailable),
+                Code::Unknown if !status.details().is_empty() => {
+                    let (root, term, leader_opt) = extract_root_descriptor(&status)
+                        .ok_or_else(|| <Status as Into<RootError>>::into(status))?;
+                    Err(RootError::NotRoot(root, term, leader_opt))
+                }
+                _ => Err(status.into()),
             }
-            Code::Unavailable if retryable_rpc_err(&status) => Err(RootError::NotAvailable),
-            Code::Unknown if !status.details().is_empty() => {
-                let (root, term, leader_opt) = extract_root_descriptor(&status)
-                    .ok_or_else(|| <Status as Into<RootError>>::into(status))?;
-                Err(RootError::NotRoot(root, term, leader_opt))
-            }
-            _ => Err(status.into()),
-        },
+        }
     }
 }

@@ -84,7 +84,7 @@ impl WatchHub {
         err: Option<Error>,
     ) {
         let inner = self.inner.read().await;
-        let status = err.map(tonic::Status::from);
+        let status = err.map(vaelo::Status::from);
         for w in inner.watchers.values() {
             w.notify(&updates, &deletes, status.clone())
         }
@@ -109,12 +109,12 @@ struct WatcherInner {
     waker: Option<Waker>,
     updates: Vec<UpdateEvent>,
     deletes: Vec<DeleteEvent>,
-    err: Option<tonic::Status>,
+    err: Option<vaelo::Status>,
     dropped: bool,
 }
 
 impl Watcher {
-    fn notify(&self, updates: &[UpdateEvent], deletes: &[DeleteEvent], err: Option<tonic::Status>) {
+    fn notify(&self, updates: &[UpdateEvent], deletes: &[DeleteEvent], err: Option<vaelo::Status>) {
         let _timer = super::metrics::WATCH_NOTIFY_DURATION_SECONDS.start_timer();
         let mut inner = self.inner.lock().unwrap();
         if inner.dropped {
@@ -132,7 +132,7 @@ impl Watcher {
 }
 
 impl Stream for Watcher {
-    type Item = Result<WatchResponse, tonic::Status>;
+    type Item = Result<WatchResponse, vaelo::Status>;
 
     fn poll_next(
         self: std::pin::Pin<&mut Self>,

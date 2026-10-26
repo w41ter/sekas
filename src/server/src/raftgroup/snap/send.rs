@@ -26,7 +26,7 @@ use crate::raftgroup::metrics::*;
 use crate::serverpb::v1::{SnapshotChunk, snapshot_chunk};
 use crate::{Error, Result};
 
-type SnapResult = Result<SnapshotChunk, tonic::Status>;
+type SnapResult = Result<SnapshotChunk, vaelo::Status>;
 
 pub struct SnapshotChunkStream {
     info: SnapshotGuard,
@@ -71,7 +71,7 @@ impl SnapshotChunkStream {
                         Err(err) if err.kind() == ErrorKind::Interrupted => {
                             continue;
                         }
-                        Err(err) => return Some(Err(err.into())),
+                        Err(err) => return Some(Err(vaelo::Status::internal(err.to_string()))),
                     };
                     num_read += n;
                     if n == 0 {
@@ -97,7 +97,7 @@ impl SnapshotChunkStream {
                 );
                 match OpenOptions::new().read(true).open(&path) {
                     Ok(file) => self.file = Some(file),
-                    Err(err) => return Some(Err(err.into())),
+                    Err(err) => return Some(Err(vaelo::Status::internal(err.to_string()))),
                 }
                 let value = snapshot_chunk::Value::File(file_meta.to_owned());
                 Some(Ok(SnapshotChunk { value: Some(value) }))

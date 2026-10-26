@@ -9,8 +9,7 @@ use fastrace::future::{FutureExt, InSpan};
 use fastrace::local::LocalSpan;
 use fastrace::prelude::*;
 use futures::future::Either;
-use tonic::IntoRequest;
-use tonic::metadata::MetadataValue;
+use vaelo::IntoRequest;
 
 pub const TRACEPARENT_METADATA_KEY: &str = "traceparent";
 
@@ -80,24 +79,23 @@ pub fn flush() {
     fastrace::flush();
 }
 
-pub fn inject_trace_context<T>(req: impl IntoRequest<T>) -> tonic::Request<T> {
+pub fn inject_trace_context<T>(req: impl IntoRequest<T>) -> vaelo::Request<T> {
     let mut req = req.into_request();
-    if let Some(parent) = SpanContext::current_local_parent()
-        && let Ok(value) = MetadataValue::try_from(parent.encode_w3c_traceparent().as_str())
-    {
-        req.metadata_mut().insert(TRACEPARENT_METADATA_KEY, value);
+    if let Some(parent) = SpanContext::current_local_parent() {
+        let _ =
+            req.metadata_mut().insert(TRACEPARENT_METADATA_KEY, parent.encode_w3c_traceparent());
     }
     req
 }
 
-pub fn span_from_tonic_request<T>(
-    req: &tonic::Request<T>,
+pub fn span_from_rpc_request<T>(
+    req: &vaelo::Request<T>,
     name: impl Into<Cow<'static, str>>,
 ) -> Option<Span> {
     let parent = req
         .metadata()
         .get(TRACEPARENT_METADATA_KEY)
-        .and_then(|value| value.to_str().ok())
+        .and_then(|value| std::str::from_utf8(value).ok())
         .and_then(SpanContext::decode_w3c_traceparent)?;
     Some(
         Span::root(name, parent)

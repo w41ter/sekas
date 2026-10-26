@@ -150,7 +150,7 @@ impl Default for ClusterConfig {
             enable_proxy_service: false,
             db: DbConfig {
                 block_cache_size: 1 << 20,
-                write_buffer_size: 256 << 10,
+                write_buffer_size: 128 << 20,
                 max_write_buffer_number: 3,
                 max_background_jobs: 2,
                 max_sub_compactions: 1,

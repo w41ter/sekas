@@ -13,22 +13,24 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::pin::Pin;
+
 use futures::StreamExt;
 use log::{error, warn};
-use tonic::{Request, Response, Status, Streaming};
+use vaelo::{Request, Response, Status, Streaming};
 
 use crate::Server;
-use crate::raftgroup::snap::send::{SnapshotChunkStream, send_snapshot};
+use crate::raftgroup::snap::send::send_snapshot;
 use crate::serverpb::v1::*;
 use crate::service::metrics::*;
 
-#[tonic::async_trait]
 impl raft_server::Raft for Server {
-    type RetrieveSnapshotStream = SnapshotChunkStream;
+    type RetrieveSnapshotStream =
+        Pin<Box<dyn futures::Stream<Item = Result<SnapshotChunk, Status>> + Send>>;
 
     async fn send_message(
         &self,
-        request: Request<Streaming<RaftMessage>>,
+        request: Request<Streaming<RaftMessage, Status>>,
     ) -> Result<Response<RaftDone>, Status> {
         let mut in_stream = request.into_inner();
         while let Some(next_msg) = in_stream.next().await {
@@ -69,13 +71,13 @@ impl raft_server::Raft for Server {
     async fn retrieve_snapshot(
         &self,
         request: Request<SnapshotRequest>,
-    ) -> Result<Response<SnapshotChunkStream>, Status> {
+    ) -> Result<Response<Self::RetrieveSnapshotStream>, Status> {
         RAFT_SERVICE_SNAPSHOT_REQUEST_TOTAL.inc();
 
         let request = request.into_inner();
         let snap_mgr = self.node.raft_manager().snapshot_manager();
 
         let stream = send_snapshot(snap_mgr, request.replica_id, request.snapshot_id).await?;
-        Ok(Response::new(stream))
+        Ok(Response::new(Box::pin(stream) as Self::RetrieveSnapshotStream))
     }
 }

@@ -24,7 +24,7 @@ mod write;
 pub mod server {
     pub mod v1 {
         #![allow(clippy::all)]
-        tonic::include_proto!("sekas.server.v1");
+        include!(concat!(env!("OUT_DIR"), "/sekas.server.v1.rs"));
 
         /// A helper enum to hold both [`PutRequest`] and [`DeleteRequest`].
         #[derive(Clone, Debug)]
@@ -58,7 +58,7 @@ impl server::v1::WriteResult {
             Some(Result::Response(response)) => Ok(response),
             Some(Result::Error(error)) => Err(error),
             None => Err(server::v1::Error::status(
-                tonic::Code::Internal.into(),
+                vaelo::StatusCode::Internal.as_i32(),
                 "WriteResult::result is None",
             )),
         }
@@ -88,7 +88,7 @@ impl server::v1::IntentResult {
             Some(Result::Success(_)) => Ok(()),
             Some(Result::Error(error)) => Err(error),
             None => Err(server::v1::Error::status(
-                tonic::Code::Internal.into(),
+                vaelo::StatusCode::Internal.as_i32(),
                 "IntentResult::result is None",
             )),
         }
@@ -128,7 +128,7 @@ impl server::v1::QueryIntentResult {
             Some(Result::Missing(_)) => Ok(None),
             Some(Result::Error(error)) => Err(error),
             None => Err(server::v1::Error::status(
-                tonic::Code::Internal.into(),
+                vaelo::StatusCode::Internal.as_i32(),
                 "QueryIntentResult::result is None",
             )),
         }

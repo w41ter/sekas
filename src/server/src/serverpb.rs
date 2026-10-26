@@ -17,7 +17,7 @@
 pub mod v1 {
     use sekas_api::server::v1::{MoveShardDesc, ShardDesc};
 
-    tonic::include_proto!("serverpb.v1");
+    include!(concat!(env!("OUT_DIR"), "/serverpb.v1.rs"));
 
     pub type ApplyState = EntryId;
     pub type MoveShardEvent = move_shard::Event;

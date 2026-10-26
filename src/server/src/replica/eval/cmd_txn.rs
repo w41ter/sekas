@@ -455,11 +455,17 @@ async fn intent_key_forward_part(
 }
 
 fn retry_write_result(message: &'static str) -> WriteResult {
-    WriteResult::err(sekas_api::server::v1::Error::status(tonic::Code::NotFound.into(), message))
+    WriteResult::err(sekas_api::server::v1::Error::status(
+        vaelo::StatusCode::NotFound.as_i32(),
+        message,
+    ))
 }
 
 fn retry_intent_result(message: &'static str) -> IntentResult {
-    IntentResult::err(sekas_api::server::v1::Error::status(tonic::Code::NotFound.into(), message))
+    IntentResult::err(sekas_api::server::v1::Error::status(
+        vaelo::StatusCode::NotFound.as_i32(),
+        message,
+    ))
 }
 
 fn next_candidate_version(start_version: u64, prev_value: Option<&Value>) -> u64 {

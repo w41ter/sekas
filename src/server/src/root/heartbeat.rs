@@ -101,12 +101,16 @@ impl Root {
                 );
                 let piggybacks = piggybacks.to_owned();
                 let client = self.shared.transport_manager.get_node_client(node.addr.to_owned())?;
+                let timeout = std::time::Duration::from_secs(self.cfg.heartbeat_timeout_sec);
                 let handle = sekas_runtime::spawn(async move {
                     client
-                        .root_heartbeat(HeartbeatRequest {
-                            piggybacks,
-                            timestamp: 0, // TODO: use hlc
-                        })
+                        .root_heartbeat_timeout(
+                            HeartbeatRequest {
+                                piggybacks,
+                                timestamp: 0, // TODO: use hlc
+                            },
+                            timeout,
+                        )
                         .await
                 });
                 handles.push(handle);

@@ -171,7 +171,7 @@ lazy_static! {
     .unwrap();
     pub static ref ROOT_CLIENT_GET_CLIENT_DURATION_SECONDS: Histogram = register_histogram!(
         "root_client_get_client_duration_seconds",
-        "The time spent fetching a cached tonic RootClient",
+        "The time spent fetching a cached RPC RootClient",
         exponential_buckets(0.00005, 1.8, 26).unwrap(),
     )
     .unwrap();

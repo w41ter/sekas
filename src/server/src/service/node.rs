@@ -24,9 +24,9 @@ use sekas_api::server::v1::group_request_union::Request as ShardRequest;
 use sekas_api::server::v1::group_response_union::Response as ShardResponse;
 use sekas_api::server::v1::watch_key_response::WatchResult;
 use sekas_api::server::v1::*;
-use sekas_client::trace::{maybe_in_span, span_from_tonic_request, span_name};
+use sekas_client::trace::{maybe_in_span, span_from_rpc_request, span_name};
 use sekas_schema::system::txn::{TXN_INTENT_VERSION, TXN_MAX_VERSION};
-use tonic::{Request, Response, Status};
+use vaelo::{Request, Response, Status};
 
 use super::metrics::*;
 use crate::replica::ExecCtx;
@@ -207,15 +207,14 @@ async fn handle_unary_group_request(server: Server, request: GroupRequest) -> Gr
     server.node.execute_request(&exec_ctx, &request).await.unwrap_or_else(error_to_response)
 }
 
-#[crate::async_trait]
 impl node_server::Node for Server {
-    type GroupStream = GroupStream;
+    type GroupStream = Pin<Box<dyn futures::Stream<Item = Result<GroupResponse, Status>> + Send>>;
 
     async fn unary_group(
         &self,
         request: Request<GroupRequest>,
     ) -> Result<Response<GroupResponse>, Status> {
-        let span = span_from_tonic_request(&request, span_name::GRPC_NODE_UNARY_GROUP);
+        let span = span_from_rpc_request(&request, span_name::GRPC_NODE_UNARY_GROUP);
         let request = request.into_inner();
         maybe_in_span(span, async move {
             Ok(Response::new(handle_unary_group_request(self.clone(), request).await))
@@ -227,11 +226,12 @@ impl node_server::Node for Server {
         &self,
         request: Request<GroupRequest>,
     ) -> Result<Response<Self::GroupStream>, Status> {
-        let span = span_from_tonic_request(&request, span_name::GRPC_NODE_GROUP);
-        let group_response_stream =
-            Box::pin(handle_group_request(self.clone(), request.into_inner()));
+        let span = span_from_rpc_request(&request, span_name::GRPC_NODE_GROUP);
+        let group_response_stream = GroupStream {
+            inner: Box::pin(handle_group_request(self.clone(), request.into_inner())),
+        };
         maybe_in_span(span, async move {
-            Ok(Response::new(GroupStream { inner: group_response_stream }))
+            Ok(Response::new(Box::pin(group_response_stream) as Self::GroupStream))
         })
         .await
     }

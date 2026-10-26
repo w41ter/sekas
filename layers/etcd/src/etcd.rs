@@ -15,7 +15,7 @@
 pub mod etcdserverpb {
     #![allow(dead_code)]
     #![allow(clippy::all)]
-    tonic::include_proto!("etcdserverpb");
+    include!(concat!(env!("OUT_DIR"), "/etcdserverpb.rs"));
 
     impl From<&compare::TargetUnion> for compare::CompareTarget {
         fn from(value: &compare::TargetUnion) -> Self {
@@ -92,13 +92,13 @@ pub mod etcdserverpb {
 pub mod authpb {
     #![allow(dead_code)]
     #![allow(clippy::all)]
-    tonic::include_proto!("authpb");
+    include!(concat!(env!("OUT_DIR"), "/authpb.rs"));
 }
 
 pub mod recordpb {
     #![allow(dead_code)]
     #![allow(clippy::all)]
-    tonic::include_proto!("recordpb");
+    include!(concat!(env!("OUT_DIR"), "/recordpb.rs"));
 
     use super::etcdserverpb::KeyValue;
 

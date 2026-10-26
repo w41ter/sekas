@@ -230,6 +230,9 @@ pub(super) async fn measure_for(
     let report = handle.stop().await;
     lab.mark(format!("{}_end", spec.name));
     validate(lab, &report)?;
+    if lab.config.execution.cooldown_secs > 0 {
+        tokio::time::sleep(Duration::from_secs(lab.config.execution.cooldown_secs)).await;
+    }
     Ok(report)
 }
 
