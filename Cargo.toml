@@ -62,4 +62,4 @@ vaelo = { path = "../srpc/crates/vaelo" }
 # for build
 prost-build = "0.14"
 vaelo-build = { path = "../srpc/crates/vaelo-build" }
-protoc-build = { git = "https://github.com/w41ter/protoc-build.git", rev = "v3.21.5" }
+protoc-build = { git = "https://github.com/w41ter/protoc-build.git", rev = "283c4b96bf850434be7a4673c736a61657c9c79d", features = ["vendored"] }

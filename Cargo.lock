@@ -2513,7 +2513,7 @@ dependencies = [
 [[package]]
 name = "protoc-build"
 version = "0.1.0"
-source = "git+https://github.com/w41ter/protoc-build.git?rev=v3.21.5#573573ab38466634105a49c9393d4a134d0cc597"
+source = "git+https://github.com/w41ter/protoc-build.git?rev=283c4b96bf850434be7a4673c736a61657c9c79d#283c4b96bf850434be7a4673c736a61657c9c79d"
 dependencies = [
  "cfg-if",
  "cmake",
