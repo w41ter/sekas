@@ -32,6 +32,8 @@ use super::report::MetricsRecorder;
 pub(crate) struct LabContext {
     pub(crate) config: LabConfig,
     pub(crate) run_id: String,
+    storage_run_id: String,
+    isolation_generation: usize,
     root_dir: PathBuf,
     pub(crate) nodes: HashMap<u64, String>,
     notifiers: HashMap<u64, ShutdownNotifier>,
@@ -45,7 +47,16 @@ pub(crate) struct LabContext {
 
 impl LabContext {
     pub(super) async fn start(config: LabConfig, run_id: String) -> Result<Self> {
-        let root_dir = config.environment.root_dir.join(&run_id);
+        Self::start_isolated(config, run_id.clone(), run_id, 0).await
+    }
+
+    async fn start_isolated(
+        config: LabConfig,
+        run_id: String,
+        storage_run_id: String,
+        isolation_generation: usize,
+    ) -> Result<Self> {
+        let root_dir = config.environment.root_dir.join(&storage_run_id);
         if config.environment.cleanup && root_dir.exists() {
             fs::remove_dir_all(&root_dir)
                 .with_context(|| format!("remove old root dir {}", root_dir.display()))?;
@@ -56,6 +67,8 @@ impl LabContext {
         let mut lab = LabContext {
             config,
             run_id,
+            storage_run_id,
+            isolation_generation,
             root_dir,
             nodes: HashMap::new(),
             notifiers: HashMap::new(),
@@ -72,6 +85,27 @@ impl LabContext {
         };
         lab.start_cluster().await?;
         Ok(lab)
+    }
+
+    /// Replace the running cluster with a clean cluster for the next matrix
+    /// item.
+    ///
+    /// The report keeps one logical run id, while every generation gets a
+    /// distinct storage id. This preserves all generations when cleanup is
+    /// disabled without allowing RocksDB or cluster metadata to leak
+    /// between measurements.
+    pub(super) async fn restart_isolated(&mut self) -> Result<()> {
+        let config = self.config.clone();
+        let run_id = self.run_id.clone();
+        let isolation_generation = self.isolation_generation + 1;
+        let storage_run_id = format!("{run_id}-item-{isolation_generation:02}");
+        let metrics = std::mem::take(&mut self.metrics);
+        self.shutdown()?;
+        let mut replacement =
+            Self::start_isolated(config, run_id, storage_run_id, isolation_generation).await?;
+        replacement.metrics = metrics;
+        *self = replacement;
+        Ok(())
     }
 
     async fn start_cluster(&mut self) -> Result<()> {
@@ -158,7 +192,7 @@ impl LabContext {
             self.root_dir.join(format!("node-{node_id}"))
         } else {
             let disk = &disks[node_id as usize % disks.len()];
-            disk.join(&self.run_id).join(format!("node-{node_id}"))
+            disk.join(&self.storage_run_id).join(format!("node-{node_id}"))
         }
     }
 
@@ -175,7 +209,7 @@ impl LabContext {
         if self.config.environment.cleanup {
             let _ = fs::remove_dir_all(&self.root_dir);
             for disk in &self.config.environment.disk_pools {
-                let _ = fs::remove_dir_all(disk.join(&self.run_id));
+                let _ = fs::remove_dir_all(disk.join(&self.storage_run_id));
             }
         }
         first_error.map_or(Ok(()), Err)

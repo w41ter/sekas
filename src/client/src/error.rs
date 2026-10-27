@@ -24,6 +24,8 @@ pub enum AppError {
     InvalidArgument(String),
     #[error("deadline exceeded {0}")]
     DeadlineExceeded(String),
+    #[error("resource exhausted: {0}")]
+    ResourceExhausted(String),
     #[error("cas condition {1} not satisfied, operation index {0}")]
     CasFailed(u64, u64, Option<Value>),
     #[error("the txn is conflict with others")]
@@ -135,6 +137,7 @@ impl From<Error> for AppError {
         match err {
             Error::InvalidArgument(value) => Self::InvalidArgument(value),
             Error::DeadlineExceeded(value) => Self::DeadlineExceeded(value),
+            Error::ResourceExhausted(value) => Self::ResourceExhausted(value),
             Error::NotFound(value) => Self::NotFound(value),
             Error::AlreadyExists(value) => Self::AlreadyExists(value),
             Error::CasFailed(index, cond_index, prev_value) => {
@@ -157,6 +160,7 @@ impl From<AppError> for Status {
             AppError::AlreadyExists(message) => Status::already_exists(message),
             AppError::InvalidArgument(message) => Status::invalid_argument(message),
             AppError::DeadlineExceeded(message) => Status::deadline_exceeded(message),
+            AppError::ResourceExhausted(message) => Status::resource_exhausted(message),
             AppError::Network(status) => status,
             AppError::Internal(error) => Status::internal(error.to_string()),
             AppError::CasFailed(..) | AppError::TxnConflict => Status::internal(err.to_string()),
@@ -198,5 +202,16 @@ pub fn from_source(status: Status) -> Error {
         Error::Transport(status)
     } else {
         Error::Rpc(status)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resource_exhausted_is_an_application_error() {
+        let error = AppError::from(Error::ResourceExhausted("limit".to_owned()));
+        assert!(matches!(error, AppError::ResourceExhausted(message) if message == "limit"));
     }
 }

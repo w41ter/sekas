@@ -24,7 +24,7 @@ mod cmd_txn;
 mod cmd_write;
 mod latch;
 
-use sekas_api::server::v1::{WriteResponse, WriteResult};
+use sekas_api::server::v1::{ShardWriteRequest, WriteResponse, WriteResult};
 
 pub(crate) use self::cmd_get::get;
 pub(crate) use self::cmd_ingest::ingest_value_set;
@@ -39,10 +39,10 @@ pub(crate) use self::cmd_write::batch_write;
 pub(crate) use self::latch::{
     DeferSignalLatchGuard, LatchGuard, LatchManager, acquire_row_latches, remote,
 };
-use crate::Result;
 use crate::engine::{GroupEngine, WriteBatch};
 use crate::replica::pending::PendingMutation;
 use crate::serverpb::v1::{EvalResult, SyncOp, WriteBatchRep};
+use crate::{Error, Result};
 
 fn write_ok(response: WriteResponse) -> WriteResult {
     WriteResult::ok(response)
@@ -53,6 +53,50 @@ fn write_not_executed() -> WriteResult {
         vaelo::StatusCode::NotFound.as_i32(),
         "write entry is not executed",
     ))
+}
+
+fn validate_value_sizes<'a>(writes: impl IntoIterator<Item = &'a ShardWriteRequest>) -> Result<()> {
+    for put in writes.into_iter().flat_map(|write| &write.puts) {
+        if put.value.len() > sekas_api::MAX_VALUE_SIZE {
+            return Err(Error::InvalidArgument(format!(
+                "value size {} exceeds limit {}",
+                put.value.len(),
+                sekas_api::MAX_VALUE_SIZE
+            )));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod limit_tests {
+    use sekas_api::server::v1::PutRequest;
+
+    use super::*;
+
+    #[test]
+    fn server_rejects_oversized_values() {
+        let valid = ShardWriteRequest {
+            puts: vec![PutRequest {
+                value: vec![0; sekas_api::MAX_VALUE_SIZE],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        assert!(validate_value_sizes(std::iter::once(&valid)).is_ok());
+
+        let oversized = ShardWriteRequest {
+            puts: vec![PutRequest {
+                value: vec![0; sekas_api::MAX_VALUE_SIZE + 1],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        assert!(matches!(
+            validate_value_sizes(std::iter::once(&oversized)),
+            Err(Error::InvalidArgument(_))
+        ));
+    }
 }
 
 #[derive(Debug, Default)]

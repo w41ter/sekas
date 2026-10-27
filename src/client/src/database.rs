@@ -82,7 +82,7 @@ impl Database {
     #[inline]
     pub async fn put(&self, table_id: u64, key: Vec<u8>, value: Vec<u8>) -> AppResult<()> {
         let mut txn = Txn::new(self.clone());
-        txn.put(table_id, WriteBuilder::new(key).ensure_put(value));
+        txn.put(table_id, WriteBuilder::new(key).put(value)?);
         txn.commit().await?;
         Ok(())
     }

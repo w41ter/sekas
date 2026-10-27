@@ -39,7 +39,11 @@ impl Client {
         let remote = addr
             .parse::<SocketAddr>()
             .map_err(|error| Status::invalid_argument(error.to_string()))?;
-        let channel = RpcChannel::grpc(remote).build().map_err(rpc_status)?;
+        let grpc_options = vaelo::GrpcOptions::default()
+            .max_decoding_message_size(sekas_api::MAX_RPC_MESSAGE_SIZE)
+            .max_encoding_message_size(sekas_api::MAX_RPC_MESSAGE_SIZE);
+        let channel =
+            RpcChannel::grpc(remote).grpc_options(grpc_options).build().map_err(rpc_status)?;
         let client = node_client::NodeClient::new(channel);
         let client = Self { client };
         client.get_root().await?;

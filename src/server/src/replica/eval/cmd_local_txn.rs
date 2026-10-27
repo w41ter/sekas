@@ -17,7 +17,7 @@ use sekas_api::server::v1::{LocalTxnWriteRequest, LocalTxnWriteResponse, PutType
 use super::cas::eval_conditions;
 use super::cmd_txn::{apply_put_op, read_first_non_intent_key};
 use super::latch::DeferSignalLatchGuard;
-use super::{LatchGuard, WriteEvalResult, write_not_executed, write_ok};
+use super::{LatchGuard, WriteEvalResult, validate_value_sizes, write_not_executed, write_ok};
 use crate::engine::GroupEngine;
 use crate::replica::ExecCtx;
 use crate::replica::write_view::WriteEvalContext;
@@ -30,6 +30,7 @@ pub(crate) async fn local_txn_write<T: LatchGuard>(
     req: &LocalTxnWriteRequest,
     commit_version: u64,
 ) -> Result<(Option<WriteEvalResult>, LocalTxnWriteResponse)> {
+    validate_value_sizes(&req.writes)?;
     if is_local_txn_hits_moving_shard(exec_ctx, req) {
         return Err(Error::LocalTxnNotAllowed);
     }

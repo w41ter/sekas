@@ -14,7 +14,7 @@ enable_proxy_service = false
 [cluster.root]
 enable_group_balance = true
 enable_replica_balance = true
-enable_leader_balance = false
+enable_leader_balance = true
 enable_shard_balance = false
 enable_auto_shard_split = false
 enable_auto_shard_merge = false
@@ -31,7 +31,7 @@ max_inflight_msgs = 10000
 max_inflight_requests = 102400
 max_io_batch_size = 65535
 max_size_per_msg = 1048576
-tick_interval_ms = 100
+tick_interval_ms = 500
 
 [cluster.node]
 shard_chunk_size = 1048576
@@ -45,14 +45,6 @@ snap_file_size = 68719476736
 
 [cluster.node.engine]
 engine_slow_io_threshold_ms = 1000
-
-[cluster.db]
-block_cache_size = 33554432     # 32MB
-write_buffer_size = 16777216    # 16MB
-max_write_buffer_number = 2
-max_background_jobs = 2
-max_sub_compactions = 1
-mvcc_gc_retention_ms = 0
 
 [execution]
 database = "perf_lab_snapshot"

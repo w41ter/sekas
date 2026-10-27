@@ -43,10 +43,10 @@ use crate::raftgroup::monitor::record_perf_point;
 use crate::serverpb::v1::{EvalResult, RaftMessage};
 use crate::{RaftConfig, Result, record_latency};
 
-// A Ready can contain many individually bounded Raft messages. Grouping all
-// of them into one protobuf can exceed the RPC framework's default inbound
-// message limit even though every Raft message is valid on its own.
-const MAX_RAFT_TRANSPORT_MESSAGE_SIZE: usize = 4 * 1024 * 1024;
+// Leave room below the RPC hard limit for protobuf envelopes and future
+// transport metadata. Oversized MsgAppend messages are split on entry
+// boundaries before they reach the network stream.
+const MAX_RAFT_TRANSPORT_MESSAGE_SIZE: usize = sekas_api::MAX_RPC_MESSAGE_SIZE - 1024 * 1024;
 
 pub enum Request {
     Read {
@@ -181,6 +181,22 @@ fn batch_raft_messages(
     to_replica: ReplicaDesc,
     messages: Vec<Message>,
 ) -> Vec<RaftMessage> {
+    batch_raft_messages_with_limit(
+        group_id,
+        from_replica,
+        to_replica,
+        messages,
+        MAX_RAFT_TRANSPORT_MESSAGE_SIZE,
+    )
+}
+
+fn batch_raft_messages_with_limit(
+    group_id: u64,
+    from_replica: ReplicaDesc,
+    to_replica: ReplicaDesc,
+    messages: Vec<Message>,
+    max_batch_len: usize,
+) -> Vec<RaftMessage> {
     use prost::Message as _;
 
     let new_batch = || RaftMessage {
@@ -192,14 +208,19 @@ fn batch_raft_messages(
     let mut batches = Vec::new();
     let mut batch = new_batch();
     let mut batch_len = batch.encoded_len();
+    // A protobuf length delimiter is at most ten bytes for usize-sized values.
+    // Reserving that full width makes this bound independent of the eventual
+    // encoded message length.
+    let max_message_len =
+        max_batch_len.saturating_sub(batch_len).saturating_sub(1).saturating_sub(10);
 
-    for message in messages {
+    for message in
+        messages.into_iter().flat_map(|message| split_append_message(message, max_message_len))
+    {
         let message_len = message.encoded_len();
         // `messages` is field 4, whose protobuf tag occupies one byte.
         let field_len = 1 + prost::length_delimiter_len(message_len) + message_len;
-        if !batch.messages.is_empty()
-            && batch_len.saturating_add(field_len) > MAX_RAFT_TRANSPORT_MESSAGE_SIZE
-        {
+        if !batch.messages.is_empty() && batch_len.saturating_add(field_len) > max_batch_len {
             batches.push(batch);
             batch = new_batch();
             batch_len = batch.encoded_len();
@@ -209,7 +230,7 @@ fn batch_raft_messages(
     }
 
     if !batch.messages.is_empty() {
-        if batch_len > MAX_RAFT_TRANSPORT_MESSAGE_SIZE {
+        if batch_len > max_batch_len {
             warn!(
                 "raft message exceeds transport limit. group={group_id}, from={}, to={}, size={batch_len}",
                 from_replica.id, to_replica.id
@@ -218,6 +239,45 @@ fn batch_raft_messages(
         batches.push(batch);
     }
     batches
+}
+
+fn split_append_message(mut message: Message, max_encoded_len: usize) -> Vec<Message> {
+    use prost::Message as _;
+
+    if message.get_msg_type() != MessageType::MsgAppend
+        || message.entries.len() <= 1
+        || message.encoded_len() <= max_encoded_len
+    {
+        return vec![message];
+    }
+
+    let entries = message.take_entries();
+    let mut chunks = Vec::new();
+    let mut chunk = message.clone();
+    let mut chunk_len = chunk.encoded_len();
+
+    for entry in entries {
+        // `entries` is field 7 in eraftpb.Message, so its protobuf tag is one byte.
+        let entry_len = entry.encoded_len();
+        let field_len = 1 + prost::length_delimiter_len(entry_len) + entry_len;
+        if !chunk.entries.is_empty() && chunk_len.saturating_add(field_len) > max_encoded_len {
+            let previous = chunk.entries.last().expect("non-empty append chunk");
+            let previous_index = previous.index;
+            let previous_term = previous.term;
+            chunks.push(chunk);
+
+            chunk = message.clone();
+            chunk.index = previous_index;
+            chunk.log_term = previous_term;
+            chunk_len = chunk.encoded_len();
+        }
+        chunk_len = chunk_len.saturating_add(field_len);
+        chunk.entries.push(entry);
+    }
+    if !chunk.entries.is_empty() {
+        chunks.push(chunk);
+    }
+    chunks
 }
 
 /// A structure wraps raft node execution logics.
@@ -622,9 +682,10 @@ mod tests {
             .map(|index| Message { index, context: vec![0; 64 * 1024], ..Default::default() })
             .collect::<Vec<_>>();
 
-        let batches = batch_raft_messages(7, from, to, messages);
+        let max_batch_len = 1024 * 1024;
+        let batches = batch_raft_messages_with_limit(7, from, to, messages, max_batch_len);
         assert!(batches.len() > 1);
-        assert!(batches.iter().all(|batch| batch.encoded_len() <= MAX_RAFT_TRANSPORT_MESSAGE_SIZE));
+        assert!(batches.iter().all(|batch| batch.encoded_len() <= max_batch_len));
         assert_eq!(
             batches
                 .into_iter()
@@ -633,5 +694,51 @@ mod tests {
                 .collect::<Vec<_>>(),
             (0..100).collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn oversized_append_is_split_on_entry_boundaries() {
+        let from = ReplicaDesc { id: 1, node_id: 1, ..Default::default() };
+        let to = ReplicaDesc { id: 2, node_id: 2, ..Default::default() };
+        let entries = (11..15)
+            .map(|index| Entry {
+                index,
+                term: if index < 13 { 2 } else { 3 },
+                data: vec![0; 64 * 1024],
+                ..Default::default()
+            })
+            .collect();
+        let message = Message {
+            msg_type: MessageType::MsgAppend.into(),
+            to: 2,
+            from: 1,
+            term: 3,
+            log_term: 2,
+            index: 10,
+            commit: 14,
+            entries,
+            ..Default::default()
+        };
+
+        let max_batch_len = 128 * 1024;
+        let batches = batch_raft_messages_with_limit(7, from, to, vec![message], max_batch_len);
+        assert!(batches.iter().all(|batch| batch.encoded_len() <= max_batch_len));
+        let chunks = batches.into_iter().flat_map(|batch| batch.messages).collect::<Vec<_>>();
+        assert!(chunks.len() > 1);
+
+        let mut previous_index = 10;
+        let mut previous_term = 2;
+        let mut entry_indices = Vec::new();
+        for chunk in &chunks {
+            assert_eq!(chunk.get_msg_type(), MessageType::MsgAppend);
+            assert_eq!(chunk.index, previous_index);
+            assert_eq!(chunk.log_term, previous_term);
+            assert_eq!((chunk.from, chunk.to, chunk.term, chunk.commit), (1, 2, 3, 14));
+            entry_indices.extend(chunk.entries.iter().map(|entry| entry.index));
+            let last = chunk.entries.last().unwrap();
+            previous_index = last.index;
+            previous_term = last.term;
+        }
+        assert_eq!(entry_indices, vec![11, 12, 13, 14]);
     }
 }

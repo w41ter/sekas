@@ -62,6 +62,7 @@ impl TransactionCase {
             RunProfile::Characterization => 32,
             RunProfile::Stress => 64,
         };
+        let mut isolation = MatrixIsolation::default();
         for &groups in groups {
             let key_counts = if self.key_matrix == KeyMatrix::Large {
                 LARGE_TXN_KEY_COUNTS
@@ -72,6 +73,7 @@ impl TransactionCase {
                 if keys < groups || keys > (fixture_spec.keys / groups) * groups {
                     continue;
                 }
+                isolation.start_item(lab).await?;
                 let name = format!("groups_{groups}_keys_{keys}");
                 let (db, targets) = layout(lab, &name, groups as usize, fixture_spec).await?;
                 let per_table = keys.div_ceil(groups);

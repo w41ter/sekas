@@ -50,28 +50,28 @@ impl CapacityCase {
         );
         match self {
             Self::Concurrency | Self::OfferedLoad => {
-                let (db, targets) = layout(lab, "capacity", 2, fixture_spec).await?;
+                let mut isolation = MatrixIsolation::default();
                 for (name, operation) in [
                     ("read", Operation::Read { present: true, version: None, expected: None }),
                     ("update", Operation::Put),
                     ("distributed_txn", Operation::Transaction { mode: TxnMode::Blind, keys: 2 }),
                 ] {
-                    let mut template = workload(
-                        lab,
-                        name,
-                        targets[0].clone(),
-                        operation,
-                        fixture_spec.value_size,
-                        closed_loop(1),
-                    );
-                    if name == "distributed_txn" {
-                        template.targets = targets.clone();
-                    }
                     if self == Self::Concurrency {
                         for &concurrency in CONCURRENCY_LEVELS {
-                            let mut spec = template.clone();
-                            spec.name = format!("{name}_concurrency_{concurrency}");
-                            spec.load = closed_loop(concurrency);
+                            isolation.start_item(lab).await?;
+                            let item = format!("{name}_concurrency_{concurrency}");
+                            let (db, targets) = layout(lab, &item, 2, fixture_spec).await?;
+                            let mut spec = workload(
+                                lab,
+                                &item,
+                                targets[0].clone(),
+                                operation.clone(),
+                                fixture_spec.value_size,
+                                closed_loop(concurrency),
+                            );
+                            if name == "distributed_txn" {
+                                spec.targets = targets;
+                            }
                             spec.allow_overload = true;
                             let report = measure(lab, &db, spec).await?;
                             ensure!(
@@ -86,9 +86,20 @@ impl CapacityCase {
                         // validation errors are not.
 
                         for &qps in OFFERED_QPS {
-                            let mut spec = template.clone();
-                            spec.name = format!("{name}_offered_{qps}");
-                            spec.load = open_loop(qps, 128);
+                            isolation.start_item(lab).await?;
+                            let item = format!("{name}_offered_{qps}");
+                            let (db, targets) = layout(lab, &item, 2, fixture_spec).await?;
+                            let mut spec = workload(
+                                lab,
+                                &item,
+                                targets[0].clone(),
+                                operation.clone(),
+                                fixture_spec.value_size,
+                                open_loop(qps, 128),
+                            );
+                            if name == "distributed_txn" {
+                                spec.targets = targets;
+                            }
                             spec.allow_overload = true;
                             let report = measure(lab, &db, spec).await?;
                             ensure!(
@@ -103,7 +114,9 @@ impl CapacityCase {
                 }
             }
             Self::GroupScale => {
+                let mut isolation = MatrixIsolation::default();
                 for &groups in GROUP_SCALE_GROUP_COUNTS {
+                    isolation.start_item(lab).await?;
                     let (db, targets) =
                         layout(lab, &format!("scale_{groups}"), groups as usize, fixture_spec)
                             .await?;
@@ -167,7 +180,9 @@ impl CapacityCase {
                 reports.extend([before, after]);
             }
             Self::MetadataScale => {
+                let mut isolation = MatrixIsolation::default();
                 for &count in METADATA_COUNTS {
+                    isolation.start_item(lab).await?;
                     let db = lab.client.create_database(format!("metadata_scale_{count}")).await?;
                     for i in 0..count {
                         lab.table(&db, &format!("table_{i}")).await?;

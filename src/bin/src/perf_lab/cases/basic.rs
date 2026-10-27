@@ -47,24 +47,11 @@ impl BasicCase {
             } else {
                 write_fixture
             };
-        let (db, target) =
+        let (mut db, mut target) =
             fixture(lab, name, self != Self::PointMiss && self != Self::Insert, fixture_spec)
                 .await?;
         if matches!(self, Self::PointHit | Self::RangeScan | Self::CrossShardScan) {
-            let db_config = &lab.config.cluster.db;
-            let bytes = target.keys as u128 * fixture_spec.value_size as u128;
-            let memory_budget = db_config.block_cache_size as u128 * 4
-                + db_config.write_buffer_size as u128
-                    * db_config.max_write_buffer_number as u128
-                    * 2;
-            ensure!(
-                bytes > memory_budget,
-                "read case requires a working set larger than cache and write buffers"
-            );
-            ensure!(
-                lab.storage_stats()?.sst_bytes > db_config.block_cache_size as u64,
-                "read fixture did not flush beyond block cache"
-            );
+            validate_read_fixture(lab, &target, fixture_spec)?;
         }
         let mut reports = Vec::new();
         let mut derived = BTreeMap::new();
@@ -98,7 +85,12 @@ impl BasicCase {
                 );
                 reports.push(measure(lab, &db, spec).await?);
             } else {
+                let mut isolation = MatrixIsolation::default();
                 for &limit in SCAN_LIMITS {
+                    if !isolation.start_item(lab).await? {
+                        (db, target) = fixture(lab, name, true, fixture_spec).await?;
+                        validate_read_fixture(lab, &target, fixture_spec)?;
+                    }
                     let spec = workload(
                         lab,
                         &format!("scan_{limit}"),
@@ -153,10 +145,8 @@ impl BasicCase {
                 reports.push(report);
             } else {
                 let mut latency_target = target.clone();
-                let mut throughput_target = target;
                 if self == Self::Insert {
                     latency_target.prefix.push_str("latency-");
-                    throughput_target.prefix.push_str("throughput-");
                 }
                 let latency = workload(
                     lab,
@@ -167,10 +157,24 @@ impl BasicCase {
                     closed_loop(1),
                 );
                 reports.push(measure(lab, &db, latency).await?);
+                lab.restart_isolated().await?;
+                (db, target) = fixture(
+                    lab,
+                    name,
+                    self != Self::PointMiss && self != Self::Insert,
+                    fixture_spec,
+                )
+                .await?;
+                if self == Self::PointHit {
+                    validate_read_fixture(lab, &target, fixture_spec)?;
+                }
+                if self == Self::Insert {
+                    target.prefix.push_str("throughput-");
+                }
                 let throughput = workload(
                     lab,
                     &format!("throughput_c{concurrency}"),
-                    throughput_target,
+                    target,
                     operation,
                     fixture_spec.value_size,
                     closed_loop(concurrency),
@@ -196,4 +200,24 @@ impl BasicCase {
         }
         Ok(case_report(lab, name, reports, derived, checks))
     }
+}
+
+fn validate_read_fixture(
+    lab: &LabContext,
+    target: &crate::perf_lab::workload::Target,
+    fixture_spec: FixtureSpec,
+) -> Result<()> {
+    let db_config = &lab.config.cluster.db;
+    let bytes = target.keys as u128 * fixture_spec.value_size as u128;
+    let memory_budget = db_config.block_cache_size as u128 * 4
+        + db_config.write_buffer_size as u128 * db_config.max_write_buffer_number as u128 * 2;
+    ensure!(
+        bytes > memory_budget,
+        "read case requires a working set larger than cache and write buffers"
+    );
+    ensure!(
+        lab.storage_stats()?.sst_bytes > db_config.block_cache_size as u64,
+        "read fixture did not flush beyond block cache"
+    );
+    Ok(())
 }

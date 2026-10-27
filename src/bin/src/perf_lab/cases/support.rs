@@ -17,6 +17,22 @@ use crate::perf_lab::workload::{
 };
 use crate::perf_lab::{LabContext, RunProfile};
 
+#[derive(Default)]
+pub(super) struct MatrixIsolation {
+    items: usize,
+}
+
+impl MatrixIsolation {
+    pub(super) async fn start_item(&mut self, lab: &mut LabContext) -> Result<bool> {
+        let first = self.items == 0;
+        if !first {
+            lab.restart_isolated().await?;
+        }
+        self.items += 1;
+        Ok(first)
+    }
+}
+
 #[derive(Clone, Copy)]
 pub(super) struct FixtureSpec {
     pub(super) keys: u64,
@@ -321,6 +337,10 @@ pub(super) async fn layout(
         seed_target(lab, &db, target, &seed_value).await?;
         wait_shard_local_txn_ready(lab, target).await?;
     }
+    // Seeding can generate enough Raft and snapshot I/O to trigger elections,
+    // especially when leader balancing is disabled for deterministic layouts.
+    // Do not let that setup-induced churn leak into warmup or measurement.
+    lab.wait_cluster_stable().await?;
     let mut actual = BTreeSet::new();
     for target in &targets {
         actual.insert(lab.group_for_key(target.table, &target.key(0)).await?.0);

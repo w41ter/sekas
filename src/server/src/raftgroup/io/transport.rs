@@ -20,7 +20,7 @@ use futures::channel::mpsc;
 use log::{debug, warn};
 use sekas_api::server::v1::{NodeDesc, ReplicaDesc};
 use sekas_runtime::{JoinHandle, TaskGroup};
-use vaelo::{ConnectionTag, RpcChannel};
+use vaelo::{ConnectionTag, GrpcOptions, RpcChannel};
 
 use crate::Result;
 use crate::node::route_table::RaftRouteTable;
@@ -164,7 +164,8 @@ impl StreamingTask {
             .addr
             .parse::<SocketAddr>()
             .map_err(|error| crate::Error::InvalidArgument(error.to_string()))?;
-        let channel = RpcChannel::grpc(remote).connection_tag(tag).build()?;
+        let channel =
+            RpcChannel::grpc(remote).connection_tag(tag).grpc_options(grpc_options()).build()?;
         let client = RaftClient::new(channel);
         let (mut sender, response) = client.send_message().start().into_parts();
         tokio::pin!(response);
@@ -208,7 +209,8 @@ pub async fn retrive_snapshot(
         .addr
         .parse::<SocketAddr>()
         .map_err(|error| crate::Error::InvalidArgument(error.to_string()))?;
-    let channel = RpcChannel::grpc(remote).connection_tag(tag).build()?;
+    let channel =
+        RpcChannel::grpc(remote).connection_tag(tag).grpc_options(grpc_options()).build()?;
     let client = RaftClient::new(channel);
     let request = SnapshotRequest { replica_id: target_replica.id, snapshot_id };
     let resp = client.retrieve_snapshot(request).await?;
@@ -221,6 +223,12 @@ fn raft_connection_tag(from_replica: u64, to_replica: u64) -> ConnectionTag {
             | ((from_replica.wrapping_mul(0x9e37_79b9_7f4a_7c15).rotate_left(17) ^ to_replica)
                 & 0x3fff_ffff_ffff_ffff),
     )
+}
+
+fn grpc_options() -> GrpcOptions {
+    GrpcOptions::default()
+        .max_decoding_message_size(sekas_api::MAX_RPC_MESSAGE_SIZE)
+        .max_encoding_message_size(sekas_api::MAX_RPC_MESSAGE_SIZE)
 }
 
 async fn resolve_address(resolver: &dyn AddressResolver, node_id: u64) -> Result<NodeDesc> {

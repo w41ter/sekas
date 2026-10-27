@@ -32,7 +32,8 @@ use crate::retry::RetryState;
 use crate::rpc::RouterGroupState;
 use crate::trace::{TraceFutureExt, local_span, span_name};
 use crate::{
-    AppResult, Database, Error, RangeRequest, Result, SekasClient, TxnStateTable, record_latency,
+    AppError, AppResult, Database, Error, RangeRequest, Result, SekasClient, TxnStateTable,
+    record_latency,
 };
 const TXN_CLEANUP_TIMEOUT: Duration = Duration::from_secs(5);
 const ASYNC_COMMIT_MAX_KEYS: usize = 63;
@@ -163,6 +164,7 @@ impl WriteBuilder {
     /// Build a put request.
     pub fn put(self, value: Vec<u8>) -> AppResult<PutRequest> {
         self.verify_conditions()?;
+        validate_value_size(value.len())?;
         Ok(PutRequest {
             put_type: PutType::None.into(),
             key: self.key,
@@ -411,6 +413,7 @@ impl Txn {
     /// version. Once a user snapshot has been observed, the distributed-intent
     /// path preserves SI by checking write conflicts during intent preparation.
     pub async fn commit(mut self) -> AppResult<WriteBatchResponse> {
+        self.validate_limits()?;
         if self.start_version.get().is_none()
             && let Some(resp) = self.try_commit_local_txn().await?
         {
@@ -427,6 +430,10 @@ impl Txn {
             self.has_snapshot_read.load(Ordering::Acquire),
         );
         Ok(ctx.commit().await?)
+    }
+
+    fn validate_limits(&self) -> AppResult<()> {
+        validate_transaction_payload(&self.puts, &self.deletes)
     }
 
     async fn try_commit_local_txn(&mut self) -> Result<Option<WriteBatchResponse>> {
@@ -919,15 +926,51 @@ fn push_local_txn_group(
 
 fn approx_write_size(write: &WriteContext) -> usize {
     match &write.request {
-        WriteRequest::Put(put) => {
-            put.key.len()
-                + put.value.len()
-                + put.conditions.iter().map(approx_condition_size).sum::<usize>()
-        }
-        WriteRequest::Delete(delete) => {
-            delete.key.len() + delete.conditions.iter().map(approx_condition_size).sum::<usize>()
-        }
+        WriteRequest::Put(put) => approx_put_size(put),
+        WriteRequest::Delete(delete) => approx_delete_size(delete),
     }
+}
+
+fn approx_put_size(put: &PutRequest) -> usize {
+    put.key.len()
+        + put.value.len()
+        + put.conditions.iter().map(approx_condition_size).sum::<usize>()
+}
+
+fn approx_delete_size(delete: &DeleteRequest) -> usize {
+    delete.key.len() + delete.conditions.iter().map(approx_condition_size).sum::<usize>()
+}
+
+fn validate_value_size(size: usize) -> AppResult<()> {
+    if size > sekas_api::MAX_VALUE_SIZE {
+        return Err(AppError::InvalidArgument(format!(
+            "value size {size} exceeds limit {}",
+            sekas_api::MAX_VALUE_SIZE
+        )));
+    }
+    Ok(())
+}
+
+fn validate_transaction_payload(
+    puts: &[(u64, PutRequest)],
+    deletes: &[(u64, DeleteRequest)],
+) -> AppResult<()> {
+    for (_, put) in puts {
+        validate_value_size(put.value.len())?;
+    }
+    let size = puts
+        .iter()
+        .map(|(_, put)| approx_put_size(put))
+        .chain(deletes.iter().map(|(_, delete)| approx_delete_size(delete)))
+        .try_fold(0_usize, usize::checked_add)
+        .unwrap_or(usize::MAX);
+    if size > sekas_api::MAX_TXN_SIZE {
+        return Err(AppError::InvalidArgument(format!(
+            "transaction size {size} exceeds limit {}",
+            sekas_api::MAX_TXN_SIZE
+        )));
+    }
+    Ok(())
 }
 
 fn approx_condition_size(condition: &WriteCondition) -> usize {
@@ -1684,5 +1727,31 @@ mod local_txn_retry_tests {
     fn group_not_accessable_is_retryable_for_local_txn() {
         assert!(can_retry_local_txn(&Error::GroupNotAccessable(1)));
         assert!(!can_retry_local_txn(&Error::DeadlineExceeded("timeout".into())));
+    }
+
+    #[test]
+    fn put_value_limit_is_inclusive() {
+        assert!(WriteBuilder::new(Vec::new()).put(vec![0; sekas_api::MAX_VALUE_SIZE]).is_ok());
+        assert!(matches!(
+            WriteBuilder::new(Vec::new()).put(vec![0; sekas_api::MAX_VALUE_SIZE + 1]),
+            Err(AppError::InvalidArgument(_))
+        ));
+    }
+
+    #[test]
+    fn transaction_payload_limit_counts_all_writes() {
+        let puts = (0..sekas_api::MAX_TXN_SIZE / sekas_api::MAX_VALUE_SIZE)
+            .map(|_| {
+                (1, PutRequest { value: vec![0; sekas_api::MAX_VALUE_SIZE], ..Default::default() })
+            })
+            .collect::<Vec<_>>();
+        assert!(validate_transaction_payload(&puts, &[]).is_ok());
+
+        let mut puts = puts;
+        puts[0].1.key.push(0);
+        assert!(matches!(
+            validate_transaction_payload(&puts, &[]),
+            Err(AppError::InvalidArgument(_))
+        ));
     }
 }

@@ -148,25 +148,10 @@ impl Default for ClusterConfig {
             nodes: 3,
             cpus_per_node: 2,
             enable_proxy_service: false,
-            db: DbConfig {
-                block_cache_size: 1 << 20,
-                write_buffer_size: 128 << 20,
-                max_write_buffer_number: 3,
-                max_background_jobs: 2,
-                max_sub_compactions: 1,
-                ..DbConfig::default()
-            },
+            db: DbConfig::default(),
             node: NodeConfig::default(),
-            raft: RaftConfig { tick_interval_ms: 100, ..RaftConfig::default() },
-            root: RootConfig {
-                enable_group_balance: true,
-                enable_replica_balance: true,
-                enable_leader_balance: false,
-                enable_shard_balance: false,
-                replicas_per_group: 3,
-                schedule_interval_sec: 1,
-                ..RootConfig::default()
-            },
+            raft: RaftConfig::default(),
+            root: RootConfig::default(),
         }
     }
 }

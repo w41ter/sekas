@@ -46,7 +46,9 @@ impl MixedCase {
         };
         let ratios =
             if self == Self::ReadUpdate { READ_UPDATE_WRITE_RATIOS } else { INTERFERENCE_RATIOS };
+        let mut isolation = MatrixIsolation::default();
         for &ratio in ratios {
+            isolation.start_item(lab).await?;
             let stage = format!("ratio_{ratio}");
             let (db, target) = fixture(lab, &stage, true, fixture_spec).await?;
             let background_target = if matches!(self, Self::ReadUpdate | Self::HotCold) {

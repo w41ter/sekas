@@ -25,6 +25,16 @@ mod write;
 /// request's group epoch no longer matches the authoritative root metadata.
 pub const ALLOC_REPLICA_EPOCH_NOT_MATCH_KEYWORD: &str = "epoch not match";
 
+/// Maximum encoded size of one RPC message.
+pub const MAX_RPC_MESSAGE_SIZE: usize = 64 * 1024 * 1024;
+
+/// Maximum size of one user value.
+pub const MAX_VALUE_SIZE: usize = 10 * 1024;
+
+/// Maximum aggregate key, value and condition payload buffered by one
+/// transaction.
+pub const MAX_TXN_SIZE: usize = 10 * 1024 * 1024;
+
 pub mod server {
     pub mod v1 {
         #![allow(clippy::all)]

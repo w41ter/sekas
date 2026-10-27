@@ -68,8 +68,12 @@ async fn bootstrap_services(
     use crate::service::admin::make_admin_service;
 
     let admin = make_admin_service(server.clone());
+    let grpc_options = vaelo::GrpcOptions::default()
+        .max_decoding_message_size(sekas_api::MAX_RPC_MESSAGE_SIZE)
+        .max_encoding_message_size(sekas_api::MAX_RPC_MESSAGE_SIZE);
     let mut builder = vaelo::ServerBuilder::new()
         .rpc_protocols([vaelo::RpcProtocol::Grpc])
+        .grpc_options(grpc_options)
         .add_service(NodeServer::new(server.clone()))
         .add_service(RaftServer::new(server.clone()))
         .add_service(RootServer::new(server.clone()));

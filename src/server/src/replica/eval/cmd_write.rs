@@ -18,7 +18,7 @@ use sekas_api::server::v1::{PutType, ShardWriteRequest, ShardWriteResponse, Writ
 use sekas_rock::time::timestamp_nanos;
 
 use super::cas::eval_conditions;
-use super::{WriteEvalResult, write_not_executed, write_ok};
+use super::{WriteEvalResult, validate_value_sizes, write_not_executed, write_ok};
 use crate::node::move_shard::ForwardCtx;
 use crate::replica::ExecCtx;
 use crate::replica::write_view::WriteEvalContext;
@@ -29,6 +29,7 @@ pub(crate) async fn batch_write(
     write_ctx: &mut WriteEvalContext<'_>,
     req: &ShardWriteRequest,
 ) -> Result<(Option<WriteEvalResult>, ShardWriteResponse)> {
+    validate_value_sizes(std::iter::once(req))?;
     // TODO(walter) only internal shards would write in batch.
     if req.deletes.is_empty() && req.puts.is_empty() {
         return Ok((None, ShardWriteResponse::default()));

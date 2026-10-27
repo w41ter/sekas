@@ -203,6 +203,7 @@ fn classify_error(error: AppError) -> String {
         AppError::TxnConflict => "txn_conflict",
         AppError::CasFailed(..) => "cas_failed",
         AppError::DeadlineExceeded(_) => "deadline_exceeded",
+        AppError::ResourceExhausted(_) => "resource_exhausted",
         AppError::Network(_) => "network",
         AppError::InvalidArgument(_) => "validation",
         AppError::Internal(_) => "internal",

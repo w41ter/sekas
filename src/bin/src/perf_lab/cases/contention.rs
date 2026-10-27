@@ -38,7 +38,9 @@ impl ContentionCase {
             RunProfile::Characterization => (16, 5, 8),
             RunProfile::Stress => (64, 10, 16),
         };
+        let mut isolation = MatrixIsolation::default();
         for &hotset in HOTSET_SIZES {
+            isolation.start_item(lab).await?;
             let (db, mut target) =
                 fixture(lab, &format!("hotset_{hotset}"), false, fixture_spec).await?;
             target.keys = hotset;

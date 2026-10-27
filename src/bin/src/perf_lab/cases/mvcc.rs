@@ -37,7 +37,9 @@ impl MvccCase {
             RunProfile::Characterization => 32,
             RunProfile::Stress => 64,
         };
+        let mut isolation = MatrixIsolation::default();
         for &versions in VERSION_COUNTS {
+            isolation.start_item(lab).await?;
             let (db, mut target) =
                 fixture(lab, &format!("{}_v{versions}", name), false, fixture_spec).await?;
             // Keep this matrix bounded independently of the read working-set profile.

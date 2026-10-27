@@ -21,7 +21,7 @@ use sekas_schema::system::txn::TXN_INTENT_VERSION;
 
 use super::cas::eval_conditions;
 use super::latch::DeferSignalLatchGuard;
-use super::{LatchGuard, WriteEvalResult};
+use super::{LatchGuard, WriteEvalResult, validate_value_sizes};
 use crate::engine::GroupEngine;
 use crate::node::move_shard::ForwardCtx;
 use crate::replica::write_view::WriteEvalContext;
@@ -34,6 +34,7 @@ pub(crate) async fn write_intent<T: LatchGuard>(
     latch_guard: &mut DeferSignalLatchGuard<T>,
     req: &WriteIntentRequest,
 ) -> Result<(Option<WriteEvalResult>, WriteIntentResponse, Vec<ForwardPart>)> {
+    validate_value_sizes(&req.writes)?;
     let mut eval_result = WriteEvalResult::default();
     let mut responses = vec![retry_write_result("intent entry is not executed"); req.writes.len()];
     let mut forwards = Vec::new();

@@ -19,7 +19,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use sekas_api::server::v1::root_client::RootClient;
-use vaelo::{ConnectionTag, RpcChannel};
+use vaelo::{ConnectionTag, GrpcOptions, RpcChannel};
 
 static NEXT_CONNECTION_TAG: AtomicU64 = AtomicU64::new(1);
 
@@ -61,7 +61,11 @@ impl ConnManager {
         }
 
         let remote = addr.parse::<SocketAddr>().map_err(|e| Error::Internal(Box::new(e)))?;
-        let mut builder = RpcChannel::grpc(remote).connection_tag(self.connection_tag);
+        let grpc_options = GrpcOptions::default()
+            .max_decoding_message_size(sekas_api::MAX_RPC_MESSAGE_SIZE)
+            .max_encoding_message_size(sekas_api::MAX_RPC_MESSAGE_SIZE);
+        let mut builder =
+            RpcChannel::grpc(remote).connection_tag(self.connection_tag).grpc_options(grpc_options);
         if let Some(connect_timeout) = self.connect_timeout {
             builder = builder.connect_timeout(connect_timeout);
         }

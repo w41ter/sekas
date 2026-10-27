@@ -323,7 +323,34 @@ impl Case {
     }
 
     pub(super) fn version(&self) -> u32 {
-        1
+        match self.kind {
+            CaseKind::PointHit
+            | CaseKind::PointMiss
+            | CaseKind::Insert
+            | CaseKind::Update
+            | CaseKind::RangeScan
+            | CaseKind::LatestVersions
+            | CaseKind::SnapshotPoint
+            | CaseKind::SnapshotScan
+            | CaseKind::TombstoneRead
+            | CaseKind::ReadOnlyLocal
+            | CaseKind::ReadOnlyDistributed
+            | CaseKind::BlindLocal
+            | CaseKind::BlindDistributed
+            | CaseKind::ReadWriteLocal
+            | CaseKind::ReadWriteDistributed
+            | CaseKind::LargeTxn
+            | CaseKind::Hotset
+            | CaseKind::SiConflict
+            | CaseKind::SiConflictRetry
+            | CaseKind::LongShortTxn
+            | CaseKind::ReadUpdate
+            | CaseKind::Concurrency
+            | CaseKind::OfferedLoad
+            | CaseKind::GroupScale
+            | CaseKind::MetadataScale => 2,
+            _ => 1,
+        }
     }
 
     pub(super) fn description(&self) -> &'static str {
@@ -387,6 +414,8 @@ mod tests {
             );
         }
         assert!(CaseKind::from_report_name("txn-conflict").is_none());
+        assert_eq!(Case::build(CaseKind::LargeTxn).version(), 2);
+        assert_eq!(Case::build(CaseKind::LeaderTransfer).version(), 1);
     }
     #[test]
     fn scenarios_enable_their_required_events() {
