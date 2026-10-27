@@ -21,6 +21,10 @@ mod txn;
 mod value;
 mod write;
 
+/// Keyword carried by an `AllocReplica` invalid-argument error when the
+/// request's group epoch no longer matches the authoritative root metadata.
+pub const ALLOC_REPLICA_EPOCH_NOT_MATCH_KEYWORD: &str = "epoch not match";
+
 pub mod server {
     pub mod v1 {
         #![allow(clippy::all)]

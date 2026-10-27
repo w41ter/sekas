@@ -22,6 +22,7 @@ mod watch_replica_states;
 
 use std::collections::HashMap;
 
+use sekas_api::ALLOC_REPLICA_EPOCH_NOT_MATCH_KEYWORD;
 use sekas_api::server::v1::{ReplicaDesc, ScheduleState};
 
 pub use self::durable::DurableGroup;
@@ -34,6 +35,16 @@ pub use self::watch_replica_states::WatchReplicaStates;
 use super::ActionTask;
 use crate::schedule::scheduler::ScheduleContext;
 use crate::schedule::task::{Task, TaskState};
+
+fn is_expected_alloc_replica_error(err: &sekas_client::Error) -> bool {
+    match err {
+        sekas_client::Error::ResourceExhausted(_) => true,
+        sekas_client::Error::InvalidArgument(message) => {
+            message.contains(ALLOC_REPLICA_EPOCH_NOT_MATCH_KEYWORD)
+        }
+        _ => false,
+    }
+}
 
 pub struct GroupLockTable {
     group_id: u64,
@@ -176,5 +187,26 @@ impl Task for ActionTaskWithLocks {
             ctx.group_lock_table.release(self.inner.id(), std::mem::take(&mut self.locks));
         }
         state
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_expected_alloc_replica_error;
+
+    #[test]
+    fn classify_expected_alloc_replica_errors() {
+        assert!(is_expected_alloc_replica_error(&sekas_client::Error::ResourceExhausted(
+            "no enough nodes".to_owned()
+        )));
+        assert!(is_expected_alloc_replica_error(&sekas_client::Error::InvalidArgument(
+            "group epoch not match at root".to_owned()
+        )));
+        assert!(!is_expected_alloc_replica_error(&sekas_client::Error::InvalidArgument(
+            "num_required must be positive".to_owned()
+        )));
+        assert!(!is_expected_alloc_replica_error(&sekas_client::Error::EpochNotMatch(
+            Default::default()
+        )));
     }
 }

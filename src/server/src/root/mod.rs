@@ -34,6 +34,7 @@ use std::time::Duration;
 
 use log::{error, info, trace, warn};
 use schedule::BackgroundJob;
+use sekas_api::ALLOC_REPLICA_EPOCH_NOT_MATCH_KEYWORD;
 use sekas_api::server::v1::report_request::GroupUpdates;
 use sekas_api::server::v1::watch_response::*;
 use sekas_api::server::v1::*;
@@ -855,7 +856,7 @@ impl Root {
         let schema = self.schema()?;
         let group_desc = schema.get_group(group_id).await?.ok_or(Error::GroupNotFound(group_id))?;
         if group_desc.epoch != epoch {
-            return Err(Error::InvalidArgument("epoch not match".to_owned()));
+            return Err(Error::InvalidArgument(ALLOC_REPLICA_EPOCH_NOT_MATCH_KEYWORD.to_owned()));
         }
         let mut existing_replicas =
             group_desc.replicas.into_iter().map(|r| r.node_id).collect::<HashSet<u64>>();

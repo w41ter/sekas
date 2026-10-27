@@ -19,7 +19,7 @@ use std::time::Duration;
 use log::{debug, error, info};
 use sekas_api::server::v1::*;
 
-use super::ActionTaskWithLocks;
+use super::{ActionTaskWithLocks, is_expected_alloc_replica_error};
 use crate::schedule::actions::{AddLearners, CreateReplicas, RemoveLearners, ReplaceVoters};
 use crate::schedule::event_source::EventSource;
 use crate::schedule::provider::GroupProviders;
@@ -173,10 +173,7 @@ impl DurableGroup {
         };
         match ctx.transport_manager.root_client().alloc_replica(req).await {
             Ok(resp) => Some(resp.replicas),
-            Err(
-                e @ (sekas_client::Error::ResourceExhausted(_)
-                | sekas_client::Error::EpochNotMatch(_)),
-            ) => {
+            Err(e) if is_expected_alloc_replica_error(&e) => {
                 debug!(
                     "group {group_id} replica {replica_id} alloc addition replicas for {who}: {e}",
                 );

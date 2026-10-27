@@ -31,7 +31,9 @@ service Root {
 	// Report the changes of metadata and volatile states of group or replicas.
 	rpc Report(ReportRequest) returns (ReportResponse) {}
 
-	// Alloc replica id and node for the corresponding group.
+	// Alloc replica id and node for the corresponding group. If the request epoch
+	// does not match the authoritative group epoch, the RPC returns InvalidArgument
+	// and its error message contains the keyword "epoch not match".
 	rpc AllocReplica(AllocReplicaRequest) returns (AllocReplicaResponse) {}
 
 	// Alloc txn id.
