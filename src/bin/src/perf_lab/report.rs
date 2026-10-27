@@ -22,6 +22,7 @@ use serde::{Deserialize, Serialize};
 
 use super::cases::{Case, CaseCategory, CaseKind};
 use super::config::LabConfig;
+use super::diagnostics::{HistogramDelta, HistogramSnapshot, ProcessSnapshot};
 use super::{LabContext, WorkloadReport};
 
 // These counters answer the storage and topology scenarios' questions. Keep
@@ -40,6 +41,16 @@ pub(crate) struct MetricInterval {
     to: String,
     duration_ms: u128,
     counters: BTreeMap<String, f64>,
+    #[serde(default)]
+    from_at_unix_ms: u128,
+    #[serde(default)]
+    to_at_unix_ms: u128,
+    #[serde(default)]
+    histogram_deltas: BTreeMap<String, HistogramDelta>,
+    #[serde(default)]
+    process_start: Option<ProcessSnapshot>,
+    #[serde(default)]
+    process_end: Option<ProcessSnapshot>,
 }
 
 #[derive(Default)]
@@ -49,8 +60,10 @@ pub(crate) struct MetricsRecorder {
 
 impl MetricsRecorder {
     pub(crate) fn mark(&mut self, name: String) {
+        let at_unix_ms = crate::perf_lab::unix_millis();
+        let families = prometheus::gather();
         let counters =
-            prometheus::gather()
+            families
                 .iter()
                 .filter(|family| OBSERVED_COUNTERS.contains(&family.name()))
                 .flat_map(|family| {
@@ -59,7 +72,10 @@ impl MetricsRecorder {
                     )
                 })
                 .collect();
-        self.marks.push(MetricMark { name, at_unix_ms: crate::perf_lab::unix_millis(), counters });
+        let histograms = super::diagnostics::histograms(&families);
+        let process = super::diagnostics::process_snapshot();
+        println!("perf-lab mark: {name} at_unix_ms={at_unix_ms}");
+        self.marks.push(MetricMark { name, at_unix_ms, counters, histograms, process });
     }
 
     pub(crate) fn intervals(&self) -> Vec<MetricInterval> {
@@ -71,6 +87,18 @@ impl MetricsRecorder {
                     from: start.name.clone(),
                     to: end.name.clone(),
                     duration_ms: end.at_unix_ms.saturating_sub(start.at_unix_ms),
+                    from_at_unix_ms: start.at_unix_ms,
+                    to_at_unix_ms: end.at_unix_ms,
+                    histogram_deltas: end
+                        .histograms
+                        .iter()
+                        .filter_map(|(key, histogram)| {
+                            let delta = histogram.delta(start.histograms.get(key));
+                            (delta.samples.count > 0).then(|| (key.clone(), delta))
+                        })
+                        .collect(),
+                    process_start: start.process.clone(),
+                    process_end: end.process.clone(),
                     counters: end
                         .counters
                         .iter()
@@ -91,9 +119,11 @@ struct MetricMark {
     name: String,
     at_unix_ms: u128,
     counters: BTreeMap<String, f64>,
+    histograms: BTreeMap<String, HistogramSnapshot>,
+    process: Option<ProcessSnapshot>,
 }
 
-fn metric_key(name: &str, metric: &Metric) -> String {
+pub(super) fn metric_key(name: &str, metric: &Metric) -> String {
     let labels = metric
         .get_label()
         .iter()
@@ -406,6 +436,8 @@ mod tests {
             name: name.into(),
             at_unix_ms,
             counters: values.iter().map(|(key, value)| ((*key).into(), *value)).collect(),
+            histograms: BTreeMap::new(),
+            process: None,
         };
         let recorder = MetricsRecorder {
             marks: vec![
@@ -431,6 +463,7 @@ mod tests {
         assert_eq!(intervals[0].counters.values().sum::<f64>(), 8.0);
         assert_eq!(intervals[1].counters.values().sum::<f64>(), 4.0);
         let mut legacy = serde_json::to_value(&intervals[0]).unwrap();
+        legacy.as_object_mut().unwrap().remove("histogram_deltas");
         legacy["histograms"] = serde_json::json!({"rpc": {"count": 1}});
         legacy["counters"]["gauge:gc"] = serde_json::json!(123.0);
         legacy["counters"]["gc_other"] = serde_json::json!(456.0);

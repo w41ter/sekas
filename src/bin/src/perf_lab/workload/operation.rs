@@ -161,7 +161,9 @@ async fn execute_transaction(
             for (table, key) in &writes {
                 out.bytes += check_value(txn.get(*table, key.clone()).await?, true, None)?;
             }
-            tokio::time::sleep(spec.hold).await;
+            if !spec.hold.is_zero() {
+                tokio::time::sleep(spec.hold).await;
+            }
         }
         if let Some(value) = &value {
             for (table, key) in &writes {

@@ -17,6 +17,7 @@
 mod cases;
 mod cluster;
 mod config;
+mod diagnostics;
 mod observer;
 mod report;
 mod runner;

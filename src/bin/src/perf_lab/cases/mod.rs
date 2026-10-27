@@ -323,6 +323,24 @@ impl Case {
     }
 
     pub(super) fn version(&self) -> u32 {
+        // Zero-hold snapshot transactions no longer wait for a timer tick.
+        match self.kind {
+            CaseKind::ReadOnlyLocal
+            | CaseKind::ReadOnlyDistributed
+            | CaseKind::ReadWriteLocal
+            | CaseKind::ReadWriteDistributed
+            | CaseKind::LongShortTxn => return 3,
+            CaseKind::LeaderTransfer
+            | CaseKind::DataLeaderFailover
+            | CaseKind::FollowerRecovery
+            | CaseKind::ReplicaAdd
+            | CaseKind::ReplicaRemove
+            | CaseKind::SnapshotCatchup
+            | CaseKind::ShardMigration
+            | CaseKind::SplitMerge
+            | CaseKind::RootFailover => return 2,
+            _ => {}
+        }
         match self.kind {
             CaseKind::PointHit
             | CaseKind::PointMiss
@@ -415,7 +433,7 @@ mod tests {
         }
         assert!(CaseKind::from_report_name("txn-conflict").is_none());
         assert_eq!(Case::build(CaseKind::LargeTxn).version(), 2);
-        assert_eq!(Case::build(CaseKind::LeaderTransfer).version(), 1);
+        assert_eq!(Case::build(CaseKind::LeaderTransfer).version(), 2);
     }
     #[test]
     fn scenarios_enable_their_required_events() {
