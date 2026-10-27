@@ -57,9 +57,9 @@ toml = "1.1"
 tokio = { version = "1.21", features = ["full"] }
 tokio-stream = { version = "0.1", features = ["net"] }
 tracing = "0.1"
-vaelo = { git = "https://github.com/w41ter/vaelo", rev = "1a715f72246ef4ed692903c473a7d036f745d8f8" }
+vaelo = { git = "https://github.com/w41ter/vaelo", rev = "5796d7336af474c9ea143c379af66f8bf5cda2c4" }
 
 # for build
 prost-build = "0.14"
-vaelo-build = { git = "https://github.com/w41ter/vaelo", rev = "1a715f72246ef4ed692903c473a7d036f745d8f8" }
+vaelo-build = { git = "https://github.com/w41ter/vaelo", rev = "5796d7336af474c9ea143c379af66f8bf5cda2c4" }
 protoc-build = { git = "https://github.com/w41ter/protoc-build.git", rev = "283c4b96bf850434be7a4673c736a61657c9c79d", features = ["vendored"] }

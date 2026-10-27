@@ -35,7 +35,7 @@ pub(crate) struct LabContext {
     root_dir: PathBuf,
     pub(crate) nodes: HashMap<u64, String>,
     notifiers: HashMap<u64, ShutdownNotifier>,
-    handles: HashMap<u64, thread::JoinHandle<()>>,
+    handles: HashMap<u64, thread::JoinHandle<Result<()>>>,
     conn_manager: ConnManager,
     pub(crate) router: Router,
     pub(super) client: SekasClient,
@@ -89,7 +89,7 @@ impl LabContext {
             let addr = nodes.get(&id).unwrap().clone();
             let join_list = if id == 0 { vec![] } else { vec![root_addr.clone()] };
             self.spawn_server(id, addr.clone(), id == 0, join_list)?;
-            node_client_with_retry(&addr).await?;
+            self.wait_server_ready(id, &addr).await?;
             self.http_clients.insert(id, admin_http_client(&addr)?);
             self.nodes.insert(id, addr);
         }
@@ -144,9 +144,8 @@ impl LabContext {
         let worker_threads = self.config.cluster.cpus_per_node.max(1);
         let handle = thread::spawn(move || {
             let owner = ExecutorOwner::new(worker_threads);
-            if let Err(err) = sekas_server::run(cfg, owner.executor(), shutdown) {
-                panic!("perf-lab server {node_id} at {addr} exits with {err}");
-            }
+            sekas_server::run(cfg, owner.executor(), shutdown)
+                .with_context(|| format!("perf-lab server {node_id} at {addr} exited"))
         });
         self.notifiers.insert(node_id, notifier);
         self.handles.insert(node_id, handle);
@@ -163,10 +162,15 @@ impl LabContext {
         }
     }
 
-    pub(super) fn shutdown(&mut self) {
+    pub(super) fn shutdown(&mut self) -> Result<()> {
         let _ = std::mem::take(&mut self.notifiers);
-        for (_, handle) in std::mem::take(&mut self.handles) {
-            handle.join().unwrap_or_default();
+        let mut first_error = None;
+        for (node_id, handle) in std::mem::take(&mut self.handles) {
+            if let Err(error) = join_server(node_id, handle)
+                && first_error.is_none()
+            {
+                first_error = Some(error);
+            }
         }
         if self.config.environment.cleanup {
             let _ = fs::remove_dir_all(&self.root_dir);
@@ -174,12 +178,13 @@ impl LabContext {
                 let _ = fs::remove_dir_all(disk.join(&self.run_id));
             }
         }
+        first_error.map_or(Ok(()), Err)
     }
 
     pub(super) async fn stop_server(&mut self, node_id: u64) -> Result<()> {
         self.notifiers.remove(&node_id);
         if let Some(handle) = self.handles.remove(&node_id) {
-            handle.join().unwrap_or_default();
+            join_server(node_id, handle)?;
         }
         Ok(())
     }
@@ -194,10 +199,47 @@ impl LabContext {
             .map(|(_, addr)| addr.clone())
             .ok_or_else(|| anyhow!("no live seed node"))?;
         self.spawn_server(node_id, addr.clone(), false, vec![root_addr])?;
-        node_client_with_retry(&addr).await?;
+        self.wait_server_ready(node_id, &addr).await?;
         self.http_clients.insert(node_id, admin_http_client(&addr)?);
         self.nodes.insert(node_id, addr);
         Ok(node_id)
+    }
+
+    async fn wait_server_ready(&mut self, node_id: u64, addr: &str) -> Result<NodeClient> {
+        let mut last_error = None;
+        for _ in 0..1000 {
+            if self.handles.get(&node_id).is_some_and(|handle| handle.is_finished()) {
+                self.join_finished_server(node_id)?;
+                bail!("perf-lab server {node_id} at {addr} exited before becoming ready");
+            }
+            match NodeClient::connect(addr.to_owned()).await {
+                Ok(client) => {
+                    if self.handles.get(&node_id).is_some_and(|handle| handle.is_finished()) {
+                        self.join_finished_server(node_id)?;
+                        bail!("perf-lab server {node_id} at {addr} exited while becoming ready");
+                    }
+                    return Ok(client);
+                }
+                Err(error) => last_error = Some(error),
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        bail!(
+            "connect to perf-lab server {node_id} at {addr} timed out: {}",
+            last_error.map_or_else(
+                || "no connection attempt completed".to_owned(),
+                |err| err.to_string()
+            )
+        );
+    }
+
+    fn join_finished_server(&mut self, node_id: u64) -> Result<()> {
+        self.notifiers.remove(&node_id);
+        let handle = self
+            .handles
+            .remove(&node_id)
+            .ok_or_else(|| anyhow!("perf-lab server {node_id} has no thread handle"))?;
+        join_server(node_id, handle)
     }
 
     async fn wait_root_group_ready(&self) -> Result<()> {
@@ -314,7 +356,7 @@ impl LabContext {
 
 impl Drop for LabContext {
     fn drop(&mut self) {
-        self.shutdown();
+        let _ = self.shutdown();
     }
 }
 
@@ -322,7 +364,7 @@ impl LabContext {
     pub(super) async fn restart_server(&mut self, node: u64) -> Result<()> {
         let addr = self.nodes.get(&node).cloned().ok_or_else(|| anyhow!("unknown node {node}"))?;
         self.spawn_server(node, addr.clone(), false, vec![])?;
-        node_client_with_retry(&addr).await?;
+        self.wait_server_ready(node, &addr).await?;
         Ok(())
     }
 }
@@ -335,23 +377,44 @@ fn admin_http_client(addr: &str) -> Result<vaelo::http::Client> {
         .with_context(|| format!("build admin HTTP client for {addr}"))
 }
 
-async fn node_client_with_retry(addr: &str) -> Result<NodeClient> {
-    for _ in 0..1000 {
-        match NodeClient::connect(addr.to_owned()).await {
-            Ok(client) => return Ok(client),
-            Err(_) => tokio::time::sleep(Duration::from_millis(50)).await,
-        }
+fn join_server(node_id: u64, handle: thread::JoinHandle<Result<()>>) -> Result<()> {
+    match handle.join() {
+        Ok(result) => result,
+        Err(_) => bail!("perf-lab server {node_id} thread panicked"),
     }
-    bail!("connect to {addr} timeout");
 }
 
 fn next_n_listen_addrs(n: usize) -> Result<Vec<String>> {
-    let mut addrs = Vec::with_capacity(n);
-    let listener = std::net::TcpListener::bind(("127.0.0.1", 0))?;
-    let start = listener.local_addr()?.port();
-    drop(listener);
-    for offset in 0..n {
-        addrs.push(format!("127.0.0.1:{}", start + offset as u16));
+    let listeners = (0..n)
+        .map(|_| std::net::TcpListener::bind(("127.0.0.1", 0)))
+        .collect::<std::io::Result<Vec<_>>>()?;
+    listeners.iter().map(|listener| Ok(listener.local_addr()?.to_string())).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashSet;
+
+    use super::*;
+
+    #[test]
+    fn listen_addresses_are_individually_allocated() {
+        let addrs = next_n_listen_addrs(4).unwrap();
+        assert_eq!(addrs.len(), 4);
+        assert_eq!(addrs.iter().collect::<HashSet<_>>().len(), 4);
+
+        let listeners = addrs
+            .iter()
+            .map(std::net::TcpListener::bind)
+            .collect::<std::io::Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(listeners.len(), 4);
     }
-    Ok(addrs)
+
+    #[test]
+    fn server_thread_error_is_preserved() {
+        let handle = thread::spawn(|| Err(anyhow!("address already in use")));
+        let error = join_server(7, handle).unwrap_err();
+        assert_eq!(error.to_string(), "address already in use");
+    }
 }

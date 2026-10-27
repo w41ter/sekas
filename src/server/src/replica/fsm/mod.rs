@@ -325,7 +325,20 @@ impl GroupStateMachine {
             }
             MoveShardEvent::Abort => {
                 let mut state = self.must_move_shard_state();
-                debug_assert!(state.step == MoveShardStep::Prepare as i32);
+                debug_assert!(
+                    state.step == MoveShardStep::Prepare as i32
+                        || state.step == MoveShardStep::Moving as i32
+                );
+
+                let desc = state.get_move_shard_desc();
+                if desc.dest_group_id == group_desc.id
+                    && let Some(delete) = self.group_engine.delete_shard_data(
+                        desc.get_shard_id(),
+                        self.cfg.delete_shard_range_threshold,
+                    )?
+                {
+                    self.plugged_write_batches.push(delete);
+                }
 
                 state.step = MoveShardStep::Aborted as i32;
                 self.plugged_write_states.move_shard_state = Some(state);

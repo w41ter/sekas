@@ -70,7 +70,15 @@ impl Command {
                     }
                 };
                 let result = case.run(&mut lab).await;
-                lab.shutdown();
+                let shutdown_result = lab.shutdown();
+                let result =
+                    match (result, shutdown_result) {
+                        (Ok(report), Ok(())) => Ok(report),
+                        (Err(error), Ok(())) => Err(error),
+                        (Ok(_), Err(error)) => Err(error.context("cluster shutdown")),
+                        (Err(error), Err(shutdown_error)) => Err(error
+                            .context(format!("cluster shutdown also failed: {shutdown_error:#}"))),
+                    };
                 let result = match result {
                     Ok(report) => report,
                     Err(error) => {

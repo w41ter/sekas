@@ -29,7 +29,7 @@ use crate::node::Replica;
 use crate::node::metrics::*;
 use crate::serverpb::v1::*;
 use crate::transport::TransportManager;
-use crate::{NodeConfig, Result, record_latency};
+use crate::{Error, NodeConfig, Result, record_latency};
 
 #[derive(Clone, Debug)]
 pub struct ForwardCtx {
@@ -278,6 +278,9 @@ impl MoveShardCoordinator {
                 "pull shard from source group: {e:?}. replica={}, group={}, desc={}",
                 self.replica_id, self.group_id, self.desc
             );
+            if abort_on_pull_error(&e) {
+                self.abort_moving_shard().await;
+            }
             return;
         }
 
@@ -288,6 +291,16 @@ impl MoveShardCoordinator {
     fn is_dest_group(&self) -> bool {
         self.group_id == self.desc.dest_group_id
     }
+}
+
+fn abort_on_pull_error(error: &Error) -> bool {
+    matches!(
+        error,
+        Error::ResourceExhausted(_)
+            | Error::InvalidArgument(_)
+            | Error::InvalidData(_)
+            | Error::ShardNotFound(_)
+    )
 }
 
 pub async fn pull_shard(
@@ -315,4 +328,18 @@ pub async fn pull_shard(
         NODE_INGEST_CHUNK_TOTAL.inc();
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::error::BusyReason;
+
+    #[test]
+    fn aborts_only_terminal_pull_errors() {
+        assert!(abort_on_pull_error(&Error::ResourceExhausted("message too large".into())));
+        assert!(abort_on_pull_error(&Error::InvalidArgument("bad shard".into())));
+        assert!(!abort_on_pull_error(&Error::ServiceIsBusy(BusyReason::Transfering)));
+        assert!(!abort_on_pull_error(&Error::GroupNotReady(7)));
+    }
 }

@@ -31,11 +31,11 @@ enable_log_recycle = false
 max_inflight_msgs = 10000
 max_inflight_requests = 102400
 max_io_batch_size = 65535
-max_size_per_msg = 67108864
+max_size_per_msg = 1048576
 tick_interval_ms = 100
 
 [cluster.node]
-shard_chunk_size = 67108864
+shard_chunk_size = 1048576
 shard_gc_keys = 256
 mvcc_gc_keys = 256
 mvcc_gc_interval_ms = 100

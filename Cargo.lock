@@ -3668,7 +3668,7 @@ dependencies = [
 [[package]]
 name = "vaelo"
 version = "0.1.0"
-source = "git+https://github.com/w41ter/vaelo?rev=1a715f72246ef4ed692903c473a7d036f745d8f8#1a715f72246ef4ed692903c473a7d036f745d8f8"
+source = "git+https://github.com/w41ter/vaelo?rev=5796d7336af474c9ea143c379af66f8bf5cda2c4#5796d7336af474c9ea143c379af66f8bf5cda2c4"
 dependencies = [
  "base64",
  "bytes",
@@ -3693,7 +3693,7 @@ dependencies = [
 [[package]]
 name = "vaelo-build"
 version = "0.1.0"
-source = "git+https://github.com/w41ter/vaelo?rev=1a715f72246ef4ed692903c473a7d036f745d8f8#1a715f72246ef4ed692903c473a7d036f745d8f8"
+source = "git+https://github.com/w41ter/vaelo?rev=5796d7336af474c9ea143c379af66f8bf5cda2c4#5796d7336af474c9ea143c379af66f8bf5cda2c4"
 dependencies = [
  "prost-build 0.14.4",
 ]
@@ -3701,7 +3701,7 @@ dependencies = [
 [[package]]
 name = "vaelo-derive"
 version = "0.1.0"
-source = "git+https://github.com/w41ter/vaelo?rev=1a715f72246ef4ed692903c473a7d036f745d8f8#1a715f72246ef4ed692903c473a7d036f745d8f8"
+source = "git+https://github.com/w41ter/vaelo?rev=5796d7336af474c9ea143c379af66f8bf5cda2c4#5796d7336af474c9ea143c379af66f8bf5cda2c4"
 
 [[package]]
 name = "valuable"

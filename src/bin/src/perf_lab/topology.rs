@@ -239,10 +239,12 @@ impl LabContext {
         }
         let source_state = self.router.find_group(src_group)?;
         let started = Instant::now();
-        for _ in 0..16 {
+        let deadline = started + Duration::from_secs(self.config.execution.event_timeout_secs);
+        let mut last_error = None;
+        loop {
             let src_epoch = self.router.find_group(src_group)?.epoch;
             if self.group_contains_shard(dest_group, shard.id) {
-                self.wait_source_release(&source_state, shard.id).await?;
+                self.wait_source_release(&source_state, shard.id, deadline).await?;
                 return Ok(ShardMigrationResult {
                     duration: started.elapsed(),
                     route_convergence: Duration::ZERO,
@@ -251,43 +253,69 @@ impl LabContext {
                     shard_id: shard.id,
                 });
             }
+            if Instant::now() >= deadline {
+                bail!(
+                    "migrate shard {} from group {src_group} to group {dest_group} timed out: {}",
+                    shard.id,
+                    last_error.unwrap_or_else(|| "destination route did not converge".to_owned())
+                );
+            }
             let mut group = self.group(dest_group);
-            match group.accept_shard(src_group, src_epoch, &shard).await {
-                Ok(()) => {}
-                Err(err) => {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            match tokio::time::timeout(remaining, group.accept_shard(src_group, src_epoch, &shard))
+                .await
+            {
+                Ok(Ok(())) => break,
+                Ok(Err(err)) => {
                     warn!(
                         "accept shard {} from group {} to group {} failed: {}",
                         shard.id, src_group, dest_group, err
                     );
-                    tokio::time::sleep(Duration::from_millis(50)).await;
-                    continue;
+                    last_error = Some(err.to_string());
+                }
+                Err(_) => {
+                    bail!(
+                        "accept shard {} from group {src_group} to group {dest_group} timed out",
+                        shard.id
+                    );
                 }
             }
-            let route_started = Instant::now();
-            for _ in 0..1000 {
-                if self.group_contains_shard(dest_group, shard.id) {
-                    self.wait_source_release(&source_state, shard.id).await?;
-                    return Ok(ShardMigrationResult {
-                        duration: started.elapsed(),
-                        route_convergence: route_started.elapsed(),
-                        src_group,
-                        dest_group,
-                        shard_id: shard.id,
-                    });
-                }
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            }
+            tokio::time::sleep(
+                deadline.saturating_duration_since(Instant::now()).min(Duration::from_millis(50)),
+            )
+            .await;
         }
-        bail!("migrate shard {} did not finish", shard.id);
+
+        let route_started = Instant::now();
+        while Instant::now() < deadline {
+            if self.group_contains_shard(dest_group, shard.id) {
+                self.wait_source_release(&source_state, shard.id, deadline).await?;
+                return Ok(ShardMigrationResult {
+                    duration: started.elapsed(),
+                    route_convergence: route_started.elapsed(),
+                    src_group,
+                    dest_group,
+                    shard_id: shard.id,
+                });
+            }
+            tokio::time::sleep(
+                deadline.saturating_duration_since(Instant::now()).min(Duration::from_millis(20)),
+            )
+            .await;
+        }
+        bail!(
+            "migrate shard {} from group {src_group} to group {dest_group} did not converge within {:?}",
+            shard.id,
+            started.elapsed()
+        );
     }
 
     async fn wait_source_release(
         &self,
         source: &sekas_client::RouterGroupState,
         shard: u64,
+        deadline: Instant,
     ) -> Result<()> {
-        let deadline =
-            Instant::now() + Duration::from_secs(self.config.execution.event_timeout_secs);
         while Instant::now() < deadline {
             // Use the pre-migration epoch and an accurate-epoch RPC. The new
             // descriptor proves removal without issuing an invalid current-epoch

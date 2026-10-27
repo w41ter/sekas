@@ -106,6 +106,7 @@ pub(super) async fn execute(
                     },
                     limit: *limit,
                     total_limit: *limit,
+                    limit_bytes: 1024 * 1024,
                     ..Default::default()
                 })
                 .await?;
