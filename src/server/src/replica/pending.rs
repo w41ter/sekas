@@ -19,6 +19,7 @@ use sekas_api::server::v1::{ReplicaDesc, ShardKey};
 use tokio::sync::Notify;
 
 use crate::error::BusyReason;
+use crate::replica::metrics::{WriteMetrics, WriteStage};
 use crate::{Error, Result};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -135,6 +136,14 @@ impl CommitFence {
             watcher.wait().await?;
         }
         Ok(())
+    }
+
+    pub async fn wait_for_write(&self, metrics: WriteMetrics) -> Result<()> {
+        if self.is_empty() {
+            return Ok(());
+        }
+        let _wait = metrics.timer(WriteStage::CommitFence);
+        self.wait().await
     }
 }
 

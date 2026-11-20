@@ -195,7 +195,7 @@ fn collect_local_txn_write_keys(req: &LocalTxnWriteRequest) -> Result<Vec<ShardK
 pub mod remote {
     use std::collections::VecDeque;
     use std::sync::Arc;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     use dashmap::DashMap;
     use futures::channel::oneshot;
@@ -210,6 +210,7 @@ pub mod remote {
     use crate::engine::{GroupEngine, SnapshotMode, WriteBatch};
     use crate::raftgroup::RaftGroup;
     use crate::replica::eval::LatchManager;
+    use crate::replica::metrics::ROW_LATCH;
     use crate::serverpb::v1::EvalResult;
     use crate::{Error, Result};
 
@@ -231,7 +232,7 @@ pub mod remote {
     }
 
     pub struct RemoteLatchGuard {
-        hold: bool,
+        acquired_at: Option<Instant>,
         shard_key: ShardKey,
         latch_mgr: RemoteLatchManager,
     }
@@ -286,7 +287,7 @@ pub mod remote {
             &self,
             shard_id: u64,
             key: &[u8],
-        ) -> Result<RemoteLatchGuard, oneshot::Receiver<RemoteLatchGuard>> {
+        ) -> Result<RemoteLatchGuard, (oneshot::Receiver<RemoteLatchGuard>, Instant)> {
             let mut entry = self.core.get_latch_mut(shard_id, key);
             let latch = entry.value_mut();
             if !latch.hold {
@@ -297,7 +298,7 @@ pub mod remote {
                 );
                 latch.hold = true;
                 Ok(RemoteLatchGuard {
-                    hold: true,
+                    acquired_at: Some(Instant::now()),
                     shard_key: ShardKey { shard_id, user_key: key.to_owned() },
                     latch_mgr: self.clone(),
                 })
@@ -308,14 +309,15 @@ pub mod remote {
                     sekas_rock::ascii::escape_bytes(key)
                 );
                 let (tx, rx) = oneshot::channel();
+                let queued_at = Instant::now();
                 latch.latch_waiters.push_back(tx);
-                Err(rx)
+                Err((rx, queued_at))
             }
         }
 
         fn transfer_latch_guard(&self, latch_block: &mut LatchBlock) -> bool {
             let mut guard = RemoteLatchGuard {
-                hold: true,
+                acquired_at: None,
                 shard_key: latch_block.shard_key.clone(),
                 latch_mgr: self.clone(),
             };
@@ -325,6 +327,7 @@ pub mod remote {
                     latch_block.shard_key.shard_id,
                     sekas_rock::ascii::escape_bytes(&latch_block.shard_key.user_key)
                 );
+                guard.acquired_at = Some(Instant::now());
                 guard = match sender.send(guard) {
                     Ok(()) => {
                         // The guard will wakes up the remaining waiters even the receiver is
@@ -346,7 +349,7 @@ pub mod remote {
                 sekas_rock::ascii::escape_bytes(&latch_block.shard_key.user_key)
             );
 
-            guard.hold = false;
+            guard.acquired_at = None;
             latch_block.hold = false;
 
             // No more waiters, remove entry from map.
@@ -471,7 +474,11 @@ pub mod remote {
         async fn acquire(&self, shard_id: u64, key: &[u8]) -> Result<RemoteLatchGuard> {
             match self.acquire_internal(shard_id, key) {
                 Ok(latch) => Ok(latch),
-                Err(rx) => Ok(rx.await.expect("Will not be dropped without send()")),
+                Err((rx, queued_at)) => {
+                    let latch = rx.await.expect("Will not be dropped without send()");
+                    ROW_LATCH.wait.observe(queued_at.elapsed().as_secs_f64());
+                    Ok(latch)
+                }
             }
         }
     }
@@ -534,8 +541,13 @@ pub mod remote {
                             start_version,
                             sender,
                         );
-                        debug_assert!(self.hold, "resolve txn should hold the lock");
-                        self.hold = false;
+                        debug_assert!(
+                            self.acquired_at.is_some(),
+                            "resolve txn should hold the lock"
+                        );
+                        if let Some(acquired_at) = self.acquired_at.take() {
+                            ROW_LATCH.hold.observe(acquired_at.elapsed().as_secs_f64());
+                        }
                         let wait_timeout = Duration::from_millis(
                             lease_deadline_ms.saturating_sub(timestamp_millis()),
                         );
@@ -631,8 +643,10 @@ pub mod remote {
 
     impl Drop for RemoteLatchGuard {
         fn drop(&mut self) {
-            if self.hold {
+            if let Some(acquired_at) = self.acquired_at.take() {
+                let held = acquired_at.elapsed();
                 self.latch_mgr.release(self.shard_key.shard_id, &self.shard_key.user_key);
+                ROW_LATCH.hold.observe(held.as_secs_f64());
             }
         }
     }
@@ -687,15 +701,14 @@ pub mod remote {
             }
 
             // case 2: transfer latch guard.
+            let waits = ROW_LATCH.wait.get_sample_count();
             let acquire_1 = latch_mgr.acquire(shard_id, &user_key).await.unwrap();
-            let user_key_clone = user_key.clone();
-            let latch_mgr_clone = latch_mgr.clone();
-            let handle = sekas_runtime::spawn(async move {
-                latch_mgr_clone.acquire(shard_id, &user_key_clone).await
-            });
-            sekas_runtime::time::sleep(Duration::from_secs(1)).await;
+            let acquire_2 = latch_mgr.acquire(shard_id, &user_key);
+            tokio::pin!(acquire_2);
+            assert!(futures::poll!(&mut acquire_2).is_pending());
             drop(acquire_1);
-            handle.await.unwrap().unwrap();
+            drop(acquire_2.await.unwrap());
+            assert!(ROW_LATCH.wait.get_sample_count() > waits);
 
             // case 3: transfer latch should release latches.
             let _acquire_3 = latch_mgr.acquire(shard_id, &user_key).await.unwrap();

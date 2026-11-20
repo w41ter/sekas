@@ -39,6 +39,7 @@ use crate::raftgroup::snap::RecycleSnapMode;
 use crate::raftgroup::{ChannelManager, RaftGroup, RaftManager, SnapManager};
 pub use crate::replica::Replica;
 use crate::replica::fsm::{GroupStateMachine, WatchHub};
+use crate::replica::metrics::{WriteMetrics, WriteStage};
 use crate::replica::{ExecCtx, LeaseState, LeaseStateObserver, ReplicaInfo};
 use crate::schedule::MoveReplicasProvider;
 use crate::serverpb::v1::*;
@@ -410,9 +411,17 @@ impl Node {
         let Some(replica) = self.replica_route_table.find(request.group_id) else {
             return Err(Error::GroupNotFound(request.group_id));
         };
+        let metrics = request
+            .request
+            .as_ref()
+            .and_then(|request| request.request.as_ref())
+            .map(WriteMetrics::for_request)
+            .unwrap_or_default();
+        let _request = metrics.timer(WriteStage::Request);
 
         match execute(&replica, exec_ctx, request).await {
             Err(Error::PartialForward(partial)) => {
+                let _forward = metrics.timer(WriteStage::Forward);
                 let resp = self.complete_partial_forward(partial).await?;
                 Ok(GroupResponse::new(resp))
             }
@@ -429,6 +438,7 @@ impl Node {
                         self.forward_scan_request(replica, forward_ctx, scan_request).await?;
                     Ok(GroupResponse::new(Response::Scan(scan_resp)))
                 } else {
+                    let _forward = metrics.timer(WriteStage::Forward);
                     let resp = self.move_shard_ctrl.forward(forward_ctx, request).await?;
                     Ok(GroupResponse::new(resp))
                 }

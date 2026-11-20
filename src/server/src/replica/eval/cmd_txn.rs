@@ -24,6 +24,7 @@ use super::latch::DeferSignalLatchGuard;
 use super::{LatchGuard, WriteEvalResult, validate_value_sizes};
 use crate::engine::GroupEngine;
 use crate::node::move_shard::ForwardCtx;
+use crate::replica::metrics::WriteStage;
 use crate::replica::write_view::WriteEvalContext;
 use crate::replica::{ExecCtx, ForwardPart};
 use crate::{Error, Result};
@@ -521,6 +522,7 @@ pub(super) async fn read_first_non_intent_key<T: LatchGuard>(
         }
 
         trace!("another txn {} intent exists", txn_intent.start_version);
+        let _resolve = write_ctx.metrics.timer(WriteStage::ResolveIntent);
         latch_guard.resolve_txn(shard_id, key, txn_intent).await?;
     }
 }

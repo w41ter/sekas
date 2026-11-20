@@ -16,6 +16,7 @@ use prost::Message;
 use sekas_api::server::v1::{TxnIntent, Value};
 use sekas_schema::system::txn::TXN_INTENT_VERSION;
 
+use super::metrics::{WriteMetrics, WriteStage};
 use super::pending::{
     CommitFence, PendingMutationEntry, PendingMutationKind, PendingMutationOverlay,
 };
@@ -31,6 +32,7 @@ pub(super) struct WriteEvalContext<'a> {
     engine: &'a GroupEngine,
     overlay: PendingMutationOverlay,
     dependencies: CommitFence,
+    pub(super) metrics: WriteMetrics,
 }
 
 impl PendingWriteView {
@@ -38,11 +40,16 @@ impl PendingWriteView {
         PendingWriteView { overlay }
     }
 
-    pub fn context<'a>(&self, engine: &'a GroupEngine) -> WriteEvalContext<'a> {
+    pub fn context<'a>(
+        &self,
+        engine: &'a GroupEngine,
+        metrics: WriteMetrics,
+    ) -> WriteEvalContext<'a> {
         WriteEvalContext {
             engine,
             overlay: self.overlay.clone(),
             dependencies: CommitFence::none(),
+            metrics,
         }
     }
 }
@@ -53,7 +60,7 @@ impl WriteEvalContext<'_> {
         engine: &GroupEngine,
         overlay: PendingMutationOverlay,
     ) -> WriteEvalContext<'_> {
-        WriteEvalContext { engine, overlay, dependencies: CommitFence::none() }
+        PendingWriteView::new(overlay).context(engine, WriteMetrics::default())
     }
 
     pub fn engine(&self) -> &GroupEngine {
@@ -65,6 +72,7 @@ impl WriteEvalContext<'_> {
     }
 
     pub async fn latest_value(&mut self, shard_id: u64, key: &[u8]) -> Result<Option<Value>> {
+        let _read = self.metrics.timer(WriteStage::MvccRead);
         let committed = self.engine.get(shard_id, key).await?;
         let pending = self.overlay.entries(shard_id, key);
         Ok(self.merge_latest_value(committed, pending))
@@ -80,6 +88,7 @@ impl WriteEvalContext<'_> {
         if matches!(entry.mutation.kind, PendingMutationKind::Delete) {
             return Ok(false);
         }
+        let _wait = self.metrics.timer(WriteStage::PendingIntent);
         entry.fence.wait().await?;
         Ok(true)
     }
@@ -128,6 +137,7 @@ impl WriteEvalContext<'_> {
     }
 
     fn first_values(&mut self, shard_id: u64, key: &[u8], limit: usize) -> Result<Vec<Value>> {
+        let _read = self.metrics.timer(WriteStage::MvccRead);
         let pending = self.overlay.entries(shard_id, key);
         self.join_pending_fences(&pending);
         let mut pending_values = std::collections::BTreeMap::<u64, Option<Value>>::new();

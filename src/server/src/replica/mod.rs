@@ -16,6 +16,7 @@
 mod eval;
 pub mod fsm;
 mod local_txn;
+pub(crate) mod metrics;
 mod move_shard;
 mod pending;
 pub mod retry;
@@ -25,6 +26,7 @@ mod write_view;
 use std::sync::atomic::AtomicI32;
 use std::sync::{Arc, Mutex};
 use std::task::Poll;
+use std::time::Instant;
 
 use futures::channel::mpsc;
 use log::{info, trace, warn};
@@ -40,6 +42,7 @@ pub(crate) use self::eval::merge_scan_response;
 use self::eval::remote::RemoteLatchManager;
 use self::fsm::WatchEvent;
 use self::local_txn::LocalTxnManager;
+use self::metrics::{LockMetrics, WriteMetrics, WriteStage};
 use self::pending::{CommitFence, PendingMutationOverlay, ProposalWatcher};
 pub use self::state::{LeaseState, LeaseStateObserver};
 use self::write_view::PendingWriteView;
@@ -70,9 +73,23 @@ pub struct ReplicaInfo {
 }
 
 #[allow(dead_code)]
-enum MetaAclGuard<'a> {
+enum MetaAclLockGuard<'a> {
     Read(tokio::sync::RwLockReadGuard<'a, ()>),
     Write(tokio::sync::RwLockWriteGuard<'a, ()>),
+}
+
+struct MetaAclGuard<'a> {
+    guard: Option<MetaAclLockGuard<'a>>,
+    metrics: &'static LockMetrics,
+    acquired_at: Instant,
+}
+
+impl Drop for MetaAclGuard<'_> {
+    fn drop(&mut self) {
+        let held = self.acquired_at.elapsed();
+        drop(self.guard.take());
+        self.metrics.hold.observe(held.as_secs_f64());
+    }
 }
 
 /// ExecCtx contains the required infos during request execution.
@@ -395,21 +412,41 @@ impl Replica {
 
     #[inline]
     async fn take_write_acl_guard(&self) -> MetaAclGuard<'_> {
-        MetaAclGuard::Write(self.meta_acl.write().await)
+        self.take_timed_acl_guard(true).await
     }
 
     #[inline]
     async fn take_read_acl_guard(&self) -> MetaAclGuard<'_> {
-        MetaAclGuard::Read(self.meta_acl.read().await)
+        self.take_timed_acl_guard(false).await
+    }
+
+    async fn take_timed_acl_guard(&self, exclusive: bool) -> MetaAclGuard<'_> {
+        let metrics = metrics::metadata_lock(exclusive);
+        let start = Instant::now();
+        let guard = if exclusive {
+            MetaAclLockGuard::Write(self.meta_acl.write().await)
+        } else {
+            MetaAclLockGuard::Read(self.meta_acl.read().await)
+        };
+        let acquired_at = Instant::now();
+        metrics.wait.observe((acquired_at - start).as_secs_f64());
+        MetaAclGuard { guard: Some(guard), metrics, acquired_at }
     }
 
     #[inline]
     fn try_take_acl_guard<'a>(&'a self, request: &'a Request) -> Option<MetaAclGuard<'a>> {
-        if is_change_meta_request(request) && !matches!(request, Request::MoveReplicas(_)) {
-            self.meta_acl.try_write().ok().map(MetaAclGuard::Write)
+        let exclusive =
+            is_change_meta_request(request) && !matches!(request, Request::MoveReplicas(_));
+        let guard = if exclusive {
+            MetaAclLockGuard::Write(self.meta_acl.try_write().ok()?)
         } else {
-            self.meta_acl.try_read().ok().map(MetaAclGuard::Read)
-        }
+            MetaAclLockGuard::Read(self.meta_acl.try_read().ok()?)
+        };
+        Some(MetaAclGuard {
+            guard: Some(guard),
+            acquired_at: Instant::now(),
+            metrics: metrics::metadata_lock(exclusive),
+        })
     }
 
     /// Delegates the eval method for the given `Request`.
@@ -420,10 +457,12 @@ impl Replica {
         let latch_timer = REPLICA_ROW_LATCH_ACQUIRE_DURATION_SECONDS.start_timer();
         let mut latches = acquire_row_latches(&self.latch_mgr, request).await?;
         drop(latch_timer);
+        let write_metrics = WriteMetrics::for_request(request);
+        let evaluation = write_metrics.timer(WriteStage::Evaluate);
         let mut pending_fences = CommitFence::none();
         let (eval_result_opt, response, forwards, pending_txn_guard_opt) = match &request {
             Request::Write(req) => {
-                let mut write_ctx = self.write_view.context(&self.group_engine);
+                let mut write_ctx = self.write_view.context(&self.group_engine, write_metrics);
                 let (eval_result, resp) = eval::batch_write(exec_ctx, &mut write_ctx, req).await?;
                 pending_fences.join(write_ctx.take_dependencies());
                 (eval_result, Response::Write(resp), vec![], None)
@@ -433,7 +472,7 @@ impl Replica {
                     latches.as_mut().expect("local txn write request must hold latches");
                 let pending_txn_guard = self.local_txn_mgr.begin_commit(req.commit_version).await;
                 let commit_version = pending_txn_guard.commit_version();
-                let mut write_ctx = self.write_view.context(&self.group_engine);
+                let mut write_ctx = self.write_view.context(&self.group_engine, write_metrics);
                 let local_txn_result = eval::local_txn_write(
                     exec_ctx,
                     &mut write_ctx,
@@ -461,7 +500,7 @@ impl Replica {
             }
             Request::WriteIntent(req) => {
                 let latches_mut = latches.as_mut().expect("clear intent request must hold latches");
-                let mut write_ctx = self.write_view.context(&self.group_engine);
+                let mut write_ctx = self.write_view.context(&self.group_engine, write_metrics);
                 let (eval_result, resp, forwards) =
                     eval::write_intent(exec_ctx, &mut write_ctx, latches_mut, req).await?;
                 pending_fences.join(write_ctx.take_dependencies());
@@ -470,7 +509,7 @@ impl Replica {
             }
             Request::CommitIntent(req) => {
                 let latches_mut = latches.as_mut().expect("clear intent request must hold latches");
-                let mut write_ctx = self.write_view.context(&self.group_engine);
+                let mut write_ctx = self.write_view.context(&self.group_engine, write_metrics);
                 let (eval_result, resp, forwards) =
                     eval::commit_intent(exec_ctx, &mut write_ctx, latches_mut, req).await?;
                 pending_fences.join(write_ctx.take_dependencies());
@@ -478,7 +517,7 @@ impl Replica {
             }
             Request::ClearIntent(req) => {
                 let latches_mut = latches.as_mut().expect("clear intent request must hold latches");
-                let mut write_ctx = self.write_view.context(&self.group_engine);
+                let mut write_ctx = self.write_view.context(&self.group_engine, write_metrics);
                 let (eval_result, resp, forwards) =
                     eval::clear_intent(exec_ctx, &mut write_ctx, latches_mut, req).await?;
                 pending_fences.join(write_ctx.take_dependencies());
@@ -588,18 +627,27 @@ impl Replica {
                 (Some(eval_result), Response::MergeShard(MergeShardResponse {}), vec![], None)
             }
         };
+        drop(evaluation);
 
-        let result = self
-            .handle_evaluate_result(
-                exec_ctx,
-                eval_result_opt,
-                if pending_fences.is_empty() { None } else { Some(pending_fences) },
-                response,
-                forwards,
-                latches,
-            )
-            .await;
+        let result = async {
+            if let Some(eval_result) = eval_result_opt {
+                self.overlay_propose(exec_ctx, eval_result, pending_fences, latches, write_metrics)
+                    .await?;
+            } else if !pending_fences.is_empty() {
+                // Let other requests use the rows while this request waits on their proposals.
+                drop(latches);
+                pending_fences.wait_for_write(write_metrics).await?;
+            }
+
+            if forwards.is_empty() {
+                Ok(response)
+            } else {
+                Err(Error::PartialForward(PartialForward { response, parts: forwards }))
+            }
+        }
+        .await;
         if let Some(pending_txn_guard) = pending_txn_guard_opt {
+            let _finalize = write_metrics.timer(WriteStage::FinalizeLocalTxn);
             if result.is_ok() || matches!(result, Err(Error::PartialForward(_))) {
                 pending_txn_guard.finish().await;
             } else {
@@ -609,37 +657,15 @@ impl Replica {
         result
     }
 
-    async fn handle_evaluate_result(
-        &self,
-        exec_ctx: &ExecCtx,
-        eval_result_opt: Option<WriteEvalResult>,
-        pending_fences: Option<CommitFence>,
-        response: Response,
-        forwards: Vec<ForwardPart>,
-        latches: Option<DeferSignalLatchGuard<RemoteLatchGuard>>,
-    ) -> Result<Response> {
-        if let Some(eval_result) = eval_result_opt {
-            self.overlay_propose(exec_ctx, eval_result, pending_fences, latches).await?;
-        } else if let Some(pending_fence) = pending_fences {
-            // Since here no proposal, waiting pending fences to finish, before returns.
-            drop(latches);
-            pending_fence.wait().await?;
-        }
-
-        if forwards.is_empty() {
-            Ok(response)
-        } else {
-            Err(Error::PartialForward(PartialForward { response, parts: forwards }))
-        }
-    }
-
     async fn overlay_propose(
         &self,
         exec_ctx: &ExecCtx,
         eval_result: WriteEvalResult,
-        pending_fences: Option<CommitFence>,
+        pending_fences: CommitFence,
         eval_latches: Option<DeferSignalLatchGuard<RemoteLatchGuard>>,
+        write_metrics: WriteMetrics,
     ) -> Result<()> {
+        let prepare = write_metrics.timer(WriteStage::PrepareProposal);
         let pending_mutations = eval_result.pending_mutations();
         let watcher = ProposalWatcher::new();
         self.pending_overlay
@@ -647,25 +673,19 @@ impl Replica {
         if let Some(barrier) = self.cfg.testing_knobs.after_overlay_insert.as_ref() {
             barrier.on_reached().await;
         }
-        let pending_fence = pending_fences.unwrap_or_else(CommitFence::none);
-        let (pending_fence_result, propose_result) = futures::join!(
-            pending_fence.wait(),
-            self.propose_eval_result_and_wait(exec_ctx, eval_result, eval_latches),
-        );
+        let submit = async {
+            let eval_result = eval_result.into_eval_result(&self.group_engine)?;
+            let proposal = self.raft_group.propose(eval_result, Some(exec_ctx.current_term))?;
+            drop(prepare);
+            drop(eval_latches);
+            let _raft = write_metrics.timer(WriteStage::RaftResult);
+            proposal.wait_result().await
+        };
+        let (pending_fence_result, propose_result) =
+            futures::join!(pending_fences.wait_for_write(write_metrics), submit);
+        let _cleanup = write_metrics.timer(WriteStage::OverlayCleanup);
         self.pending_overlay.remove_batch(&pending_mutations);
         watcher.complete_result(pending_fence_result.and(propose_result))
-    }
-
-    async fn propose_eval_result_and_wait(
-        &self,
-        exec_ctx: &ExecCtx,
-        eval_result: WriteEvalResult,
-        eval_latches: Option<DeferSignalLatchGuard<RemoteLatchGuard>>,
-    ) -> Result<()> {
-        let eval_result = eval_result.into_eval_result(&self.group_engine)?;
-        let proposal = self.raft_group.propose(eval_result, Some(exec_ctx.current_term))?;
-        drop(eval_latches);
-        proposal.wait_result().await
     }
 
     fn check_request_early(&self, exec_ctx: &mut ExecCtx, req: &Request) -> Result<()> {

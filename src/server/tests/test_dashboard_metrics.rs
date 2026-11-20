@@ -159,4 +159,28 @@ async fn dashboard_metrics_follow_logical_operations_and_txn_paths() {
         }
     }
     assert!(metric("raftgroup_propose_bytes_total", &[]).get_counter().value() > 0.0);
+    for (lock, phase) in
+        [("metadata_read", "wait"), ("metadata_read", "hold"), ("row_latch", "hold")]
+    {
+        let histogram =
+            metric("replica_group_lock_duration_seconds", &[("lock", lock), ("phase", phase)])
+                .get_histogram();
+        assert!(histogram.sample_count() > 0, "{lock} {phase}");
+    }
+    for stage in [
+        "request",
+        "evaluate",
+        "mvcc_read",
+        "proposal_prepare",
+        "raft_result",
+        "overlay_cleanup",
+        "local_txn_finalize",
+    ] {
+        let histogram = metric(
+            "replica_write_stage_duration_seconds",
+            &[("type", "local_txn_write"), ("stage", stage)],
+        )
+        .get_histogram();
+        assert!(histogram.sample_count() > 0, "{stage}");
+    }
 }

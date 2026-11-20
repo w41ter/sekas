@@ -26,6 +26,7 @@ from grafanalib.formatunits import BYTES_SEC, OPS_PER_SEC, REQUESTS_PER_SEC
 PROMETHEUS = {"type": "prometheus", "uid": "${prometheus}"}
 JOB_MATCHER = 'job=~"${job:regex}"'
 CLIENT_JOB_MATCHER = 'job=~"${client_job:regex}"'
+GROUP_INSTANCE_MATCHER = 'instance=~"${group_instance:regex}"'
 # Older Prometheus parsers reject composite durations such as Grafana's 1m0s.
 RATE_INTERVAL = "1m"
 DATA_REQUEST_TYPES = ("get", "scan", "write")
@@ -345,6 +346,108 @@ def node_service_group_rows():
             "Node services - Group metadata", metric, METADATA_REQUEST_TYPES,
             description,
         ),
+    )
+
+
+def group_write_path_panels():
+    instance = (GROUP_INSTANCE_MATCHER,)
+    write = (*instance, 'type="write"')
+    successful = (*instance, 'type="ok"')
+    group_rpc = "node_service_group_request_duration_seconds"
+    raft_proposal = "raftgroup_propose_duration_seconds"
+    row_acquire = "replica_row_latch_acquire_duration_seconds"
+    lock_duration = "replica_group_lock_duration_seconds"
+    write_stage = "replica_write_stage_duration_seconds"
+
+    def slow_observations(metric, matchers):
+        # Classic histogram bucket boundary of roughly 58 ms.
+        le = 'le=~"0[.]0578415690713088.*"'
+        count = metric_rate(f"{metric}_count", *matchers)
+        bucket = metric_rate(f"{metric}_bucket", *matchers, le)
+        return f"sum by (instance) ({count}) - sum by (instance) ({bucket})"
+
+    return row_panels(
+        "Group write path",
+        time_series(
+            "Group writes and Raft proposals",
+            [
+                (quantile(group_rpc, 0.99, "instance", matchers=write),
+                 "{{instance}} · Group write p99"),
+                (quantile(raft_proposal, 0.99, "instance", matchers=successful),
+                 "{{instance}} · Raft proposal p99"),
+            ],
+            SECONDS_FORMAT,
+            "Group write includes plain and local-transaction writes. The successful Raft "
+            "proposal timer runs from submission through apply. These are separate histograms.",
+        ),
+        time_series(
+            "Observations above 58 ms",
+            [
+                (slow_observations(group_rpc, write), "{{instance}} · Group writes"),
+                (slow_observations(raft_proposal, successful), "{{instance}} · Raft proposals"),
+                (slow_observations(row_acquire, instance), "{{instance}} · Row acquisition steps"),
+            ],
+            OPS_PER_SEC,
+            "Rate above the same histogram bucket boundary for each stage.",
+        ),
+        time_series(
+            "Replica write stages",
+            latency_queries(
+                write_stage, "instance", "type", "stage",
+                label="{{instance}} · {{type}} · {{stage}}",
+                matchers=(*instance, 'stage=~"request|evaluate|proposal_prepare|raft_result|'
+                          'overlay_cleanup|local_txn_finalize"'),
+            ),
+            SECONDS_FORMAT,
+            "Request is the routed Group write. Evaluate starts after row-latch acquisition. "
+            "Proposal preparation includes the pending overlay insert and batch encoding. "
+            "Raft result begins after row latches are released.",
+        ),
+        time_series(
+            "MVCC reads, transaction dependencies, and forwarding",
+            latency_queries(
+                write_stage, "instance", "type", "stage",
+                label="{{instance}} · {{type}} · {{stage}}",
+                matchers=(*instance, 'stage=~"mvcc_read|pending_intent|resolve_intent|'
+                          'commit_fence|forward"'),
+            ),
+            SECONDS_FORMAT,
+            "Dependency stages appear when used. MVCC reads are measured per key. "
+            "Commit-fence wait can overlap Raft result.",
+        ),
+        time_series(
+            "Metadata lock and contended row-latch wait",
+            latency_queries(
+                lock_duration, "instance", "lock", label="{{instance}} · {{lock}}",
+                matchers=(*instance, 'phase="wait"'),
+            ),
+            SECONDS_FORMAT,
+            "Metadata wait covers asynchronous read and write acquisitions. Row wait covers "
+            "queued acquisitions, including reacquisition during intent resolution.",
+        ),
+        time_series(
+            "Metadata lock and row-latch hold",
+            latency_queries(
+                lock_duration, "instance", "lock", label="{{instance}} · {{lock}}",
+                matchers=(*instance, 'phase="hold"'),
+            ),
+            SECONDS_FORMAT,
+            "Time from acquisition to release. Each row-latch hold covers a single key.",
+        ),
+        time_series(
+            "Contended row-latch acquisitions",
+            [(metric_rate(f"{lock_duration}_count", *instance, 'lock="row_latch"', 'phase="wait"'),
+              "{{instance}}")],
+            OPS_PER_SEC,
+            "Completed queued acquisitions per second.",
+        ),
+        time_series(
+            "Initial row-latch acquisition step",
+            latency_queries(row_acquire, "instance", label="{{instance}}", matchers=instance),
+            SECONDS_FORMAT,
+            "Request-level acquisition step, including key collection and requests that take no latch.",
+        ),
+        description="Server-side Group write timings across all replicas on each selected instance.",
     )
 
 
@@ -810,6 +913,17 @@ dashboard = Dashboard(
             refresh=REFRESH_ON_TIME_RANGE_CHANGE,
         ),
         Template(
+            name="group_instance",
+            label="Group write instances",
+            query='label_values(metrics_rpc_requests_total{job=~"${job:regex}"}, instance)',
+            dataSource=PROMETHEUS,
+            default="$__all",
+            multi=True,
+            includeAll=True,
+            allValue=".+",
+            refresh=REFRESH_ON_TIME_RANGE_CHANGE,
+        ),
+        Template(
             name="client_job",
             label="Client jobs",
             query='label_values({__name__=~"client_database_request_total|'
@@ -825,6 +939,7 @@ dashboard = Dashboard(
     panels=layout_dashboard(overview_sections(), [
         proxy_service_db_panels(),
         *node_service_group_rows(),
+        group_write_path_panels(),
         node_service_shard_migration_panels(),
         node_service_metadata_panels(),
         node_panels(),
