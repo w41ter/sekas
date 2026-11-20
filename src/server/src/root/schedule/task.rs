@@ -18,6 +18,8 @@ pub struct ReconcileTask {
     pub created_at: u64,
     #[prost(uint64, tag = "129")]
     pub fire_at: u64,
+    #[prost(uint32, tag = "130")]
+    pub retry_count: u32,
     #[prost(oneof = "reconcile_task::Task", tags = "1, 2, 3, 4, 5, 6, 7")]
     pub task: ::core::option::Option<reconcile_task::Task>,
 }
@@ -65,6 +67,8 @@ pub struct MigrateShardTask {
     pub src_group: u64,
     #[prost(uint64, tag = "3")]
     pub dest_group: u64,
+    #[prost(message, optional, tag = "4")]
+    pub split_task: Option<SplitShardTask>,
 }
 
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -97,6 +101,12 @@ pub struct SplitShardTask {
     pub shard_id: u64,
     #[prost(uint64, tag = "2")]
     pub group_id: u64,
+    /// Allocate once so retries can recognize a completed split.
+    #[prost(uint64, optional, tag = "3")]
+    pub new_shard_id: Option<u64>,
+    /// Bind execution to the metadata used to validate the task.
+    #[prost(uint64, optional, tag = "4")]
+    pub group_epoch: Option<u64>,
 }
 
 #[derive(Clone, PartialEq, ::prost::Message)]

@@ -25,6 +25,7 @@ use self::task::reconcile_task::Task;
 pub use self::task::*;
 use super::allocator::*;
 use super::*;
+use crate::Error;
 
 pub struct ReconcileScheduler {
     ctx: ScheduleContext,
@@ -47,7 +48,7 @@ impl ReconcileScheduler {
 
     pub async fn poll_and_schedule(&self) -> Duration {
         let cr = self.generate_schedule_task().await; // TODO: take care self.tasks then can give more > 1 value here.
-        if matches!(cr, Ok(true)) {
+        if matches!(cr, Ok(true)) || !self.is_empty().await {
             let _step_timer = metrics::RECONCILE_STEP_DURATION_SECONDS.start_timer();
             while self.advance_tasks().await {}
         }
@@ -78,6 +79,7 @@ impl ReconcileScheduler {
             task: Some(reconcile_task::Task::ShedRoot(ShedRootLeaderTask { node_id })),
             created_at: timestamp_millis(),
             fire_at: 0,
+            retry_count: 0,
         })
         .await;
     }
@@ -88,6 +90,7 @@ impl ReconcileScheduler {
             task: Some(reconcile_task::Task::ShedLeader(ShedLeaderTask { node_id })),
             created_at: timestamp_millis(),
             fire_at: 0,
+            retry_count: 0,
         })
         .await;
     }
@@ -103,6 +106,7 @@ impl ReconcileScheduler {
             })),
             created_at: timestamp_millis(),
             fire_at: 0,
+            retry_count: 0,
         })
         .await;
     }
@@ -119,6 +123,7 @@ impl ReconcileScheduler {
             })),
             created_at: timestamp_millis(),
             fire_at: 0,
+            retry_count: 0,
         })
         .await;
     }
@@ -131,9 +136,11 @@ impl ReconcileScheduler {
                 shard: action.shard,
                 src_group: action.source_group,
                 dest_group: action.target_group,
+                split_task: None,
             })),
             created_at: timestamp_millis(),
             fire_at: 0,
+            retry_count: 0,
         })
         .await;
     }
@@ -143,9 +150,14 @@ impl ReconcileScheduler {
         debug!("sched split shard task, group_id {group_id}, shard_id {shard_id}");
         self.ctx.cluster_stats.handle_split_shard(shard_id);
         self.setup_task(ReconcileTask {
-            task: Some(reconcile_task::Task::SplitShard(SplitShardTask { group_id, shard_id })),
+            task: Some(reconcile_task::Task::SplitShard(SplitShardTask {
+                group_id,
+                shard_id,
+                ..Default::default()
+            })),
             created_at: timestamp_millis(),
             fire_at: 0,
+            retry_count: 0,
         })
         .await;
     }
@@ -169,6 +181,7 @@ impl ReconcileScheduler {
             })),
             created_at: timestamp_millis(),
             fire_at: 0,
+            retry_count: 0,
         })
         .await;
     }
@@ -270,42 +283,38 @@ impl ReconcileScheduler {
 
 impl ReconcileScheduler {
     async fn advance_tasks(&self) -> bool {
-        let mut task = self.tasks.lock().await;
-        let mut nowait_next = !task.is_empty();
-        metrics::RECONCILE_SCHEDULER_TASK_QUEUE_SIZE.set(task.len() as i64);
-
-        let start_at = timestamp_millis();
-        let mut cursor = task.cursor_front_mut();
+        let mut tasks = self.tasks.lock().await;
+        metrics::RECONCILE_SCHEDULER_TASK_QUEUE_SIZE.set(tasks.len() as i64);
+        let mut immediately_next = false;
+        let mut cursor = tasks.cursor_front_mut();
         while let Some(task) = cursor.current() {
-            if start_at < task.fire_at {
+            if timestamp_millis() < task.fire_at {
                 cursor.move_next();
                 continue;
             }
 
             let _timer = Self::record_exec(task);
-            let Ok(sched_result) = self.ctx.handle_task(task).await else {
-                Self::record_retry(task);
-                // ack == false or meet error, skip current task and retry later.
-                cursor.move_next();
-                continue;
-            };
-
-            if sched_result.ack {
-                cursor.remove_current();
-                if !sched_result.immediately_next {
-                    nowait_next = false
+            let sched_result = self.ctx.handle_task(task).await;
+            let retry_at = timestamp_millis();
+            match sched_result {
+                Ok(result) if result.ack => {
+                    immediately_next |= result.immediately_next;
+                    cursor.remove_current();
                 }
-            } else if let Some(delay) = sched_result.delay {
-                Self::record_retry(task);
-                task.fire_at = start_at + delay.as_millis() as u64;
-                cursor.move_next();
-            } else {
-                Self::record_retry(task);
-                // ack == false or meet error, skip current task and retry later.
-                cursor.move_next();
+                Ok(result) => {
+                    Self::record_retry(task);
+                    task.defer_retry(retry_at, result.delay);
+                    cursor.move_next();
+                }
+                Err(_) => {
+                    Self::record_retry(task);
+                    task.defer_retry(retry_at, None);
+                    cursor.move_next();
+                }
             }
         }
-        nowait_next
+        // A queue containing only deferred tasks must return to the timed poll.
+        immediately_next && tasks.iter().any(|task| task.fire_at <= timestamp_millis())
     }
 
     fn record_exec(task: &mut ReconcileTask) -> HistogramTimer {
@@ -379,14 +388,41 @@ impl SchedResult {
         SchedResult { ack: true, immediately_next: true, ..Default::default() }
     }
 
-    /// Immediately step next and save the delay intervals.
-    fn delay(duration: Duration) -> Self {
-        SchedResult { ack: true, immediately_next: true, delay: Some(duration) }
-    }
-
     /// Keep current task and retry after a delay.
     fn retry_after(duration: Duration) -> Self {
         SchedResult { ack: false, immediately_next: false, delay: Some(duration) }
+    }
+}
+
+/// Returns true when this split has already completed, false when it can run.
+fn precheck_split_shard(task: &SplitShardTask, group: Option<&GroupDesc>) -> Result<bool> {
+    let group = group.ok_or(Error::AbortScheduleTask("split group no longer exists"))?;
+    if task.new_shard_id.is_some_and(|id| group.shard(id).is_some()) {
+        return Ok(true);
+    }
+    if group.shard(task.shard_id).is_none() {
+        return Err(Error::AbortScheduleTask("split shard no longer belongs to the group"));
+    }
+    if task.group_epoch.is_some_and(|epoch| epoch != group.epoch) {
+        return Err(Error::AbortScheduleTask("split group metadata has changed"));
+    }
+    Ok(false)
+}
+
+impl ReconcileTask {
+    fn defer_retry(&mut self, now: u64, delay: Option<Duration>) {
+        let delay = match delay {
+            Some(delay) => {
+                self.retry_count = 0;
+                delay
+            }
+            None => {
+                let secs = (1u64 << self.retry_count.min(5)).min(30);
+                self.retry_count = self.retry_count.saturating_add(1);
+                Duration::from_secs(secs)
+            }
+        };
+        self.fire_at = now.saturating_add(delay.as_millis().min(u64::MAX as u128) as u64);
     }
 }
 
@@ -613,6 +649,9 @@ impl ScheduleContext {
     }
 
     async fn handle_migrate_shard(&self, task: &mut MigrateShardTask) -> Result<SchedResult> {
+        if let Some(split_task) = &mut task.split_task {
+            return self.handle_split_shard(split_task).await;
+        }
         info!(
             "start migrate shard. shard={}, src={}, dest={}",
             task.shard, task.src_group, task.dest_group
@@ -625,9 +664,12 @@ impl ScheduleContext {
                     task.shard, task.src_group, task.dest_group, self.cfg.move_shard_size_limit
                 );
                 self.cluster_stats.finish_move_shard(task.shard);
-                let mut split_task =
-                    SplitShardTask { group_id: task.src_group, shard_id: task.shard };
-                return self.handle_split_shard(&mut split_task).await;
+                let split_task = task.split_task.insert(SplitShardTask {
+                    group_id: task.src_group,
+                    shard_id: task.shard,
+                    ..Default::default()
+                });
+                return self.handle_split_shard(split_task).await;
             }
             MigrateShardPrecheck::WaitStats => {
                 info!(
@@ -796,21 +838,42 @@ impl ScheduleContext {
         Ok(result)
     }
 
-    /// Handle the spliting shard stask.
+    /// Validate and execute a split against one group metadata version.
     async fn handle_split_shard_inner(&self, task: &mut SplitShardTask) -> Result<SchedResult> {
         let schema = self.shared.schema()?;
-        if schema.get_group(task.group_id).await?.is_none() {
-            warn!("split shard {} but group {} is not exists", task.shard_id, task.group_id);
-            return Ok(SchedResult::next());
-        };
-
+        let group = schema.get_group(task.group_id).await?;
+        match precheck_split_shard(task, group.as_ref()) {
+            Ok(true) => return Ok(SchedResult::next()),
+            Ok(false) => {}
+            Err(Error::AbortScheduleTask(reason)) => {
+                warn!(
+                    "abort split shard task. group={}, shard={}, reason={reason}",
+                    task.group_id, task.shard_id
+                );
+                return Ok(SchedResult::next());
+            }
+            Err(err) => return Err(err),
+        }
+        let group = group.unwrap();
+        task.group_epoch = Some(group.epoch);
         let old_shard_id = task.shard_id;
-        let new_shard_id = schema.next_shard_id().await?;
-        let split_policy = self.split_policy_for_moving(task.group_id, old_shard_id).await?;
-        match self.try_split_shard(task.group_id, old_shard_id, new_shard_id, split_policy).await {
+        let new_shard_id = match task.new_shard_id {
+            Some(id) => id,
+            None => {
+                let id = schema.next_shard_id().await?;
+                task.new_shard_id = Some(id);
+                id
+            }
+        };
+        let split_policy = self.split_policy_for_moving(&group, old_shard_id);
+
+        match self.try_split_shard(&group, old_shard_id, new_shard_id, split_policy).await {
             Ok(true) => Ok(SchedResult::next()),
             Ok(false) => Ok(SchedResult::retry_after(Duration::from_secs(30))),
-            Err(crate::Error::EpochNotMatch(_)) => {
+            Err(crate::Error::EpochNotMatch(desc)) => {
+                if matches!(precheck_split_shard(task, Some(&desc)), Ok(true)) {
+                    return Ok(SchedResult::next());
+                }
                 warn!(
                     "split shard meet epoch not match, abort split shard task. group={}, shard={}, new_shard={}",
                     task.group_id, old_shard_id, new_shard_id
@@ -820,7 +883,7 @@ impl ScheduleContext {
             Err(crate::Error::InvalidArgument(msg))
                 if msg.contains("shard estimated split keys is empty") =>
             {
-                Ok(SchedResult::delay(Duration::from_secs(30)))
+                Ok(SchedResult::retry_after(Duration::from_secs(30)))
             }
             Err(err) => {
                 error!(
@@ -832,27 +895,14 @@ impl ScheduleContext {
         }
     }
 
-    async fn split_policy_for_moving(
-        &self,
-        group_id: u64,
-        shard_id: u64,
-    ) -> Result<Option<(Vec<u8>, u64)>> {
-        let Some(stats) = self.cluster_stats.get_shard_stats(shard_id) else {
-            return Ok(None);
-        };
+    fn split_policy_for_moving(&self, group: &GroupDesc, shard_id: u64) -> Option<(Vec<u8>, u64)> {
+        let stats = self.cluster_stats.get_shard_stats(shard_id)?;
         if stats.shard_size <= self.cfg.move_shard_size_limit {
-            return Ok(None);
+            return None;
         }
-        let Some(group) = self.get_group_leader(group_id).await? else {
-            return Ok(None);
-        };
-        let Some(shard) = group.shards.iter().find(|shard| shard.id == shard_id) else {
-            return Ok(None);
-        };
-        let Some(range) = shard.range.as_ref() else {
-            return Ok(None);
-        };
-        Ok(Some((range.start.clone(), self.cfg.move_shard_size_limit)))
+        let shard = group.shard(shard_id)?;
+        let range = shard.range.as_ref()?;
+        Some((range.start.clone(), self.cfg.move_shard_size_limit))
     }
 
     async fn handle_merge_shard(&self, task: &mut MergeShardTask) -> Result<SchedResult> {
@@ -1010,12 +1060,20 @@ impl ScheduleContext {
     /// Split shard request.
     async fn try_split_shard(
         &self,
-        group_id: u64,
+        group: &GroupDesc,
         old_shard_id: u64,
         new_shard_id: u64,
         split_policy: Option<(Vec<u8>, u64)>,
     ) -> Result<bool> {
-        let mut group_client = self.shared.transport_manager.lazy_group_client(group_id);
+        let group_state = sekas_client::RouterGroupState {
+            id: group.id,
+            epoch: group.epoch,
+            replicas: group.replicas.iter().map(|replica| (replica.id, replica.clone())).collect(),
+            leader_state: None,
+        };
+        let client =
+            self.shared.transport_manager.build_client(sekas_client::ClientOptions::default());
+        let mut group_client = sekas_client::GroupClient::new(group_state, client);
         let split_key = if let Some((split_start_key, split_target_size)) = split_policy {
             let Some(split_key) = group_client
                 .get_split_key(old_shard_id, Some(split_start_key), Some(split_target_size))
@@ -1060,6 +1118,94 @@ mod tests {
         MigrateShardPrecheck, check_merge_shards, is_merge_candidate, precheck_migrate_shard_stats,
     };
     use crate::RootConfig;
+
+    #[test]
+    fn split_precheck_rejects_obsolete_tasks_and_recognizes_completion() {
+        let mut task = super::SplitShardTask { group_id: 3, shard_id: 1028, ..Default::default() };
+        let mut group = super::GroupDesc {
+            id: 3,
+            epoch: 8,
+            shards: vec![ShardDesc::whole(1028, 1024)],
+            ..Default::default()
+        };
+        assert!(!super::precheck_split_shard(&task, Some(&group)).unwrap());
+        assert!(matches!(
+            super::precheck_split_shard(&task, None),
+            Err(crate::Error::AbortScheduleTask(_))
+        ));
+        group.shards.clear();
+        assert!(matches!(
+            super::precheck_split_shard(&task, Some(&group)),
+            Err(crate::Error::AbortScheduleTask(_))
+        ));
+        group.shards.push(ShardDesc::whole(1028, 1024));
+        task.group_epoch = Some(group.epoch);
+        task.new_shard_id = Some(1056);
+        group.epoch += 1;
+        assert!(matches!(
+            super::precheck_split_shard(&task, Some(&group)),
+            Err(crate::Error::AbortScheduleTask(_))
+        ));
+        // A lost response must be treated as success, even if the parent has
+        // since moved out and the epoch has advanced.
+        group.shards = vec![ShardDesc::whole(1056, 1024)];
+        assert!(super::precheck_split_shard(&task, Some(&group)).unwrap());
+    }
+
+    #[test]
+    fn task_backoff_is_capped_and_explicit_delays_are_preserved() {
+        let mut task = super::ReconcileTask::default();
+        for seconds in [1, 2, 4, 8, 16, 30, 30] {
+            task.defer_retry(1000, None);
+            assert_eq!(task.fire_at, 1000 + seconds * 1000);
+        }
+        task.defer_retry(1000, Some(super::Duration::from_secs(30)));
+        assert_eq!(task.fire_at, 31000);
+        task.defer_retry(1000, None);
+        assert_eq!(task.fire_at, 2000);
+        task.retry_count = u32::MAX;
+        task.defer_retry(u64::MAX - 100, None);
+        assert_eq!(task.fire_at, u64::MAX);
+        assert_eq!(task.retry_count, u32::MAX);
+    }
+
+    #[sekas_macro::test]
+    async fn scheduler_defers_errors_and_does_not_spin_on_delayed_tasks() {
+        let dir = crate::testutil::TempDir::new("scheduler-backoff").unwrap();
+        let cfg = crate::Config { root_dir: dir.path().to_owned(), ..Default::default() };
+        let engines = crate::engine::Engines::open(&cfg.root_dir, &cfg.db).unwrap();
+        let transport = crate::transport::TransportManager::new(vec![], engines.state()).await;
+        let root = super::Root::new(transport, &crate::serverpb::v1::NodeIdent::default(), cfg);
+        let scheduler = &root.scheduler;
+        scheduler.sched_split_shard_task(3, 1028).await;
+        // This root has no leadership/schema, so the real handler fails.
+        let before_retry = super::timestamp_millis();
+        assert!(!scheduler.advance_tasks().await);
+        {
+            let mut tasks = scheduler.tasks.lock().await;
+            let task = tasks.front_mut().unwrap();
+            assert_eq!(task.retry_count, 1);
+            assert!(task.fire_at >= before_retry + 1000);
+            task.fire_at = super::timestamp_millis() + 60000;
+        }
+        tokio::time::timeout(super::Duration::from_millis(100), async {
+            while scheduler.advance_tasks().await {}
+        })
+        .await
+        .unwrap();
+        {
+            let mut tasks = scheduler.tasks.lock().await;
+            let task = tasks.front_mut().unwrap();
+            assert_eq!(task.retry_count, 1);
+            task.fire_at = 0;
+        }
+        let before_retry = super::timestamp_millis();
+        assert!(!scheduler.advance_tasks().await);
+        let tasks = scheduler.tasks.lock().await;
+        let task = tasks.front().unwrap();
+        assert_eq!(task.retry_count, 2);
+        assert!(task.fire_at >= before_retry + 2000);
+    }
 
     #[test]
     fn migrate_shard_precheck_uses_stats_and_size_limit() {

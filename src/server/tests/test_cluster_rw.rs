@@ -36,6 +36,50 @@ fn init() {
 }
 
 #[sekas_macro::test]
+async fn cluster_split_retry_preserves_epoch_and_reports_completed_split() {
+    let mut ctx = TestContext::new(fn_name!());
+    ctx.set_replicas_per_group(1);
+    let nodes = ctx.bootstrap_servers(1).await;
+    let c = ClusterClient::new(nodes).await;
+    let app = c.app_client().await;
+    let db = app.create_database("db".to_owned()).await.unwrap();
+    let table = db.create_table("table".to_owned()).await.unwrap();
+    c.assert_table_ready_with_voters(table.id, 1).await;
+
+    let state = c.find_router_group_state_by_key(table.id, b"a").await.unwrap();
+    let old_shard_id = sekas_schema::FIRST_USER_SHARD_ID;
+    let new_shard_id = old_shard_id + 1024;
+    let mut client = c.group(state.id);
+    client.apply_group_state(state.clone());
+    client.split_shard(old_shard_id, new_shard_id, Some(b"m".to_vec())).await.unwrap();
+    c.assert_large_group_epoch(state.id, state.epoch).await;
+
+    // Simulate losing the success response: retry with the same epoch and ID.
+    // The response carries the completed split instead of applying it again.
+    let err =
+        client.split_shard(old_shard_id, new_shard_id, Some(b"m".to_vec())).await.unwrap_err();
+    let sekas_client::Error::EpochNotMatch(desc) = err else {
+        panic!("expected epoch mismatch, got {err:?}");
+    };
+    assert_eq!(desc.shards.len(), 2);
+    assert_eq!(desc.shard(old_shard_id).unwrap().range.as_ref().unwrap().end, b"m");
+    assert_eq!(desc.shard(new_shard_id).unwrap().range.as_ref().unwrap().start, b"m");
+
+    // A change after task validation must fail against the pinned epoch,
+    // even if the router has already learned the newer metadata.
+    let mut stale = c.group(state.id);
+    stale.apply_group_state(state);
+    assert!(matches!(
+        stale.split_shard(new_shard_id + 1, new_shard_id + 2, Some(b"n".to_vec())).await,
+        Err(sekas_client::Error::EpochNotMatch(_))
+    ));
+    db.put(table.id, b"a".to_vec(), b"left".to_vec()).await.unwrap();
+    db.put(table.id, b"z".to_vec(), b"right".to_vec()).await.unwrap();
+    assert_eq!(db.get(table.id, b"a".to_vec()).await.unwrap(), Some(b"left".to_vec()));
+    assert_eq!(db.get(table.id, b"z".to_vec()).await.unwrap(), Some(b"right".to_vec()));
+}
+
+#[sekas_macro::test]
 async fn cluster_rw_with_single_node() {
     let mut ctx = TestContext::new(fn_name!());
     ctx.set_replicas_per_group(1);
