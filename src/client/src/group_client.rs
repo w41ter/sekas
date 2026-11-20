@@ -128,25 +128,31 @@ impl GroupClient {
         O: Future<Output = Result<V, Status>>,
     {
         let invoke_start = Instant::now();
+        let deadline = self.timeout.take().map(|timeout| invoke_start + timeout);
         // Initial lazy connection
         if self.epoch == 0 {
             self.initial_group_state()?;
         }
         self.next_access_index = 0;
 
-        let timeout = self.timeout.take();
-        let deadline = timeout.map(|duration| Instant::now() + duration);
         let mut index = 0;
         let group_id = self.group_id;
         while let Some((node_id, client)) = self.recommend_client() {
+            let timeout =
+                deadline.map(|deadline| deadline.saturating_duration_since(Instant::now()));
+            if timeout == Some(Duration::ZERO) {
+                return Err(Error::DeadlineExceeded(format!("group {group_id} retry budget")));
+            }
             trace!("group {group_id} issue rpc request with index {index} to node {node_id}");
             index += 1;
             let ctx = InvokeContext { group_id, epoch: self.epoch, timeout };
-            let resp = if let Some(deadline) = deadline {
-                let timeout = deadline.saturating_duration_since(Instant::now());
-                tokio::time::timeout(timeout, op(ctx, client)).await.map_err(|_| {
-                    Error::DeadlineExceeded(format!("group {group_id} node {node_id} RPC future"))
-                })?
+            let resp = if let Some(timeout) = timeout {
+                match tokio::time::timeout(timeout, op(ctx, client)).await {
+                    Ok(result) => result,
+                    Err(_) => Err(Status::deadline_exceeded(format!(
+                        "group {group_id} node {node_id} RPC future"
+                    ))),
+                }
             } else {
                 op(ctx, client).await
             };
@@ -158,7 +164,7 @@ impl GroupClient {
                     return Ok(s);
                 }
             };
-            if deadline.map(|v| v.elapsed() > Duration::ZERO).unwrap_or_default() {
+            if deadline.is_some_and(|deadline| deadline <= Instant::now()) {
                 return Err(Error::DeadlineExceeded(format!("group {group_id} retry budget")));
             }
             GROUP_CLIENT_RETRY_TOTAL.inc();
@@ -292,6 +298,15 @@ impl GroupClient {
                 Ok(())
             }
             Error::EpochNotMatch(group_desc) => self.apply_epoch_not_match_status(group_desc, opt),
+            Error::DeadlineExceeded(message) => {
+                warn!(
+                    "group {} RPC to node {} timed out (epoch {}): {message}",
+                    self.group_id,
+                    self.access_node_id.unwrap_or_default(),
+                    self.epoch,
+                );
+                Err(Error::DeadlineExceeded(message))
+            }
             e => {
                 if !matches!(
                     e,

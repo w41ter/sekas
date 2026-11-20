@@ -33,6 +33,7 @@ pub(super) struct Config {
     pub threads: usize,
     pub workers: usize,
     pub operations: u64,
+    pub request_timeout_ms: u64,
     pub report_interval_secs: u64,
     pub seed: Option<u64>,
     pub workload: WorkloadConfig,
@@ -47,6 +48,7 @@ impl Default for Config {
             threads: std::thread::available_parallelism().map_or(1, usize::from),
             workers: 1,
             operations: 100_000,
+            request_timeout_ms: 500,
             report_interval_secs: 10,
             seed: None,
             workload: WorkloadConfig::default(),
@@ -115,4 +117,18 @@ pub(super) struct Mix {
     pub cas: f64,
     pub insert_if_absent: f64,
     pub increment: f64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn request_timeout_can_be_overridden() {
+        let default: Config = toml::from_str("operations = 100").unwrap();
+        assert_eq!(default.request_timeout_ms, 500);
+
+        let custom: Config = toml::from_str("request_timeout_ms = 2000").unwrap();
+        assert_eq!(custom.request_timeout_ms, 2000);
+    }
 }

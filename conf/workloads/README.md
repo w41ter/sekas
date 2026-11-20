@@ -52,6 +52,8 @@ it can reach. In Grafana, select that scrape job under **Client jobs**.
 ## Tune a preset
 
 - `operations` sets the number of attempts in each run across all workers.
+- `request_timeout_ms` sets the client timeout for a transaction or read.
+  It defaults to 500 milliseconds.
 - `workload.records` sets the initial row count. Run load again after increasing it.
 - `[workload.mix]` sets relative weights for `read`, `insert`, `update`,
   `scan`, `cas`, `insert_if_absent`, and `increment`.

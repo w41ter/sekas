@@ -60,6 +60,7 @@ impl Command {
         let config = Config::read(self.conf.as_deref())?;
         ensure!(config.threads > 0, "threads must be positive");
         ensure!(config.workers > 0, "workers must be positive");
+        ensure!(config.request_timeout_ms > 0, "request_timeout_ms must be positive");
         ensure!(config.report_interval_secs > 0, "report_interval_secs must be positive");
         ensure!(!config.addrs.is_empty(), "addrs must contain a cluster address");
         let workload = Workload::new(&config.workload, self.phase, config.operations)?;
@@ -91,8 +92,8 @@ async fn run_benchmark(config: Config, phase: Phase, workload: Workload) -> Resu
     let (db, table) = open_target(&config, phase).await?;
     let worker_count = (config.workers as u64).min(workload.operations);
     info!(
-        "{phase:?} on {}.{} with {worker_count} workers and seed {seed}",
-        config.database, config.table
+        "{phase:?} on {}.{} with {worker_count} workers, seed {seed}, and request timeout {} ms",
+        config.database, config.table, config.request_timeout_ms,
     );
 
     let workload = Arc::new(workload);
@@ -144,7 +145,7 @@ async fn run_benchmark(config: Config, phase: Phase, workload: Workload) -> Resu
 async fn open_target(config: &Config, phase: Phase) -> Result<(Database, u64)> {
     let options = ClientOptions {
         connect_timeout: Some(Duration::from_millis(200)),
-        timeout: Some(Duration::from_millis(500)),
+        timeout: Some(Duration::from_millis(config.request_timeout_ms)),
     };
     let client = SekasClient::new(options, config.addrs.clone()).await?;
     let database = config.database.clone();

@@ -187,7 +187,7 @@ impl RangeScanner {
             let router = self.client.router();
             let (group_state, shard_desc) = router.find_shard(self.table_id, &self.cursor_key)?;
             let mut group_client = GroupClient::new(group_state, self.client.clone());
-            if let Err(err) = self.scan_shard(&mut group_client, &shard_desc).await {
+            if let Err(err) = self.scan_shard(&mut group_client, &shard_desc, &retry_state).await {
                 retry_state.retry(err).await?;
                 continue;
             }
@@ -212,6 +212,7 @@ impl RangeScanner {
         &mut self,
         group_client: &mut GroupClient,
         shard_desc: &ShardDesc,
+        retry_state: &RetryState,
     ) -> crate::Result<()> {
         loop {
             if self.remaining_total == Some(0) {
@@ -230,6 +231,7 @@ impl RangeScanner {
                 exclude_end_key: true,
                 ..Default::default()
             };
+            group_client.set_timeout_opt(retry_state.timeout());
             let scan_resp = match group_client.request(&Request::Scan(req)).await? {
                 Response::Scan(resp) => resp,
                 e => {

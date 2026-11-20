@@ -4,6 +4,9 @@ table = "benchmark"
 workers = 4
 operations = 10000
 
+# Client timeout for a transaction or read, in milliseconds.
+# request_timeout_ms = 500
+
 # Optional settings for the client runtime and repeatable operation selection.
 # threads = 4
 # report_interval_secs = 10
