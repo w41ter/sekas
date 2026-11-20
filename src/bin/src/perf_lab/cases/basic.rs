@@ -5,6 +5,10 @@ use std::collections::BTreeMap;
 use anyhow::{Result, ensure};
 
 use super::support::*;
+use crate::perf_lab::assessment::{
+    CaseExpectations, Expectation, Metric, MetricRef, budget, primitive, sequential,
+};
+use crate::perf_lab::machine::Primitive;
 use crate::perf_lab::report::{
     CaseReport, case_report, failure_check, latency_check, throughput_check,
 };
@@ -13,6 +17,8 @@ use crate::perf_lab::{LabContext, RunProfile};
 
 // Range-scan case parameters.
 const SCAN_LIMITS: &[u64] = &[16, 128, 1024];
+const READ_WORKING_SET_CACHE_MULTIPLIER: u128 = 4;
+const DISK_SIZED_READ_BLOCK_CACHE_SIZE: usize = 32 << 20;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum BasicCase {
@@ -26,6 +32,35 @@ pub(super) enum BasicCase {
 }
 
 impl BasicCase {
+    pub(super) fn configure(self, cfg: &mut crate::perf_lab::config::LabConfig) {
+        if cfg.profile != RunProfile::Smoke
+            && matches!(self, Self::PointHit | Self::RangeScan | Self::CrossShardScan)
+        {
+            cfg.cluster.db.block_cache_size = DISK_SIZED_READ_BLOCK_CACHE_SIZE;
+        }
+    }
+
+    pub(super) fn expectations(self, profile: RunProfile) -> CaseExpectations {
+        if profile != RunProfile::Regression {
+            return CaseExpectations { standard_version: 1, checks: Vec::new() };
+        }
+        let checks = match self {
+            Self::PointHit => point_hit_expectations(),
+            Self::PointMiss => point_miss_expectations(),
+            Self::Insert => insert_expectations(),
+            Self::Update => update_expectations(),
+            Self::RangeScan => range_scan_expectations(),
+            Self::CrossShardScan => vec![Expectation::AtLeast {
+                id: "cross-shard-scan-rows",
+                metric: MetricRef::new("cross_shard_full_scan", Metric::RowsPerSecond),
+                estimated_min: 40_000.0,
+                allowed_min: 20_000.0,
+            }],
+            Self::Delete => Vec::new(),
+        };
+        CaseExpectations { standard_version: 1, checks }
+    }
+
     pub(super) async fn run(self, name: &str, lab: &mut LabContext) -> Result<CaseReport> {
         let read_fixture = fixture_spec(
             lab,
@@ -202,6 +237,96 @@ impl BasicCase {
     }
 }
 
+fn point_hit_expectations() -> Vec<Expectation> {
+    vec![Expectation::ModeledLatency {
+        id: "point-hit-c1-p50",
+        metric: MetricRef::new("latency_c1", Metric::P50Us),
+        model: sequential(vec![
+            primitive(Primitive::TcpLoopback64B, 1.0),
+            primitive(Primitive::TcpLoopback4KiB, 1.0),
+            primitive(Primitive::TokioTaskPingPong, 4.0),
+            primitive(Primitive::PageCacheRead4KiB, 1.0),
+            budget(15.0, 35.0, "rpc codec, routing and rocksdb lookup"),
+        ]),
+        allowed_multiplier: 3.0,
+        fixed_jitter_us: 10.0,
+    }]
+}
+
+fn point_miss_expectations() -> Vec<Expectation> {
+    vec![Expectation::ModeledLatency {
+        id: "point-miss-c1-p50",
+        metric: MetricRef::new("latency_c1", Metric::P50Us),
+        model: sequential(vec![
+            primitive(Primitive::TcpLoopback64B, 2.0),
+            primitive(Primitive::TokioTaskPingPong, 4.0),
+            primitive(Primitive::PageCacheRead4KiB, 1.0),
+            budget(12.0, 28.0, "rpc codec, routing and negative rocksdb lookup"),
+        ]),
+        allowed_multiplier: 3.0,
+        fixed_jitter_us: 10.0,
+    }]
+}
+
+fn insert_expectations() -> Vec<Expectation> {
+    vec![Expectation::ModeledLatency {
+        id: "insert-c1-p50",
+        metric: MetricRef::new("latency_c1", Metric::P50Us),
+        model: sequential(vec![
+            primitive(Primitive::TcpLoopback64B, 1.0),
+            primitive(Primitive::TcpLoopback4KiB, 2.0),
+            primitive(Primitive::TokioTaskPingPong, 6.0),
+            // This is a stable storage-stack reference, not a claim that
+            // each Raft log append uses O_DIRECT or waits for durability.
+            primitive(Primitive::ODirectWrite4KiB, 1.0),
+            budget(15.0, 35.0, "root allocation, raft bookkeeping and wakeups"),
+        ]),
+        allowed_multiplier: 2.5,
+        fixed_jitter_us: 0.0,
+    }]
+}
+
+fn update_expectations() -> Vec<Expectation> {
+    vec![Expectation::ModeledLatency {
+        id: "update-c1-p50",
+        metric: MetricRef::new("latency_c1", Metric::P50Us),
+        model: sequential(vec![
+            primitive(Primitive::TcpLoopback64B, 1.0),
+            primitive(Primitive::TcpLoopback4KiB, 2.0),
+            primitive(Primitive::TokioTaskPingPong, 6.0),
+            primitive(Primitive::ODirectWrite4KiB, 1.0),
+            budget(20.0, 45.0, "root allocation, existing-key evaluation and raft wakeups"),
+        ]),
+        allowed_multiplier: 2.5,
+        fixed_jitter_us: 0.0,
+    }]
+}
+
+fn range_scan_expectations() -> Vec<Expectation> {
+    vec![
+        Expectation::RatioUpperBound {
+            id: "range-scan-128-vs-16",
+            numerator: MetricRef::new("scan_128", Metric::P50Us),
+            denominator: MetricRef::new("scan_16", Metric::P50Us),
+            estimated_max: 8.0,
+            allowed_max: 12.0,
+        },
+        Expectation::RatioUpperBound {
+            id: "range-scan-1024-vs-128",
+            numerator: MetricRef::new("scan_1024", Metric::P50Us),
+            denominator: MetricRef::new("scan_128", Metric::P50Us),
+            estimated_max: 8.0,
+            allowed_max: 12.0,
+        },
+        Expectation::AtLeast {
+            id: "range-scan-1024-bandwidth",
+            metric: MetricRef::new("scan_1024", Metric::BytesPerSecond),
+            estimated_min: 200.0 * 1024.0 * 1024.0,
+            allowed_min: 100.0 * 1024.0 * 1024.0,
+        },
+    ]
+}
+
 fn validate_read_fixture(
     lab: &LabContext,
     target: &crate::perf_lab::workload::Target,
@@ -209,15 +334,36 @@ fn validate_read_fixture(
 ) -> Result<()> {
     let db_config = &lab.config.cluster.db;
     let bytes = target.keys as u128 * fixture_spec.value_size as u128;
-    let memory_budget = db_config.block_cache_size as u128 * 4
-        + db_config.write_buffer_size as u128 * db_config.max_write_buffer_number as u128 * 2;
     ensure!(
-        bytes > memory_budget,
-        "read case requires a working set larger than cache and write buffers"
+        bytes > db_config.block_cache_size as u128 * READ_WORKING_SET_CACHE_MULTIPLIER,
+        "read case requires a working set larger than block cache"
     );
     ensure!(
         lab.storage_stats()?.sst_bytes > db_config.block_cache_size as u64,
         "read fixture did not flush beyond block cache"
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn disk_sized_read_cases_override_only_block_cache() {
+        for case in [BasicCase::PointHit, BasicCase::RangeScan, BasicCase::CrossShardScan] {
+            let production = sekas_server::DbConfig::default();
+            let mut cfg = crate::perf_lab::config::LabConfig::default();
+            case.configure(&mut cfg);
+            assert_eq!(cfg.cluster.db.block_cache_size, DISK_SIZED_READ_BLOCK_CACHE_SIZE);
+            assert_eq!(cfg.cluster.db.write_buffer_size, production.write_buffer_size);
+            assert_eq!(cfg.cluster.db.max_write_buffer_number, production.max_write_buffer_number);
+        }
+
+        let mut smoke: crate::perf_lab::config::LabConfig =
+            toml::from_str(include_str!("../../../../../conf/perf-lab-smoke.toml")).unwrap();
+        let smoke_cache = smoke.cluster.db.block_cache_size;
+        BasicCase::PointHit.configure(&mut smoke);
+        assert_eq!(smoke.cluster.db.block_cache_size, smoke_cache);
+    }
 }

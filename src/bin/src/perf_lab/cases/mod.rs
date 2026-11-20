@@ -33,10 +33,11 @@ use storage::StorageCase;
 use topology::TopologyCase;
 use transaction::{KeyMatrix, Placement, TransactionCase};
 
-use super::LabContext;
+use super::assessment::CaseExpectations;
 use super::config::LabConfig;
 use super::report::CaseReport;
 use super::workload::TxnMode;
+use super::{LabContext, RunProfile};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -388,10 +389,24 @@ impl Case {
         cfg.cluster.node.mvcc_gc_retention_ms = 0;
         cfg.cluster.db.mvcc_gc_retention_ms = 0;
         match self.scenario {
+            Scenario::Basic(case) => case.configure(cfg),
             Scenario::Storage(case) => case.configure(cfg),
             Scenario::Topology(case) => case.configure(cfg),
             Scenario::Capacity(case) => case.configure(cfg),
             _ => {}
+        }
+    }
+
+    pub(super) fn expectations(&self, profile: RunProfile) -> CaseExpectations {
+        match self.scenario {
+            Scenario::Basic(case) => case.expectations(profile),
+            Scenario::Mvcc(case) => case.expectations(profile),
+            Scenario::Transaction(case) => case.expectations(profile),
+            Scenario::Contention(case) => case.expectations(profile),
+            Scenario::Storage(case) => case.expectations(profile),
+            Scenario::Mixed(case) => case.expectations(profile),
+            Scenario::Topology(case) => case.expectations(profile),
+            Scenario::Capacity(case) => case.expectations(profile),
         }
     }
 
@@ -438,6 +453,9 @@ mod tests {
     #[test]
     fn scenarios_enable_their_required_events() {
         let mut cfg = LabConfig::default();
+        Case::build(CaseKind::PointHit).configure(&mut cfg);
+        assert_eq!(cfg.cluster.db.block_cache_size, 32 << 20);
+        let mut cfg = LabConfig::default();
         Case::build(CaseKind::SnapshotCatchup).configure(&mut cfg);
         assert!(cfg.cluster.raft.testing_knobs.force_new_peer_receiving_snapshot);
         let mut cfg = LabConfig::default();
@@ -456,5 +474,39 @@ mod tests {
         assert_eq!(cfg.cluster.root.mvcc_gc_retention_ms, 0);
         assert_eq!(cfg.cluster.db.mvcc_gc_retention_ms, 0);
         assert!(!cfg.cluster.root.enable_auto_shard_split);
+    }
+
+    #[test]
+    fn machine_modeled_expectations_are_explicit_and_profile_scoped() {
+        assert_eq!(
+            Case::build(CaseKind::PointHit).expectations(RunProfile::Regression).checks.len(),
+            1
+        );
+        assert_eq!(
+            Case::build(CaseKind::Insert).expectations(RunProfile::Regression).checks.len(),
+            1
+        );
+        assert!(Case::build(CaseKind::PointHit).expectations(RunProfile::Smoke).checks.is_empty());
+        assert_eq!(
+            Case::build(CaseKind::Update).expectations(RunProfile::Regression).checks.len(),
+            1
+        );
+        assert_eq!(
+            Case::build(CaseKind::SnapshotPoint).expectations(RunProfile::Regression).checks.len(),
+            2
+        );
+        assert_eq!(
+            Case::build(CaseKind::Concurrency).expectations(RunProfile::Regression).checks.len(),
+            6
+        );
+
+        let generic_only = CaseKind::value_variants()
+            .iter()
+            .copied()
+            .filter(|kind| {
+                Case::build(*kind).expectations(RunProfile::Regression).checks.is_empty()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(generic_only, vec![CaseKind::Delete]);
     }
 }

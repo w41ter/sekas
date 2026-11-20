@@ -6,6 +6,7 @@ use std::time::Duration;
 use anyhow::Result;
 
 use super::support::*;
+use crate::perf_lab::assessment::{CaseExpectations, Expectation, Metric, MetricRef};
 use crate::perf_lab::report::{
     CaseReport, case_report, latency_check, throughput_check, workload_checks,
 };
@@ -28,6 +29,31 @@ pub(super) enum MixedCase {
 }
 
 impl MixedCase {
+    pub(super) fn expectations(self, profile: RunProfile) -> CaseExpectations {
+        if profile != RunProfile::Regression {
+            return CaseExpectations { standard_version: 1, checks: Vec::new() };
+        }
+        let ratios: &[(&str, &str, &str)] = if self == Self::ReadUpdate {
+            &[
+                ("mixed-ratio005-qps", "foreground_ratio_0.05", "baseline_ratio_0.05"),
+                ("mixed-ratio05-qps", "foreground_ratio_0.5", "baseline_ratio_0.5"),
+            ]
+        } else {
+            &[("mixed-ratio05-qps", "foreground_ratio_0.5", "baseline_ratio_0.5")]
+        };
+        let checks = ratios
+            .iter()
+            .map(|(id, foreground, baseline)| Expectation::RatioLowerBound {
+                id,
+                numerator: MetricRef::new(foreground, Metric::Qps),
+                denominator: MetricRef::new(baseline, Metric::Qps),
+                estimated_min: 0.9,
+                allowed_min: 0.7,
+            })
+            .collect();
+        CaseExpectations { standard_version: 1, checks }
+    }
+
     pub(super) async fn run(self, name: &str, lab: &mut LabContext) -> Result<CaseReport> {
         let mut reports = Vec::new();
         let mut derived = BTreeMap::new();

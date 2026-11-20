@@ -14,10 +14,12 @@
 
 #![allow(clippy::result_large_err)]
 
+mod assessment;
 mod cases;
 mod cluster;
 mod config;
 mod diagnostics;
+mod machine;
 mod observer;
 mod report;
 mod runner;
@@ -76,6 +78,13 @@ pub struct Command {
     /// Compare against a previous suite JSON report.
     #[clap(long, value_name = "FILE")]
     baseline: Option<String>,
+
+    /// Machine primitives produced by sekas-machine-bench.
+    ///
+    /// Required by regression and characterization profiles so cases can
+    /// evaluate their modeled latency expectations.
+    #[clap(long, value_name = "FILE")]
+    machine_profile: Option<String>,
 
     /// Return non-zero when baseline regression thresholds are exceeded.
     #[clap(long)]

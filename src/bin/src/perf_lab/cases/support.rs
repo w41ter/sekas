@@ -252,7 +252,11 @@ pub(super) async fn measure_for(
     Ok(report)
 }
 
-pub(super) fn validate(_lab: &LabContext, report: &WorkloadReport) -> Result<()> {
+pub(super) fn validate(lab: &LabContext, report: &WorkloadReport) -> Result<()> {
+    validate_report(lab.config.profile, report)
+}
+
+fn validate_report(profile: RunProfile, report: &WorkloadReport) -> Result<()> {
     ensure!(report.operations > 0, "{} produced no operations", report.name);
     let unexpected = report.unexpected_failures();
     ensure!(
@@ -261,7 +265,21 @@ pub(super) fn validate(_lab: &LabContext, report: &WorkloadReport) -> Result<()>
         report.name,
         report.errors
     );
-    ensure!(unexpected == 0, "{} unexpected failures: {:?}", report.name, report.errors);
+    let correctness_failures = ["validation", "internal", "not_found", "already_exists"]
+        .into_iter()
+        .map(|kind| report.errors.get(kind).copied().unwrap_or_default())
+        .sum::<u64>();
+    ensure!(correctness_failures == 0, "{} correctness failures: {:?}", report.name, report.errors);
+    if matches!(profile, RunProfile::Regression | RunProfile::Characterization) {
+        if unexpected > 0 {
+            eprintln!(
+                "perf-lab workload {} recorded {unexpected} unexpected failures for assessment: {:?}",
+                report.name, report.errors
+            );
+        }
+    } else {
+        ensure!(unexpected == 0, "{} unexpected failures: {:?}", report.name, report.errors);
+    }
     Ok(())
 }
 
@@ -385,5 +403,36 @@ pub(super) async fn raw_versions(
             .map(|v| v.values)
             .unwrap_or_default()),
         _ => bail!("unexpected raw scan response"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn report_with_error(kind: &str) -> WorkloadReport {
+        WorkloadReport {
+            name: "workload".to_owned(),
+            operations: 2,
+            successes: 1,
+            failures: 1,
+            errors: BTreeMap::from([(kind.to_owned(), 1)]),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn regression_keeps_deadlines_for_assessment() {
+        let report = report_with_error("deadline_exceeded");
+        assert!(validate_report(RunProfile::Regression, &report).is_ok());
+        assert!(validate_report(RunProfile::Characterization, &report).is_ok());
+        assert!(validate_report(RunProfile::Smoke, &report).is_err());
+    }
+
+    #[test]
+    fn regression_still_rejects_correctness_failures() {
+        for kind in ["validation", "internal", "not_found", "already_exists"] {
+            assert!(validate_report(RunProfile::Regression, &report_with_error(kind)).is_err());
+        }
     }
 }

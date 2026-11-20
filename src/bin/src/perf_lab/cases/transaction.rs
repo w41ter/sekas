@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 use anyhow::Result;
 
 use super::support::*;
+use crate::perf_lab::assessment::{CaseExpectations, Expectation, Metric, MetricRef};
 use crate::perf_lab::report::{CaseReport, case_report, workload_checks};
 use crate::perf_lab::workload::{Operation, TxnMode};
 use crate::perf_lab::{LabContext, RunProfile};
@@ -37,6 +38,51 @@ pub(super) enum KeyMatrix {
 }
 
 impl TransactionCase {
+    pub(super) fn expectations(self, profile: RunProfile) -> CaseExpectations {
+        if profile != RunProfile::Regression {
+            return CaseExpectations { standard_version: 1, checks: Vec::new() };
+        }
+        let checks = match (self.placement, self.key_matrix) {
+            (Placement::Local, KeyMatrix::Regular) => vec![txn_growth(
+                "local-keys32-vs-1",
+                "groups_1_keys_32",
+                "groups_1_keys_1",
+                32.0,
+                48.0,
+            )],
+            (Placement::Distributed, KeyMatrix::Regular) => vec![
+                txn_growth("groups2-keys32-vs-8", "groups_2_keys_32", "groups_2_keys_8", 4.0, 8.0),
+                txn_growth("groups4-keys32-vs-8", "groups_4_keys_32", "groups_4_keys_8", 4.0, 8.0),
+            ],
+            (Placement::Matrix, KeyMatrix::Large) => [1, 2, 4]
+                .into_iter()
+                .map(|groups| {
+                    let id = match groups {
+                        1 => "large-g1-keys1024-vs-64",
+                        2 => "large-g2-keys1024-vs-64",
+                        4 => "large-g4-keys1024-vs-64",
+                        _ => unreachable!(),
+                    };
+                    let numerator = match groups {
+                        1 => "groups_1_keys_1024",
+                        2 => "groups_2_keys_1024",
+                        4 => "groups_4_keys_1024",
+                        _ => unreachable!(),
+                    };
+                    let denominator = match groups {
+                        1 => "groups_1_keys_64",
+                        2 => "groups_2_keys_64",
+                        4 => "groups_4_keys_64",
+                        _ => unreachable!(),
+                    };
+                    txn_growth(id, numerator, denominator, 16.0, 24.0)
+                })
+                .collect(),
+            _ => Vec::new(),
+        };
+        CaseExpectations { standard_version: 1, checks }
+    }
+
     pub(super) async fn run(self, name: &str, lab: &mut LabContext) -> Result<CaseReport> {
         let groups = match self.placement {
             Placement::Local => LOCAL_GROUP_COUNTS,
@@ -104,5 +150,21 @@ impl TransactionCase {
         );
         let checks = workload_checks(&reports, true, true);
         Ok(case_report(lab, name, reports, derived, checks))
+    }
+}
+
+fn txn_growth(
+    id: &'static str,
+    numerator: &'static str,
+    denominator: &'static str,
+    estimated_max: f64,
+    allowed_max: f64,
+) -> Expectation {
+    Expectation::RatioUpperBound {
+        id,
+        numerator: MetricRef::new(numerator, Metric::P50Us),
+        denominator: MetricRef::new(denominator, Metric::P50Us),
+        estimated_max,
+        allowed_max,
     }
 }

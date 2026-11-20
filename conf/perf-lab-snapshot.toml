@@ -46,6 +46,9 @@ snap_file_size = 68719476736
 [cluster.node.engine]
 engine_slow_io_threshold_ms = 1000
 
+[cluster.db]
+block_cache_size = 1073741824
+
 [execution]
 database = "perf_lab_snapshot"
 duration_secs = 5

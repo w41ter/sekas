@@ -6,12 +6,13 @@ use std::time::{Duration, Instant};
 use anyhow::{Result, bail, ensure};
 
 use super::support::*;
-use crate::perf_lab::LabContext;
+use crate::perf_lab::assessment::{CaseExpectations, Expectation, Metric, MetricRef};
 use crate::perf_lab::config::LabConfig;
 use crate::perf_lab::report::{
     CaseReport, case_report, latency_check, throughput_check, workload_checks,
 };
 use crate::perf_lab::workload::{Operation, TxnMode};
+use crate::perf_lab::{LabContext, RunProfile};
 
 // Capacity case parameters; scale cases do not borrow the concurrency matrix.
 const CONCURRENCY_LEVELS: &[usize] = &[1, 4, 16, 64];
@@ -32,6 +33,65 @@ pub(super) enum CapacityCase {
 }
 
 impl CapacityCase {
+    pub(super) fn expectations(self, profile: RunProfile) -> CaseExpectations {
+        if profile != RunProfile::Regression {
+            return CaseExpectations { standard_version: 1, checks: Vec::new() };
+        }
+        let checks = match self {
+            Self::Concurrency => concurrency_expectations(),
+            Self::OfferedLoad => offered_load_expectations(),
+            Self::GroupScale => vec![Expectation::RatioLowerBound {
+                id: "group-scale-g4-vs-g1-qps",
+                numerator: MetricRef::new("groups_4", Metric::Qps),
+                denominator: MetricRef::new("groups_1", Metric::Qps),
+                estimated_min: 2.0,
+                allowed_min: 1.0,
+            }],
+            Self::NodeScale => vec![
+                Expectation::DerivedAtLeast {
+                    id: "node-scale-throughput",
+                    metric: "scale_out.throughput_ratio",
+                    unit: "x",
+                    estimated_min: 1.2,
+                    allowed_min: 0.9,
+                },
+                Expectation::DerivedAtMost {
+                    id: "node-scale-duration",
+                    metric: "scale_out.event_duration_ms",
+                    unit: "ms",
+                    estimated_max: 10_000.0,
+                    allowed_max: 60_000.0,
+                },
+            ],
+            Self::MetadataScale => vec![
+                ratio_upper(
+                    "metadata-100-vs-1-p99",
+                    "metadata_100",
+                    "metadata_1",
+                    Metric::P99Us,
+                    3.0,
+                    10.0,
+                ),
+                ratio_upper(
+                    "data-read-100-vs-1-p99",
+                    "data_read_100",
+                    "data_read_1",
+                    Metric::P99Us,
+                    1.5,
+                    3.0,
+                ),
+                Expectation::DerivedAtMost {
+                    id: "metadata-100-create",
+                    metric: "metadata_100.create_duration_ms",
+                    unit: "ms",
+                    estimated_max: 2_000.0,
+                    allowed_max: 10_000.0,
+                },
+            ],
+        };
+        CaseExpectations { standard_version: 1, checks }
+    }
+
     pub(super) fn configure(self, cfg: &mut LabConfig) {
         if self == Self::NodeScale {
             cfg.cluster.node.replica.testing_knobs.disable_scheduler_durable_task = true;
@@ -262,5 +322,125 @@ impl CapacityCase {
             }
         }
         Ok(case_report(lab, name, reports, derived, checks))
+    }
+}
+
+fn concurrency_expectations() -> Vec<Expectation> {
+    vec![
+        ratio_lower(
+            "read-c64-vs-c16-qps",
+            "read_concurrency_64",
+            "read_concurrency_16",
+            Metric::Qps,
+            1.0,
+            0.9,
+        ),
+        ratio_lower(
+            "update-c64-vs-c16-qps",
+            "update_concurrency_64",
+            "update_concurrency_16",
+            Metric::Qps,
+            1.2,
+            1.0,
+        ),
+        ratio_lower(
+            "distributed-c64-vs-c16-qps",
+            "distributed_txn_concurrency_64",
+            "distributed_txn_concurrency_16",
+            Metric::Qps,
+            1.5,
+            1.0,
+        ),
+        tail("read-c64-tail", "read_concurrency_64", 5.0, 10.0),
+        tail("update-c64-tail", "update_concurrency_64", 10.0, 50.0),
+        tail("distributed-c64-tail", "distributed_txn_concurrency_64", 10.0, 50.0),
+    ]
+}
+
+fn offered_load_expectations() -> Vec<Expectation> {
+    let mut checks = Vec::new();
+    for (operation, offered) in [
+        ("read", 100),
+        ("read", 1000),
+        ("read", 5000),
+        ("update", 100),
+        ("update", 1000),
+        ("update", 5000),
+        ("distributed_txn", 100),
+        ("distributed_txn", 1000),
+        ("distributed_txn", 5000),
+    ] {
+        let (id, workload) = match (operation, offered) {
+            ("read", 100) => ("read-offered-100", "read_offered_100"),
+            ("read", 1000) => ("read-offered-1000", "read_offered_1000"),
+            ("read", 5000) => ("read-offered-5000", "read_offered_5000"),
+            ("update", 100) => ("update-offered-100", "update_offered_100"),
+            ("update", 1000) => ("update-offered-1000", "update_offered_1000"),
+            ("update", 5000) => ("update-offered-5000", "update_offered_5000"),
+            ("distributed_txn", 100) => ("distributed-offered-100", "distributed_txn_offered_100"),
+            ("distributed_txn", 1000) => {
+                ("distributed-offered-1000", "distributed_txn_offered_1000")
+            }
+            ("distributed_txn", 5000) => {
+                ("distributed-offered-5000", "distributed_txn_offered_5000")
+            }
+            _ => unreachable!(),
+        };
+        checks.push(Expectation::AtLeast {
+            id,
+            metric: MetricRef::new(workload, Metric::Qps),
+            estimated_min: offered as f64 * 0.9,
+            allowed_min: offered as f64 * 0.7,
+        });
+    }
+    checks
+}
+
+fn ratio_lower(
+    id: &'static str,
+    numerator: &'static str,
+    denominator: &'static str,
+    metric: Metric,
+    estimated_min: f64,
+    allowed_min: f64,
+) -> Expectation {
+    Expectation::RatioLowerBound {
+        id,
+        numerator: MetricRef::new(numerator, metric),
+        denominator: MetricRef::new(denominator, metric),
+        estimated_min,
+        allowed_min,
+    }
+}
+
+fn ratio_upper(
+    id: &'static str,
+    numerator: &'static str,
+    denominator: &'static str,
+    metric: Metric,
+    estimated_max: f64,
+    allowed_max: f64,
+) -> Expectation {
+    Expectation::RatioUpperBound {
+        id,
+        numerator: MetricRef::new(numerator, metric),
+        denominator: MetricRef::new(denominator, metric),
+        estimated_max,
+        allowed_max,
+    }
+}
+
+fn tail(
+    id: &'static str,
+    workload: &'static str,
+    estimated_max: f64,
+    allowed_max: f64,
+) -> Expectation {
+    Expectation::RatioUpperBound {
+        id,
+        numerator: MetricRef::new(workload, Metric::P999Us),
+        denominator: MetricRef::new(workload, Metric::P50Us),
+        estimated_max,
+        allowed_max,
     }
 }

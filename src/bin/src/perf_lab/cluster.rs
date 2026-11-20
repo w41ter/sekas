@@ -19,6 +19,7 @@ use std::time::{Duration, Instant};
 use std::{fs, thread};
 
 use anyhow::{Context as _, Result, anyhow, bail};
+use log::LevelFilter;
 use sekas_client::{
     AppError, ClientOptions, ConnManager, Database, NodeClient, RootClient, Router, SekasClient,
     StaticServiceDiscovery, TableDesc,
@@ -197,6 +198,12 @@ impl LabContext {
     }
 
     pub(super) fn shutdown(&mut self) -> Result<()> {
+        // Router/watch tasks can observe an expected Canceled status while the
+        // in-process runtimes are being torn down.  Do not forward those late
+        // `log` records through tracing-log after a worker's logging TLS has
+        // begun destruction.  Joining every server thread before restoring
+        // the level keeps the suppression scoped to cluster shutdown.
+        let _log_guard = ShutdownLogGuard::new();
         let _ = std::mem::take(&mut self.notifiers);
         let mut first_error = None;
         for (node_id, handle) in std::mem::take(&mut self.handles) {
@@ -385,6 +392,22 @@ impl LabContext {
 
     pub(crate) fn mark(&mut self, name: impl Into<String>) {
         self.metrics.mark(name.into())
+    }
+}
+
+struct ShutdownLogGuard(LevelFilter);
+
+impl ShutdownLogGuard {
+    fn new() -> Self {
+        let previous = log::max_level();
+        log::set_max_level(LevelFilter::Off);
+        Self(previous)
+    }
+}
+
+impl Drop for ShutdownLogGuard {
+    fn drop(&mut self) {
+        log::set_max_level(self.0);
     }
 }
 

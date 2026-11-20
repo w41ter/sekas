@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 use anyhow::{Result, ensure};
 
 use super::support::*;
+use crate::perf_lab::assessment::{CaseExpectations, Expectation, Metric, MetricRef};
 use crate::perf_lab::report::{CaseReport, case_report, workload_checks};
 use crate::perf_lab::workload::{LoadModel, Operation};
 use crate::perf_lab::{LabContext, RunProfile};
@@ -21,6 +22,49 @@ pub(super) enum MvccCase {
 }
 
 impl MvccCase {
+    pub(super) fn expectations(self, profile: RunProfile) -> CaseExpectations {
+        if profile != RunProfile::Regression {
+            return CaseExpectations { standard_version: 1, checks: Vec::new() };
+        }
+        let checks = match self {
+            Self::LatestVersions => vec![
+                growth("latest-v100-v1", "versions_100", "versions_1", 1.5, 2.5),
+                growth("latest-v1000-v1", "versions_1000", "versions_1", 1.5, 3.0),
+            ],
+            Self::SnapshotPoint => vec![
+                growth("snapshot-point-v100-v1", "versions_100", "versions_1", 2.0, 6.0),
+                growth("snapshot-point-v1000-v1", "versions_1000", "versions_1", 4.0, 10.0),
+            ],
+            Self::SnapshotScan => vec![
+                growth("snapshot-scan-v100-v1", "snapshot_scan_100", "snapshot_scan_1", 4.0, 10.0),
+                growth(
+                    "snapshot-scan-v1000-v1",
+                    "snapshot_scan_1000",
+                    "snapshot_scan_1",
+                    10.0,
+                    32.0,
+                ),
+            ],
+            Self::TombstoneRead => vec![
+                growth(
+                    "tombstone-latest-v1000-v1",
+                    "tombstone_1000_historical_false",
+                    "tombstone_1_historical_false",
+                    2.0,
+                    4.0,
+                ),
+                growth(
+                    "tombstone-history-v1000-v1",
+                    "tombstone_1000_historical_true",
+                    "tombstone_1_historical_true",
+                    4.0,
+                    10.0,
+                ),
+            ],
+        };
+        CaseExpectations { standard_version: 1, checks }
+    }
+
     pub(super) async fn run(self, name: &str, lab: &mut LabContext) -> Result<CaseReport> {
         let mut reports = Vec::new();
         let mut derived = BTreeMap::new();
@@ -129,5 +173,21 @@ impl MvccCase {
         }
         let checks = workload_checks(&reports, true, true);
         Ok(case_report(lab, name, reports, derived, checks))
+    }
+}
+
+fn growth(
+    id: &'static str,
+    numerator: &'static str,
+    denominator: &'static str,
+    estimated_max: f64,
+    allowed_max: f64,
+) -> Expectation {
+    Expectation::RatioUpperBound {
+        id,
+        numerator: MetricRef::new(numerator, Metric::P50Us),
+        denominator: MetricRef::new(denominator, Metric::P50Us),
+        estimated_max,
+        allowed_max,
     }
 }

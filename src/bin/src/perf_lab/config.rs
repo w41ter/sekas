@@ -144,11 +144,16 @@ pub(crate) struct ClusterConfig {
 
 impl Default for ClusterConfig {
     fn default() -> Self {
+        // A host-sized production block cache makes a bounded in-process read
+        // fixture impossible to push beyond cache.  Keep every write and
+        // compaction setting at its production default so perf-lab does not
+        // introduce artificial flush stalls.
+        let db = DbConfig { block_cache_size: 1 << 30, ..DbConfig::default() };
         ClusterConfig {
             nodes: 3,
             cpus_per_node: 2,
             enable_proxy_service: false,
-            db: DbConfig::default(),
+            db,
             node: NodeConfig::default(),
             raft: RaftConfig::default(),
             root: RootConfig::default(),
@@ -271,5 +276,16 @@ mod tests {
         cfg.execution.duration_secs = 30;
         cfg.execution.request_timeout_secs = 0;
         assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn default_db_only_overrides_production_block_cache() {
+        let production = DbConfig::default();
+        let db = LabConfig::default().cluster.db;
+        assert_eq!(db.block_cache_size, 1 << 30);
+        assert_eq!(db.write_buffer_size, production.write_buffer_size);
+        assert_eq!(db.max_write_buffer_number, production.max_write_buffer_number);
+        assert_eq!(db.max_background_jobs, production.max_background_jobs);
+        assert_eq!(db.max_sub_compactions, production.max_sub_compactions);
     }
 }

@@ -65,8 +65,9 @@ if [[ -e "$output" && "$force" != true ]]; then
 fi
 
 if ! jq -e '
-    type == "object" and (.schema_version == 3) and
+    type == "object" and (.schema_version == 4) and
     ((.errors // {}) | length == 0) and
+    (.machine_profile | type == "object") and
     (.run_id | type == "string" or type == "number") and
     (.reports | type == "array" and length > 0) and
     all(.reports[];
@@ -76,6 +77,7 @@ if ! jq -e '
         (.category | type == "string" and length > 0) and
         (.semantic_parameters | type == "object") and
         (.regression_checks | type == "array" and length > 0) and
+        (.assessment | type == "object") and
         (.run_id | type == "string" or type == "number") and
         (.derived | type == "object" and length > 0) and
         all(.derived[]; type == "number")
@@ -94,6 +96,7 @@ trap 'rm -f "$tmp"' EXIT
 jq '{
     schema_version,
     run_id: ("baseline-" + (.run_id | tostring)),
+    machine_profile,
     reports: [
         .reports[] | {
             case,
@@ -106,7 +109,8 @@ jq '{
             regression_checks,
             workloads: [],
             derived,
-            metric_intervals: []
+            metric_intervals: [],
+            assessment
         }
     ]
 }' "$input" >"$tmp"

@@ -20,9 +20,11 @@ use anyhow::{Context as _, Result, anyhow, bail};
 use prometheus::proto::Metric;
 use serde::{Deserialize, Serialize};
 
+use super::assessment::CaseAssessment;
 use super::cases::{Case, CaseCategory, CaseKind};
 use super::config::LabConfig;
 use super::diagnostics::{HistogramDelta, HistogramSnapshot, ProcessSnapshot};
+use super::machine::MachineProfile;
 use super::{LabContext, WorkloadReport};
 
 // These counters answer the storage and topology scenarios' questions. Keep
@@ -145,6 +147,7 @@ pub(crate) struct CaseReport {
     pub(crate) workloads: Vec<WorkloadReport>,
     pub(crate) derived: BTreeMap<String, f64>,
     pub(crate) metric_intervals: Vec<MetricInterval>,
+    pub(crate) assessment: CaseAssessment,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -201,6 +204,7 @@ pub(crate) fn workload_checks(
 pub(crate) struct SuiteReport {
     pub(crate) schema_version: u32,
     pub(crate) run_id: String,
+    pub(crate) machine_profile: Option<MachineProfile>,
     pub(crate) reports: Vec<CaseReport>,
     #[serde(default)]
     pub(crate) errors: BTreeMap<String, String>,
@@ -281,6 +285,7 @@ pub(crate) fn case_report(
         workloads,
         derived,
         metric_intervals: lab.metrics.intervals(),
+        assessment: CaseAssessment::unavailable("assessment has not been evaluated"),
     }
 }
 
@@ -297,7 +302,7 @@ pub(crate) fn compare_with_baseline(
         || current.regression_checks != baseline.regression_checks
     {
         bail!(
-            "{} baseline scenario contract differs; regenerate the schema v3 baseline",
+            "{} baseline scenario contract differs; regenerate the schema v4 baseline",
             current.case
         );
     }
@@ -373,8 +378,8 @@ pub(crate) fn read_baseline_reports(path: &Path) -> Result<Vec<CaseReport>> {
     if suite.reports.is_empty() {
         bail!("baseline {} contains no reports", path.display());
     }
-    if suite.schema_version != 3 {
-        bail!("perf-lab baseline schema changed; regenerate a version 3 baseline");
+    if suite.schema_version != 4 {
+        bail!("perf-lab baseline schema changed; regenerate a version 4 baseline");
     }
     if !suite.errors.is_empty() {
         bail!("perf-lab baseline contains failed cases; use a successful suite");
@@ -479,6 +484,7 @@ mod tests {
             workloads: vec![],
             derived: BTreeMap::new(),
             metric_intervals: vec![serde_json::from_value(legacy).unwrap()],
+            assessment: CaseAssessment::unavailable("test"),
         };
         assert_eq!(report.counter_delta("gc"), 8.0);
     }
@@ -507,14 +513,16 @@ mod tests {
                 ("event_duration_ms".into(), 100.0),
             ]),
             metric_intervals: vec![],
+            assessment: CaseAssessment::unavailable("test"),
         };
         let path =
             std::env::temp_dir().join(format!("perf-lab-checks-{}.json", std::process::id()));
         fs::write(
             &path,
             serde_json::to_vec(&SuiteReport {
-                schema_version: 3,
+                schema_version: 4,
                 run_id: "test".into(),
+                machine_profile: None,
                 reports: vec![report.clone()],
                 errors: BTreeMap::new(),
             })
@@ -530,8 +538,9 @@ mod tests {
         current.config.execution.duration_secs += 1;
         assert!(compare_with_baseline(&current, &path).is_err());
         let failed_suite = SuiteReport {
-            schema_version: 3,
+            schema_version: 4,
             run_id: "failed".into(),
+            machine_profile: None,
             reports: vec![current],
             errors: BTreeMap::from([("gc-backlog".into(), "GC did not reclaim versions".into())]),
         };
@@ -562,6 +571,7 @@ mod tests {
                 ("point_read.qps".to_owned(), 1000.0),
             ]),
             metric_intervals: vec![],
+            assessment: CaseAssessment::unavailable("test"),
         };
         let path = std::env::temp_dir().join(format!(
             "sekas-perf-lab-avg-{}-{}.json",
@@ -569,8 +579,9 @@ mod tests {
             std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
         ));
         let suite = SuiteReport {
-            schema_version: 3,
+            schema_version: 4,
             run_id: "baseline".to_owned(),
+            machine_profile: None,
             reports: vec![baseline],
             errors: BTreeMap::new(),
         };

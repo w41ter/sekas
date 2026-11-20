@@ -19,14 +19,26 @@ use std::path::Path;
 use anyhow::{Context as _, Result, anyhow, bail};
 use tracing_subscriber::EnvFilter;
 
+use super::assessment::{self, CaseAssessment};
 use super::config::LabConfig;
+use super::machine::MachineProfile;
 use super::report::{CaseReport, SuiteReport, compare_with_baseline, read_baseline_reports};
-use super::{CaseKind, Command, LabContext, run_id};
+use super::{CaseKind, Command, LabContext, RunProfile, run_id};
 
 impl Command {
     pub fn run(self) -> Result<()> {
         let specs = self.build_cases()?;
         let cfg = LabConfig::load(&self)?;
+        let machine_profile = self
+            .machine_profile
+            .as_deref()
+            .map(|path| MachineProfile::load(Path::new(path)))
+            .transpose()?;
+        if matches!(cfg.profile, RunProfile::Regression | RunProfile::Characterization)
+            && machine_profile.is_none()
+        {
+            bail!("profile {:?} requires --machine-profile from sekas-machine-bench", cfg.profile);
+        }
         let suite_id = run_id();
         init_logging(&cfg, &suite_id)?;
         let tracing_enabled = super::trace_every_n().is_some();
@@ -65,7 +77,13 @@ impl Command {
                         let reason = format!("cluster startup: {error:#}");
                         eprintln!("perf-lab case {} failed: {reason}", case.name());
                         errors.insert(case.name().to_owned(), reason);
-                        write_suite_report(&suite_id, &reports, &errors, &out_dir)?;
+                        write_suite_report(
+                            &suite_id,
+                            &reports,
+                            &errors,
+                            machine_profile.as_ref(),
+                            &out_dir,
+                        )?;
                         continue;
                     }
                 };
@@ -85,16 +103,35 @@ impl Command {
                         let reason = format!("{error:#}");
                         eprintln!("perf-lab case {} failed: {reason}", case.name());
                         errors.insert(case.name().to_owned(), reason);
-                        write_suite_report(&suite_id, &reports, &errors, &out_dir)?;
+                        write_suite_report(
+                            &suite_id,
+                            &reports,
+                            &errors,
+                            machine_profile.as_ref(),
+                            &out_dir,
+                        )?;
                         continue;
                     }
                 };
 
+                let mut result = result;
+                result.assessment = match machine_profile.as_ref() {
+                    Some(profile) => assessment::assess(
+                        &result,
+                        case.expectations(result.config.profile),
+                        profile,
+                    ),
+                    None => CaseAssessment::unavailable(format!(
+                        "profile {:?} does not use a machine latency model",
+                        result.config.profile
+                    )),
+                };
                 has_failed_regression |= compare_report(&result)?;
                 reports.push(result);
             }
 
-            write_suite_report(&suite_id, &reports, &errors, &out_dir)?;
+            write_suite_report(&suite_id, &reports, &errors, machine_profile.as_ref(), &out_dir)?;
+            assessment::print_suite(&reports);
             if tracing_enabled {
                 sekas_client::trace::flush();
             }
@@ -133,13 +170,15 @@ fn write_suite_report(
     run_id: &str,
     reports: &[CaseReport],
     errors: &BTreeMap<String, String>,
+    machine_profile: Option<&MachineProfile>,
     out_dir: &Path,
 ) -> Result<()> {
     fs::create_dir_all(out_dir)
         .with_context(|| format!("create report dir {}", out_dir.display()))?;
     let suite = SuiteReport {
-        schema_version: 3,
+        schema_version: 4,
         run_id: run_id.to_owned(),
+        machine_profile: machine_profile.cloned(),
         reports: reports.to_vec(),
         errors: errors.clone(),
     };

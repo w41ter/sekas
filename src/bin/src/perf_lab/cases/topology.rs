@@ -8,6 +8,7 @@ use sekas_api::server::v1::ReplicaRole;
 use sekas_client::Database;
 
 use super::support::*;
+use crate::perf_lab::assessment::{CaseExpectations, Expectation, Metric, MetricRef};
 use crate::perf_lab::config::LabConfig;
 use crate::perf_lab::observer::metric_counter;
 use crate::perf_lab::report::{CaseReport, case_report, latency_check, workload_checks};
@@ -30,6 +31,59 @@ pub(super) enum TopologyCase {
 }
 
 impl TopologyCase {
+    pub(super) fn expectations(self, profile: RunProfile) -> CaseExpectations {
+        if profile != RunProfile::Regression {
+            return CaseExpectations { standard_version: 1, checks: Vec::new() };
+        }
+        let mut checks = vec![
+            Expectation::AtMost {
+                id: "topology-point-write-gap",
+                metric: MetricRef::new("point_write", Metric::MaxSuccessGapUs),
+                estimated_max: 2_000_000.0,
+                allowed_max: 10_000_000.0,
+            },
+            Expectation::AtMost {
+                id: "topology-distributed-txn-gap",
+                metric: MetricRef::new("distributed_txn", Metric::MaxSuccessGapUs),
+                estimated_max: 2_000_000.0,
+                allowed_max: 10_000_000.0,
+            },
+            Expectation::DerivedAtMost {
+                id: "topology-point-write-event",
+                metric: "point_write.event_duration_ms",
+                unit: "ms",
+                estimated_max: 10_000.0,
+                allowed_max: 60_000.0,
+            },
+            Expectation::DerivedAtMost {
+                id: "topology-distributed-txn-event",
+                metric: "distributed_txn.event_duration_ms",
+                unit: "ms",
+                estimated_max: 10_000.0,
+                allowed_max: 60_000.0,
+            },
+        ];
+        if self == Self::SnapshotCatchup {
+            checks.extend([
+                Expectation::DerivedAtLeast {
+                    id: "snapshot-point-write-applied",
+                    metric: "point_write.snapshot_applied",
+                    unit: "count",
+                    estimated_min: 1.0,
+                    allowed_min: 1.0,
+                },
+                Expectation::DerivedAtLeast {
+                    id: "snapshot-distributed-txn-applied",
+                    metric: "distributed_txn.snapshot_applied",
+                    unit: "count",
+                    estimated_min: 1.0,
+                    allowed_min: 1.0,
+                },
+            ]);
+        }
+        CaseExpectations { standard_version: 1, checks }
+    }
+
     pub(super) fn configure(self, cfg: &mut LabConfig) {
         if matches!(self, Self::ReplicaAdd | Self::ReplicaRemove | Self::SnapshotCatchup) {
             cfg.cluster.node.replica.testing_knobs.disable_scheduler_durable_task = true;

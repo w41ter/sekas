@@ -6,6 +6,7 @@ use std::time::Duration;
 use anyhow::{Result, ensure};
 
 use super::support::*;
+use crate::perf_lab::assessment::{CaseExpectations, Expectation, Metric, MetricRef};
 use crate::perf_lab::report::{CaseReport, case_report, workload_checks};
 use crate::perf_lab::workload::{Operation, TxnMode, spawn_workload};
 use crate::perf_lab::{LabContext, RunProfile};
@@ -22,6 +23,49 @@ pub(super) enum ContentionCase {
 }
 
 impl ContentionCase {
+    pub(super) fn expectations(self, profile: RunProfile) -> CaseExpectations {
+        if profile != RunProfile::Regression {
+            return CaseExpectations { standard_version: 1, checks: Vec::new() };
+        }
+        let checks = match self {
+            Self::Hotset => vec![Expectation::RatioLowerBound {
+                id: "hotset-1024-vs-1-qps",
+                numerator: MetricRef::new("hotset_1024", Metric::Qps),
+                denominator: MetricRef::new("hotset_1", Metric::Qps),
+                estimated_min: 4.0,
+                allowed_min: 1.0,
+            }],
+            Self::SiConflict => vec![Expectation::AtLeast {
+                id: "hotset-1-observes-conflicts",
+                metric: MetricRef::new("hotset_1", Metric::Conflicts),
+                estimated_min: 10.0,
+                allowed_min: 1.0,
+            }],
+            Self::SiConflictRetry => vec![
+                Expectation::AtLeast {
+                    id: "hotset-1-retry-observes-conflicts",
+                    metric: MetricRef::new("hotset_1", Metric::Conflicts),
+                    estimated_min: 10.0,
+                    allowed_min: 1.0,
+                },
+                Expectation::AtMost {
+                    id: "hotset-1-retry-attempts",
+                    metric: MetricRef::new("hotset_1", Metric::AttemptsPerSuccess),
+                    estimated_max: 4.0,
+                    allowed_max: 10.0,
+                },
+            ],
+            Self::LongShortTxn => vec![Expectation::RatioLowerBound {
+                id: "short-vs-long-hotset1-qps",
+                numerator: MetricRef::new("short_hotset_1", Metric::Qps),
+                denominator: MetricRef::new("long_hotset_1", Metric::Qps),
+                estimated_min: 2.0,
+                allowed_min: 1.0,
+            }],
+        };
+        CaseExpectations { standard_version: 1, checks }
+    }
+
     pub(super) async fn run(self, name: &str, lab: &mut LabContext) -> Result<CaseReport> {
         let mut reports = Vec::new();
         let mut derived = BTreeMap::new();

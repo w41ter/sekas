@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Result, ensure};
 
 use super::support::*;
+use crate::perf_lab::assessment::{CaseExpectations, Expectation, Metric, MetricRef};
 use crate::perf_lab::config::LabConfig;
 use crate::perf_lab::observer::metric_counter;
 use crate::perf_lab::report::{CaseReport, case_report, workload_checks};
@@ -22,6 +23,51 @@ pub(super) enum StorageCase {
 }
 
 impl StorageCase {
+    pub(super) fn expectations(self, profile: RunProfile) -> CaseExpectations {
+        if profile != RunProfile::Regression {
+            return CaseExpectations { standard_version: 1, checks: Vec::new() };
+        }
+        let checks = match self {
+            Self::GcBacklog | Self::GcSteady => vec![
+                tail("gc-foreground-tail", "foreground_during_gc", 5.0, 10.0),
+                Expectation::DerivedAtLeast {
+                    id: "gc-reclaims-versions",
+                    metric: "gc.deleted_versions",
+                    unit: "count",
+                    estimated_min: 1.0,
+                    allowed_min: 1.0,
+                },
+            ],
+            Self::RetentionBoundary => vec![
+                Expectation::RatioUpperBound {
+                    id: "expired-vs-retained-snapshot-p50",
+                    numerator: MetricRef::new("expired_snapshot", Metric::P50Us),
+                    denominator: MetricRef::new("retained_snapshot", Metric::P50Us),
+                    estimated_max: 2.0,
+                    allowed_max: 4.0,
+                },
+                Expectation::DerivedAtLeast {
+                    id: "retention-reclaims-old-version",
+                    metric: "retention.old_version_reclaimed",
+                    unit: "bool",
+                    estimated_min: 1.0,
+                    allowed_min: 1.0,
+                },
+            ],
+            Self::InsertCompaction | Self::ChurnCompaction => vec![
+                tail("storage-pressure-tail", "storage_pressure", 5.0, 10.0),
+                Expectation::DerivedAtMost {
+                    id: "storage-write-stalls",
+                    metric: "storage.write_stalls",
+                    unit: "count",
+                    estimated_max: 0.0,
+                    allowed_max: 1.0,
+                },
+            ],
+        };
+        CaseExpectations { standard_version: 1, checks }
+    }
+
     pub(super) fn configure(self, cfg: &mut LabConfig) {
         if matches!(
             self,
@@ -202,5 +248,20 @@ impl StorageCase {
         let mut report = case_report(lab, name, reports, derived, checks);
         report.derived.extend(observations(&report, &["node_mvcc_gc_delete_versions_total"]));
         Ok(report)
+    }
+}
+
+fn tail(
+    id: &'static str,
+    workload: &'static str,
+    estimated_max: f64,
+    allowed_max: f64,
+) -> Expectation {
+    Expectation::RatioUpperBound {
+        id,
+        numerator: MetricRef::new(workload, Metric::P999Us),
+        denominator: MetricRef::new(workload, Metric::P50Us),
+        estimated_max,
+        allowed_max,
     }
 }
