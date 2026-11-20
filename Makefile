@@ -77,6 +77,12 @@ endif
 		--legend ./target/debug/coverage/lcov.info
 	$(V)echo "the coverage report is generated in: ./target/debug/coverage"
 
+.PHONY: generate-dashboard
+## generate-dashboard : Generate performance dashboard
+generate-dashboard:
+	$(V)python3 scripts/server.dashboard.py > target/sekas-dashboard.json
+	$(V)echo "the dashboard is generated in: target/sekas-dashboard.json"
+
 .PHONY: help
 ## help : Print help message
 help: Makefile
