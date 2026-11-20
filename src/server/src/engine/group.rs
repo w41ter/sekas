@@ -322,15 +322,15 @@ impl GroupEngine {
 
     pub fn delete_shard_data(
         &self,
-        shard_id: u64,
+        shard: &ShardDesc,
         delete_range_threshold: usize,
     ) -> Result<Option<WriteBatch>> {
         let mut entries = Vec::with_capacity(delete_range_threshold + 1);
-        let mut snapshot = self.snapshot(shard_id, SnapshotMode::default())?;
+        let mut snapshot = self.snapshot_with_desc(shard, SnapshotMode::default())?;
         while let Some(mvcc_iter) = snapshot.next() {
             for entry in mvcc_iter? {
                 let entry = entry?;
-                entries.push((entry.user_key().to_owned(), entry.version()));
+                entries.push(entry.key);
                 if entries.len() > delete_range_threshold {
                     break;
                 }
@@ -346,11 +346,11 @@ impl GroupEngine {
 
         let mut wb = WriteBatch::default();
         if entries.len() <= delete_range_threshold {
-            for (user_key, version) in entries {
-                self.delete(&mut wb, shard_id, &user_key, version)?;
+            for key in entries {
+                wb.delete(key);
             }
         } else {
-            let (start, end) = self.shard_raw_boundary(shard_id)?;
+            let (start, end) = Self::shard_raw_range(shard)?;
             wb.delete_range(start, end);
         }
         Ok(Some(wb))
@@ -403,9 +403,12 @@ impl GroupEngine {
     }
 
     pub fn snapshot(&self, shard_id: u64, mode: SnapshotMode) -> Result<Snapshot<'_>> {
+        self.snapshot_with_desc(&self.shard_desc(shard_id)?, mode)
+    }
+
+    fn snapshot_with_desc(&self, desc: &ShardDesc, mode: SnapshotMode) -> Result<Snapshot<'_>> {
         use rocksdb::{Direction, IteratorMode, ReadOptions};
 
-        let desc = self.shard_desc(shard_id)?;
         let table_id = desc.table_id;
         debug_assert_ne!(table_id, LOCAL_TABLE_ID);
 
@@ -413,27 +416,27 @@ impl GroupEngine {
         let key = match &mode {
             SnapshotMode::Start { start_key: Some(start_key) } => {
                 debug_assert!(
-                    shard::belong_to(&desc, start_key),
+                    shard::belong_to(desc, start_key),
                     "shard desc {desc:?} start key {start_key:?}"
                 );
                 keys::raw(table_id, start_key)
             }
             SnapshotMode::Start { start_key: None } => {
                 // An empty key is equivalent to range start key.
-                keys::raw(table_id, &shard::start_key(&desc))
+                keys::raw(table_id, &shard::start_key(desc))
             }
             SnapshotMode::Key { key } => {
-                debug_assert!(shard::belong_to(&desc, key), "shard desc {desc:?} key {key:?}");
+                debug_assert!(shard::belong_to(desc, key), "shard desc {desc:?} key {key:?}");
                 keys::raw(table_id, key)
             }
             SnapshotMode::Prefix { key } => {
-                debug_assert!(shard::belong_to(&desc, key), "shard desc {desc:?} key {key:?}");
+                debug_assert!(shard::belong_to(desc, key), "shard desc {desc:?} key {key:?}");
                 keys::raw(table_id, key)
             }
         };
         let inner_mode = IteratorMode::From(&key, Direction::Forward);
         let iter = self.raw_db.iterator_cf_opt(&self.cf_handle(), opts, inner_mode);
-        Ok(Snapshot::new(table_id, iter, mode, &desc))
+        Ok(Snapshot::new(table_id, iter, mode, desc))
     }
 
     pub fn raw_iter(&self) -> Result<RawIterator<'_>> {
@@ -569,15 +572,20 @@ impl GroupEngine {
 
     /// Get the raw db boundary of the target shard.
     fn shard_raw_boundary(&self, shard_id: u64) -> Result<(Vec<u8>, Vec<u8>)> {
-        let shard_desc = self.shard_desc(shard_id)?;
-        let RangePartition { start, end } = shard_desc.range.ok_or_else(|| {
-            Error::InvalidData(format!("the range field of shard {shard_id} is not set"))
+        Self::shard_raw_range(&self.shard_desc(shard_id)?)
+    }
+
+    /// Build a range from the caller's current shard metadata, including all
+    /// versions.
+    pub(crate) fn shard_raw_range(shard: &ShardDesc) -> Result<(Vec<u8>, Vec<u8>)> {
+        let RangePartition { start, end } = shard.range.as_ref().ok_or_else(|| {
+            Error::InvalidData(format!("the range field of shard {} is not set", shard.id))
         })?;
-        let start = keys::raw(shard_desc.table_id, &start);
+        let start = keys::raw(shard.table_id, start);
         let end = if end.is_empty() {
-            lexical::lexical_next_boundary(&keys::raw(shard_desc.table_id, &end))
+            lexical::lexical_next_boundary(&keys::raw(shard.table_id, end))
         } else {
-            keys::raw(shard_desc.table_id, &end)
+            keys::raw(shard.table_id, end)
         };
         Ok((start, end))
     }
@@ -988,6 +996,40 @@ impl WriteBatch {
     #[inline]
     pub fn delete_range(&mut self, start: Vec<u8>, end: Vec<u8>) {
         self.delete_ranges.push((start, end));
+    }
+
+    /// Remove pending writes in a shard while preserving all scheduled
+    /// deletions.
+    pub fn remove_puts_in_range(&mut self, start: &[u8], end: &[u8]) {
+        if self.inner.is_empty() {
+            return;
+        }
+
+        struct Filter<'a> {
+            start: &'a [u8],
+            end: &'a [u8],
+            batch: rocksdb::WriteBatch,
+        }
+
+        impl rocksdb::WriteBatchIterator for Filter<'_> {
+            fn put(&mut self, key: Box<[u8]>, value: Box<[u8]>) {
+                if key.as_ref() < self.start || key.as_ref() >= self.end {
+                    self.batch.put(key, value);
+                }
+            }
+
+            fn delete(&mut self, key: Box<[u8]>) {
+                self.batch.delete(key);
+            }
+        }
+
+        let mut filter = Filter { start, end, batch: rocksdb::WriteBatch::default() };
+        self.inner.iterate(&mut filter);
+        self.inner = filter.batch;
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.inner.is_empty() && self.delete_ranges.is_empty()
     }
 }
 

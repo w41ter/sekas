@@ -15,6 +15,9 @@
 
 mod checkpoint;
 
+#[cfg(test)]
+mod cleanup_tests;
+
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::{Arc, mpsc};
@@ -209,21 +212,16 @@ impl GroupStateMachine {
                 desc.shards.push(shard);
             }
             if let Some(DeleteShard { shard_id }) = op.delete_shard {
-                desc.shard(shard_id).ok_or(Error::ShardNotFound(shard_id))?;
+                let shard = desc.shard(shard_id).ok_or(Error::ShardNotFound(shard_id))?;
                 info!(
                     "group {} delete shard {} at epoch {}",
                     self.info.group_id,
                     shard_id,
                     Epoch(desc.epoch)
                 );
+                self.clear_shard_data(shard)?;
                 self.desc_updated = true;
                 desc.epoch = apply_shard_delta(desc.epoch);
-                if let Some(delete) = self
-                    .group_engine
-                    .delete_shard_data(shard_id, self.cfg.delete_shard_range_threshold)?
-                {
-                    self.plugged_write_batches.push(delete);
-                }
                 desc.drop_shard(shard_id);
             }
             if let Some(m) = op.move_shard {
@@ -246,6 +244,23 @@ impl GroupStateMachine {
             self.plugged_write_states.descriptor = Some(desc);
         }
 
+        Ok(())
+    }
+
+    fn clear_shard_data(&mut self, shard: &ShardDesc) -> Result<()> {
+        let (start, end) = GroupEngine::shard_raw_range(shard)?;
+        let delete =
+            self.group_engine.delete_shard_data(shard, self.cfg.delete_shard_range_threshold)?;
+
+        // Only remove writes preceding this cleanup. Later entries can write to
+        // the same range again, and existing deletions must keep their ordering.
+        for batch in &mut self.plugged_write_batches {
+            batch.remove_puts_in_range(&start, &end);
+        }
+        self.plugged_write_batches.retain(|batch| !batch.is_empty());
+        if let Some(delete) = delete {
+            self.plugged_write_batches.push(delete);
+        }
         Ok(())
     }
 
@@ -331,13 +346,8 @@ impl GroupStateMachine {
                 );
 
                 let desc = state.get_move_shard_desc();
-                if desc.dest_group_id == group_desc.id
-                    && let Some(delete) = self.group_engine.delete_shard_data(
-                        desc.get_shard_id(),
-                        self.cfg.delete_shard_range_threshold,
-                    )?
-                {
-                    self.plugged_write_batches.push(delete);
+                if desc.dest_group_id == group_desc.id {
+                    self.clear_shard_data(desc.get_shard_desc())?;
                 }
 
                 state.step = MoveShardStep::Aborted as i32;
@@ -359,12 +369,9 @@ impl GroupStateMachine {
         let inherited_epoch = std::cmp::max(group_desc.epoch, inherited_epoch);
         group_desc.epoch = apply_shard_delta(inherited_epoch);
         let msg = if desc.src_group_id == group_desc.id {
-            if let Some(delete) = self
-                .group_engine
-                .delete_shard_data(shard_desc.id, self.cfg.delete_shard_range_threshold)?
-            {
-                self.plugged_write_batches.push(delete);
-            }
+            let shard =
+                group_desc.shard(shard_desc.id).ok_or(Error::ShardNotFound(shard_desc.id))?;
+            self.clear_shard_data(shard)?;
             self.move_out_shards.insert(shard_desc.id, shard_desc.clone());
             group_desc.shards.retain(|r| r.id != shard_desc.id);
             "shard migrated out"
