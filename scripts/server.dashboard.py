@@ -23,7 +23,8 @@ from grafanalib.formatunits import BYTES_SEC, OPS_PER_SEC, REQUESTS_PER_SEC
 
 PROMETHEUS = {"type": "prometheus", "uid": "${prometheus}"}
 JOB_MATCHER = 'job=~"${job:regex}"'
-RATE_INTERVAL = "$__rate_interval"
+# Older Prometheus parsers reject composite durations such as Grafana's 1m0s.
+RATE_INTERVAL = "1m"
 
 
 def metric_selector(metric, *matchers):

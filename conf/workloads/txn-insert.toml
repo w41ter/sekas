@@ -4,7 +4,7 @@ database = "db"
 table = "bench_txn_insert"
 threads = 4
 workers = 8
-operations = 100_000
+operations = 1_000_000_000
 seed = 7
 
 [workload]

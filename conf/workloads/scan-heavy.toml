@@ -4,11 +4,11 @@ database = "db"
 table = "bench_scan_heavy"
 threads = 4
 workers = 8
-operations = 100_000
+operations = 1_000_000_000
 seed = 7
 
 [workload]
-records = 100_000
+records = 1_000_000_000
 value_size = 256
 distribution = "uniform"
 txn_keys = 1

@@ -4,11 +4,11 @@ database = "db"
 table = "bench_atomic_increment"
 threads = 4
 workers = 8
-operations = 100_000
+operations = 1_000_000_000
 seed = 7
 
 [workload]
-records = 0
+records = 1_000_000_000
 distribution = "zipfian"
 zipfian_theta = 0.99
 shared_keys = 4_096
