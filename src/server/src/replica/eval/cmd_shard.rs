@@ -63,7 +63,9 @@ pub(crate) fn split_shard(
     let shard_desc = engine.shard_desc(old_shard_id)?;
     let split_key = match req.split_key.as_ref().cloned() {
         Some(split_key) => {
-            if !sekas_schema::shard::belong_to(&shard_desc, &split_key) {
+            if !sekas_schema::shard::belong_to(&shard_desc, &split_key)
+                || split_key <= sekas_schema::shard::start_key(&shard_desc)
+            {
                 return Err(Error::InvalidArgument(format!(
                     "the user provided split key is not belong to the shard {old_shard_id}"
                 )));

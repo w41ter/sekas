@@ -249,7 +249,8 @@ impl<T: AllocSource> Allocator<T> {
         let node_count = self.alloc_source.nodes(NodeFilter::All).len();
         let min_nodes = self.config.replicas_per_group;
         let (actions, decision) = if node_count >= min_nodes {
-            ShardCountPolicy::with(self.alloc_source.clone()).compute_balance()
+            ShardCountPolicy::with(self.alloc_source.clone())
+                .compute_balance(&self.cluster_stats, self.config.move_shard_size_limit)
         } else {
             (
                 vec![],

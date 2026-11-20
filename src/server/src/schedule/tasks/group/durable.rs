@@ -288,6 +288,9 @@ impl Task for DurableGroup {
     }
 
     async fn poll(&mut self, ctx: &mut ScheduleContext<'_>) -> TaskState {
+        if ctx.replica.move_shard_state().is_some() {
+            return TaskState::Pending(Some(Duration::from_secs(1)));
+        }
         if ctx.cfg.testing_knobs.disable_scheduler_durable_task {
             return TaskState::Pending(None);
         }

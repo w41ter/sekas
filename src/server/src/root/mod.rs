@@ -121,6 +121,15 @@ impl RootCore {
 }
 
 impl Root {
+    pub(crate) async fn poll_with_stats(&self, stats: Vec<GroupStats>) -> Result<()> {
+        self.shared.schema()?;
+        for group in stats {
+            self.cluster_stats.handle_group_stats(group);
+        }
+        self.scheduler.poll_and_schedule().await;
+        Ok(())
+    }
+
     pub(crate) fn new(
         transport_manager: TransportManager,
         node_ident: &NodeIdent,

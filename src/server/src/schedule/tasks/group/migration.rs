@@ -14,12 +14,14 @@
 
 use std::collections::HashSet;
 use std::sync::Arc;
+use std::time::Duration;
 
 use log::debug;
 use sekas_api::server::v1::ReplicaDesc;
 
 use super::ActionTaskWithLocks;
 use crate::Error;
+use crate::error::BusyReason;
 use crate::schedule::actions::*;
 use crate::schedule::event_source::EventSource;
 use crate::schedule::provider::GroupProviders;
@@ -44,6 +46,16 @@ impl Task for ReplicaMigration {
     }
 
     async fn poll(&mut self, ctx: &mut ScheduleContext<'_>) -> TaskState {
+        if ctx.replica.move_shard_state().is_some() {
+            if let Some(request) = self.providers.move_replicas.take() {
+                request
+                    .sender
+                    .send(Err(Error::ServiceIsBusy(BusyReason::Moving)))
+                    .unwrap_or_default();
+            }
+            self.providers.move_replicas.watch(self.id());
+            return TaskState::Pending(Some(Duration::from_secs(1)));
+        }
         if let Some(move_replicas) = self.providers.move_replicas.take() {
             let replicas = self.providers.descriptor.replicas();
             if let Err(e) = validate_move_replicas(

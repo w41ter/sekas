@@ -17,6 +17,7 @@ use std::cmp::Reverse;
 use std::sync::Arc;
 
 use log::debug;
+use rand::seq::SliceRandom;
 use sekas_api::server::v1::{GroupDesc, ShardDesc};
 
 use super::{
@@ -24,6 +25,7 @@ use super::{
 };
 use crate::Result;
 use crate::constants::ROOT_GROUP_ID;
+use crate::root::ClusterStats;
 
 pub struct ShardCountPolicy<T: AllocSource> {
     alloc_source: Arc<T>,
@@ -39,7 +41,11 @@ impl<T: AllocSource> ShardCountPolicy<T> {
         Ok(select_groups_for_shard(groups, n, required_replicas))
     }
 
-    pub fn compute_balance(&self) -> (Vec<ShardAction>, BalanceDecision) {
+    pub fn compute_balance(
+        &self,
+        stats: &ClusterStats,
+        move_size_limit: u64,
+    ) -> (Vec<ShardAction>, BalanceDecision) {
         let mut candidates: Vec<_> = self
             .current_user_groups()
             .into_iter()
@@ -62,7 +68,9 @@ impl<T: AllocSource> ShardCountPolicy<T> {
             if balance.classify(*count) != BalanceStatus::Overfull {
                 break;
             }
-            if let Some(action) = self.rebalance_target(src_group, &candidates, &balance) {
+            if let Some(action) =
+                self.rebalance_target(src_group, &candidates, &balance, stats, move_size_limit)
+            {
                 let decision = BalanceDecision::ActionNeeded(format!(
                     "move shard {}: g{} -> g{}",
                     action.shard, action.source_group, action.target_group
@@ -79,6 +87,8 @@ impl<T: AllocSource> ShardCountPolicy<T> {
         source_group: &GroupDesc,
         ranked_candidates: &[(GroupDesc, u64)],
         balance: &CountBalance,
+        stats: &ClusterStats,
+        move_size_limit: u64,
     ) -> Option<ReallocateShard> {
         for (target, count) in ranked_candidates.iter().rev() {
             if balance.classify(*count) != BalanceStatus::Underfull {
@@ -87,7 +97,7 @@ impl<T: AllocSource> ShardCountPolicy<T> {
             if balance.classify(count + 1) == BalanceStatus::Overfull {
                 continue;
             }
-            let source_shard = self.preferred_remove_shard(source_group, target)?;
+            let source_shard = self.preferred_remove_shard(source_group, stats, move_size_limit)?;
             return Some(ReallocateShard {
                 shard: source_shard.id,
                 source_group: source_group.id,
@@ -101,11 +111,25 @@ impl<T: AllocSource> ShardCountPolicy<T> {
     fn preferred_remove_shard(
         &self,
         src_group: &GroupDesc,
-        _target_group: &GroupDesc,
+        stats: &ClusterStats,
+        move_size_limit: u64,
     ) -> Option<ShardDesc> {
-        let replicas = src_group.shards.to_owned();
-        // TODO: ranking shards and choose the preferred one
-        replicas.first().map(ToOwned::to_owned)
+        let mut shards = src_group
+            .shards
+            .iter()
+            .filter(|shard| !stats.is_shard_scheduled(shard.id))
+            .collect::<Vec<_>>();
+        shards.shuffle(&mut rand::rng());
+        // Prefer a shard that can move immediately. Shuffle ties so an
+        // unsplittable shard cannot repeatedly monopolize the next attempt.
+        shards
+            .iter()
+            .copied()
+            .find(|shard| {
+                stats.get_shard_stats(shard.id).is_some_and(|s| s.shard_size <= move_size_limit)
+            })
+            .or_else(|| shards.first().copied())
+            .cloned()
     }
 
     fn current_user_groups(&self) -> Vec<GroupDesc> {
@@ -146,5 +170,32 @@ mod tests {
         let selected = select_groups_for_shard(groups, 2, 3);
 
         assert_eq!(selected.iter().map(|group| group.id).collect::<Vec<_>>(), vec![3, 2]);
+    }
+
+    #[test]
+    fn migration_prefers_moveable_shards_and_skips_scheduled_shards() {
+        use sekas_api::server::v1::{GroupStats, ShardStats};
+
+        use crate::root::allocator::sim_test::MockInfoProvider;
+
+        let policy = ShardCountPolicy::with(Arc::new(MockInfoProvider::new()));
+        let stats = ClusterStats::default();
+        let mut source = group(1, 3, 0);
+        source.shards = (1..=3).map(|id| ShardDesc::whole(id, 1024)).collect();
+        stats.handle_group_stats(GroupStats {
+            group_id: 1,
+            shard_stats: vec![
+                ShardStats { shard_id: 1, table_id: 1024, shard_size: 2048 },
+                ShardStats { shard_id: 2, table_id: 1024, shard_size: 512 },
+                ShardStats { shard_id: 3, table_id: 1024, shard_size: 512 },
+            ],
+            ..Default::default()
+        });
+        stats.handle_split_shard(2);
+        assert_eq!(policy.preferred_remove_shard(&source, &stats, 1024).unwrap().id, 3);
+        stats.handle_move_shard(3, 2);
+        assert_eq!(policy.preferred_remove_shard(&source, &stats, 1024).unwrap().id, 1);
+        stats.handle_merge_shard(1, 4);
+        assert!(policy.preferred_remove_shard(&source, &stats, 1024).is_none());
     }
 }

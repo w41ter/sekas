@@ -365,6 +365,124 @@ async fn move_shard_basic() {
 }
 
 #[sekas_macro::test]
+async fn move_shard_freezes_source_and_destination_epoch() {
+    use std::sync::Arc;
+
+    use sekas_server::TestingBarrier;
+
+    let barrier = Arc::new(TestingBarrier::new());
+    let observed = barrier.arm();
+    let mut ctx = TestContext::new(fn_name!());
+    ctx.set_replicas_per_group(1);
+    ctx.disable_all_node_scheduler();
+    ctx.mut_replica_testing_knobs().after_moving_shard_setup = Some(barrier.clone());
+    let addr = ctx.next_listen_address();
+    let ready = ctx.spawn_server_with_handle(0, &addr, true, vec![]);
+    let server = ready.await.unwrap();
+    let c = ClusterClient::new([(0, addr)].into_iter().collect()).await;
+    let (source, destination, shard_id) = (100000, 100001, 10000000);
+    let shard = ShardDesc::whole(shard_id, shard_id);
+    let siblings = |left, table| {
+        vec![
+            ShardDesc::with_range(left, table, vec![], b"m".to_vec()),
+            ShardDesc::with_range(left + 1, table, b"m".to_vec(), vec![]),
+        ]
+    };
+    let mut source_shards = siblings(shard_id + 1, shard_id + 1);
+    source_shards.push(shard.clone());
+    create_group(&c, source, vec![0], source_shards).await;
+    create_group(&c, destination, vec![0], siblings(shard_id + 3, shard_id + 2)).await;
+    c.assert_group_leader(source).await;
+    c.assert_group_leader(destination).await;
+    insert(&c, source, shard_id, 0..8).await;
+    let source_replica = server.node.replica_table().find(source).unwrap();
+    let dest_replica = server.node.replica_table().find(destination).unwrap();
+    let (source_epoch, dest_epoch) = (source_replica.epoch(), dest_replica.epoch());
+
+    c.group(destination).accept_shard(source, source_epoch, &shard).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(5), barrier.wait_reached(observed)).await.unwrap();
+    assert!(source_replica.move_shard_state().is_some());
+    assert!(dest_replica.move_shard_state().is_some());
+    for (group, epoch, left) in
+        [(source, source_epoch, shard_id + 1), (destination, dest_epoch, shard_id + 3)]
+    {
+        let requests = vec![
+            Request::CreateShard(CreateShardRequest {
+                shard: Some(ShardDesc::whole(shard_id + 100, shard_id + 100)),
+            }),
+            Request::DeleteShard(DeleteShardRequest { shard_id: left }),
+            Request::SplitShard(SplitShardRequest {
+                old_shard_id: left,
+                new_shard_id: shard_id + 101,
+                split_key: Some(b"g".to_vec()),
+            }),
+            Request::MergeShard(MergeShardRequest {
+                left_shard_id: left,
+                right_shard_id: left + 1,
+            }),
+            Request::ChangeReplicas(ChangeReplicasRequest {
+                change_replicas: Some(ChangeReplicas::default()),
+            }),
+            Request::MoveReplicas(MoveReplicasRequest::default()),
+            Request::AcceptShard(AcceptShardRequest {
+                src_group_id: source,
+                src_group_epoch: source_epoch,
+                shard_desc: Some(shard.clone()),
+            }),
+        ];
+        for request in requests {
+            let result =
+                sekas_server::testutil::try_group_request(&server, group, epoch, &request).await;
+            assert!(
+                matches!(&result, Err(sekas_server::Error::ServiceIsBusy(reason)) if reason.to_string() == "in shard migrating"),
+                "group {group}: {request:?} returned {result:?}"
+            );
+            assert_eq!(server.node.replica_table().find(group).unwrap().epoch(), epoch);
+        }
+        // Read-only metadata sampling must still work on another shard.
+        sekas_server::testutil::try_group_request(
+            &server,
+            group,
+            epoch,
+            &Request::GetSplitKey(GetSplitKeyRequest { shard_id: left, ..Default::default() }),
+        )
+        .await
+        .unwrap();
+    }
+    // Data writes continue through forwarding while metadata is frozen.
+    insert(&c, source, shard_id, 8..12).await;
+    assert_eq!(source_replica.epoch(), source_epoch);
+    assert_eq!(dest_replica.epoch(), dest_epoch);
+    barrier.release();
+    tokio::time::timeout(Duration::from_secs(5), move_shard(&c, &shard, destination, source))
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        wait_moving_shard_state(&c, source, &[collect_moving_shard_state_response::State::None])
+            .await;
+        wait_moving_shard_state(
+            &c,
+            destination,
+            &[collect_moving_shard_state_response::State::None],
+        )
+        .await;
+    })
+    .await
+    .unwrap();
+    let migration_epoch = std::cmp::max(source_epoch, dest_epoch) + (1 << 32);
+    assert_eq!(source_replica.epoch(), migration_epoch);
+    assert_eq!(dest_replica.epoch(), migration_epoch);
+    assert!(source_replica.descriptor().shard(shard_id).is_none());
+    assert!(dest_replica.descriptor().shard(shard_id).is_some());
+    validate(&c, destination, shard_id, 0..12).await;
+    // The guard is released when migration completes, allowing the sibling split.
+    c.group(source).split_shard(shard_id + 1, shard_id + 101, Some(b"g".to_vec())).await.unwrap();
+    assert!(source_replica.epoch() > migration_epoch);
+    insert(&c, destination, shard_id, 12..16).await;
+    validate(&c, destination, shard_id, 0..16).await;
+}
+
+#[sekas_macro::test]
 async fn move_shard_round_trip_same_range() {
     let mut ctx = TestContext::new(fn_name!());
     let nodes = ctx.bootstrap_servers(3).await;

@@ -501,14 +501,22 @@ impl GroupEngine {
 
     /// Estimate the split keys (in user key) of the target shard.
     pub fn estimate_split_key(&self, shard_id: u64) -> Result<Option<Vec<u8>>> {
+        let shard = self.shard_desc(shard_id)?;
         let (start, end) = self.shard_raw_boundary(shard_id)?;
         let estimated_split_keys =
             self.raw_db.estimate_split_keys_in_range(&self.cf_handle(), &start, &end)?;
-        Ok(estimate_user_split_key(&estimated_split_keys))
+        if let Some(key) = estimate_user_split_key(&estimated_split_keys)
+            && shard::belong_to(&shard, &key)
+            && key > shard::start_key(&shard)
+        {
+            return Ok(Some(key));
+        }
+        self.estimate_memtable_split_key(&shard, &shard::start_key(&shard))
     }
 
     /// Estimate a split key after `split_start_key` whose approximate bytes
-    /// from the start key reaches `split_target_size`.
+    /// from the start key reaches `split_target_size`. If SST samples cannot
+    /// reach the target, a memtable fallback may split a smaller portion.
     pub fn estimate_split_key_after(
         &self,
         shard_id: u64,
@@ -537,13 +545,83 @@ impl GroupEngine {
             split_target_size,
         )?
         else {
-            return Ok(None);
+            // The size estimate includes memtables, while SST properties do
+            // not. A bounded memtable sample can provide a smaller split when
+            // the requested size has no corresponding SST sample.
+            if self.raw_db.get_approximate_size(&self.cf_handle(), &split_start, &shard_end)?
+                < split_target_size
+            {
+                return Ok(None);
+            }
+            return self.estimate_memtable_split_key(&shard_desc, split_start_key);
         };
 
         if !shard::belong_to(&shard_desc, &split_key) || split_key.as_slice() <= split_start_key {
             return Ok(None);
         }
         Ok(Some(split_key))
+    }
+
+    /// Sample only memtables, without flushing or reading SST data. The
+    /// fallback key is a hint and may split fewer bytes than a size request.
+    fn estimate_memtable_split_key(
+        &self,
+        shard_desc: &ShardDesc,
+        start_key: &[u8],
+    ) -> Result<Option<Vec<u8>>> {
+        use rocksdb::{Direction, IteratorMode, ReadOptions, ReadTier};
+
+        const MAX_ENTRIES: usize = 8192;
+        const SAMPLE_INTERVAL: usize = 64;
+        const MAX_SAMPLE_TIME: Duration = Duration::from_millis(10);
+        let start = keys::raw(shard_desc.table_id, start_key);
+        let (_, end) = Self::shard_raw_range(shard_desc)?;
+        let mut opts = ReadOptions::default();
+        opts.set_read_tier(ReadTier::Memtable);
+        opts.fill_cache(false);
+        opts.set_iterate_upper_bound(end);
+        let iter = self.raw_db.iterator_cf_opt(
+            &self.cf_handle(),
+            opts,
+            IteratorMode::From(&start, Direction::Forward),
+        );
+        let started = Instant::now();
+        let mut samples = Vec::new();
+        let mut first_user_key = None;
+        let mut last_key = None;
+        for (index, entry) in iter.take(MAX_ENTRIES).enumerate() {
+            let (key, _) = entry?;
+            if first_user_key.is_none() {
+                first_user_key = keys::may_revert_mvcc_key(&key);
+            }
+            if index % SAMPLE_INTERVAL == 0 {
+                samples.push(key.to_vec());
+                if started.elapsed() >= MAX_SAMPLE_TIME {
+                    last_key = Some(key.to_vec());
+                    break;
+                }
+            }
+            last_key = Some(key.to_vec());
+        }
+        let Some(last_key) = last_key else {
+            return Ok(None);
+        };
+        let (Some(first_user_key), Some(last_user_key)) =
+            (first_user_key, keys::may_revert_mvcc_key(&last_key))
+        else {
+            return Ok(None);
+        };
+        if first_user_key == last_user_key {
+            return Ok(None);
+        }
+        if samples.last() != Some(&last_key) {
+            samples.push(last_key);
+        }
+        let key = estimate_user_split_key(&samples)
+            .filter(|key| *key > first_user_key)
+            .or_else(|| Some(shortest_separator_prefix(&first_user_key, &last_user_key)))
+            .filter(|key| key.as_slice() > start_key && shard::belong_to(shard_desc, key));
+        Ok(key)
     }
 
     /// return the desc of the specified shard.
@@ -2017,5 +2095,49 @@ mod tests {
 
         let split_key = engine.estimate_split_key_after(shard_id, start_key, u64::MAX).unwrap();
         assert!(split_key.is_none());
+    }
+
+    #[sekas_macro::test]
+    async fn estimate_split_key_samples_unflushed_memtables_in_range() {
+        let dir = TempDir::new(fn_name!()).unwrap();
+        let engine = create_engine_with_range(1, 1, b"a".to_vec(), b"b".to_vec(), dir.path()).await;
+        assert!(engine.estimate_split_key(1).unwrap().is_none());
+        let mut wb = WriteBatch::default();
+        for i in 0..3000 {
+            engine.put(&mut wb, 1, format!("a/{i:04}").as_bytes(), &[b'v'; 128], i).unwrap();
+        }
+        engine.commit(wb, WriteStates::default(), false).unwrap();
+        // No flush: SST samples are empty but live memtable data is splitable.
+        let (start, end) = engine.shard_raw_boundary(1).unwrap();
+        assert!(
+            engine
+                .raw_db
+                .estimate_split_keys_in_range(&engine.cf_handle(), &start, &end)
+                .unwrap()
+                .is_empty()
+        );
+        let key = engine.estimate_split_key(1).unwrap().unwrap();
+        assert!(key.as_slice() > b"a".as_slice() && key.as_slice() < b"b".as_slice());
+        let key = engine.estimate_split_key_after(1, b"a/1000", 1024).unwrap().unwrap();
+        assert!(key.as_slice() > b"a/1000".as_slice() && key.as_slice() < b"b".as_slice());
+        assert!(engine.estimate_split_key_after(1, b"a", u64::MAX).unwrap().is_none());
+    }
+
+    #[sekas_macro::test]
+    async fn memtable_split_does_not_split_multiple_versions_of_one_key() {
+        let dir = TempDir::new(fn_name!()).unwrap();
+        let engine = create_engine(1, 1, dir.path()).await;
+        let mut wb = WriteBatch::default();
+        for version in 0..200 {
+            engine.put(&mut wb, 1, b"key", b"value", version).unwrap();
+        }
+        engine.commit(wb, WriteStates::default(), false).unwrap();
+        assert!(engine.estimate_split_key(1).unwrap().is_none());
+        let mut wb = WriteBatch::default();
+        engine.put(&mut wb, 1, b"next", b"value", 1).unwrap();
+        engine.commit(wb, WriteStates::default(), false).unwrap();
+        let key = engine.estimate_split_key(1).unwrap().unwrap();
+        assert!(key.as_slice() > b"key".as_slice());
+        assert!(key.as_slice() <= b"next".as_slice());
     }
 }

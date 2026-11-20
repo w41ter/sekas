@@ -163,6 +163,37 @@ impl TestContext {
         join_list: Vec<String>,
         root: RootConfig,
     ) {
+        self.spawn_server_with_cfg_ready(idx, addr, init, join_list, root, None);
+    }
+
+    pub fn spawn_server_with_handle(
+        &mut self,
+        idx: usize,
+        addr: &str,
+        init: bool,
+        join_list: Vec<String>,
+    ) -> tokio::sync::oneshot::Receiver<sekas_server::Server> {
+        let (ready, receiver) = tokio::sync::oneshot::channel();
+        self.spawn_server_with_cfg_ready(
+            idx,
+            addr,
+            init,
+            join_list,
+            self.root_cfg.clone(),
+            Some(ready),
+        );
+        receiver
+    }
+
+    fn spawn_server_with_cfg_ready(
+        &mut self,
+        idx: usize,
+        addr: &str,
+        init: bool,
+        join_list: Vec<String>,
+        root: RootConfig,
+        ready: Option<tokio::sync::oneshot::Sender<sekas_server::Server>>,
+    ) {
         let addr = addr.to_owned();
         let name = idx.to_string();
         let root_dir = self.root_dir.path().join(name);
@@ -195,7 +226,13 @@ impl TestContext {
         let name = self.name.clone();
         let handle = thread::spawn(move || {
             let owner = ExecutorOwner::new(1);
-            sekas_server::run(cfg, owner.executor(), shutdown).unwrap();
+            match ready {
+                Some(ready) => {
+                    sekas_server::testutil::run_with_server(cfg, owner.executor(), shutdown, ready)
+                        .unwrap()
+                }
+                None => sekas_server::run(cfg, owner.executor(), shutdown).unwrap(),
+            }
             info!("{name} server {idx} is shutdown");
         });
         self.notifiers.insert(idx as u64, notifier);

@@ -175,9 +175,9 @@ fn try_execute<'a>(
 
         let exec_ctx = ExecCtx::with_epoch(replica.epoch());
         match replica.try_execute(exec_ctx, request).await {
-            Err(Error::ServiceIsBusy(BusyReason::AclGuard | BusyReason::PendingConfigChange)) => {
-                ActionState::Pending(Some(Duration::from_millis(100)))
-            }
+            Err(Error::ServiceIsBusy(
+                BusyReason::AclGuard | BusyReason::PendingConfigChange | BusyReason::Moving,
+            )) => ActionState::Pending(Some(Duration::from_millis(100))),
             Err(e) => {
                 warn!("group {group_id} replica {replica_id} task {task_id} abort {desc}: {e}");
                 ActionState::Aborted

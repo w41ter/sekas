@@ -35,10 +35,14 @@ use crate::{Config, Error, Result, Server};
 
 /// The main entrance of sekas server.
 pub fn run(config: Config, executor: Executor, shutdown: Shutdown) -> Result<()> {
-    executor.block_on(async { run_in_async(config, shutdown).await })
+    executor.block_on(async { run_in_async(config, shutdown, None).await })
 }
 
-async fn run_in_async(config: Config, shutdown: Shutdown) -> Result<()> {
+pub(crate) async fn run_in_async(
+    config: Config,
+    shutdown: Shutdown,
+    ready: Option<tokio::sync::oneshot::Sender<Server>>,
+) -> Result<()> {
     let engines = Engines::open(&config.root_dir, &config.db)?;
 
     let root_list = if config.init { vec![config.addr.clone()] } else { config.join_list.clone() };
@@ -55,6 +59,9 @@ async fn run_in_async(config: Config, shutdown: Shutdown) -> Result<()> {
     info!("node {} starts serving requests", ident.node_id);
 
     let server = Server { node: Arc::new(node), root, address_resolver };
+    if let Some(ready) = ready {
+        let _ = ready.send(server.clone());
+    }
     bootstrap_services(&config, server, &transport_manager, shutdown).await
 }
 

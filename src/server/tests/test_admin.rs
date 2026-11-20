@@ -97,6 +97,72 @@ async fn admin_show_scheduling() {
 }
 
 #[sekas_macro::test]
+async fn admin_unsplittable_shard_does_not_leave_a_retry_task() {
+    let mut ctx = TestContext::new(fn_name!());
+    ctx.set_replicas_per_group(1);
+    ctx.set_move_shard_size_limit(1024);
+    ctx.set_schedule_interval_sec(1);
+    let addr = ctx.next_listen_address();
+    let ready = ctx.spawn_server_with_handle(0, &addr, true, vec![]);
+    let server = ready.await.unwrap();
+    let cluster = ClusterClient::new([(0, addr)].into_iter().collect()).await;
+    let client = cluster.app_client().await;
+    let db = client.create_database("db".into()).await.unwrap();
+    let table = db.create_table("table".into()).await.unwrap();
+    cluster.assert_table_ready_with_voters(table.id, 1).await;
+    let attempts = || {
+        prometheus::gather()
+            .iter()
+            .find(|family| family.name() == "root_reconcile_scheduler_task_handle_total")
+            .and_then(|family| {
+                family
+                    .get_metric()
+                    .iter()
+                    .find(|metric| {
+                        metric
+                            .get_label()
+                            .iter()
+                            .any(|label| label.name() == "type" && label.value() == "split_shard")
+                    })
+                    .map(|metric| metric.get_counter().value())
+            })
+            .unwrap_or(0.0)
+    };
+    let before = attempts();
+    // Above the split threshold, but a single user key has no split point.
+    db.put(table.id, b"key".to_vec(), vec![b'v'; 8 * 1024]).await.unwrap();
+    // Seed the known fixture size independently of RocksDB's approximate
+    // sampling, then drive one poll without waiting for a heartbeat.
+    let group = cluster.find_router_group_state_by_key(table.id, b"key").await.unwrap();
+    let shard = cluster.get_shard_desc(table.id, b"key").await.unwrap();
+    let stats = vec![sekas_api::server::v1::GroupStats {
+        group_id: group.id,
+        shard_count: 1,
+        shard_stats: vec![sekas_api::server::v1::ShardStats {
+            shard_id: shard.id,
+            table_id: table.id,
+            shard_size: 8 * 1024,
+        }],
+        ..Default::default()
+    }];
+    tokio::time::timeout(
+        Duration::from_secs(2),
+        sekas_server::testutil::drive_scheduling(&server, stats),
+    )
+    .await
+    .expect("one scheduler poll must finish promptly")
+    .unwrap();
+    assert!(attempts() > before);
+    let body = client.handle_statement("show scheduler_tasks;").await.unwrap();
+    let ExecuteResult::Data(tasks) = serde_json::from_slice(&body).unwrap() else {
+        panic!("show scheduler_tasks must return a table");
+    };
+    assert!(tasks.rows.is_empty(), "an empty split result must complete the task");
+    db.put(table.id, b"key".to_vec(), b"updated".to_vec()).await.unwrap();
+    assert_eq!(db.get(table.id, b"key".to_vec()).await.unwrap(), Some(b"updated".to_vec()));
+}
+
+#[sekas_macro::test]
 async fn admin_balance_init_cluster() {
     let node_count = 4;
     let mut ctx = TestContext::new(fn_name!());

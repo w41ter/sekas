@@ -15,6 +15,7 @@
 use std::collections::{HashMap, HashSet, hash_map};
 use std::sync::{Arc, Mutex};
 
+use rand::RngExt;
 use sekas_api::server::v1::*;
 
 struct GroupDelta {
@@ -174,12 +175,17 @@ impl ClusterStats {
 
     /// Get the large shards, return the group_id and shard_id.
     pub fn get_large_shards(&self, limit: usize, split_threshold: u64) -> Vec<(u64, u64)> {
+        if limit == 0 {
+            return Vec::new();
+        }
         let scheduled_shards = {
             let sched_stats = self.sched_stats.lock().expect("poisoned");
             sched_stats.scheduled_shards()
         };
         let table_set = self.table_set_stats.lock().expect("poisoned");
         let mut target_shards = Vec::with_capacity(limit);
+        let mut seen = 0;
+        let mut rng = rand::rng();
         for table_stats in table_set.tables.values() {
             for shard_stats in table_stats.shards.values() {
                 if shard_stats.shard_size <= split_threshold
@@ -192,9 +198,16 @@ impl ClusterStats {
                         // Don't split the root groups, such as txn shard.
                         continue;
                     }
-                    target_shards.push((group_id, shard_stats.shard_id));
-                    if target_shards.len() >= limit {
-                        break;
+                    seen += 1;
+                    if target_shards.len() < limit {
+                        target_shards.push((group_id, shard_stats.shard_id));
+                    } else {
+                        // Reservoir sampling gives every eligible shard a
+                        // chance without storing the entire candidate set.
+                        let index = rng.random_range(0..seen);
+                        if index < limit {
+                            target_shards[index] = (group_id, shard_stats.shard_id);
+                        }
                     }
                 }
             }

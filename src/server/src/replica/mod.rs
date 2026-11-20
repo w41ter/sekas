@@ -705,6 +705,10 @@ impl Replica {
             // unapplied WALs, so the freshness of metadata cannot be
             // guaranteed.
             Err(Error::GroupNotReady(group_id))
+        } else if lease_state.has_shard_moving() && changes_group_epoch(req) {
+            Err(Error::ServiceIsBusy(BusyReason::Moving))
+        } else if matches!(req, Request::AcceptShard(_)) && lease_state.has_joint_config() {
+            Err(Error::ServiceIsBusy(BusyReason::PendingConfigChange))
         } else if exec_ctx.forward_shard_id.is_some() {
             Ok(())
         } else if exec_ctx.epoch < lease_state.descriptor.epoch {
@@ -716,13 +720,6 @@ impl Replica {
                 self.info.replica_id
             );
             Err(Error::EpochNotMatch(lease_state.descriptor.clone()))
-        } else if lease_state.has_shard_moving() && matches!(req, Request::AcceptShard(_)) {
-            trace!(
-                "the request shard is in moving, group: {}, replica: {}",
-                self.info.group_id, self.info.replica_id
-            );
-            // At the same time, there can only be one moving shard task.
-            Err(Error::ServiceIsBusy(BusyReason::Moving))
         } else {
             // If the current replica is the leader and has applied data in the current
             // term, it is expected that the input epoch should not be larger
@@ -841,4 +838,8 @@ fn is_change_meta_request(request: &Request) -> bool {
         | Request::GetSplitKey(_)
         | Request::WatchKey(_) => false,
     }
+}
+
+fn changes_group_epoch(request: &Request) -> bool {
+    is_change_meta_request(request) && !matches!(request, Request::Transfer(_))
 }

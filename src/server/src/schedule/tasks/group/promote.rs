@@ -115,6 +115,9 @@ impl Task for PromoteGroup {
     }
 
     async fn poll(&mut self, ctx: &mut ScheduleContext<'_>) -> TaskState {
+        if ctx.replica.move_shard_state().is_some() {
+            return TaskState::Pending(Some(Duration::from_secs(1)));
+        }
         if ctx.group_lock_table.has_config_change() {
             return TaskState::Pending(Some(Duration::from_secs(1)));
         }

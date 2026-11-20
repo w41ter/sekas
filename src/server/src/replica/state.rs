@@ -89,6 +89,15 @@ impl LeaseState {
         self.move_shard_state.is_some()
     }
 
+    pub fn has_joint_config(&self) -> bool {
+        self.descriptor.replicas.iter().any(|replica| {
+            matches!(
+                ReplicaRole::try_from(replica.role),
+                Ok(ReplicaRole::IncomingVoter | ReplicaRole::DemotingVoter)
+            )
+        })
+    }
+
     #[inline]
     pub fn is_shard_in_moving(&self, shard_id: u64) -> bool {
         self.move_shard_state.as_ref().map(|s| s.get_shard_id() == shard_id).unwrap_or_default()

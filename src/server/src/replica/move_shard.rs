@@ -19,6 +19,7 @@ use sekas_api::server::v1::*;
 use super::eval::{LatchManager, ingest_value_set};
 use super::{LeaseState, Replica, ReplicaInfo};
 use crate::engine::WriteBatch;
+use crate::error::BusyReason;
 use crate::serverpb::v1::*;
 use crate::{Error, Result};
 
@@ -101,7 +102,11 @@ impl Replica {
     }
 
     pub async fn enter_pulling_step(&self, desc: &MoveShardDesc) -> Result<()> {
-        self.update_move_shard_state(desc, MoveShardEvent::Ingest).await
+        self.update_move_shard_state(desc, MoveShardEvent::Ingest).await?;
+        if let Some(barrier) = &self.cfg.testing_knobs.after_moving_shard_setup {
+            barrier.on_reached().await;
+        }
+        Ok(())
     }
 
     pub async fn commit_shard_moving(&self, desc: &MoveShardDesc) -> Result<()> {
@@ -188,7 +193,9 @@ impl Replica {
         desc: &MoveShardDesc,
     ) -> Result<bool> {
         let epoch = desc.src_group_epoch;
-        if epoch < lease_state.descriptor.epoch {
+        if lease_state.has_joint_config() {
+            Err(Error::ServiceIsBusy(BusyReason::PendingConfigChange))
+        } else if epoch < lease_state.descriptor.epoch {
             // This moving needs to be rollback.
             Err(Error::EpochNotMatch(lease_state.descriptor.clone()))
         } else if lease_state.move_shard_state.is_none() {
@@ -279,4 +286,39 @@ fn is_shard_moved_in(shard_desc: &ShardDesc, group_desc: &GroupDesc) -> bool {
         }
     }
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn source_acquire_waits_for_joint_configuration_to_finish() {
+        let replica = ReplicaDesc { id: 1, node_id: 1, role: ReplicaRole::IncomingVoter as i32 };
+        let info = ReplicaInfo::new(&replica, 1, ReplicaLocalState::Normal);
+        let (sender, _) = futures::channel::mpsc::unbounded();
+        let mut state = LeaseState::new(
+            GroupDesc { id: 1, epoch: 8, replicas: vec![replica], ..Default::default() },
+            None,
+            sender,
+        );
+        let desc = MoveShardDesc {
+            src_group_id: 1,
+            src_group_epoch: 8,
+            dest_group_id: 2,
+            shard_desc: Some(ShardDesc::whole(1, 1024)),
+            ..Default::default()
+        };
+        assert!(matches!(
+            Replica::check_moving_shard_setup(&info, &state, &desc),
+            Err(Error::ServiceIsBusy(BusyReason::PendingConfigChange))
+        ));
+        state.descriptor.replicas[0].role = ReplicaRole::Voter as i32;
+        assert!(Replica::check_moving_shard_setup(&info, &state, &desc).unwrap());
+        state.descriptor.epoch += 1;
+        assert!(matches!(
+            Replica::check_moving_shard_setup(&info, &state, &desc),
+            Err(Error::EpochNotMatch(_))
+        ));
+    }
 }

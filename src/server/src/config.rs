@@ -97,6 +97,7 @@ pub struct ReplicaTestingKnobs {
     pub disable_scheduler_durable_task: bool,
     pub disable_scheduler_remove_orphan_replica_task: bool,
     pub after_overlay_insert: Option<Arc<TestingBarrier>>,
+    pub after_moving_shard_setup: Option<Arc<TestingBarrier>>,
 }
 
 #[derive(Default)]
