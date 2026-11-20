@@ -14,6 +14,7 @@
 
 mod config;
 mod main;
+mod metrics;
 mod report;
 mod worker;
 mod workload;

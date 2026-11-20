@@ -13,12 +13,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 use std::io::IsTerminal;
+use std::net::SocketAddr;
 use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result, bail, ensure};
 use clap::Parser;
 use log::info;
 use sekas_client::{AppError, ClientOptions, Database, SekasClient};
@@ -28,8 +29,8 @@ use tracing_subscriber::EnvFilter;
 
 use super::config::{Config, Phase};
 use super::report::Metrics;
-use super::worker;
 use super::workload::Workload;
+use super::{metrics, worker};
 
 #[derive(Parser)]
 #[clap(about = "Run a benchmark against a Sekas cluster")]
@@ -41,6 +42,11 @@ pub struct Command {
     /// Load the initial dataset or run a workload against it
     #[clap(long, value_enum, default_value = "run")]
     phase: Phase,
+
+    /// Serve Prometheus metrics at /admin/metrics on this address while the
+    /// benchmark runs
+    #[clap(long, value_name = "ADDR")]
+    metrics_addr: Option<SocketAddr>,
 }
 
 impl Command {
@@ -62,7 +68,20 @@ impl Command {
             .enable_all()
             .worker_threads(config.threads)
             .build()?
-            .block_on(run_benchmark(config, self.phase, workload))
+            .block_on(async move {
+                let benchmark = run_benchmark(config, self.phase, workload);
+                let Some(addr) = self.metrics_addr else {
+                    return benchmark.await;
+                };
+                let server = metrics::bind(addr).await?;
+                tokio::select! {
+                    result = benchmark => result,
+                    result = server.serve() => {
+                        result.context("serve benchmark metrics")?;
+                        bail!("benchmark metrics server stopped");
+                    }
+                }
+            })
     }
 }
 

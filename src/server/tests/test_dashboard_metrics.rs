@@ -17,7 +17,8 @@ mod helper;
 use std::time::Duration;
 
 use futures::StreamExt;
-use sekas_api::server::v1::ShardScanRequest;
+use sekas_api::server::v1::group_request_union::Request;
+use sekas_api::server::v1::{QueryIntentRequest, ShardKey, ShardScanRequest};
 use sekas_client::WriteBuilder;
 use sekas_rock::fn_name;
 
@@ -55,6 +56,16 @@ async fn dashboard_metrics_follow_logical_operations_and_txn_paths() {
         .await
         .unwrap();
     assert_eq!(scan.data.len(), 1);
+    let group = cluster.find_router_group_state_by_key(table_id, key).await.unwrap();
+    let mut group_client = cluster.group(group.id);
+    group_client.get_split_key(shard_id, None, None).await.unwrap();
+    group_client
+        .request(&Request::QueryIntent(QueryIntentRequest {
+            start_version: 1,
+            shard_keys: vec![ShardKey { shard_id, user_key: key.to_vec() }],
+        }))
+        .await
+        .unwrap();
     db.delete(table_id, key.to_vec()).await.unwrap();
 
     let mut txn = db.begin_txn();
@@ -140,6 +151,11 @@ async fn dashboard_metrics_follow_logical_operations_and_txn_paths() {
                         > 0.0
                 );
             }
+        }
+    }
+    for family in ["group_client_group_request_total", "node_service_group_request_total"] {
+        for operation in ["get_split_key", "query_intent"] {
+            assert!(metric(family, &[("type", operation)]).get_counter().value() > 0.0);
         }
     }
     assert!(metric("raftgroup_propose_bytes_total", &[]).get_counter().value() > 0.0);

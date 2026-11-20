@@ -23,6 +23,7 @@ make_static_metric! {
         get,
         scan,
         write,
+        query_intent,
         write_intent,
         commit_intent,
         clear_intent,
@@ -30,6 +31,7 @@ make_static_metric! {
         split_shard,
         merge_shard,
         accept_shard,
+        get_split_key,
         create_shard,
         delete_shard,
         move_replicas,
@@ -93,9 +95,9 @@ pub(crate) fn record_group_request(request: &GroupRequest) -> Option<GroupReques
     use group_request_union::Request;
 
     let kind = match request.request.as_ref()?.request.as_ref()? {
-        Request::Get(_) | Request::QueryIntent(_) | Request::GetSplitKey(_) => {
-            GroupRequestType::get
-        }
+        Request::Get(_) => GroupRequestType::get,
+        Request::QueryIntent(_) => GroupRequestType::query_intent,
+        Request::GetSplitKey(_) => GroupRequestType::get_split_key,
         Request::Scan(_) => GroupRequestType::scan,
         Request::Write(_) | Request::LocalTxnWrite(_) => GroupRequestType::write,
         Request::WriteIntent(_) => GroupRequestType::write_intent,

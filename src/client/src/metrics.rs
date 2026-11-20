@@ -35,6 +35,7 @@ make_static_metric! {
         get,
         scan,
         write,
+        query_intent,
         prepare_intent,
         commit_intent,
         clear_intent,
@@ -42,6 +43,7 @@ make_static_metric! {
         split_shard,
         merge_shard,
         accept_shard,
+        get_split_key,
         create_shard,
         delete_shard,
         move_replicas,
@@ -263,9 +265,9 @@ pub(crate) fn record_group_request(request: &GroupRequest) -> Option<GroupReques
     use group_request_union::Request;
 
     let kind = match request.request.as_ref()?.request.as_ref()? {
-        Request::Get(_) | Request::QueryIntent(_) | Request::GetSplitKey(_) => {
-            GroupRequestType::get
-        }
+        Request::Get(_) => GroupRequestType::get,
+        Request::QueryIntent(_) => GroupRequestType::query_intent,
+        Request::GetSplitKey(_) => GroupRequestType::get_split_key,
         Request::Scan(_) => GroupRequestType::scan,
         Request::Write(_) | Request::LocalTxnWrite(_) => GroupRequestType::write,
         Request::WriteIntent(_) => GroupRequestType::prepare_intent,
@@ -310,12 +312,6 @@ make_static_metric! {
         "type" => DatabaseOperation,
         "direction" => { input, output },
     }
-    pub struct DatabaseBytesTotal: IntCounter {
-        "type" => {
-            rx,
-            tx,
-        }
-    }
 }
 
 lazy_static! {
@@ -346,14 +342,6 @@ lazy_static! {
         .unwrap();
     static ref CLIENT_DATABASE_OPERATION_BYTES_TOTAL: DatabaseOperationBytes =
         DatabaseOperationBytes::from(&CLIENT_DATABASE_OPERATION_BYTES_TOTAL_VEC);
-    pub static ref CLIENT_DATABASE_BYTES_TOTAL_VEC: IntCounterVec = register_int_counter_vec!(
-        "client_database_bytes_total",
-        "The total bytes of client database receive/send",
-        &["type"],
-    )
-    .unwrap();
-    pub static ref CLIENT_DATABASE_BYTES_TOTAL: DatabaseBytesTotal =
-        DatabaseBytesTotal::from(&CLIENT_DATABASE_BYTES_TOTAL_VEC);
 }
 
 impl DatabaseOperation {

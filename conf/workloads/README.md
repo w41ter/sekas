@@ -36,6 +36,19 @@ together count as one operation, as does a write transaction or scan. A
 condition rejection counts toward the operation budget. The command prints
 the totals and exits with an error if there are any reported errors.
 
+### Scrape client metrics
+
+Pass `--metrics-addr` to serve the benchmark process's Prometheus metrics
+while it runs. By default, the benchmark opens no metrics listener.
+
+```sh
+sekas bench --conf conf/workloads/read-heavy-uniform.toml --metrics-addr 127.0.0.1:9180
+```
+
+Set the Prometheus target to the benchmark host and port and set
+`metrics_path: /admin/metrics`. For a remote scraper, bind to an address
+it can reach. In Grafana, select that scrape job under **Client jobs**.
+
 ## Tune a preset
 
 - `operations` sets the number of attempts in each run across all workers.

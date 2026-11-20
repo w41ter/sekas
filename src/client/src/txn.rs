@@ -642,11 +642,9 @@ impl Txn {
         options: TxnReadOptions,
         version: Option<u64>,
     ) -> AppResult<Option<Value>> {
-        CLIENT_DATABASE_BYTES_TOTAL.rx.inc_by(key.len() as u64);
         let _timer = DatabaseOperation::get.record_request(key.len());
         let value = self.get_raw_value_inner(table_id, &key, options, version).await?;
         let bytes = value.as_ref().map_or(0, value_payload_len);
-        CLIENT_DATABASE_BYTES_TOTAL.tx.inc_by(bytes as u64);
         DatabaseOperation::get.record_response(bytes);
         Ok(value)
     }
