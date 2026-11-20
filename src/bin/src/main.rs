@@ -130,10 +130,7 @@ fn main() -> Result<()> {
 
     match Command::parse().subcmd {
         SubCommand::Start(cmd) => cmd.run(),
-        SubCommand::Bench(cmd) => {
-            cmd.run();
-            Ok(())
-        }
+        SubCommand::Bench(cmd) => cmd.run().map_err(|err| Error::InvalidData(format!("{err:#}"))),
         SubCommand::Checker(cmd) => cmd.run().map_err(|err| Error::InvalidData(err.to_string())),
         SubCommand::PerfLab(cmd) => cmd.run().map_err(|err| Error::InvalidData(format!("{err:#}"))),
         SubCommand::Shell(cmd) => {

@@ -13,142 +13,85 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::ops::Range as IndexRange;
 use std::time::Instant;
 
-use log::trace;
-use rand::prelude::*;
-use sekas_client::Database;
+use rand::SeedableRng;
+use rand::rngs::StdRng;
+use sekas_api::server::v1::PutRequest;
+use sekas_client::{AppError, AppResult, Database, Range, RangeRequest, WriteBuilder};
+use tokio_stream::StreamExt;
 
-use super::AppConfig;
-use super::metrics::*;
+use super::report::{Metrics, Outcome};
+use super::workload::{Request, Workload};
 
-pub struct Job {
-    db: Database,
-    table_id: u64,
-
-    consumed: usize,
-    num_op: usize,
-    generator: Generator,
-}
-
-pub struct Generator {
-    cfg: AppConfig,
-    range: std::ops::Range<u64>,
-    rng: StdRng,
-}
-
-#[derive(Debug, Clone)]
-pub enum NextOp {
-    Put { key: Vec<u8>, value: Vec<u8> },
-    Get { key: Vec<u8> },
-}
-
-impl Generator {
-    pub fn new(seed: u64, cfg: AppConfig, range: std::ops::Range<u64>) -> Generator {
-        Generator { cfg, range, rng: StdRng::seed_from_u64(seed) }
+pub(super) async fn run(
+    db: &Database,
+    table: u64,
+    workload: &Workload,
+    metrics: &Metrics,
+    indexes: IndexRange<u64>,
+    seed: u64,
+) {
+    let mut rng = StdRng::seed_from_u64(seed);
+    for index in indexes {
+        let operation = workload.next(index, &mut rng);
+        let start = Instant::now();
+        let outcome = match execute(db, table, operation.request).await {
+            Ok(()) => Outcome::Success,
+            Err(AppError::CasFailed(..)) if operation.kind.is_conditional() => Outcome::Rejected,
+            Err(error) => {
+                tracing::debug!(operation = operation.kind.name(), %error, "benchmark operation failed");
+                Outcome::Error
+            }
+        };
+        metrics.record(operation.kind, outcome, start.elapsed());
     }
+}
 
-    pub fn next_op(&mut self) -> NextOp {
-        let v = self.rng.random_range(0..100) as f64 / 100.0;
-        let key = self.next_key();
-        if v < self.cfg.data.write {
-            let value = self.next_bytes(self.cfg.data.value.clone());
-            NextOp::Put { key, value }
-        } else {
-            NextOp::Get { key }
+async fn execute(db: &Database, table: u64, request: Request) -> AppResult<()> {
+    match request {
+        Request::Read(key) => {
+            db.get(table, key).await?;
+        }
+        Request::Write(puts) => write(db, table, puts).await?,
+        Request::Cas { key, value } => {
+            let current = db
+                .get_raw_value(table, key.clone())
+                .await?
+                .filter(|current| current.content.is_some())
+                .ok_or_else(|| AppError::NotFound("CAS fixture key".into()))?;
+            let put = WriteBuilder::new(key).expect_version(current.version).put(value)?;
+            write(db, table, [put]).await?;
+        }
+        Request::Scan { begin, end, limit } => {
+            let mut stream = db
+                .range(RangeRequest {
+                    table_id: table,
+                    range: Range::Range { begin: Some(begin), end: Some(end) },
+                    limit,
+                    total_limit: limit,
+                    limit_bytes: 1024 * 1024,
+                    ..Default::default()
+                })
+                .await?;
+            while let Some(batch) = stream.next().await {
+                batch?;
+            }
         }
     }
-
-    fn next_bytes(&mut self, range: std::ops::Range<usize>) -> Vec<u8> {
-        const BYTES: &[u8; 62] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-        let len = self.rng.random_range(range);
-        let mut buf = vec![0u8; len];
-        self.rng.fill(buf.as_mut_slice());
-        buf.iter_mut().for_each(|v| *v = BYTES[(*v % 62) as usize]);
-        buf
-    }
-
-    fn next_key(&mut self) -> Vec<u8> {
-        let index = self.rng.random_range(self.range.clone());
-        format!("{}{index:0leading$}", self.cfg.key.prefix, leading = self.cfg.key.leading)
-            .into_bytes()
-    }
+    Ok(())
 }
 
-impl Job {
-    pub fn new(db: Database, table_id: u64, seed: u64, num_op: usize, cfg: AppConfig) -> Job {
-        let limited = cfg.data.limited;
-        Job { db, table_id, consumed: 0, num_op, generator: Generator::new(seed, cfg, 0..limited) }
+async fn write(
+    db: &Database,
+    table: u64,
+    puts: impl IntoIterator<Item = PutRequest>,
+) -> AppResult<()> {
+    let mut txn = db.begin_txn();
+    for put in puts {
+        txn.put(table, put);
     }
-}
-
-impl Iterator for Job {
-    type Item = NextOp;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.consumed >= self.num_op {
-            None
-        } else {
-            self.consumed += 1;
-            Some(self.generator.next_op())
-        }
-    }
-}
-
-pub async fn worker_main(_id: usize, mut job: Job) {
-    let db = job.db.clone();
-    let table_id = job.table_id;
-    for next_op in &mut job {
-        execute(&db, table_id, next_op).await;
-    }
-}
-
-async fn execute(db: &Database, co: u64, next_op: NextOp) {
-    match next_op {
-        NextOp::Get { key } => {
-            get(db, co, key).await;
-        }
-        NextOp::Put { key, value } => {
-            put(db, co, key, value).await;
-        }
-    }
-}
-
-async fn get(db: &Database, co: u64, key: Vec<u8>) {
-    trace!("send get request");
-    let start = Instant::now();
-    match db.get(co, key).await {
-        Ok(_) => {
-            GET_SUCCESS_REQUEST_TOTAL.inc();
-            GET_SUCCESS_REQUEST_DURATION_SECONDS.observe(saturating_elapsed_seconds(start));
-        }
-        Err(e) => {
-            tracing::error!("get request {e:?}");
-            GET_FAILURE_REQUEST_TOTAL.inc();
-            GET_FAILURE_REQUEST_DURATION_SECONDS.observe(saturating_elapsed_seconds(start));
-        }
-    }
-    GET_REQUEST_TOTAL.inc();
-}
-
-async fn put(db: &Database, co: u64, key: Vec<u8>, value: Vec<u8>) {
-    trace!("send put request");
-    let start = Instant::now();
-    match db.put(co, key, value).await {
-        Ok(_) => {
-            PUT_SUCCESS_REQUEST_TOTAL.inc();
-            PUT_SUCCESS_REQUEST_DURATION_SECONDS.observe(saturating_elapsed_seconds(start));
-        }
-        Err(_) => {
-            PUT_FAILURE_REQUEST_TOTAL.inc();
-            PUT_FAILURE_REQUEST_DURATION_SECONDS.observe(saturating_elapsed_seconds(start));
-        }
-    }
-    PUT_REQUEST_TOTAL.inc();
-}
-
-#[inline]
-fn saturating_elapsed_seconds(instant: Instant) -> f64 {
-    let now = Instant::now();
-    now.saturating_duration_since(instant).as_secs_f64()
+    txn.commit().await?;
+    Ok(())
 }

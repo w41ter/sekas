@@ -19,9 +19,7 @@ sekas-server = { path = "../server", version = "0.5" }
 sekas-rock = { path = "../rock", version = "0.5" }
 sekas-runtime = { path = "../runtime", version = "0.5" }
 
-lazy_static.workspace = true
 log.workspace = true
-paste.workspace = true
 prometheus.workspace = true
 rand.workspace = true
 rustyline.workspace = true

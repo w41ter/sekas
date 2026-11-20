@@ -1,0 +1,17 @@
+# Competing creates over a shared pool of keys.
+addrs = ["127.0.0.1:21805"]
+database = "db"
+table = "bench_insert_if_absent"
+threads = 4
+workers = 8
+operations = 100_000
+seed = 7
+
+[workload]
+records = 0
+value_size = 256
+distribution = "uniform"
+shared_keys = 16_384
+
+[workload.mix]
+insert_if_absent = 100

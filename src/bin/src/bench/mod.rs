@@ -14,10 +14,8 @@
 
 mod config;
 mod main;
-mod metrics;
 mod report;
 mod worker;
+mod workload;
 
 pub use main::Command as BenchCommand;
-
-use self::config::AppConfig;

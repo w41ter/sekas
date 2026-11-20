@@ -1,0 +1,17 @@
+# Compare-and-swap updates on a small, skewed set of existing keys.
+addrs = ["127.0.0.1:21805"]
+database = "db"
+table = "bench_cas"
+threads = 4
+workers = 8
+operations = 100_000
+seed = 7
+
+[workload]
+records = 4_096
+value_size = 256
+distribution = "zipfian"
+zipfian_theta = 0.99
+
+[workload.mix]
+cas = 100

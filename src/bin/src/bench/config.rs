@@ -12,83 +12,107 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::time::Duration;
+use std::path::Path;
 
-use serde::{Deserialize, Serialize};
+use anyhow::{Context, Result};
+use clap::ValueEnum;
+use serde::Deserialize;
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct AppConfig {
-    pub num_threads: usize,
-    pub report_interval: Duration,
-    pub operation: usize,
-
-    pub addrs: Vec<String>,
-
-    pub database: String,
-    pub table: String,
-    pub create_if_missing: bool,
-
-    pub seed: Option<u64>,
-
-    pub data: DataConfig,
-    pub key: KeyConfig,
-    pub worker: WorkerConfig,
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub(super) enum Phase {
+    Load,
+    Run,
 }
 
-impl Default for AppConfig {
+#[derive(Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub(super) struct Config {
+    pub addrs: Vec<String>,
+    pub database: String,
+    pub table: String,
+    pub threads: usize,
+    pub workers: usize,
+    pub operations: u64,
+    pub report_interval_secs: u64,
+    pub seed: Option<u64>,
+    pub workload: WorkloadConfig,
+}
+
+impl Default for Config {
     fn default() -> Self {
-        AppConfig {
-            num_threads: std::thread::available_parallelism().map(usize::from).unwrap_or(1),
-            report_interval: Duration::from_secs(10),
-            operation: 100000,
-            addrs: vec!["0.0.0.0:21805".into()],
+        Self {
+            addrs: vec!["127.0.0.1:21805".into()],
             database: "db".into(),
-            table: "table".into(),
-            create_if_missing: true,
+            table: "benchmark".into(),
+            threads: std::thread::available_parallelism().map_or(1, usize::from),
+            workers: 1,
+            operations: 100_000,
+            report_interval_secs: 10,
             seed: None,
-            data: DataConfig::default(),
-            key: KeyConfig::default(),
-            worker: WorkerConfig::default(),
+            workload: WorkloadConfig::default(),
         }
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct DataConfig {
-    pub inserted: u64,
-    pub limited: u64,
+impl Config {
+    pub fn read(path: Option<&Path>) -> Result<Self> {
+        if let Some(path) = path {
+            let contents = std::fs::read_to_string(path)
+                .with_context(|| format!("read benchmark config {}", path.display()))?;
+            toml::from_str(&contents)
+                .with_context(|| format!("parse benchmark config {}", path.display()))
+        } else {
+            Ok(Self::default())
+        }
+    }
+}
 
+#[derive(Clone, Copy, Debug, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub(super) enum KeyDistribution {
+    #[default]
+    Uniform,
+    Zipfian,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub(super) struct WorkloadConfig {
+    pub records: u64,
+    pub value_size: usize,
+    pub distribution: KeyDistribution,
+    pub zipfian_theta: f64,
+    pub txn_keys: u64,
+    pub scan_length: u64,
+    pub insert_start: Option<u64>,
+    pub shared_keys: u64,
+    pub mix: Mix,
+}
+
+impl Default for WorkloadConfig {
+    fn default() -> Self {
+        Self {
+            records: 10_000,
+            value_size: 10,
+            distribution: KeyDistribution::Uniform,
+            zipfian_theta: 0.99,
+            txn_keys: 1,
+            scan_length: 10,
+            insert_start: None,
+            shared_keys: 1000,
+            mix: Mix { read: 1.0, update: 1.0, ..Default::default() },
+        }
+    }
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub(super) struct Mix {
     pub read: f64,
-    pub write: f64,
-    pub value: std::ops::Range<usize>,
-}
-
-impl Default for DataConfig {
-    fn default() -> Self {
-        DataConfig { inserted: 10000, limited: 10000, read: 0.5, write: 0.5, value: 10..11 }
-    }
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct KeyConfig {
-    pub prefix: String,
-    pub leading: usize,
-}
-
-impl Default for KeyConfig {
-    fn default() -> Self {
-        KeyConfig { prefix: "user_".to_owned(), leading: 10 }
-    }
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct WorkerConfig {
-    pub num_worker: usize,
-    pub start_intervals: Option<Duration>,
-}
-
-impl Default for WorkerConfig {
-    fn default() -> Self {
-        WorkerConfig { num_worker: 1, start_intervals: None }
-    }
+    pub insert: f64,
+    pub update: f64,
+    pub scan: f64,
+    pub cas: f64,
+    pub insert_if_absent: f64,
+    pub increment: f64,
 }

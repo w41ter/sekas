@@ -1,0 +1,18 @@
+# Read-heavy baseline with evenly distributed keys.
+addrs = ["127.0.0.1:21805"]
+database = "db"
+table = "bench_read_heavy_uniform"
+threads = 4
+workers = 8
+operations = 100_000
+seed = 7
+
+[workload]
+records = 100_000
+value_size = 256
+distribution = "uniform"
+txn_keys = 1
+
+[workload.mix]
+read = 95
+update = 5

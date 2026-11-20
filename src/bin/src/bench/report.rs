@@ -12,189 +12,119 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::time::{Duration, Instant};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
-use prometheus::proto::Metric;
+use prometheus::core::Metric;
+use prometheus::{Histogram, HistogramOpts, exponential_buckets, proto};
+use tokio::time::Instant;
 
-use super::metrics::*;
+use super::workload::OperationKind;
 
-pub(super) struct ReportContext {
-    instant: Instant,
-    get_success: Metric,
-    get_failure: Metric,
-    put_success: Metric,
-    put_failure: Metric,
+pub(super) struct Metrics {
+    operations: [OperationMetrics; OperationKind::ALL.len()],
 }
 
-struct Summary {
-    interval: Duration,
-    get_success: Histogram,
-    get_failure: Histogram,
-    put_success: Histogram,
-    put_failure: Histogram,
+struct OperationMetrics {
+    latency: Histogram,
+    rejected: AtomicU64,
+    failures: AtomicU64,
 }
 
-struct Histogram {
-    count: usize,
-    avg: usize,
-    p99: usize,
-    p999: usize,
-    p9999: usize,
-    min: usize,
-    max: usize,
+pub(super) enum Outcome {
+    Success,
+    Rejected,
+    Error,
 }
 
-impl From<prometheus::proto::Metric> for Histogram {
-    fn from(m: prometheus::proto::Metric) -> Self {
-        let h = m.get_histogram();
-        let us = |v: f64| -> usize { (v * 1000. * 1000.) as usize };
-        let value = |percent: f64| -> usize {
-            let cnt = (percent * h.get_sample_count() as f64) + 0.5;
-            h.get_bucket()
-                .iter()
-                .find(|b| b.cumulative_count() as f64 >= cnt)
-                .map(|b| us(b.upper_bound()))
-                .unwrap_or_default()
-        };
+#[derive(Clone)]
+pub(super) struct Snapshot {
+    time: Instant,
+    operations: [OperationSnapshot; OperationKind::ALL.len()],
+}
 
-        let max = h
-            .get_bucket()
-            .iter()
-            .find(|v| v.cumulative_count() == h.get_sample_count())
-            .map(|v| us(v.upper_bound()))
-            .unwrap_or_default();
+#[derive(Clone)]
+struct OperationSnapshot {
+    latency: proto::Metric,
+    rejected: u64,
+    failures: u64,
+}
 
-        let min = h
-            .get_bucket()
-            .iter()
-            .take_while(|v| v.cumulative_count() == 0)
-            .map(|v| us(v.upper_bound()))
-            .last()
-            .unwrap_or_default();
+impl Metrics {
+    pub fn new() -> Self {
+        let opts = HistogramOpts::new("benchmark_latency_seconds", "Successful operation latency")
+            .buckets(exponential_buckets(0.00005, 1.8, 26).unwrap());
+        Self {
+            operations: OperationKind::ALL.map(|_| OperationMetrics {
+                latency: Histogram::with_opts(opts.clone()).unwrap(),
+                rejected: AtomicU64::new(0),
+                failures: AtomicU64::new(0),
+            }),
+        }
+    }
 
-        let avg = if h.get_sample_count() == 0 {
-            0
-        } else {
-            us(h.get_sample_sum() / h.get_sample_count() as f64)
-        };
+    pub fn record(&self, kind: OperationKind, outcome: Outcome, elapsed: Duration) {
+        let operation = &self.operations[kind as usize];
+        match outcome {
+            Outcome::Success => operation.latency.observe(elapsed.as_secs_f64()),
+            Outcome::Rejected => {
+                operation.rejected.fetch_add(1, Ordering::Relaxed);
+            }
+            Outcome::Error => {
+                operation.failures.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    }
 
-        Histogram {
-            count: h.get_sample_count() as usize,
-            avg,
-            p99: value(0.99),
-            p999: value(0.999),
-            p9999: value(0.9999),
-            min,
-            max,
+    pub fn snapshot(&self) -> Snapshot {
+        Snapshot {
+            time: Instant::now(),
+            operations: self.operations.each_ref().map(|operation| OperationSnapshot {
+                latency: operation.latency.metric(),
+                rejected: operation.rejected.load(Ordering::Relaxed),
+                failures: operation.failures.load(Ordering::Relaxed),
+            }),
         }
     }
 }
 
-impl ReportContext {
-    pub fn default() -> Self {
-        use prometheus::core::Metric;
-        let get_success = GET_SUCCESS_REQUEST_DURATION_SECONDS.metric();
-        let get_failure = GET_FAILURE_REQUEST_DURATION_SECONDS.metric();
-        let put_success = PUT_SUCCESS_REQUEST_DURATION_SECONDS.metric();
-        let put_failure = PUT_FAILURE_REQUEST_DURATION_SECONDS.metric();
-        ReportContext {
-            instant: Instant::now(),
-            get_success,
-            get_failure,
-            put_success,
-            put_failure,
+impl Snapshot {
+    pub fn failures(&self) -> u64 {
+        self.operations.iter().map(|operation| operation.failures).sum()
+    }
+
+    pub fn display_since(&self, previous: &Self) {
+        let elapsed = (self.time - previous.time).as_secs_f64();
+        for kind in OperationKind::ALL {
+            let current = &self.operations[kind as usize];
+            let prior = &previous.operations[kind as usize];
+            let failures = current.failures - prior.failures;
+            let rejected = current.rejected - prior.rejected;
+            let current = current.latency.get_histogram();
+            let prior = prior.latency.get_histogram();
+            let successes = current.get_sample_count() - prior.get_sample_count();
+            if successes == 0 && failures == 0 && rejected == 0 {
+                continue;
+            }
+            let ops_per_sec = successes as f64 / elapsed.max(f64::EPSILON);
+            print!(
+                "{} elapsed={elapsed:.3}s success={successes} rejected={rejected} errors={failures} ops/s={ops_per_sec:.1}",
+                kind.name()
+            );
+            if successes > 0 {
+                let avg = (current.get_sample_sum() - prior.get_sample_sum()) / successes as f64;
+                let p99_rank = successes - successes / 100;
+                let p99 = current
+                    .get_bucket()
+                    .iter()
+                    .zip(prior.get_bucket())
+                    .find(|(current, prior)| {
+                        current.cumulative_count() - prior.cumulative_count() >= p99_rank
+                    })
+                    .map_or(f64::INFINITY, |(bucket, _)| bucket.upper_bound());
+                print!(" avg={:.0}us p99={:.0}us", avg * 1e6, p99 * 1e6);
+            }
+            println!();
         }
     }
-}
-
-fn diff(current: &ReportContext, earlier: &ReportContext) -> Summary {
-    Summary {
-        interval: current.instant.saturating_duration_since(earlier.instant),
-        get_success: Histogram::from(histogram_diff(&current.get_success, &earlier.get_success)),
-        get_failure: Histogram::from(histogram_diff(&current.get_failure, &earlier.get_failure)),
-        put_success: Histogram::from(histogram_diff(&current.put_success, &earlier.put_success)),
-        put_failure: Histogram::from(histogram_diff(&current.put_failure, &earlier.put_failure)),
-    }
-}
-
-fn histogram_diff(
-    current: &prometheus::proto::Metric,
-    earlier: &prometheus::proto::Metric,
-) -> prometheus::proto::Metric {
-    let mut m = prometheus::proto::Metric::default();
-    let mut h = prometheus::proto::Histogram::default();
-    let mut sum =
-        current.get_histogram().get_sample_sum() - earlier.get_histogram().get_sample_sum();
-    if sum < 0.0 {
-        sum = 0.0;
-    }
-    h.set_sample_sum(sum);
-    h.set_sample_count(
-        current
-            .get_histogram()
-            .get_sample_count()
-            .saturating_sub(earlier.get_histogram().get_sample_count()),
-    );
-
-    current
-        .get_histogram()
-        .get_bucket()
-        .iter()
-        .zip(earlier.get_histogram().get_bucket().iter())
-        .map(|(b1, b2)| {
-            let cumulative_count = b1.cumulative_count() - b2.cumulative_count();
-            let mut b = prometheus::proto::Bucket::default();
-            b.set_cumulative_count(cumulative_count);
-            b.set_upper_bound(b1.upper_bound());
-            b
-        })
-        .for_each(|v| h.bucket.push(v));
-
-    m.set_histogram(h);
-    m
-}
-
-pub(super) fn display(earlier_ctx: &mut ReportContext) {
-    let mut current_ctx = ReportContext::default();
-    let summary = diff(&current_ctx, earlier_ctx);
-
-    display_histogram(
-        "GET",
-        &summary.get_success,
-        summary.interval,
-        current_ctx.get_success.get_histogram().get_sample_count(),
-    );
-    display_histogram(
-        "PUT",
-        &summary.put_success,
-        summary.interval,
-        current_ctx.put_success.get_histogram().get_sample_count(),
-    );
-    display_histogram(
-        "GET_ERROR",
-        &summary.get_failure,
-        summary.interval,
-        current_ctx.get_failure.get_histogram().get_sample_count(),
-    );
-    display_histogram(
-        "PUT_ERROR",
-        &summary.put_failure,
-        summary.interval,
-        current_ctx.put_failure.get_histogram().get_sample_count(),
-    );
-    std::mem::swap(earlier_ctx, &mut current_ctx);
-}
-
-fn display_histogram(name: &str, h: &Histogram, interval: Duration, count: u64) {
-    if h.count == 0 {
-        return;
-    }
-
-    let seconds = interval.as_secs_f64();
-    let qps = (h.count as f64) / seconds;
-
-    println!(
-        "{name} - Takes(s): {:.1}, Count: {}, OPS: {:.1}, Avg(us): {}, Min(us): {}, Max(us): {}, 99th(us): {}, 99.9th(us): {}, 99.99th(us): {}",
-        seconds, count, qps, h.avg, h.min, h.max, h.p99, h.p999, h.p9999
-    );
 }

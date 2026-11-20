@@ -13,214 +13,157 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 use std::io::IsTerminal;
-use std::sync::mpsc;
+use std::ops::Range;
+use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
+use anyhow::{Context, Result, ensure};
 use clap::Parser;
-use log::{debug, info};
-use sekas_client::{AppError, ClientOptions, Database, SekasClient, TableDesc};
-use sekas_runtime::sync::WaitGroup;
-use sekas_runtime::{Shutdown, ShutdownNotifier};
-use tokio::runtime::Runtime;
-use tokio::select;
-use tokio::time::MissedTickBehavior;
+use log::info;
+use sekas_client::{AppError, ClientOptions, Database, SekasClient};
+use tokio::task::JoinSet;
+use tokio::time::{Instant, MissedTickBehavior};
 use tracing_subscriber::EnvFilter;
 
-use super::config::*;
-use super::report;
-use super::report::ReportContext;
-use super::worker::*;
-
-type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
-
-struct Context {
-    wait_group: WaitGroup,
-    shutdown: Shutdown,
-    runtime: Runtime,
-}
+use super::config::{Config, Phase};
+use super::report::Metrics;
+use super::worker;
+use super::workload::Workload;
 
 #[derive(Parser)]
-#[clap(about = "Start benchmark testing")]
+#[clap(about = "Run a benchmark against a Sekas cluster")]
 pub struct Command {
-    /// Sets a custom config file
+    /// Read benchmark settings from a TOML file
     #[clap(long, value_name = "FILE")]
-    conf: Option<String>,
+    conf: Option<PathBuf>,
+
+    /// Load the initial dataset or run a workload against it
+    #[clap(long, value_enum, default_value = "run")]
+    phase: Phase,
 }
 
 impl Command {
-    pub fn run(self) {
-        let filter_layer =
-            EnvFilter::try_from_default_env().or_else(|_| EnvFilter::try_new("info")).unwrap();
+    pub fn run(self) -> Result<()> {
+        let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
         tracing_subscriber::fmt()
-            .with_env_filter(filter_layer)
+            .with_env_filter(filter)
             .with_ansi(std::io::stderr().is_terminal())
             .init();
 
-        let cfg = load_config(self).unwrap();
+        let config = Config::read(self.conf.as_deref())?;
+        ensure!(config.threads > 0, "threads must be positive");
+        ensure!(config.workers > 0, "workers must be positive");
+        ensure!(config.report_interval_secs > 0, "report_interval_secs must be positive");
+        ensure!(!config.addrs.is_empty(), "addrs must contain a cluster address");
+        let workload = Workload::new(&config.workload, self.phase, config.operations)?;
 
-        info!("config {:#?}", cfg);
-
-        let runtime = tokio::runtime::Builder::new_multi_thread()
+        tokio::runtime::Builder::new_multi_thread()
             .enable_all()
-            .worker_threads(cfg.num_threads)
-            .build()
-            .unwrap();
+            .worker_threads(config.threads)
+            .build()?
+            .block_on(run_benchmark(config, self.phase, workload))
+    }
+}
 
-        const DEFAULT_TABLE: &str = "BENCH_TABLE";
-        let db = runtime.block_on(async { open_database(&cfg).await }).expect("open database");
-        let co =
-            runtime.block_on(async { open_table(&db, DEFAULT_TABLE).await }).expect("open table");
-        let notifier = ShutdownNotifier::default();
-        let ctx = Context { wait_group: WaitGroup::new(), shutdown: notifier.subscribe(), runtime };
+async fn run_benchmark(config: Config, phase: Phase, workload: Workload) -> Result<()> {
+    let interval = Duration::from_secs(config.report_interval_secs);
+    let seed = config.seed.unwrap_or_else(rand::random);
+    let (db, table) = open_target(&config, phase).await?;
+    let worker_count = (config.workers as u64).min(workload.operations);
+    info!(
+        "{phase:?} on {}.{} with {worker_count} workers and seed {seed}",
+        config.database, config.table
+    );
 
-        let (send, recv) = mpsc::channel();
-        let handle = ctx.runtime.spawn(async move {
-            notifier.ctrl_c().await;
-            info!("receive CTRL-C, exit");
-            send.send(()).unwrap_or_default();
-        });
-
-        let base_seed = cfg.seed.unwrap_or_else(rand::random);
-
-        info!("spawn {} workers with base seed {base_seed}", cfg.worker.num_worker);
-        let report_waiter = spawn_reporter(&ctx, cfg.clone());
-
-        let num_op = cfg.operation / cfg.worker.num_worker;
-        for i in 0..cfg.worker.num_worker {
-            let seed = base_seed + i as u64;
-            spawn_worker(&ctx, cfg.clone(), i, seed, num_op, db.clone(), co.id);
-            if let Some(interval) = cfg.worker.start_intervals
-                && recv.recv_timeout(interval).is_ok()
-            {
-                break;
-            }
-        }
-
-        info!("all workers are spawned, wait ...");
-
-        let wait_group = ctx.wait_group;
-        ctx.runtime.block_on(async move {
-            wait_group.wait().await;
-            handle.abort();
-            report_waiter.wait().await;
+    let workload = Arc::new(workload);
+    let metrics = Arc::new(Metrics::new());
+    let start = metrics.snapshot();
+    let first_tick =
+        Instant::now().checked_add(interval).context("report interval is too large")?;
+    let mut workers = JoinSet::new();
+    for index in 0..worker_count {
+        let indexes = operation_range(workload.operations, worker_count, index);
+        let seed = seed.wrapping_add(index);
+        let (db, workload, metrics) = (db.clone(), workload.clone(), metrics.clone());
+        workers.spawn(async move {
+            worker::run(&db, table, &workload, &metrics, indexes, seed).await;
         });
     }
-}
 
-fn spawn_worker(
-    ctx: &Context,
-    cfg: AppConfig,
-    i: usize,
-    seed: u64,
-    num_op: usize,
-    db: Database,
-    table_id: u64,
-) {
-    debug!("spawn worker {i} with seed {seed}");
-
-    let job = Job::new(db, table_id, seed, num_op, cfg);
-    let shutdown = ctx.shutdown.clone();
-    let wait_group = ctx.wait_group.clone();
-    ctx.runtime.spawn(async move {
-        select! {
-            _ = shutdown => {
-                debug!("worker {i} receives shutdown signal");
-            },
-            _ = worker_main(i, job) => {
-                debug!("worker {i} finish all operations");
+    let mut timer = tokio::time::interval_at(first_tick, interval);
+    timer.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    let mut previous = start.clone();
+    let interrupt = tokio::signal::ctrl_c();
+    tokio::pin!(interrupt);
+    let mut interrupted = false;
+    while !workers.is_empty() {
+        tokio::select! {
+            Some(result) = workers.join_next() => result?,
+            result = &mut interrupt => {
+                result.context("listen for Ctrl-C")?;
+                workers.shutdown().await;
+                interrupted = true;
+            }
+            _ = timer.tick() => {
+                let current = metrics.snapshot();
+                current.display_since(&previous);
+                previous = current;
             }
         }
-        drop(wait_group);
-    });
-}
-
-async fn create_or_open_database(client: &SekasClient, database: &str) -> Result<Database> {
-    match client.create_database(database.to_owned()).await {
-        Ok(db) => Ok(db),
-        Err(AppError::AlreadyExists(_)) => Ok(client.open_database(database.to_owned()).await?),
-        Err(e) => Err(e.into()),
     }
+
+    println!("Benchmark totals");
+    let end = metrics.snapshot();
+    end.display_since(&start);
+    ensure!(!interrupted, "benchmark interrupted");
+    let failures = end.failures();
+    ensure!(failures == 0, "{failures} benchmark operations failed");
+    Ok(())
 }
 
-async fn create_or_open_table(db: &Database, table: &str) -> Result<TableDesc> {
-    match db.create_table(table.to_owned()).await {
-        Ok(co) => Ok(co),
-        Err(AppError::AlreadyExists(_)) => Ok(db.open_table(table.to_owned()).await?),
-        Err(e) => Err(e.into()),
-    }
-}
-
-async fn open_database(cfg: &AppConfig) -> Result<Database> {
-    let opts = ClientOptions {
+async fn open_target(config: &Config, phase: Phase) -> Result<(Database, u64)> {
+    let options = ClientOptions {
         connect_timeout: Some(Duration::from_millis(200)),
         timeout: Some(Duration::from_millis(500)),
     };
-    let client = SekasClient::new(opts, cfg.addrs.clone()).await?;
-    let database = match client.open_database(cfg.database.clone()).await {
-        Ok(db) => db,
-        Err(AppError::NotFound(_)) if cfg.create_if_missing => {
-            create_or_open_database(&client, &cfg.database).await?
-        }
-        Err(e) => {
-            return Err(e.into());
-        }
-    };
-    Ok(database)
-}
-
-async fn open_table(db: &Database, table: &str) -> Result<TableDesc> {
-    let co = match db.open_table(table.to_owned()).await {
-        Ok(co) => co,
-        Err(AppError::NotFound(_)) => create_or_open_table(db, table).await?,
-        Err(e) => {
-            return Err(e.into());
-        }
-    };
-    Ok(co)
-}
-
-fn spawn_reporter(ctx: &Context, cfg: AppConfig) -> WaitGroup {
-    let shutdown = ctx.shutdown.clone();
-    let wait_group = WaitGroup::new();
-    let cloned_wait_group = wait_group.clone();
-    ctx.runtime.spawn(async move {
-        let mut ctx = ReportContext::default();
-        select! {
-            _ = shutdown => {},
-            _ = reporter_main(cfg, &mut ctx) => {},
-        }
-        report::display(&mut ctx);
-        drop(wait_group);
-    });
-    cloned_wait_group
-}
-
-async fn reporter_main(cfg: AppConfig, ctx: &mut ReportContext) {
-    let mut interval = tokio::time::interval(cfg.report_interval);
-    interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
-
-    // The first tick completes immediately
-    interval.tick().await;
-    loop {
-        interval.tick().await;
-        report::display(ctx);
+    let client = SekasClient::new(options, config.addrs.clone()).await?;
+    let database = config.database.clone();
+    let table = config.table.clone();
+    let db = match phase {
+        Phase::Load => match client.create_database(database.clone()).await {
+            Err(AppError::AlreadyExists(_)) => client.open_database(database).await,
+            result => result,
+        },
+        Phase::Run => client.open_database(database).await,
     }
+    .context("open benchmark database")?;
+    let table = match phase {
+        Phase::Load => match db.create_table(table.clone()).await {
+            Err(AppError::AlreadyExists(_)) => db.open_table(table).await,
+            result => result,
+        },
+        Phase::Run => db.open_table(table).await,
+    }
+    .context("open benchmark table")?;
+    Ok((db, table.id))
 }
 
-fn load_config(cmd: Command) -> Result<AppConfig> {
-    use ::config::{Config, Environment, File};
+fn operation_range(total: u64, workers: u64, worker: u64) -> Range<u64> {
+    let share = total / workers;
+    let remainder = total % workers;
+    let start = worker * share + worker.min(remainder);
+    start..start + share + u64::from(worker < remainder)
+}
 
-    let mut builder = Config::builder()
-        .add_source(Config::try_from(&AppConfig::default()).unwrap())
-        .set_default("addrs", vec!["127.0.0.1:21805"])?;
-    if let Some(conf) = cmd.conf {
-        builder = builder.add_source(File::with_name(&conf));
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn worker_ranges_cover_remainder() {
+        assert_eq!(operation_range(10, 3, 0), 0..4);
+        assert_eq!(operation_range(10, 3, 1), 4..7);
+        assert_eq!(operation_range(10, 3, 2), 7..10);
     }
-    let cfg = builder
-        .add_source(
-            Environment::with_prefix("EB").try_parsing(true).separator("_").list_separator(" "),
-        )
-        .build()?;
-
-    Ok(cfg.try_deserialize()?)
 }

@@ -33,6 +33,18 @@ cargo run -- shell
 
 Run and enjoy it.
 
+## Benchmarks
+
+With Sekas running, load and run a preset from the repository root.
+
+```sh
+workload=conf/workloads/read-heavy-uniform.toml
+cargo run --release -- bench --conf "$workload" --phase load
+cargo run --release -- bench --conf "$workload" --phase run
+```
+
+For the preset list and configuration options, see the [benchmark workload guide](conf/workloads/README.md).
+
 ## Contributing
 
 Thanks for your help in improving the project! We have a [contributing guide](CONTRIBUTING.md) to help you get involved in the Sekas project.
