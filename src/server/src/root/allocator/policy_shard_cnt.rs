@@ -13,16 +13,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::cmp::Ordering;
+use std::cmp::Reverse;
 use std::sync::Arc;
 
 use log::debug;
 use sekas_api::server::v1::{GroupDesc, ShardDesc};
 
-use super::{AllocSource, ReallocateShard, ShardAction};
+use super::{
+    AllocSource, BalanceDecision, BalanceStatus, CountBalance, ReallocateShard, ShardAction,
+};
 use crate::Result;
 use crate::constants::ROOT_GROUP_ID;
-use crate::root::allocator::BalanceStatus;
 
 pub struct ShardCountPolicy<T: AllocSource> {
     alloc_source: Arc<T>,
@@ -38,91 +39,60 @@ impl<T: AllocSource> ShardCountPolicy<T> {
         Ok(select_groups_for_shard(groups, n, required_replicas))
     }
 
-    pub fn compute_balance(&self) -> Result<Vec<ShardAction>> {
-        let mean_cnt = self.mean_shard_count();
-        let candidate_groups = self.current_user_groups();
-
-        let ranked_candidates = Self::rank_group_for_balance(candidate_groups, mean_cnt);
+    pub fn compute_balance(&self) -> (Vec<ShardAction>, BalanceDecision) {
+        let mut candidates: Vec<_> = self
+            .current_user_groups()
+            .into_iter()
+            .map(|group| {
+                let count = group.shards.len() as u64;
+                (group, count)
+            })
+            .collect();
+        let balance = CountBalance::new(&candidates, |_| 0.5);
+        candidates.sort_by_key(|(_, count)| Reverse(*count));
         debug!(
-            "group ranked by shard count. mean={mean_cnt}, scored_nodes={:?}",
-            ranked_candidates
+            "group ranked by shard count. mean={}, scored_groups={:?}",
+            balance.mean,
+            candidates
                 .iter()
-                .map(|(g, s)| format!("{}-{}({:?})", g.id, g.shards.len(), s))
+                .map(|(g, count)| (g.id, count, balance.classify(*count)))
                 .collect::<Vec<_>>(),
         );
-        for (src_group, status) in &ranked_candidates {
-            if *status != BalanceStatus::Overfull {
+        for (src_group, count) in &candidates {
+            if balance.classify(*count) != BalanceStatus::Overfull {
                 break;
             }
-            if let Some(action) = self.rebalance_target(src_group, &ranked_candidates) {
-                return Ok(vec![action]);
+            if let Some(action) = self.rebalance_target(src_group, &candidates, &balance) {
+                let decision = BalanceDecision::ActionNeeded(format!(
+                    "move shard {}: g{} -> g{}",
+                    action.shard, action.source_group, action.target_group
+                ));
+                return (vec![ShardAction::Migrate(action)], decision);
             }
         }
 
-        Ok(vec![])
-    }
-
-    fn mean_shard_count(&self) -> f64 {
-        let groups = self.current_user_groups();
-        let total_shards = groups.iter().map(|n| n.shards.len() as u64).sum::<u64>() as f64;
-        total_shards / (groups.len() as f64)
-    }
-
-    fn rank_group_for_balance(
-        gs: Vec<GroupDesc>,
-        mean_cnt: f64,
-    ) -> Vec<(GroupDesc, BalanceStatus)> {
-        let mut with_status = gs
-            .into_iter()
-            .map(|n| {
-                let shard_num = n.shards.len() as f64;
-                let s = Self::group_balance_state(shard_num, mean_cnt);
-                (n, s)
-            })
-            .collect::<Vec<(GroupDesc, BalanceStatus)>>();
-        with_status.sort_by(|n1, n2| {
-            if (n2.1 == BalanceStatus::Overfull) && (n1.1 != BalanceStatus::Overfull) {
-                return Ordering::Greater;
-            }
-            if (n2.1 == BalanceStatus::Underfull) && (n1.1 != BalanceStatus::Underfull) {
-                return Ordering::Less;
-            }
-            n2.0.shards.len().cmp(&n1.0.shards.len())
-        });
-        with_status
-    }
-
-    fn group_balance_state(shard_num: f64, mean: f64) -> BalanceStatus {
-        let delta = 0.5;
-        if shard_num > mean + delta {
-            return BalanceStatus::Overfull;
-        }
-        if shard_num < mean - delta {
-            return BalanceStatus::Underfull;
-        }
-        BalanceStatus::Balanced
+        (vec![], balance.no_action("user_groups", &candidates))
     }
 
     fn rebalance_target(
         &self,
         source_group: &GroupDesc,
-        ranked_candidates: &[(GroupDesc, BalanceStatus)],
-    ) -> Option<ShardAction> {
-        let mean = self.mean_shard_count();
-        for (target, state) in ranked_candidates.iter().rev() {
-            if *state != BalanceStatus::Underfull {
+        ranked_candidates: &[(GroupDesc, u64)],
+        balance: &CountBalance,
+    ) -> Option<ReallocateShard> {
+        for (target, count) in ranked_candidates.iter().rev() {
+            if balance.classify(*count) != BalanceStatus::Underfull {
                 break;
             }
-            let sim_count = (target.shards.len() + 1) as f64;
-            if Self::group_balance_state(sim_count, mean) == BalanceStatus::Overfull {
+            if balance.classify(count + 1) == BalanceStatus::Overfull {
                 continue;
             }
             let source_shard = self.preferred_remove_shard(source_group, target)?;
-            return Some(ShardAction::Migrate(ReallocateShard {
+            return Some(ReallocateShard {
                 shard: source_shard.id,
                 source_group: source_group.id,
                 target_group: target.id,
-            }));
+            });
         }
         debug!("skip balance group:{} due to no suitable target", source_group.id);
         None

@@ -144,6 +144,9 @@ SHOW <property:ident> [FROM <name:ident>]
     - replicas FROM <group-id>
     - shards FROM <group-id>
     - nodes
+    - balancer         Last decision and inputs for each root balancing policy
+    - scheduler        Root scheduler summary and background job count
+    - scheduler_tasks  Outstanding root reconcile tasks
 
 Note:
     The ident accepts characters [a-zA-Z0-9_-].

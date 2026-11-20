@@ -315,6 +315,7 @@ impl Root {
             }
         });
 
+        self.scheduler.reset_status();
         {
             let mut core = self.shared.core.lock().unwrap();
             *core = Some(root_core.clone());

@@ -13,7 +13,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::cmp::Ordering;
+use std::cmp::Reverse;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -21,23 +21,13 @@ use log::debug;
 use sekas_api::server::v1::{NodeDesc, RaftRole, ReplicaDesc, ReplicaRole};
 
 use super::source::NodeFilter;
-use super::{AllocSource, BalanceStatus, LeaderAction, TransferLeader};
-use crate::Result;
+use super::{
+    AllocSource, BalanceDecision, BalanceStatus, CountBalance, LeaderAction, TransferLeader,
+};
 use crate::constants::ROOT_GROUP_ID;
 
 pub struct LeaderCountPolicy<T: AllocSource> {
     alloc_source: Arc<T>,
-}
-
-enum TransferDescision {
-    TransferOnly {
-        group: u64,
-        src_replica: u64,
-        target_replica: u64,
-        src_node: u64,
-        target_node: u64,
-    },
-    // TODO: add create then transfer option?
 }
 
 impl<T: AllocSource> LeaderCountPolicy<T> {
@@ -45,52 +35,47 @@ impl<T: AllocSource> LeaderCountPolicy<T> {
         Self { alloc_source }
     }
 
-    pub fn compute_balance(&self) -> Result<LeaderAction> {
-        let mean = self.mean_leader_count(NodeFilter::Schedulable);
-        let candidate_nodes = self.alloc_source.nodes(NodeFilter::Schedulable);
-        let ranked_nodes = Self::rank_nodes_for_leader(candidate_nodes, mean);
+    pub fn compute_balance(&self) -> (LeaderAction, BalanceDecision) {
+        let mut candidates: Vec<_> = self
+            .alloc_source
+            .nodes(NodeFilter::Schedulable)
+            .into_iter()
+            .map(|node| {
+                let count = node.capacity.as_ref().unwrap().leader_count;
+                (node, count)
+            })
+            .collect();
+        let balance = CountBalance::new(&candidates, |_| 0.5);
+        candidates.sort_by_key(|(_, count)| Reverse(*count));
         debug!(
-            "node ranked by leader count. mean={mean}, scored_nodes={:?}",
-            ranked_nodes
+            "node ranked by leader count. mean={}, scored_nodes={:?}",
+            balance.mean,
+            candidates
                 .iter()
-                .map(|(n, s)| format!(
-                    "{}-{}({:?})",
-                    n.id,
-                    n.capacity.as_ref().unwrap().leader_count,
-                    s
-                ))
+                .map(|(n, count)| (n.id, count, balance.classify(*count)))
                 .collect::<Vec<_>>(),
         );
-        for (n, _) in ranked_nodes.iter().filter(|(_, s)| *s == BalanceStatus::Overfull) {
-            if let Some(descision) = self.try_descrease_node_leader_count(n, &ranked_nodes, mean)? {
-                match descision {
-                    TransferDescision::TransferOnly {
-                        group,
-                        src_replica,
-                        target_replica,
-                        src_node,
-                        target_node,
-                    } => {
-                        return Ok(LeaderAction::Shed(TransferLeader {
-                            group,
-                            src_node,
-                            src_replica,
-                            target_node,
-                            target_replica,
-                        }));
-                    }
-                }
+        for (n, count) in &candidates {
+            if balance.classify(*count) != BalanceStatus::Overfull {
+                break;
+            }
+            if let Some(action) = self.try_transfer_leader(n, &candidates, &balance) {
+                let decision = BalanceDecision::ActionNeeded(format!(
+                    "transfer leader of group {}: n{} -> n{}",
+                    action.group, action.src_node, action.target_node
+                ));
+                return (LeaderAction::Shed(action), decision);
             }
         }
-        Ok(LeaderAction::Noop)
+        (LeaderAction::Noop, balance.no_action("schedulable_nodes", &candidates))
     }
 
-    fn try_descrease_node_leader_count(
+    fn try_transfer_leader(
         &self,
         n: &NodeDesc,
-        ranked_nodes: &[(NodeDesc, BalanceStatus)],
-        mean: f64,
-    ) -> Result<Option<TransferDescision>> {
+        ranked_nodes: &[(NodeDesc, u64)],
+        balance: &CountBalance,
+    ) -> Option<TransferLeader> {
         let node_replicas = self.alloc_source.node_replicas(&n.id);
         let groups = self.alloc_source.groups();
         for (replica, group_id) in node_replicas
@@ -122,14 +107,12 @@ impl<T: AllocSource> LeaderCountPolicy<T> {
                 .map(|r| (r.node_id, r.to_owned()))
                 .collect::<HashMap<u64, ReplicaDesc>>();
 
-            for target_node in ranked_nodes
+            for (target_node, count) in ranked_nodes
                 .iter()
                 .rev()
-                .filter(|(_, s)| *s == BalanceStatus::Underfull)
-                .map(|e| &e.0)
+                .take_while(|(_, count)| balance.classify(*count) == BalanceStatus::Underfull)
             {
-                let sim_count = (target_node.capacity.as_ref().unwrap().leader_count + 1) as f64;
-                if Self::leader_balance_state(sim_count, mean) == BalanceStatus::Overfull {
+                if balance.classify(count + 1) == BalanceStatus::Overfull {
                     continue;
                 }
                 let target_replica = exist_replica_in_nodes.get(&target_node.id);
@@ -137,58 +120,15 @@ impl<T: AllocSource> LeaderCountPolicy<T> {
                     continue;
                 }
                 let target_replica = target_replica.unwrap();
-                return Ok(Some(TransferDescision::TransferOnly {
+                return Some(TransferLeader {
                     group: group_id.to_owned(),
                     src_replica: replica.id,
                     target_replica: target_replica.id,
                     src_node: replica.node_id,
                     target_node: target_replica.node_id,
-                }));
+                });
             }
         }
-        Ok(None)
-    }
-
-    fn rank_nodes_for_leader(ns: Vec<NodeDesc>, mean_cnt: f64) -> Vec<(NodeDesc, BalanceStatus)> {
-        let mut with_status = ns
-            .into_iter()
-            .map(|n| {
-                let leader_num = n.capacity.as_ref().unwrap().leader_count as f64;
-                let s = Self::leader_balance_state(leader_num, mean_cnt);
-                (n, s)
-            })
-            .collect::<Vec<(NodeDesc, BalanceStatus)>>();
-        with_status.sort_by(|n1, n2| {
-            if (n2.1 == BalanceStatus::Overfull) && (n1.1 != BalanceStatus::Overfull) {
-                return Ordering::Greater;
-            }
-            if (n2.1 == BalanceStatus::Underfull) && (n1.1 != BalanceStatus::Underfull) {
-                return Ordering::Less;
-            }
-            n2.0.capacity
-                .as_ref()
-                .unwrap()
-                .leader_count
-                .cmp(&n1.0.capacity.as_ref().unwrap().leader_count)
-        });
-        with_status
-    }
-
-    fn leader_balance_state(replica_num: f64, mean: f64) -> BalanceStatus {
-        let delta = 0.5;
-        if replica_num > mean + delta {
-            return BalanceStatus::Overfull;
-        }
-        if replica_num < mean - delta {
-            return BalanceStatus::Underfull;
-        }
-        BalanceStatus::Balanced
-    }
-
-    fn mean_leader_count(&self, filter: NodeFilter) -> f64 {
-        let nodes = self.alloc_source.nodes(filter);
-        let total_leaders =
-            nodes.iter().map(|n| n.capacity.as_ref().unwrap().leader_count).sum::<u64>() as f64;
-        total_leaders / (nodes.len() as f64)
+        None
     }
 }

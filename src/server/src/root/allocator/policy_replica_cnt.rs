@@ -12,18 +12,19 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::cmp::Ordering;
+use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use sekas_api::server::v1::{NodeDesc, ReplicaDesc};
 
 use super::source::NodeFilter;
-use super::{AllocSource, ReallocateReplica, ReplicaAction};
+use super::{
+    AllocSource, BalanceDecision, BalanceStatus, CountBalance, ReallocateReplica, ReplicaAction,
+};
 use crate::Result;
 use crate::constants::{REPLICA_PER_GROUP, ROOT_GROUP_ID};
 use crate::root::ClusterStats;
-use crate::root::allocator::BalanceStatus;
 
 pub struct ReplicaCountPolicy<T: AllocSource> {
     alloc_source: Arc<T>,
@@ -53,34 +54,45 @@ impl<T: AllocSource> ReplicaCountPolicy<T> {
         Ok(candidate_nodes.into_iter().take(wanted_count).collect())
     }
 
-    pub fn compute_balance(&self) -> Result<Vec<ReplicaAction>> {
-        let mean_cnt = self.mean_replica_count(NodeFilter::Schedulable);
-        let candidate_nodes = self.alloc_source.nodes(NodeFilter::Schedulable);
-
-        let ranked_candidates = self.rank_node_for_balance(candidate_nodes, mean_cnt);
+    pub fn compute_balance(&self) -> (Vec<ReplicaAction>, BalanceDecision) {
+        let mut candidates: Vec<_> = self
+            .alloc_source
+            .nodes(NodeFilter::Schedulable)
+            .into_iter()
+            .map(|node| {
+                let count = self.node_replica_count(&node);
+                (node, count)
+            })
+            .collect();
+        let balance = CountBalance::new(&candidates, |mean| (mean * 0.05).max(2.0));
+        candidates.sort_by_key(|(_, count)| Reverse(*count));
         tracing::debug!(
-            scored_nodes = ?ranked_candidates.iter().map(|(n, s)| format!("{}-{}({:?})", n.id, self.node_replica_count(n), s)).collect::<Vec<_>>(),
-            mean = mean_cnt,
+            scored_nodes = ?candidates.iter().map(|(n, count)| (n.id, count, balance.classify(*count))).collect::<Vec<_>>(),
+            mean = balance.mean,
             "node ranked by replica count",
         );
-        for (src_node, status) in &ranked_candidates {
-            if *status != BalanceStatus::Overfull {
+        for (src_node, count) in &candidates {
+            if balance.classify(*count) != BalanceStatus::Overfull {
                 break;
             }
-            if let Some(action) = self.rebalance_target(src_node, &ranked_candidates, mean_cnt) {
-                return Ok(vec![action]);
+            if let Some(action) = self.rebalance_target(src_node, &candidates, &balance) {
+                let decision = BalanceDecision::ActionNeeded(format!(
+                    "move replica {} of group {}: n{} -> n{}",
+                    action.source_replica, action.group, action.source_node, action.target_node.id
+                ));
+                return (vec![ReplicaAction::Migrate(action)], decision);
             }
         }
 
-        Ok(Vec::new())
+        (Vec::new(), balance.no_action("schedulable_nodes", &candidates))
     }
 
     fn rebalance_target(
         &self,
         src: &NodeDesc,
-        ranked_nodes: &[(NodeDesc, BalanceStatus)],
-        mean: f64,
-    ) -> Option<ReplicaAction> {
+        ranked_nodes: &[(NodeDesc, u64)],
+        balance: &CountBalance,
+    ) -> Option<ReallocateReplica> {
         let mut groups = self
             .alloc_source
             .groups()
@@ -97,21 +109,20 @@ impl<T: AllocSource> ReplicaCountPolicy<T> {
             }
         }
 
-        for (target, state) in ranked_nodes.iter().rev() {
-            if *state != BalanceStatus::Underfull {
+        for (target, count) in ranked_nodes.iter().rev() {
+            if balance.classify(*count) != BalanceStatus::Underfull {
                 break;
             }
-            let sim_count = (self.node_replica_count(target) + 1) as f64;
-            if Self::node_balance_state(sim_count, mean) == BalanceStatus::Overfull {
+            if balance.classify(count + 1) == BalanceStatus::Overfull {
                 continue;
             }
             let (source_replica, group) = self.preferred_remove_replica(src, target, &groups)?;
-            return Some(ReplicaAction::Migrate(ReallocateReplica {
+            return Some(ReallocateReplica {
                 group,
                 source_node: source_replica.node_id,
                 source_replica: source_replica.id,
                 target_node: target.to_owned(),
-            }));
+            });
         }
         None
     }
@@ -137,52 +148,6 @@ impl<T: AllocSource> ReplicaCountPolicy<T> {
             }
             false
         })
-    }
-
-    fn mean_replica_count(&self, filter: NodeFilter) -> f64 {
-        let nodes = self.alloc_source.nodes(filter);
-        let total_replicas = nodes.iter().map(|n| self.node_replica_count(n)).sum::<u64>() as f64;
-        total_replicas / (nodes.len() as f64)
-    }
-
-    fn rank_node_for_balance(
-        &self,
-        ns: Vec<NodeDesc>,
-        mean_cnt: f64,
-    ) -> Vec<(NodeDesc, BalanceStatus)> {
-        let mut with_status = ns
-            .into_iter()
-            .map(|n| {
-                let replica_num = self.node_replica_count(&n) as f64;
-                let s = Self::node_balance_state(replica_num, mean_cnt);
-                (n, s)
-            })
-            .collect::<Vec<(NodeDesc, BalanceStatus)>>();
-        with_status.sort_by(|n1, n2| {
-            if (n2.1 == BalanceStatus::Overfull) && (n1.1 != BalanceStatus::Overfull) {
-                return Ordering::Greater;
-            }
-            if (n2.1 == BalanceStatus::Underfull) && (n1.1 != BalanceStatus::Underfull) {
-                return Ordering::Less;
-            }
-            let n2_cnt = self.node_replica_count(&n2.0);
-            let n1_cnt = self.node_replica_count(&n1.0);
-            n2_cnt.cmp(&n1_cnt)
-        });
-        with_status
-    }
-
-    fn node_balance_state(replica_num: f64, mean: f64) -> BalanceStatus {
-        const THRESHOLD_FRACTION: f64 = 0.05;
-        const MIN_RANGE_DELTA: f64 = 2.0;
-        let delta = f64::max(mean * THRESHOLD_FRACTION, MIN_RANGE_DELTA);
-        if replica_num > mean + delta {
-            return BalanceStatus::Overfull;
-        }
-        if replica_num < mean - delta {
-            return BalanceStatus::Underfull;
-        }
-        BalanceStatus::Balanced
     }
 
     fn node_alloc_score(&self, n: &NodeDesc) -> f64 {

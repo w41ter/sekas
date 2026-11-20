@@ -13,7 +13,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+mod status;
 mod task;
+
+use std::sync::Mutex as SyncMutex;
 
 use log::{debug, error, info, warn};
 use prometheus::HistogramTimer;
@@ -21,6 +24,7 @@ use sekas_api::server::v1::*;
 use sekas_rock::time::timestamp_millis;
 use tokio::sync::Mutex;
 
+use self::status::{BalanceSnapshot, Policy, QueueStatus};
 use self::task::reconcile_task::Task;
 pub use self::task::*;
 use super::allocator::*;
@@ -29,7 +33,15 @@ use crate::Error;
 
 pub struct ReconcileScheduler {
     ctx: ScheduleContext,
-    tasks: Mutex<LinkedList<ReconcileTask>>,
+    tasks: Mutex<LinkedList<(u64, ReconcileTask)>>,
+    balance: SyncMutex<BalanceSnapshot>,
+    // Keep status readable while the execution queue is held across a task RPC.
+    queue_status: SyncMutex<QueueStatus>,
+}
+
+enum BalanceActions {
+    CreateGroups(usize),
+    Move { replicas: Vec<ReplicaAction>, leaders: Vec<LeaderAction>, shards: Vec<ShardAction> },
 }
 
 pub struct ScheduleContext {
@@ -43,7 +55,30 @@ pub struct ScheduleContext {
 
 impl ReconcileScheduler {
     pub fn new(ctx: ScheduleContext) -> Self {
-        Self { ctx, tasks: Default::default() }
+        let balance = BalanceSnapshot::new(&ctx.cfg);
+        Self {
+            ctx,
+            tasks: Default::default(),
+            balance: balance.into(),
+            queue_status: Default::default(),
+        }
+    }
+
+    pub(super) fn reset_status(&self) {
+        *self.balance.lock().unwrap() = BalanceSnapshot::new(&self.ctx.cfg);
+        self.queue_status.lock().unwrap().last_poll_at = None;
+    }
+
+    pub(super) fn balance_status(&self) -> BalanceSnapshot {
+        self.balance.lock().unwrap().clone()
+    }
+
+    pub(super) fn scheduler_status(&self, now: u64) -> status::SchedulerSummary {
+        self.queue_status.lock().unwrap().summary(now)
+    }
+
+    pub(super) fn task_statuses(&self) -> Vec<status::TaskStatus> {
+        self.queue_status.lock().unwrap().tasks.values().cloned().collect()
     }
 
     pub async fn poll_and_schedule(&self) -> Duration {
@@ -52,6 +87,7 @@ impl ReconcileScheduler {
             let _step_timer = metrics::RECONCILE_STEP_DURATION_SECONDS.start_timer();
             while self.advance_tasks().await {}
         }
+        self.queue_status.lock().unwrap().last_poll_at = Some(timestamp_millis());
         Duration::from_secs(self.ctx.cfg.schedule_interval_sec)
     }
 
@@ -61,8 +97,9 @@ impl ReconcileScheduler {
 
     pub async fn setup_task(&self, task: ReconcileTask) {
         let mut tasks = self.tasks.lock().await;
-        tasks.push_back(task.to_owned());
-        info!("setup new reconcile task. len={}, task={:?}", tasks.len(), task);
+        let id = self.queue_status.lock().unwrap().insert(&task);
+        info!("setup new reconcile task. len={}, task={:?}", tasks.len() + 1, task);
+        tasks.push_back((id, task));
     }
 
     async fn is_empty(&self) -> bool {
@@ -189,53 +226,48 @@ impl ReconcileScheduler {
 
 impl ReconcileScheduler {
     pub async fn need_reconcile(&self) -> Result<bool> {
-        let group_action = self.ctx.alloc.compute_group_action().await?;
+        self.ctx.alloc.refresh_for_balance().await?;
+        let (group_action, _) = self.ctx.alloc.compute_group_action();
         if matches!(group_action, GroupAction::Add(_)) {
             return Ok(true);
         }
 
-        let actions = self.comput_replica_role_action().await?;
-        if !actions.is_empty() {
+        let (replica_actions, _) = self.compute_replica_actions();
+        let (leader_actions, _) = self.compute_leader_actions();
+        if !replica_actions.is_empty() || !leader_actions.is_empty() {
             return Ok(true);
         }
 
-        let shard_actions = self.ctx.alloc.compute_shard_action().await?;
-        if !shard_actions.is_empty() {
-            return Ok(true);
-        }
-        Ok(false)
+        let (shard_actions, _) = self.ctx.alloc.compute_shard_action();
+        Ok(!shard_actions.is_empty())
     }
 
-    pub async fn generate_schedule_task(&self) -> Result<bool> {
+    async fn generate_schedule_task(&self) -> Result<bool> {
         let _timer = super::metrics::RECONCILE_CHECK_DURATION_SECONDS.start_timer();
-        let group_action = self.ctx.alloc.compute_group_action().await?;
-        if let GroupAction::Add(cnt) = group_action {
-            metrics::RECONCILE_ALREADY_BALANCED_INFO.cluster_groups.set(0);
-            for _ in 0..cnt {
-                self.ctx.bg_jobs.submit_create_group_job().await?;
-            }
-            return Ok(true);
-        }
-        metrics::RECONCILE_ALREADY_BALANCED_INFO.cluster_groups.set(1);
+        let mut balance = BalanceSnapshot::new(&self.ctx.cfg);
+        let actions = self.evaluate_balance(&mut balance).await;
+        *self.balance.lock().unwrap() = balance;
 
-        let ractions = self.comput_replica_role_action().await?;
-        let sactions = self.ctx.alloc.compute_shard_action().await?;
-        for action in ractions {
-            match action {
-                ReplicaRoleAction::Replica(ReplicaAction::Migrate(action)) => {
-                    self.sched_migrate_replica_task(action).await
+        let (replica_actions, leader_actions, shard_actions) = match actions? {
+            BalanceActions::CreateGroups(count) => {
+                for _ in 0..count {
+                    self.ctx.bg_jobs.submit_create_group_job().await?;
                 }
-                ReplicaRoleAction::Leader(LeaderAction::Shed(action)) => {
-                    self.sched_transfer_leader_task(action).await
-                }
-                _ => {}
+                return Ok(true);
+            }
+            BalanceActions::Move { replicas, leaders, shards } => (replicas, leaders, shards),
+        };
+
+        for ReplicaAction::Migrate(action) in replica_actions {
+            self.sched_migrate_replica_task(action).await;
+        }
+        for action in leader_actions {
+            if let LeaderAction::Shed(action) = action {
+                self.sched_transfer_leader_task(action).await;
             }
         }
-
-        for action in sactions {
-            match action {
-                ShardAction::Migrate(action) => self.sched_migrate_shard_task(action).await,
-            }
+        for ShardAction::Migrate(action) in shard_actions {
+            self.sched_migrate_shard_task(action).await;
         }
 
         if self.ctx.cfg.enable_auto_shard_split {
@@ -257,27 +289,43 @@ impl ReconcileScheduler {
         Ok(!self.is_empty().await)
     }
 
-    pub async fn comput_replica_role_action(&self) -> Result<Vec<ReplicaRoleAction>> {
-        let mut actions = Vec::new();
-        let replica_actions = self.ctx.alloc.compute_replica_action().await?;
-        if replica_actions.is_empty() {
-            metrics::RECONCILE_ALREADY_BALANCED_INFO.node_replica_count.set(1);
-        } else {
-            metrics::RECONCILE_ALREADY_BALANCED_INFO.node_replica_count.set(0);
+    async fn evaluate_balance(&self, balance: &mut BalanceSnapshot) -> Result<BalanceActions> {
+        if let Err(err) = self.ctx.alloc.refresh_for_balance().await {
+            balance.record_refresh_error(&err);
+            return Err(err);
         }
-        actions.extend_from_slice(
-            &replica_actions.iter().cloned().map(ReplicaRoleAction::Replica).collect::<Vec<_>>(),
-        );
-        let leader_actions = self.ctx.alloc.compute_leader_action().await?;
-        if leader_actions.is_empty() {
-            metrics::RECONCILE_ALREADY_BALANCED_INFO.node_leader_count.set(1);
-        } else {
-            metrics::RECONCILE_ALREADY_BALANCED_INFO.node_leader_count.set(0);
+        let (group_action, decision) = self.ctx.alloc.compute_group_action();
+        balance.record(Policy::GroupCount, decision);
+        if let GroupAction::Add(count) = group_action {
+            metrics::RECONCILE_ALREADY_BALANCED_INFO.cluster_groups.set(0);
+            balance.defer("group creation takes priority");
+            return Ok(BalanceActions::CreateGroups(count));
         }
-        actions.extend_from_slice(
-            &leader_actions.iter().cloned().map(ReplicaRoleAction::Leader).collect::<Vec<_>>(),
-        );
-        Ok(actions)
+        metrics::RECONCILE_ALREADY_BALANCED_INFO.cluster_groups.set(1);
+
+        let (replicas, decision) = self.compute_replica_actions();
+        balance.record(Policy::ReplicaCount, decision);
+        let (leaders, decision) = self.compute_leader_actions();
+        balance.record(Policy::LeaderCount, decision);
+        let (shards, decision) = self.ctx.alloc.compute_shard_action();
+        balance.record(Policy::ShardCount, decision);
+        Ok(BalanceActions::Move { replicas, leaders, shards })
+    }
+
+    fn compute_replica_actions(&self) -> (Vec<ReplicaAction>, BalanceDecision) {
+        let (actions, decision) = self.ctx.alloc.compute_replica_action();
+        metrics::RECONCILE_ALREADY_BALANCED_INFO
+            .node_replica_count
+            .set(i64::from(actions.is_empty()));
+        (actions, decision)
+    }
+
+    fn compute_leader_actions(&self) -> (Vec<LeaderAction>, BalanceDecision) {
+        let (actions, decision) = self.ctx.alloc.compute_leader_action();
+        metrics::RECONCILE_ALREADY_BALANCED_INFO
+            .node_leader_count
+            .set(i64::from(actions.is_empty()));
+        (actions, decision)
     }
 }
 
@@ -287,34 +335,39 @@ impl ReconcileScheduler {
         metrics::RECONCILE_SCHEDULER_TASK_QUEUE_SIZE.set(tasks.len() as i64);
         let mut immediately_next = false;
         let mut cursor = tasks.cursor_front_mut();
-        while let Some(task) = cursor.current() {
+        while let Some((id, task)) = cursor.current() {
             if timestamp_millis() < task.fire_at {
                 cursor.move_next();
                 continue;
             }
 
+            let id = *id;
+            self.queue_status.lock().unwrap().start_attempt(id);
             let _timer = Self::record_exec(task);
             let sched_result = self.ctx.handle_task(task).await;
             let retry_at = timestamp_millis();
             match sched_result {
                 Ok(result) if result.ack => {
                     immediately_next |= result.immediately_next;
+                    self.queue_status.lock().unwrap().tasks.remove(&id);
                     cursor.remove_current();
                 }
                 Ok(result) => {
                     Self::record_retry(task);
                     task.defer_retry(retry_at, result.delay);
+                    self.queue_status.lock().unwrap().finish_attempt(id, task);
                     cursor.move_next();
                 }
                 Err(_) => {
                     Self::record_retry(task);
                     task.defer_retry(retry_at, None);
+                    self.queue_status.lock().unwrap().finish_attempt(id, task);
                     cursor.move_next();
                 }
             }
         }
         // A queue containing only deferred tasks must return to the timed poll.
-        immediately_next && tasks.iter().any(|task| task.fire_at <= timestamp_millis())
+        immediately_next && tasks.iter().any(|(_, task)| task.fire_at <= timestamp_millis())
     }
 
     fn record_exec(task: &mut ReconcileTask) -> HistogramTimer {
@@ -1178,16 +1231,19 @@ mod tests {
         let root = super::Root::new(transport, &crate::serverpb::v1::NodeIdent::default(), cfg);
         let scheduler = &root.scheduler;
         scheduler.sched_split_shard_task(3, 1028).await;
+        assert_eq!(scheduler.scheduler_status(super::timestamp_millis()).ready, 1);
         // This root has no leadership/schema, so the real handler fails.
         let before_retry = super::timestamp_millis();
         assert!(!scheduler.advance_tasks().await);
         {
             let mut tasks = scheduler.tasks.lock().await;
-            let task = tasks.front_mut().unwrap();
+            let (id, task) = tasks.front_mut().unwrap();
             assert_eq!(task.retry_count, 1);
             assert!(task.fire_at >= before_retry + 1000);
             task.fire_at = super::timestamp_millis() + 60000;
+            scheduler.queue_status.lock().unwrap().finish_attempt(*id, task);
         }
+        assert_eq!(scheduler.scheduler_status(super::timestamp_millis()).waiting, 1);
         tokio::time::timeout(super::Duration::from_millis(100), async {
             while scheduler.advance_tasks().await {}
         })
@@ -1195,16 +1251,22 @@ mod tests {
         .unwrap();
         {
             let mut tasks = scheduler.tasks.lock().await;
-            let task = tasks.front_mut().unwrap();
+            let (id, task) = tasks.front_mut().unwrap();
             assert_eq!(task.retry_count, 1);
             task.fire_at = 0;
+            scheduler.queue_status.lock().unwrap().finish_attempt(*id, task);
         }
         let before_retry = super::timestamp_millis();
         assert!(!scheduler.advance_tasks().await);
         let tasks = scheduler.tasks.lock().await;
-        let task = tasks.front().unwrap();
+        let (_, task) = tasks.front().unwrap();
         assert_eq!(task.retry_count, 2);
         assert!(task.fire_at >= before_retry + 2000);
+        let status = &scheduler.task_statuses()[0];
+        assert_eq!(status.kind, "split_shard");
+        assert_eq!(status.target, "group 3, shard 1028");
+        assert_eq!(status.retry_count, task.retry_count);
+        assert_eq!(status.fire_at, task.fire_at);
     }
 
     #[test]

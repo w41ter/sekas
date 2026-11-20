@@ -56,7 +56,7 @@ fn sim_boostrap_join_node_balance() {
             node_id: 1,
         }]);
 
-        let act = a.compute_group_action().await.unwrap();
+        let act = a.compute_group_action().0;
         assert!(matches!(act, GroupAction::Noop));
         p.display();
 
@@ -122,7 +122,7 @@ fn sim_boostrap_join_node_balance() {
         let mut group_id_gen = 2;
         let mut replica_id_gen = 4;
 
-        let act = a.compute_group_action().await.unwrap();
+        let act = a.compute_group_action().0;
         match act {
             GroupAction::Add(n) => {
                 assert_eq!(n, 5); // Six CPUs and one existing group.
@@ -177,9 +177,9 @@ fn sim_boostrap_join_node_balance() {
             _ => unreachable!(),
         }
         println!("4. group alloc works and group & replicas balanced");
-        let act = a.compute_group_action().await.unwrap();
+        let act = a.compute_group_action().0;
         assert!(matches!(act, GroupAction::Noop));
-        let ract = a.compute_replica_action().await.unwrap();
+        let ract = a.compute_replica_action().0;
         assert!(ract.is_empty());
         p.display();
 
@@ -203,7 +203,7 @@ fn sim_boostrap_join_node_balance() {
         p.display();
 
         println!("7. balance group for new node");
-        let act = a.compute_group_action().await.unwrap();
+        let act = a.compute_group_action().0;
         match act {
             GroupAction::Add(n) => {
                 assert_eq!(n, 2); // The new node adds two CPUs.
@@ -259,13 +259,13 @@ fn sim_boostrap_join_node_balance() {
         }
 
         // cluster group balanced.
-        let act = a.compute_group_action().await.unwrap();
+        let act = a.compute_group_action().0;
         assert!(matches!(act, GroupAction::Noop));
         p.display();
 
         println!("8. balance replica between nodes");
         loop {
-            let racts = a.compute_replica_action().await.unwrap();
+            let racts = a.compute_replica_action().0;
             if racts.is_empty() {
                 break;
             }
@@ -286,12 +286,17 @@ fn sim_boostrap_join_node_balance() {
                 }
             }
         }
-        let racts = a.compute_replica_action().await.unwrap();
+        let (racts, decision) = a.compute_replica_action();
         assert!(racts.is_empty());
+        let BalanceDecision::NoAction(detail) = decision else {
+            panic!("balanced replica counts must report no action");
+        };
+        assert!(detail.contains("schedulable_nodes=4"), "{detail}");
+        assert!(detail.contains("tolerance=2.00"), "{detail}");
         p.display();
 
         println!("9. balance shards between groups");
-        let sact = a.compute_shard_action().await.unwrap();
+        let sact = a.compute_shard_action().0;
         assert!(!sact.is_empty());
         for act in &sact {
             match act {
@@ -305,7 +310,7 @@ fn sim_boostrap_join_node_balance() {
                 }
             }
         }
-        let sact = a.compute_shard_action().await.unwrap();
+        let sact = a.compute_shard_action().0;
         assert!(!sact.is_empty());
         for act in &sact {
             match act {
@@ -319,13 +324,13 @@ fn sim_boostrap_join_node_balance() {
                 }
             }
         }
-        let sact = a.compute_shard_action().await.unwrap();
+        let sact = a.compute_shard_action().0;
         assert!(sact.is_empty());
         p.display();
 
         println!("10. try balance leader between nodes");
         loop {
-            let lact = a.compute_leader_action().await.unwrap();
+            let lact = a.compute_leader_action().0;
             if lact.is_empty() {
                 break;
             }

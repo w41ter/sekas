@@ -12,12 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use chrono::{DateTime, SecondsFormat};
 use log::warn;
 use sekas_api::server::v1::*;
 use sekas_parser::{ColumnResult, ConfigStatement, ExecuteResult, Row, ShowStatement};
 use sekas_rock::ascii::escape_bytes;
+use sekas_rock::time::timestamp_millis;
 
 use super::Root;
+use super::allocator::BalanceDecision;
 use crate::{Error, Result};
 
 impl Root {
@@ -62,8 +65,101 @@ impl Root {
             "replicas" => self.handle_show_replicas(show_stmt).await,
             "shards" => self.handle_show_shards(show_stmt).await,
             "nodes" => self.handle_show_nodes(show_stmt).await,
+            "balancer" | "scheduler" | "scheduler_tasks" => self.handle_show_scheduling(show_stmt),
             others => Ok(ExecuteResult::Msg(format!("unknown property: {others}"))),
         }
+    }
+
+    fn handle_show_scheduling(&self, show_stmt: ShowStatement) -> Result<ExecuteResult> {
+        let property = show_stmt.property.as_str();
+        if show_stmt.from.is_some() {
+            return Ok(ExecuteResult::Msg(format!(
+                "FROM clause is not supported by '{property}' property"
+            )));
+        }
+        self.schema()?;
+
+        let now = timestamp_millis();
+        let data = match property {
+            "balancer" => {
+                let snapshot = self.scheduler.balance_status();
+                let rows = snapshot
+                    .iter()
+                    .map(|(policy, report)| {
+                        let (status, decision) = match &report.decision {
+                            BalanceDecision::Unknown => ("unknown", "awaiting first check"),
+                            BalanceDecision::Disabled => ("disabled", "-"),
+                            BalanceDecision::Deferred(reason) => ("deferred", *reason),
+                            BalanceDecision::NoAction(detail) => ("no_action", detail.as_str()),
+                            BalanceDecision::ActionNeeded(detail) => {
+                                ("action_needed", detail.as_str())
+                            }
+                            BalanceDecision::Unsupported(detail) => {
+                                ("unsupported", detail.as_str())
+                            }
+                            BalanceDecision::Error(detail) => ("error", detail.as_str()),
+                        };
+                        Row {
+                            values: vec![
+                                policy.name().into(),
+                                status.into(),
+                                decision.into(),
+                                display_time(report.checked_at).into(),
+                            ],
+                        }
+                    })
+                    .collect();
+                show_columns(["policy", "status", "decision", "checked_at"], rows)
+            }
+            "scheduler" => {
+                let summary = self.scheduler.scheduler_status(now);
+                let row = Row {
+                    values: vec![
+                        summary.ready.into(),
+                        summary.running.into(),
+                        summary.waiting.into(),
+                        self.jobs.pending_jobs().into(),
+                        display_time(summary.last_poll_at).into(),
+                    ],
+                };
+                show_columns(
+                    ["ready", "running", "waiting", "background_jobs", "last_poll_at"],
+                    vec![row],
+                )
+            }
+            "scheduler_tasks" => {
+                let rows = self
+                    .scheduler
+                    .task_statuses()
+                    .into_iter()
+                    .map(|task| {
+                        let state = task.state(now).name();
+                        let age = now.saturating_sub(task.created_at) / 1000;
+                        let ready_in = if task.fire_at > now {
+                            (task.fire_at - now).div_ceil(1000).into()
+                        } else {
+                            "-".into()
+                        };
+                        Row {
+                            values: vec![
+                                task.kind.into(),
+                                task.target.into(),
+                                state.into(),
+                                age.into(),
+                                task.retry_count.into(),
+                                ready_in,
+                            ],
+                        }
+                    })
+                    .collect();
+                show_columns(
+                    ["task", "target", "state", "age_s", "error_retries", "ready_in_s"],
+                    rows,
+                )
+            }
+            _ => unreachable!("unknown scheduling property {property}"),
+        };
+        Ok(ExecuteResult::Data(data))
     }
 
     async fn handle_show_databases(&self, show_stmt: ShowStatement) -> Result<ExecuteResult> {
@@ -273,6 +369,17 @@ impl Root {
         let rows = nodes.into_iter().map(node_to_row).collect::<Vec<_>>();
         Ok(ExecuteResult::Data(ColumnResult { columns, rows }))
     }
+}
+
+fn show_columns<const N: usize>(columns: [&str; N], rows: Vec<Row>) -> ColumnResult {
+    ColumnResult { columns: columns.into_iter().map(str::to_owned).collect(), rows }
+}
+
+fn display_time(millis: Option<u64>) -> String {
+    millis
+        .and_then(|millis| i64::try_from(millis).ok())
+        .and_then(DateTime::from_timestamp_millis)
+        .map_or_else(|| "-".to_owned(), |time| time.to_rfc3339_opts(SecondsFormat::Secs, true))
 }
 
 /// Convert bytes size into readable unit.

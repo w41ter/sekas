@@ -20,6 +20,7 @@ use log::info;
 use prost::Message;
 use sekas_api::server::v1::*;
 use sekas_client::{ClientOptions, NodeClient, SekasClient};
+use sekas_parser::ExecuteResult;
 use sekas_rock::fn_name;
 use sekas_server::diagnosis;
 
@@ -31,6 +32,68 @@ use crate::helper::init::setup_panic_hook;
 fn init() {
     setup_panic_hook();
     tracing_subscriber::fmt::init();
+}
+
+#[sekas_macro::test]
+async fn admin_show_scheduling() {
+    let mut ctx = TestContext::new(fn_name!());
+    ctx.set_num_cpus(2);
+    ctx.set_replicas_per_group(1);
+    ctx.enable_group_balance();
+    ctx.enable_shard_balance();
+    ctx.set_schedule_interval_sec(1);
+    let nodes = ctx.bootstrap_servers(1).await;
+    let client =
+        SekasClient::new(ClientOptions::default(), nodes.into_values().collect()).await.unwrap();
+
+    let scheduler = tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            let body = client.handle_statement("show scheduler;").await.unwrap();
+            let ExecuteResult::Data(status) = serde_json::from_slice(&body).unwrap() else {
+                panic!("show scheduler must return a table");
+            };
+            if status.rows[0].values[4] != "-" {
+                break status;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .expect("scheduler must complete a poll");
+    assert_eq!(
+        scheduler.columns,
+        ["ready", "running", "waiting", "background_jobs", "last_poll_at"]
+    );
+    assert!(scheduler.rows[0].values[4].as_str().unwrap().ends_with('Z'));
+
+    let body = client.handle_statement("show balancer;").await.unwrap();
+    let ExecuteResult::Data(balancer) = serde_json::from_slice(&body).unwrap() else {
+        panic!("show balancer must return a table");
+    };
+    assert_eq!(balancer.columns, ["policy", "status", "decision", "checked_at"]);
+    assert_eq!(balancer.rows.len(), 4);
+    let groups = &balancer.rows[0].values;
+    assert_eq!(groups[0], "group_count");
+    assert_eq!(groups[1], "no_action");
+    assert_eq!(groups[2], "nodes=1, min_nodes=1, cpus=2, groups=2, desired_groups=2");
+    assert!(groups[3].as_str().unwrap().ends_with('Z'));
+    assert!(balancer.rows[1..3].iter().all(|row| row.values[1] == "disabled"));
+    let shards = &balancer.rows[3].values;
+    assert_eq!(shards[0], "shard_count");
+    assert_eq!(shards[1], "no_action");
+    let decision = shards[2].as_str().unwrap();
+    assert!(decision.contains("user_groups=1"), "{decision}");
+    assert!(decision.contains("tolerance=0.50"), "{decision}");
+
+    let body = client.handle_statement("show scheduler_tasks;").await.unwrap();
+    let ExecuteResult::Data(tasks) = serde_json::from_slice(&body).unwrap() else {
+        panic!("show scheduler_tasks must return a table");
+    };
+    assert_eq!(tasks.columns, ["task", "target", "state", "age_s", "error_retries", "ready_in_s"]);
+    assert!(tasks.rows.is_empty());
+
+    let body = client.handle_statement("show scheduler from root;").await.unwrap();
+    assert!(matches!(serde_json::from_slice(&body).unwrap(), ExecuteResult::Msg(_)));
 }
 
 #[sekas_macro::test]

@@ -34,12 +34,6 @@ mod source;
 pub use source::{AllocSource, SysAllocSource};
 
 #[derive(Clone, Debug)]
-pub enum ReplicaRoleAction {
-    Replica(ReplicaAction),
-    Leader(LeaderAction),
-}
-
-#[derive(Clone, Debug)]
 pub enum GroupAction {
     Noop,
     Add(usize),
@@ -96,6 +90,72 @@ enum BalanceStatus {
 }
 
 #[derive(Clone)]
+pub(super) enum BalanceDecision {
+    Unknown,
+    Disabled,
+    Deferred(&'static str),
+    NoAction(String),
+    ActionNeeded(String),
+    Unsupported(String),
+    Error(String),
+}
+
+// Use the same counts and tolerance to choose a move and explain a no-op.
+struct CountBalance {
+    mean: f64,
+    tolerance: f64,
+}
+
+impl CountBalance {
+    fn new<T>(candidates: &[(T, u64)], tolerance: impl FnOnce(f64) -> f64) -> Self {
+        let total = candidates.iter().map(|(_, count)| count).sum::<u64>();
+        let mean = total as f64 / candidates.len().max(1) as f64;
+        Self { mean, tolerance: tolerance(mean) }
+    }
+
+    fn classify(&self, count: u64) -> BalanceStatus {
+        let count = count as f64;
+        if count > self.mean + self.tolerance {
+            BalanceStatus::Overfull
+        } else if count < self.mean - self.tolerance {
+            BalanceStatus::Underfull
+        } else {
+            BalanceStatus::Balanced
+        }
+    }
+
+    // The candidates are sorted by descending count.
+    fn no_action<T>(&self, scope: &str, candidates: &[(T, u64)]) -> BalanceDecision {
+        let (Some((_, max)), Some((_, min))) = (candidates.first(), candidates.last()) else {
+            return BalanceDecision::NoAction(format!(
+                "{scope}=0, tolerance={:.2}",
+                self.tolerance
+            ));
+        };
+        let overfull = candidates
+            .iter()
+            .take_while(|(_, count)| self.classify(*count) == BalanceStatus::Overfull)
+            .count();
+        let underfull = candidates
+            .iter()
+            .rev()
+            .take_while(|(_, count)| self.classify(*count) == BalanceStatus::Underfull)
+            .count();
+        let reason = match (overfull, underfull) {
+            (0, _) => "no overfull source",
+            (_, 0) => "no underfull target",
+            _ => "no eligible move",
+        };
+        BalanceDecision::NoAction(format!(
+            "{reason}\n{scope}={}, mean={:.2}, tolerance={:.2}\nrange={min}..{max}, overfull={overfull}, underfull={underfull}",
+            candidates.len(),
+            self.mean,
+            self.tolerance,
+        ))
+    }
+}
+
+#[derive(Clone)]
 pub struct Allocator<T: AllocSource> {
     alloc_source: Arc<T>,
     cluster_stats: Arc<ClusterStats>,
@@ -111,70 +171,97 @@ impl<T: AllocSource> Allocator<T> {
         self.config.replicas_per_group
     }
 
-    /// Compute group change action.
-    pub async fn compute_group_action(&self) -> Result<GroupAction> {
-        if !self.config.enable_group_balance {
-            return Ok(GroupAction::Noop);
+    pub async fn refresh_for_balance(&self) -> Result<()> {
+        if self.config.enable_group_balance
+            || self.config.enable_replica_balance
+            || self.config.enable_leader_balance
+            || self.config.enable_shard_balance
+        {
+            self.alloc_source.refresh_all().await?;
         }
+        Ok(())
+    }
 
-        self.alloc_source.refresh_all().await?;
+    /// Compute group change action.
+    pub fn compute_group_action(&self) -> (GroupAction, BalanceDecision) {
+        if !self.config.enable_group_balance {
+            return (GroupAction::Noop, BalanceDecision::Disabled);
+        }
 
         let nodes = self.alloc_source.nodes(NodeFilter::NotDecommissioned);
-        if nodes.len() < self.config.replicas_per_group {
-            return Ok(GroupAction::Noop);
+        let node_count = nodes.len();
+        let min_nodes = self.config.replicas_per_group;
+        let current_groups = self.current_groups();
+        if node_count < min_nodes {
+            return (
+                GroupAction::Noop,
+                BalanceDecision::NoAction(format!(
+                    "too few nodes. nodes={node_count}, min_nodes={min_nodes}, groups={current_groups}"
+                )),
+            );
         }
 
-        let desired_groups = Self::desired_groups(&nodes);
-        let current_groups = self.current_groups();
-        Ok(match current_groups.cmp(&desired_groups) {
-            std::cmp::Ordering::Less => GroupAction::Add(desired_groups - current_groups),
+        let total_cpus = nodes
+            .iter()
+            .filter_map(|n| n.capacity.as_ref())
+            .map(|capacity| capacity.cpu_nums)
+            .sum::<f64>();
+        // Size the group pool for one leader per CPU, with at least one group per node.
+        let desired_groups = (total_cpus as usize).max(node_count);
+        let inputs = format!(
+            "nodes={node_count}, min_nodes={min_nodes}, cpus={total_cpus}, groups={current_groups}, desired_groups={desired_groups}"
+        );
+        match current_groups.cmp(&desired_groups) {
+            std::cmp::Ordering::Less => {
+                let add = desired_groups - current_groups;
+                (
+                    GroupAction::Add(add),
+                    BalanceDecision::ActionNeeded(format!("create {add} groups\n{inputs}")),
+                )
+            }
             std::cmp::Ordering::Greater => {
                 let want_remove = current_groups - desired_groups;
-                GroupAction::Remove(self.preferred_remove_groups(want_remove))
+                (
+                    GroupAction::Remove(self.preferred_remove_groups(want_remove)),
+                    BalanceDecision::Unsupported(format!("group removal is unsupported\n{inputs}")),
+                )
             }
-            std::cmp::Ordering::Equal => GroupAction::Noop,
-        })
+            std::cmp::Ordering::Equal => (GroupAction::Noop, BalanceDecision::NoAction(inputs)),
+        }
     }
 
     /// Compute replica change action.
-    pub async fn compute_replica_action(&self) -> Result<Vec<ReplicaAction>> {
+    pub fn compute_replica_action(&self) -> (Vec<ReplicaAction>, BalanceDecision) {
         if !self.config.enable_replica_balance {
-            return Ok(vec![]);
+            return (vec![], BalanceDecision::Disabled);
         }
 
-        // compute_group_action refreshed.
-        // self.alloc_source.refresh_all().await?;
-
-        // TODO: try qps rebalance.
-
-        // try replica-count rebalance.
-        let actions =
-            ReplicaCountPolicy::with(self.alloc_source.to_owned(), self.cluster_stats.to_owned())
-                .compute_balance()?;
-        if !actions.is_empty() {
-            return Ok(actions);
-        }
-
-        Ok(Vec::new())
+        // TODO: try QPS rebalancing.
+        ReplicaCountPolicy::with(self.alloc_source.clone(), self.cluster_stats.clone())
+            .compute_balance()
     }
 
-    pub async fn compute_shard_action(&self) -> Result<Vec<ShardAction>> {
+    pub fn compute_shard_action(&self) -> (Vec<ShardAction>, BalanceDecision) {
         if !self.config.enable_shard_balance {
-            return Ok(vec![]);
+            return (vec![], BalanceDecision::Disabled);
         }
 
-        // always follow comput_replica_role_action() so no need refresh
-        // self.alloc_source.refresh_all().await?;
-
-        if self.alloc_source.nodes(NodeFilter::All).len() >= self.config.replicas_per_group {
-            let actions = ShardCountPolicy::with(self.alloc_source.to_owned()).compute_balance()?;
-            if !actions.is_empty() {
-                metrics::RECONCILE_ALREADY_BALANCED_INFO.group_shard_count.set(0);
-                return Ok(actions);
-            }
-        }
-        metrics::RECONCILE_ALREADY_BALANCED_INFO.group_shard_count.set(1);
-        Ok(Vec::new())
+        let node_count = self.alloc_source.nodes(NodeFilter::All).len();
+        let min_nodes = self.config.replicas_per_group;
+        let (actions, decision) = if node_count >= min_nodes {
+            ShardCountPolicy::with(self.alloc_source.clone()).compute_balance()
+        } else {
+            (
+                vec![],
+                BalanceDecision::NoAction(format!(
+                    "too few nodes. nodes={node_count}, min_nodes={min_nodes}"
+                )),
+            )
+        };
+        metrics::RECONCILE_ALREADY_BALANCED_INFO
+            .group_shard_count
+            .set(i64::from(actions.is_empty()));
+        (actions, decision)
     }
 
     /// Allocate new replica in one group.
@@ -200,16 +287,17 @@ impl<T: AllocSource> Allocator<T> {
         ShardCountPolicy::with(self.alloc_source.to_owned()).allocate_shard(n, required_replicas)
     }
 
-    pub async fn compute_leader_action(&self) -> Result<Vec<LeaderAction>> {
+    pub fn compute_leader_action(&self) -> (Vec<LeaderAction>, BalanceDecision) {
         if !self.config.enable_leader_balance {
-            return Ok(vec![]);
+            return (vec![], BalanceDecision::Disabled);
         }
-        // self.alloc_source.refresh_all().await?;
-        match LeaderCountPolicy::with(self.alloc_source.to_owned()).compute_balance()? {
-            LeaderAction::Noop => {}
-            e @ LeaderAction::Shed { .. } => return Ok(vec![e]),
-        }
-        Ok(Vec::new())
+        let (action, decision) =
+            LeaderCountPolicy::with(self.alloc_source.clone()).compute_balance();
+        let actions = match action {
+            LeaderAction::Noop => vec![],
+            action => vec![action],
+        };
+        (actions, decision)
     }
 }
 
@@ -226,18 +314,6 @@ impl<T: AllocSource> Allocator<T> {
             .take(want_remove)
             .map(|n| n.id)
             .collect()
-    }
-
-    fn desired_groups(nodes: &[NodeDesc]) -> usize {
-        let total_cpus = nodes
-            .iter()
-            .filter_map(|n| n.capacity.as_ref())
-            .map(|capacity| capacity.cpu_nums)
-            .sum::<f64>() as usize;
-
-        // Each group contributes one leader. Size the group pool for one leader per CPU
-        // and keep at least as many groups as nodes when reported CPU capacity is low.
-        total_cpus.max(nodes.len())
     }
 
     fn current_groups(&self) -> usize {
