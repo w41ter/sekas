@@ -26,6 +26,8 @@ from grafanalib.formatunits import BYTES_SEC, OPS_PER_SEC, REQUESTS_PER_SEC
 PROMETHEUS = {"type": "prometheus", "uid": "${prometheus}"}
 JOB_MATCHER = 'job=~"${job:regex}"'
 CLIENT_JOB_MATCHER = 'job=~"${client_job:regex}"'
+# Older Prometheus parsers reject composite durations such as Grafana's 1m0s.
+RATE_INTERVAL = "1m"
 DATA_REQUEST_TYPES = ("get", "scan", "write")
 METADATA_REQUEST_TYPES = (
     "transfer", "get_split_key", "split_shard", "merge_shard", "accept_shard", "create_shard",
@@ -43,7 +45,7 @@ def metric_selector(metric, *matchers, job_matcher=JOB_MATCHER):
 
 def metric_rate(metric, *matchers, job_matcher=JOB_MATCHER):
     selector = metric_selector(metric, *matchers, job_matcher=job_matcher)
-    return f"rate({selector}[$__rate_interval])"
+    return f"rate({selector}[{RATE_INTERVAL}])"
 
 
 def quantile(metric, value, *group, job_matcher=JOB_MATCHER, matchers=()):

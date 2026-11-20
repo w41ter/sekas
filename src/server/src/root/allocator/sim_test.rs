@@ -125,6 +125,7 @@ fn sim_boostrap_join_node_balance() {
         let act = a.compute_group_action().await.unwrap();
         match act {
             GroupAction::Add(n) => {
+                assert_eq!(n, 5); // Six CPUs and one existing group.
                 for _ in 0..n {
                     let nodes = a.allocate_group_replica(vec![], REPLICA_PER_GROUP).await.unwrap();
                     println!(
@@ -205,6 +206,7 @@ fn sim_boostrap_join_node_balance() {
         let act = a.compute_group_action().await.unwrap();
         match act {
             GroupAction::Add(n) => {
+                assert_eq!(n, 2); // The new node adds two CPUs.
                 for _ in 0..n {
                     let nodes = a.allocate_group_replica(vec![], REPLICA_PER_GROUP).await.unwrap();
                     println!(

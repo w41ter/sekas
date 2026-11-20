@@ -119,28 +119,17 @@ impl<T: AllocSource> Allocator<T> {
 
         self.alloc_source.refresh_all().await?;
 
-        if self.alloc_source.nodes(NodeFilter::NotDecommissioned).len()
-            < self.config.replicas_per_group
-        {
-            // group allocator start work after node_count > replicas_per_group.
+        let nodes = self.alloc_source.nodes(NodeFilter::NotDecommissioned);
+        if nodes.len() < self.config.replicas_per_group {
             return Ok(GroupAction::Noop);
         }
 
-        let desired_groups = self.desired_groups(self.config.replicas_per_group);
-        Ok(match self.current_groups().cmp(&desired_groups) {
-            std::cmp::Ordering::Less => {
-                // it happend when:
-                // - new join node
-                // - increase cpu quota for exist node(e.g. via cgroup)
-                // - increase replica_num configuration
-                GroupAction::Add(desired_groups - self.current_groups())
-            }
+        let desired_groups = Self::desired_groups(&nodes);
+        let current_groups = self.current_groups();
+        Ok(match current_groups.cmp(&desired_groups) {
+            std::cmp::Ordering::Less => GroupAction::Add(desired_groups - current_groups),
             std::cmp::Ordering::Greater => {
-                // it happens when:
-                //  - joined node exit
-                //  - decrease cpu quota for exist node(e.g. via cgroup)
-                //  - decrease replica_num configuration
-                let want_remove = self.current_groups() - desired_groups;
+                let want_remove = current_groups - desired_groups;
                 GroupAction::Remove(self.preferred_remove_groups(want_remove))
             }
             std::cmp::Ordering::Equal => GroupAction::Noop,
@@ -239,17 +228,16 @@ impl<T: AllocSource> Allocator<T> {
             .collect()
     }
 
-    fn desired_groups(&self, replicas_per_group: usize) -> usize {
-        let nodes = self.alloc_source.nodes(NodeFilter::NotDecommissioned);
-        let total_nodes = nodes.len();
+    fn desired_groups(nodes: &[NodeDesc]) -> usize {
         let total_cpus = nodes
             .iter()
-            .map(|n| n.capacity.as_ref().unwrap().cpu_nums)
-            .fold(0_f64, |acc, x| acc + x);
+            .filter_map(|n| n.capacity.as_ref())
+            .map(|capacity| capacity.cpu_nums)
+            .sum::<f64>() as usize;
 
-        // We want only one worker per core serving a group, and we also want at least
-        // one group per machine.
-        std::cmp::max((total_cpus / replicas_per_group as f64) as usize, total_nodes)
+        // Each group contributes one leader. Size the group pool for one leader per CPU
+        // and keep at least as many groups as nodes when reported CPU capacity is low.
+        total_cpus.max(nodes.len())
     }
 
     fn current_groups(&self) -> usize {
