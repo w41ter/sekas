@@ -22,6 +22,7 @@ use sekas_api::server::v1::RaftRole;
 
 use super::applier::{Applier, ReplicaCache};
 use super::fsm::StateMachine;
+use super::metrics::RAFTGROUP_PROPOSE_BYTES_TOTAL;
 use super::monitor::{AdvancePerfContext, record_perf_point};
 use super::snap::apply::apply_snapshot;
 use super::storage::Storage;
@@ -123,6 +124,7 @@ where
             return;
         }
 
+        let payload_len = data.len();
         if let Err(err) = self.raw_node.propose(context, data) {
             if matches!(err, raft::Error::ProposalDropped) {
                 sender
@@ -133,6 +135,7 @@ where
             }
             return;
         }
+        RAFTGROUP_PROPOSE_BYTES_TOTAL.inc_by(payload_len as u64);
 
         let index = self.raw_node.raft.raft_log.last_index();
         let term = self.raw_node.raft.term;

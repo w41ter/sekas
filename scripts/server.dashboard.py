@@ -8,6 +8,7 @@ from grafanalib.core import (
     Dashboard,
     GRAPH_TOOLTIP_MODE_SHARED_CROSSHAIR,
     GridPos,
+    Heatmap,
     NO_FORMAT,
     REFRESH_ON_TIME_RANGE_CHANGE,
     RowPanel,
@@ -18,32 +19,50 @@ from grafanalib.core import (
     Templating,
     Time,
     TimeSeries,
+    YAxis,
 )
 from grafanalib.formatunits import BYTES_SEC, OPS_PER_SEC, REQUESTS_PER_SEC
 
 PROMETHEUS = {"type": "prometheus", "uid": "${prometheus}"}
 JOB_MATCHER = 'job=~"${job:regex}"'
+CLIENT_JOB_MATCHER = 'job=~"${client_job:regex}"'
 # Older Prometheus parsers reject composite durations such as Grafana's 1m0s.
 RATE_INTERVAL = "1m"
 
 
-def metric_selector(metric, *matchers):
-    return metric + "{" + ", ".join((JOB_MATCHER, *matchers)) + "}"
+def metric_selector(metric, *matchers, job_matcher=JOB_MATCHER):
+    return metric + "{" + ", ".join((job_matcher, *matchers)) + "}"
 
 
-def metric_rate(metric):
-    return f"rate({metric_selector(metric)}[{RATE_INTERVAL}])"
+def metric_rate(metric, *matchers, job_matcher=JOB_MATCHER):
+    selector = metric_selector(metric, *matchers, job_matcher=job_matcher)
+    return f"rate({selector}[{RATE_INTERVAL}])"
 
 
-def quantile(metric, value, *group):
-    buckets = metric_rate(f"{metric}_bucket")
+def quantile(metric, value, *group, job_matcher=JOB_MATCHER, matchers=()):
+    buckets = metric_rate(f"{metric}_bucket", *matchers, job_matcher=job_matcher)
     labels = ", ".join(("le", *group))
     return f"histogram_quantile({value}, sum by ({labels}) ({buckets}))"
 
 
-def time_series(title, queries, unit=NO_FORMAT, description=""):
+def histogram_average(metric, *group, job_matcher=JOB_MATCHER, matchers=()):
+    aggregate = f"sum by ({', '.join(group)})" if group else "sum"
+    total = metric_rate(f"{metric}_sum", *matchers, job_matcher=job_matcher)
+    count = metric_rate(f"{metric}_count", *matchers, job_matcher=job_matcher)
+    return f"{aggregate} ({total}) / {aggregate} ({count})"
+
+
+def latency_queries(metric, *group, label="", job_matcher=JOB_MATCHER, matchers=()):
+    prefix = f"{label} · " if label else ""
+    p99 = quantile(metric, 0.99, *group, job_matcher=job_matcher, matchers=matchers)
+    average = histogram_average(metric, *group, job_matcher=job_matcher, matchers=matchers)
+    return [(p99, f"{prefix}p99"), (average, f"{prefix}Avg")]
+
+
+def time_series(title, queries, unit=NO_FORMAT, description="", *, panel_id=None):
     return TimeSeries(
         title=title,
+        id=panel_id,
         description=description,
         dataSource=PROMETHEUS,
         targets=[
@@ -58,6 +77,7 @@ def time_series(title, queries, unit=NO_FORMAT, description=""):
         unit=unit,
         maxDataPoints=600,
         tooltipMode="multi",
+        tooltipSort="desc",
     )
 
 
@@ -76,26 +96,25 @@ def raw_gauge_ts(title, metric, legend="instance", unit=NO_FORMAT):
     return time_series(title, [(expr, legend_for(legend))], unit)
 
 
-def simple_total(title, metric, unit=OPS_PER_SEC):
-    return time_series(title, [(metric_rate(metric), "{{instance}}")], unit)
+def simple_total(title, metric, unit=OPS_PER_SEC, *, job_matcher=JOB_MATCHER):
+    return time_series(
+        title, [(metric_rate(metric, job_matcher=job_matcher), "{{instance}}")], unit,
+    )
 
 
-def vector_total(title, metric, group, unit=OPS_PER_SEC):
-    expr = f"sum by ({group}) ({metric_rate(metric)})"
+def vector_total(title, metric, group, unit=OPS_PER_SEC, *, job_matcher=JOB_MATCHER):
+    expr = f"sum by ({group}) ({metric_rate(metric, job_matcher=job_matcher)})"
     return time_series(title, [(expr, legend_for(group))], unit)
 
 
-def raw_histogram(title, metric, unit, *group):
+def raw_histogram(title, metric, unit, *group, job_matcher=JOB_MATCHER):
     prefix = " / ".join(map(legend_for, group))
     if prefix:
         prefix += " · "
-    aggregate = f"sum by ({', '.join(group)})" if group else "sum"
-    total = f"{aggregate} ({metric_rate(f'{metric}_sum')})"
-    count = f"{aggregate} ({metric_rate(f'{metric}_count')})"
     return time_series(title, [
-        (quantile(metric, 0.9999, *group), f"{prefix}p99.99"),
-        (quantile(metric, 0.99, *group), f"{prefix}p99"),
-        (f"{total} / {count}", f"{prefix}Mean"),
+        (quantile(metric, 0.9999, *group, job_matcher=job_matcher), f"{prefix}p99.99"),
+        (quantile(metric, 0.99, *group, job_matcher=job_matcher), f"{prefix}p99"),
+        (histogram_average(metric, *group, job_matcher=job_matcher), f"{prefix}Mean"),
     ], unit)
 
 
@@ -107,8 +126,19 @@ def simple_histogram_size(title, metric, unit=NO_FORMAT):
     return raw_histogram(title, metric, unit)
 
 
-def vector_duration_seconds(title, metric, *group):
-    return raw_histogram(title, metric, SECONDS_FORMAT, *group)
+def vector_duration_seconds(title, metric, *group, job_matcher=JOB_MATCHER):
+    return raw_histogram(title, metric, SECONDS_FORMAT, *group, job_matcher=job_matcher)
+
+
+def group_payload_throughput(metric, description, *, panel_id, job_matcher=JOB_MATCHER):
+    rate = metric_rate(metric, job_matcher=job_matcher)
+    return time_series(
+        "Group RPC payload throughput",
+        [(f"sum by (type, direction) ({rate})", "{{type}} · {{direction}}")],
+        BYTES_SEC,
+        description,
+        panel_id=panel_id,
+    )
 
 
 def overview_stat(title, expr, description, thresholds=()):
@@ -175,14 +205,14 @@ def overview_sections():
         ]),
         ("Workload performance", 8, [
             time_series(
-                "Group RPC throughput",
+                "Group RPC QPS",
                 [(f"sum by (type) ({metric_rate(group_requests)})", "{{type}}")],
                 REQUESTS_PER_SEC,
                 "Server-side group RPCs per second by operation type.",
             ),
             time_series(
-                "Group RPC latency · p99",
-                [(quantile(group_latency, 0.99, "type"), "{{type}}")],
+                "Group RPC latency",
+                latency_queries(group_latency, "type", label="{{type}}"),
                 SECONDS_FORMAT,
                 "Server-side latency by operation type. Buckets are pooled across the selected targets.",
             ),
@@ -202,17 +232,18 @@ def overview_sections():
                 "Retries per second recorded by the group client on the selected scrape targets.",
             ),
             time_series(
-                "Raft write path · p99",
+                "Raft write path latency",
                 [
-                    (quantile("raftgroup_worker_request_in_queue_duration_seconds", 0.99), "Worker queue"),
-                    (quantile("raftgroup_log_writer_queue_duration_seconds", 0.99), "Log writer queue"),
-                    (quantile("raftgroup_log_writer_write_duration_seconds", 0.99), "Log write"),
-                    (quantile("raftgroup_worker_apply_duration_seconds", 0.99), "Apply"),
+                    *latency_queries("raftgroup_worker_request_in_queue_duration_seconds", label="Worker queue"),
+                    *latency_queries("raftgroup_log_writer_queue_duration_seconds", label="Log writer queue"),
+                    *latency_queries("raftgroup_log_writer_write_duration_seconds", label="Log write"),
+                    *latency_queries("raftgroup_worker_apply_duration_seconds", label="Apply"),
                 ],
                 SECONDS_FORMAT,
                 "Latency of individual Raft stages across selected targets.",
             ),
         ]),
+        ("Client - Global", 8, client_global_panels()),
     ]
 
 
@@ -227,19 +258,20 @@ def proxy_service_db_panels():
     )
 
 
-def node_service_batch_panels():
+def node_service_group_panels():
     return row_panels(
-        "Node services - Batch",
-        simple_total("batch qps", "node_service_batch_request_total"),
-        simple_duration_seconds("batch duration",
-                                "node_service_batch_request_duration_seconds"),
+        "Node services - Group",
         vector_total("group request qps", "node_service_group_request_total",
                      "type"),
         vector_duration_seconds("group request duration",
                                 "node_service_group_request_duration_seconds",
                                 "type"),
-        simple_histogram_size("requests per batch",
-                              "node_service_batch_request_size"),
+        group_payload_throughput(
+            "node_service_group_request_bytes_total",
+            "Encoded Group and UnaryGroup messages received and sent by selected servers. "
+            "Streaming responses are counted per message.",
+            panel_id=151,
+        ),
     )
 
 
@@ -327,6 +359,13 @@ def raft_group_request_panels():
         vector_total("raft propose qps", "raftgroup_propose_total", "type"),
         vector_duration_seconds("raft propose duration",
                                 "raftgroup_propose_duration_seconds", "type"),
+        time_series(
+            "Raft proposal payload throughput",
+            [(metric_rate("raftgroup_propose_bytes_total"), "{{instance}}")],
+            BYTES_SEC,
+            "Encoded proposal bytes accepted by the local Raft node, by instance.",
+            panel_id=152,
+        ),
         vector_total("raft read qps", "raftgroup_read_total", "type"),
         vector_duration_seconds("raft read duration",
                                 "raftgroup_read_duration_seconds", "type"),
@@ -493,28 +532,166 @@ def root_heartbeat_report_panels():
     )
 
 
-def client_database_panels():
-    return row_panels(
-        "Client - Database",
-        vector_total("database request qps",
-            "client_database_request_total", "type"),
-        vector_duration_seconds(
-            "database request duration",
-            "client_database_request_duration_seconds", "type"),
-        vector_total("database I/O throughput",
-            "client_database_bytes_total", "type", BYTES_SEC),
-    )
+def client_rate(metric, *matchers, group=None):
+    aggregate = f"sum by ({group})" if group else "sum"
+    return f"{aggregate} ({metric_rate(metric, *matchers, job_matcher=CLIENT_JOB_MATCHER)})"
+
+
+def client_global_panels():
+    return [
+        time_series(
+            "Client operation QPS",
+            [(client_rate("client_database_request_total", group="type"), "{{type}}")],
+            OPS_PER_SEC,
+            "Logical get, put, delete, scan, and explicit commit calls across selected client jobs.",
+        ),
+        time_series(
+            "Client operation duration",
+            latency_queries("client_database_request_duration_seconds", "type",
+                            label="{{type}}", job_matcher=CLIENT_JOB_MATCHER),
+            SECONDS_FORMAT,
+            "End-to-end client latency, including any retries within the operation.",
+        ),
+        time_series(
+            "Client operation payload throughput",
+            [(client_rate("client_database_operation_bytes_total", group="type"), "{{type}}")],
+            BYTES_SEC,
+            "Logical key and value bytes supplied to calls and returned in successful results.",
+        ),
+    ]
 
 
 def client_group_panels():
     return row_panels(
         "Client - Group",
         vector_total("group request qps",
-            "group_client_group_request_total", "type"),
+            "group_client_group_request_total", "type", job_matcher=CLIENT_JOB_MATCHER),
         vector_duration_seconds("group request duration",
-            "group_client_group_request_duration_seconds", "type"),
+            "group_client_group_request_duration_seconds", "type",
+            job_matcher=CLIENT_JOB_MATCHER),
+        group_payload_throughput(
+            "group_client_group_request_bytes_total",
+            "Encoded Group RPC messages submitted and received by selected clients, including "
+            "retry attempts. Streaming responses are counted per message.",
+            panel_id=153,
+            job_matcher=CLIENT_JOB_MATCHER,
+        ),
         simple_total("group client retry rate",
-            "group_client_retry_total"),
+            "group_client_retry_total", job_matcher=CLIENT_JOB_MATCHER),
+    )
+
+
+def txn_path_panels(title, path, description):
+    matcher = f'path="{path}"'
+    duration = "client_txn_duration_seconds"
+    return [
+        time_series(
+            f"{title} QPS",
+            [(client_rate(f"{duration}_count", matcher), title)],
+            OPS_PER_SEC,
+            f"{description} Rate counts attempts when they finish.",
+        ),
+        time_series(
+            f"{title} duration",
+            latency_queries(duration, job_matcher=CLIENT_JOB_MATCHER, matchers=(matcher,)),
+            SECONDS_FORMAT,
+            description,
+        ),
+        time_series(
+            f"{title} throughput",
+            [(client_rate("client_txn_committed_bytes_total", matcher), title)],
+            BYTES_SEC,
+            "Input key and value bytes for successful commits on this path.",
+        ),
+    ]
+
+
+def txn_phase_panel(title, metric, *matchers, description=""):
+    queries = [
+        (client_rate(f"{metric}_count", *matchers), "QPS"),
+        *latency_queries(metric, job_matcher=CLIENT_JOB_MATCHER, matchers=matchers),
+    ]
+    panel = time_series(title, queries, OPS_PER_SEC, description)
+    panel.axisPlacement = "left"
+    panel.axisLabel = "QPS"
+    panel.overrides = [
+        {
+            "matcher": {"id": "byFrameRefID", "options": ref_id},
+            "properties": [
+                {"id": "unit", "value": SECONDS_FORMAT},
+                {"id": "custom.axisPlacement", "value": "right"},
+                {"id": "custom.axisLabel", "value": "Latency"},
+            ],
+        }
+        for ref_id in ("B", "C")
+    ]
+    return panel
+
+
+def txn_phase_panels():
+    local_phases = (
+        ("Local txn · Prepare group", "client_txn_local_prepare_group_duration_seconds"),
+        ("Local txn · Allocate version", "client_txn_local_alloc_version_duration_seconds"),
+        ("Local txn · Group request", "client_txn_local_group_request_duration_seconds"),
+    )
+    distributed_phases = (
+        ("Allocate start version", "allocate_start_version", ""),
+        ("Begin txn record", "begin", ""),
+        ("Prepare intents", "prepare", ""),
+        ("Allocate txn version", "allocate_version", ""),
+        ("Commit txn record", "commit", ""),
+        ("Dispatch commit intents", "dispatch_commit_intents",
+         "Time spent submitting detached commit-intent requests."),
+        ("Finish commit intents", "finish_commit_intents",
+         "Time spent waiting for acknowledged commit-intent work during recovery."),
+        ("Abort txn record", "abort", ""),
+        ("Clear intents", "clear_intents", ""),
+    )
+    return [
+        *(txn_phase_panel(title, metric) for title, metric in local_phases),
+        *(txn_phase_panel(title, "client_txn_phase_duration_seconds", f'phase="{phase}"',
+                          description=description)
+          for title, phase, description in distributed_phases),
+    ]
+
+
+def client_txn_panels():
+    return row_panels(
+        "Client - Txn",
+        *txn_path_panels(
+            "Local txn", "local",
+            "Single-group fast-path attempts from the first eligible route through retries, "
+            "completion, or fallback.",
+        ),
+        *txn_path_panels(
+            "Txn commit", "commit",
+            "End-to-end commit attempts, including local and distributed paths and the "
+            "transactions created by database put and delete.",
+        ),
+        *txn_phase_panels(),
+        Heatmap(
+            title="Written keys per txn commit",
+            id=163,
+            description="Distribution of distinct table keys in each attempted commit's write set. "
+            "Color represents the commit attempt rate for each bucket.",
+            dataSource=PROMETHEUS,
+            dataFormat="tsbuckets",
+            options={
+                "calculate": False,
+                "cellValues": {"unit": OPS_PER_SEC},
+                "tooltip": {"mode": "single", "yHistogram": True},
+                "yAxis": {"decimals": 0},
+            },
+            hideZeroBuckets=True,
+            yAxis=YAxis(label="Written keys"),
+            targets=[Target(
+                datasource=PROMETHEUS,
+                expr=client_rate("client_txn_commit_keys_bucket", group="le"),
+                format="heatmap",
+                legendFormat="{{le}}",
+                refId="A",
+            )],
+        ),
     )
 
 
@@ -552,9 +729,19 @@ def layout_dashboard(overview, details):
     return panels + details
 
 
+def assign_panel_ids(dashboard):
+    # Keep retired Batch RPC, Client Database, and combined txn phase panel IDs unused.
+    retired_ids = (5, 6, 9, 121, 122, 123, 124, 161, 162)
+    panel_count = len(dashboard.panels)
+    dashboard.panels += [RowPanel(id=panel_id) for panel_id in retired_ids]
+    dashboard = dashboard.auto_panel_ids()
+    dashboard.panels = dashboard.panels[:panel_count]
+    return dashboard
+
+
 dashboard = Dashboard(
     title="Sekas Server",
-    description="Cluster health, server workload performance, and subsystem diagnostics for a Sekas scrape job.",
+    description="Cluster health, server workload performance, and client and transaction diagnostics.",
     tags=['sekas', 'server'],
     timezone="browser",
     schemaVersion=39,
@@ -569,10 +756,19 @@ dashboard = Dashboard(
             dataSource=PROMETHEUS,
             refresh=REFRESH_ON_TIME_RANGE_CHANGE,
         ),
+        Template(
+            name="client_job",
+            label="Client jobs",
+            query='label_values({__name__=~"client_database_request_total|group_client_group_request_total"}, job)',
+            dataSource=PROMETHEUS,
+            multi=True,
+            includeAll=True,
+            refresh=REFRESH_ON_TIME_RANGE_CHANGE,
+        ),
     ]),
     panels=[
         proxy_service_db_panels(),
-        node_service_batch_panels(),
+        node_service_group_panels(),
         node_service_shard_migration_panels(),
         node_service_metadata_panels(),
         node_panels(),
@@ -587,15 +783,16 @@ dashboard = Dashboard(
         root_reconcile_panels(),
         root_heartbeat_report_panels(),
         root_misc_panels(),
-        client_database_panels(),
         client_group_panels(),
         executor_panels(),
     ],
-).auto_panel_ids()
+)
 
 # Keep the existing detail panel IDs when adding panels above them.
+dashboard = assign_panel_ids(dashboard)
+dashboard.panels.insert(-1, client_txn_panels())
 dashboard.panels = layout_dashboard(overview_sections(), dashboard.panels)
-dashboard = dashboard.auto_panel_ids()
+dashboard = assign_panel_ids(dashboard)
 
 if __name__ == "__main__":
     write_dashboard(dashboard, sys.stdout)

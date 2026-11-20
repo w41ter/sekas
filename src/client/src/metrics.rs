@@ -15,6 +15,7 @@
 use lazy_static::lazy_static;
 use prometheus::*;
 use prometheus_static_metric::make_static_metric;
+use prost::Message;
 use sekas_api::server::v1::*;
 
 make_static_metric! {
@@ -30,61 +31,65 @@ make_static_metric! {
             other,
         }
     }
-    pub struct GroupRequestTotal: IntCounter {
-        "type" => {
-            get,
-            scan,
-            write,
-
-            prepare_intent,
-            commit_intent,
-            clear_intent,
-
-            transfer,
-            split_shard,
-            merge_shard,
-            accept_shard,
-            create_shard,
-            delete_shard,
-            move_replicas,
-            change_replicas,
-
-            watch,
-        }
+    label_enum GroupRequestType {
+        get,
+        scan,
+        write,
+        prepare_intent,
+        commit_intent,
+        clear_intent,
+        transfer,
+        split_shard,
+        merge_shard,
+        accept_shard,
+        create_shard,
+        delete_shard,
+        move_replicas,
+        change_replicas,
+        watch,
     }
-    pub struct GroupRequestDuration: Histogram {
-        "type" => {
-            get,
-            scan,
-            write,
-
-            prepare_intent,
-            commit_intent,
-            clear_intent,
-
-            transfer,
-            split_shard,
-            merge_shard,
-            accept_shard,
-            create_shard,
-            delete_shard,
-            move_replicas,
-            change_replicas,
-        }
+    struct GroupRequestTotal: IntCounter {
+        "type" => GroupRequestType,
+    }
+    struct GroupRequestDuration: Histogram {
+        "type" => GroupRequestType,
+    }
+    struct GroupRequestBytes: IntCounter {
+        "type" => GroupRequestType,
+        "direction" => { sent, received },
+    }
+    pub struct TxnDuration: Histogram {
+        "path" => { commit, local },
+    }
+    pub struct TxnBytes: IntCounter {
+        "path" => { commit, local },
+    }
+    pub struct TxnPhaseDuration: Histogram {
+        "phase" => {
+            allocate_start_version,
+            begin,
+            prepare,
+            allocate_version,
+            commit,
+            dispatch_commit_intents,
+            finish_commit_intents,
+            abort,
+            clear_intents,
+        },
     }
 }
 
 // For group request
 lazy_static! {
-    pub static ref GROUP_CLIENT_GROUP_REQUEST_TOTAL_VEC: IntCounterVec = register_int_counter_vec!(
+    static ref GROUP_CLIENT_GROUP_REQUEST_TOTAL_VEC: IntCounterVec = register_int_counter_vec!(
         "group_client_group_request_total",
         "The total group requests issued by group client",
         &["type"]
     )
     .unwrap();
-    pub static ref GROUP_CLIENT_GROUP_REQUEST_TOTAL: GroupRequestTotal =
+    static ref GROUP_CLIENT_GROUP_REQUEST_TOTAL: GroupRequestTotal =
         GroupRequestTotal::from(&GROUP_CLIENT_GROUP_REQUEST_TOTAL_VEC);
-    pub static ref GROUP_CLIENT_GROUP_REQUEST_DURATION_SECONDS_VEC: HistogramVec =
+    static ref GROUP_CLIENT_GROUP_REQUEST_DURATION_SECONDS_VEC: HistogramVec =
         register_histogram_vec!(
             "group_client_group_request_duration_seconds",
             "The intervals of group requests issued by group client",
@@ -92,8 +97,16 @@ lazy_static! {
             exponential_buckets(0.00005, 1.8, 26).unwrap(),
         )
         .unwrap();
-    pub static ref GROUP_CLIENT_GROUP_REQUEST_DURATION_SECONDS: GroupRequestDuration =
+    static ref GROUP_CLIENT_GROUP_REQUEST_DURATION_SECONDS: GroupRequestDuration =
         GroupRequestDuration::from(&GROUP_CLIENT_GROUP_REQUEST_DURATION_SECONDS_VEC);
+    static ref GROUP_CLIENT_GROUP_REQUEST_BYTES_TOTAL_VEC: IntCounterVec = register_int_counter_vec!(
+        "group_client_group_request_bytes_total",
+        "Encoded Group RPC message bytes by operation and direction, excluding transport framing",
+        &["type", "direction"],
+    )
+    .unwrap();
+    static ref GROUP_CLIENT_GROUP_REQUEST_BYTES_TOTAL: GroupRequestBytes =
+        GroupRequestBytes::from(&GROUP_CLIENT_GROUP_REQUEST_BYTES_TOTAL_VEC);
     pub static ref GROUP_CLIENT_RETRY_TOTAL: IntCounter =
         register_int_counter!("group_client_retry_total", "The total retries of group client",)
             .unwrap();
@@ -136,6 +149,42 @@ lazy_static! {
             exponential_buckets(0.00005, 1.8, 26).unwrap(),
         )
         .unwrap();
+    static ref CLIENT_TXN_DURATION_SECONDS_VEC: HistogramVec = register_histogram_vec!(
+        "client_txn_duration_seconds",
+        "Client transaction commit attempt and local fast-path duration",
+        &["path"],
+        exponential_buckets(0.00005, 1.8, 26).unwrap(),
+    )
+    .unwrap();
+    pub static ref CLIENT_TXN_DURATION_SECONDS: TxnDuration =
+        TxnDuration::from(&CLIENT_TXN_DURATION_SECONDS_VEC);
+    static ref CLIENT_TXN_COMMITTED_BYTES_TOTAL_VEC: IntCounterVec = register_int_counter_vec!(
+        "client_txn_committed_bytes_total",
+        "Key and value bytes in successful client transaction commits by path",
+        &["path"],
+    )
+    .unwrap();
+    pub static ref CLIENT_TXN_COMMITTED_BYTES_TOTAL: TxnBytes =
+        TxnBytes::from(&CLIENT_TXN_COMMITTED_BYTES_TOTAL_VEC);
+    pub static ref CLIENT_TXN_COMMIT_KEYS: Histogram = register_histogram!(
+        "client_txn_commit_keys",
+        "Number of distinct written keys submitted per client transaction commit attempt",
+        {
+            let mut buckets = vec![0.0];
+            buckets.extend(exponential_buckets(1.0, 2.0, 18).unwrap());
+            buckets
+        },
+    )
+    .unwrap();
+    static ref CLIENT_TXN_PHASE_DURATION_SECONDS_VEC: HistogramVec = register_histogram_vec!(
+        "client_txn_phase_duration_seconds",
+        "Time spent in a client transaction phase, including its retries",
+        &["phase"],
+        exponential_buckets(0.00005, 1.8, 26).unwrap(),
+    )
+    .unwrap();
+    pub static ref CLIENT_TXN_PHASE_DURATION_SECONDS: TxnPhaseDuration =
+        TxnPhaseDuration::from(&CLIENT_TXN_PHASE_DURATION_SECONDS_VEC);
     pub static ref CLIENT_TXN_LOCAL_PREPARE_GROUP_DURATION_SECONDS: Histogram =
         register_histogram!(
             "client_txn_local_prepare_group_duration_seconds",
@@ -199,95 +248,67 @@ pub fn record_retry_reason(err: &crate::Error) {
     }
 }
 
-pub fn take_group_request_metrics(
-    request: &group_request_union::Request,
-) -> Option<&'static Histogram> {
-    use group_request_union::Request;
+pub(crate) struct GroupRequestMetrics {
+    pub duration: Option<&'static Histogram>,
+    response_bytes: &'static IntCounter,
+}
 
-    match request {
-        Request::Get(_) => {
-            GROUP_CLIENT_GROUP_REQUEST_TOTAL.get.inc();
-            Some(&GROUP_CLIENT_GROUP_REQUEST_DURATION_SECONDS.get)
-        }
-        Request::Scan(_) => {
-            GROUP_CLIENT_GROUP_REQUEST_TOTAL.scan.inc();
-            Some(&GROUP_CLIENT_GROUP_REQUEST_DURATION_SECONDS.scan)
-        }
-        Request::Write(_) => {
-            GROUP_CLIENT_GROUP_REQUEST_TOTAL.write.inc();
-            Some(&GROUP_CLIENT_GROUP_REQUEST_DURATION_SECONDS.write)
-        }
-        Request::LocalTxnWrite(_) => {
-            GROUP_CLIENT_GROUP_REQUEST_TOTAL.write.inc();
-            Some(&GROUP_CLIENT_GROUP_REQUEST_DURATION_SECONDS.write)
-        }
-        Request::WriteIntent(_) => {
-            GROUP_CLIENT_GROUP_REQUEST_TOTAL.prepare_intent.inc();
-            Some(&GROUP_CLIENT_GROUP_REQUEST_DURATION_SECONDS.prepare_intent)
-        }
-        Request::CommitIntent(_) => {
-            GROUP_CLIENT_GROUP_REQUEST_TOTAL.commit_intent.inc();
-            Some(&GROUP_CLIENT_GROUP_REQUEST_DURATION_SECONDS.commit_intent)
-        }
-        Request::ClearIntent(_) => {
-            GROUP_CLIENT_GROUP_REQUEST_TOTAL.clear_intent.inc();
-            Some(&GROUP_CLIENT_GROUP_REQUEST_DURATION_SECONDS.clear_intent)
-        }
-        Request::QueryIntent(_) => Some(&GROUP_CLIENT_GROUP_REQUEST_DURATION_SECONDS.get),
-        Request::AcceptShard(_) => {
-            GROUP_CLIENT_GROUP_REQUEST_TOTAL.accept_shard.inc();
-            Some(&GROUP_CLIENT_GROUP_REQUEST_DURATION_SECONDS.accept_shard)
-        }
-        Request::CreateShard(_) => {
-            GROUP_CLIENT_GROUP_REQUEST_TOTAL.create_shard.inc();
-            Some(&GROUP_CLIENT_GROUP_REQUEST_DURATION_SECONDS.create_shard)
-        }
-        Request::DeleteShard(_) => {
-            GROUP_CLIENT_GROUP_REQUEST_TOTAL.delete_shard.inc();
-            Some(&GROUP_CLIENT_GROUP_REQUEST_DURATION_SECONDS.delete_shard)
-        }
-        Request::ChangeReplicas(_) => {
-            GROUP_CLIENT_GROUP_REQUEST_TOTAL.change_replicas.inc();
-            Some(&GROUP_CLIENT_GROUP_REQUEST_DURATION_SECONDS.change_replicas)
-        }
-        Request::Transfer(_) => {
-            GROUP_CLIENT_GROUP_REQUEST_TOTAL.transfer.inc();
-            Some(&GROUP_CLIENT_GROUP_REQUEST_DURATION_SECONDS.transfer)
-        }
-        Request::MoveReplicas(_) => {
-            GROUP_CLIENT_GROUP_REQUEST_TOTAL.move_replicas.inc();
-            Some(&GROUP_CLIENT_GROUP_REQUEST_DURATION_SECONDS.move_replicas)
-        }
-        Request::WatchKey(_) => {
-            GROUP_CLIENT_GROUP_REQUEST_TOTAL.watch.inc();
-            None
-        }
-        Request::GetSplitKey(_) => Some(&GROUP_CLIENT_GROUP_REQUEST_DURATION_SECONDS.get),
-        Request::SplitShard(_) => {
-            GROUP_CLIENT_GROUP_REQUEST_TOTAL.split_shard.inc();
-            Some(&GROUP_CLIENT_GROUP_REQUEST_DURATION_SECONDS.split_shard)
-        }
-        Request::MergeShard(_) => {
-            GROUP_CLIENT_GROUP_REQUEST_TOTAL.merge_shard.inc();
-            Some(&GROUP_CLIENT_GROUP_REQUEST_DURATION_SECONDS.merge_shard)
-        }
+impl GroupRequestMetrics {
+    pub fn record_response(&self, response: &GroupResponse) {
+        self.response_bytes.inc_by(response.encoded_len() as u64);
     }
 }
 
+pub(crate) fn record_group_request(request: &GroupRequest) -> Option<GroupRequestMetrics> {
+    use group_request_union::Request;
+
+    let kind = match request.request.as_ref()?.request.as_ref()? {
+        Request::Get(_) | Request::QueryIntent(_) | Request::GetSplitKey(_) => {
+            GroupRequestType::get
+        }
+        Request::Scan(_) => GroupRequestType::scan,
+        Request::Write(_) | Request::LocalTxnWrite(_) => GroupRequestType::write,
+        Request::WriteIntent(_) => GroupRequestType::prepare_intent,
+        Request::CommitIntent(_) => GroupRequestType::commit_intent,
+        Request::ClearIntent(_) => GroupRequestType::clear_intent,
+        Request::Transfer(_) => GroupRequestType::transfer,
+        Request::SplitShard(_) => GroupRequestType::split_shard,
+        Request::MergeShard(_) => GroupRequestType::merge_shard,
+        Request::AcceptShard(_) => GroupRequestType::accept_shard,
+        Request::CreateShard(_) => GroupRequestType::create_shard,
+        Request::DeleteShard(_) => GroupRequestType::delete_shard,
+        Request::MoveReplicas(_) => GroupRequestType::move_replicas,
+        Request::ChangeReplicas(_) => GroupRequestType::change_replicas,
+        Request::WatchKey(_) => GroupRequestType::watch,
+    };
+
+    GROUP_CLIENT_GROUP_REQUEST_TOTAL.get(kind).inc();
+    let bytes = GROUP_CLIENT_GROUP_REQUEST_BYTES_TOTAL.get(kind);
+    bytes.sent.inc_by(request.encoded_len() as u64);
+    Some(GroupRequestMetrics {
+        duration: (kind != GroupRequestType::watch)
+            .then(|| GROUP_CLIENT_GROUP_REQUEST_DURATION_SECONDS.get(kind)),
+        response_bytes: &bytes.received,
+    })
+}
+
 make_static_metric! {
-    pub struct DatabaseRequestTotal: IntCounter {
-        "type" => {
-            get,
-            put,
-            delete,
-        }
+    pub label_enum DatabaseOperation {
+        get,
+        put,
+        delete,
+        scan,
+        commit,
     }
-    pub struct DatabaseRequestDuration: Histogram {
-        "type" => {
-            get,
-            put,
-            delete,
-        }
+    struct DatabaseRequestTotal: IntCounter {
+        "type" => DatabaseOperation,
+    }
+    struct DatabaseRequestDuration: Histogram {
+        "type" => DatabaseOperation,
+    }
+    struct DatabaseOperationBytes: IntCounter {
+        "type" => DatabaseOperation,
+        "direction" => { input, output },
     }
     pub struct DatabaseBytesTotal: IntCounter {
         "type" => {
@@ -298,15 +319,15 @@ make_static_metric! {
 }
 
 lazy_static! {
-    pub static ref CLIENT_DATABASE_REQUEST_TOTAL_VEC: IntCounterVec = register_int_counter_vec!(
+    static ref CLIENT_DATABASE_REQUEST_TOTAL_VEC: IntCounterVec = register_int_counter_vec!(
         "client_database_request_total",
         "The total database requests of client",
         &["type"]
     )
     .unwrap();
-    pub static ref CLIENT_DATABASE_REQUEST_TOTAL: DatabaseRequestTotal =
+    static ref CLIENT_DATABASE_REQUEST_TOTAL: DatabaseRequestTotal =
         DatabaseRequestTotal::from(&CLIENT_DATABASE_REQUEST_TOTAL_VEC);
-    pub static ref CLIENT_DATABASE_REQUEST_DURATION_SECONDS_VEC: HistogramVec =
+    static ref CLIENT_DATABASE_REQUEST_DURATION_SECONDS_VEC: HistogramVec =
         register_histogram_vec!(
             "client_database_request_duration_seconds",
             "The intervals of database requests of client",
@@ -314,8 +335,17 @@ lazy_static! {
             exponential_buckets(0.00005, 1.8, 26).unwrap(),
         )
         .unwrap();
-    pub static ref CLIENT_DATABASE_REQUEST_DURATION_SECONDS: DatabaseRequestDuration =
+    static ref CLIENT_DATABASE_REQUEST_DURATION_SECONDS: DatabaseRequestDuration =
         DatabaseRequestDuration::from(&CLIENT_DATABASE_REQUEST_DURATION_SECONDS_VEC);
+    static ref CLIENT_DATABASE_OPERATION_BYTES_TOTAL_VEC: IntCounterVec =
+        register_int_counter_vec!(
+            "client_database_operation_bytes_total",
+            "Logical input and output payload bytes by database operation",
+            &["type", "direction"],
+        )
+        .unwrap();
+    static ref CLIENT_DATABASE_OPERATION_BYTES_TOTAL: DatabaseOperationBytes =
+        DatabaseOperationBytes::from(&CLIENT_DATABASE_OPERATION_BYTES_TOTAL_VEC);
     pub static ref CLIENT_DATABASE_BYTES_TOTAL_VEC: IntCounterVec = register_int_counter_vec!(
         "client_database_bytes_total",
         "The total bytes of client database receive/send",
@@ -324,6 +354,18 @@ lazy_static! {
     .unwrap();
     pub static ref CLIENT_DATABASE_BYTES_TOTAL: DatabaseBytesTotal =
         DatabaseBytesTotal::from(&CLIENT_DATABASE_BYTES_TOTAL_VEC);
+}
+
+impl DatabaseOperation {
+    pub fn record_request(self, bytes: usize) -> HistogramTimer {
+        CLIENT_DATABASE_REQUEST_TOTAL.get(self).inc();
+        CLIENT_DATABASE_OPERATION_BYTES_TOTAL.get(self).input.inc_by(bytes as u64);
+        CLIENT_DATABASE_REQUEST_DURATION_SECONDS.get(self).start_timer()
+    }
+
+    pub fn record_response(self, bytes: usize) {
+        CLIENT_DATABASE_OPERATION_BYTES_TOTAL.get(self).output.inc_by(bytes as u64);
+    }
 }
 
 #[macro_export]

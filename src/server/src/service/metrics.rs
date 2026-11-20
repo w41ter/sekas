@@ -15,59 +15,50 @@
 use lazy_static::lazy_static;
 use prometheus::*;
 use prometheus_static_metric::make_static_metric;
+use prost::Message;
 use sekas_api::server::v1::*;
 
 make_static_metric! {
-    pub struct GroupRequestTotal: IntCounter {
-        "type" => {
-            get,
-            scan,
-            write,
-            write_intent,
-            commit_intent,
-            clear_intent,
-            transfer,
-            split_shard,
-            merge_shard,
-            accept_shard,
-            create_shard,
-            delete_shard,
-            move_replicas,
-            change_replicas,
-            watch_key,
-        }
+    label_enum GroupRequestType {
+        get,
+        scan,
+        write,
+        write_intent,
+        commit_intent,
+        clear_intent,
+        transfer,
+        split_shard,
+        merge_shard,
+        accept_shard,
+        create_shard,
+        delete_shard,
+        move_replicas,
+        change_replicas,
+        watch_key,
     }
-    pub struct GroupRequestDuration: Histogram {
-        "type" => {
-            get,
-            scan,
-            write,
-            write_intent,
-            commit_intent,
-            clear_intent,
-            transfer,
-            split_shard,
-            merge_shard,
-            accept_shard,
-            create_shard,
-            delete_shard,
-            move_replicas,
-            change_replicas,
-        }
+    struct GroupRequestTotal: IntCounter {
+        "type" => GroupRequestType,
+    }
+    struct GroupRequestDuration: Histogram {
+        "type" => GroupRequestType,
+    }
+    struct GroupRequestBytes: IntCounter {
+        "type" => GroupRequestType,
+        "direction" => { sent, received },
     }
 }
 
 // For group request
 lazy_static! {
-    pub static ref NODE_SERVICE_GROUP_REQUEST_TOTAL_VEC: IntCounterVec = register_int_counter_vec!(
+    static ref NODE_SERVICE_GROUP_REQUEST_TOTAL_VEC: IntCounterVec = register_int_counter_vec!(
         "node_service_group_request_total",
         "The total group requests of node service",
         &["type"]
     )
     .unwrap();
-    pub static ref NODE_SERVICE_GROUP_REQUEST_TOTAL: GroupRequestTotal =
+    static ref NODE_SERVICE_GROUP_REQUEST_TOTAL: GroupRequestTotal =
         GroupRequestTotal::from(&NODE_SERVICE_GROUP_REQUEST_TOTAL_VEC);
-    pub static ref NODE_SERVICE_GROUP_REQUEST_DURATION_SECONDS_VEC: HistogramVec =
+    static ref NODE_SERVICE_GROUP_REQUEST_DURATION_SECONDS_VEC: HistogramVec =
         register_histogram_vec!(
             "node_service_group_request_duration_seconds",
             "The intervals of group requests of node service",
@@ -75,88 +66,60 @@ lazy_static! {
             exponential_buckets(0.00005, 1.8, 26).unwrap(),
         )
         .unwrap();
-    pub static ref NODE_SERVICE_GROUP_REQUEST_DURATION_SECONDS: GroupRequestDuration =
+    static ref NODE_SERVICE_GROUP_REQUEST_DURATION_SECONDS: GroupRequestDuration =
         GroupRequestDuration::from(&NODE_SERVICE_GROUP_REQUEST_DURATION_SECONDS_VEC);
+    static ref NODE_SERVICE_GROUP_REQUEST_BYTES_TOTAL_VEC: IntCounterVec = register_int_counter_vec!(
+        "node_service_group_request_bytes_total",
+        "Encoded Group RPC message bytes by operation and direction, excluding transport framing",
+        &["type", "direction"],
+    )
+    .unwrap();
+    static ref NODE_SERVICE_GROUP_REQUEST_BYTES_TOTAL: GroupRequestBytes =
+        GroupRequestBytes::from(&NODE_SERVICE_GROUP_REQUEST_BYTES_TOTAL_VEC);
 }
 
-pub fn take_group_request_metrics(request: &GroupRequest) -> Option<&'static Histogram> {
+pub(crate) struct GroupRequestMetrics {
+    pub duration: Option<&'static Histogram>,
+    response_bytes: &'static IntCounter,
+}
+
+impl GroupRequestMetrics {
+    pub fn record_response(&self, response: &GroupResponse) {
+        self.response_bytes.inc_by(response.encoded_len() as u64);
+    }
+}
+
+pub(crate) fn record_group_request(request: &GroupRequest) -> Option<GroupRequestMetrics> {
     use group_request_union::Request;
 
-    match request.request.as_ref().and_then(|v| v.request.as_ref()) {
-        Some(Request::Get(_)) => {
-            NODE_SERVICE_GROUP_REQUEST_TOTAL.get.inc();
-            Some(&NODE_SERVICE_GROUP_REQUEST_DURATION_SECONDS.get)
+    let kind = match request.request.as_ref()?.request.as_ref()? {
+        Request::Get(_) | Request::QueryIntent(_) | Request::GetSplitKey(_) => {
+            GroupRequestType::get
         }
-        Some(Request::Scan(_)) => {
-            NODE_SERVICE_GROUP_REQUEST_TOTAL.scan.inc();
-            Some(&NODE_SERVICE_GROUP_REQUEST_DURATION_SECONDS.scan)
-        }
-        Some(Request::Write(_)) => {
-            NODE_SERVICE_GROUP_REQUEST_TOTAL.write.inc();
-            Some(&NODE_SERVICE_GROUP_REQUEST_DURATION_SECONDS.write)
-        }
-        Some(Request::LocalTxnWrite(_)) => {
-            NODE_SERVICE_GROUP_REQUEST_TOTAL.write.inc();
-            Some(&NODE_SERVICE_GROUP_REQUEST_DURATION_SECONDS.write)
-        }
-        Some(Request::AcceptShard(_)) => {
-            NODE_SERVICE_GROUP_REQUEST_TOTAL.accept_shard.inc();
-            Some(&NODE_SERVICE_GROUP_REQUEST_DURATION_SECONDS.accept_shard)
-        }
-        Some(Request::CreateShard(_)) => {
-            NODE_SERVICE_GROUP_REQUEST_TOTAL.create_shard.inc();
-            Some(&NODE_SERVICE_GROUP_REQUEST_DURATION_SECONDS.create_shard)
-        }
-        Some(Request::DeleteShard(_)) => {
-            NODE_SERVICE_GROUP_REQUEST_TOTAL.delete_shard.inc();
-            Some(&NODE_SERVICE_GROUP_REQUEST_DURATION_SECONDS.delete_shard)
-        }
-        Some(Request::ChangeReplicas(_)) => {
-            NODE_SERVICE_GROUP_REQUEST_TOTAL.change_replicas.inc();
-            Some(&NODE_SERVICE_GROUP_REQUEST_DURATION_SECONDS.change_replicas)
-        }
-        Some(Request::Transfer(_)) => {
-            NODE_SERVICE_GROUP_REQUEST_TOTAL.transfer.inc();
-            Some(&NODE_SERVICE_GROUP_REQUEST_DURATION_SECONDS.transfer)
-        }
-        Some(Request::MoveReplicas(_)) => {
-            NODE_SERVICE_GROUP_REQUEST_TOTAL.move_replicas.inc();
-            Some(&NODE_SERVICE_GROUP_REQUEST_DURATION_SECONDS.move_replicas)
-        }
-        Some(Request::WriteIntent(_)) => {
-            NODE_SERVICE_GROUP_REQUEST_TOTAL.write_intent.inc();
-            Some(&NODE_SERVICE_GROUP_REQUEST_DURATION_SECONDS.write_intent)
-        }
-        Some(Request::CommitIntent(_)) => {
-            NODE_SERVICE_GROUP_REQUEST_TOTAL.commit_intent.inc();
-            Some(&NODE_SERVICE_GROUP_REQUEST_DURATION_SECONDS.commit_intent)
-        }
-        Some(Request::ClearIntent(_)) => {
-            NODE_SERVICE_GROUP_REQUEST_TOTAL.clear_intent.inc();
-            Some(&NODE_SERVICE_GROUP_REQUEST_DURATION_SECONDS.clear_intent)
-        }
-        Some(Request::QueryIntent(_)) => {
-            NODE_SERVICE_GROUP_REQUEST_TOTAL.get.inc();
-            Some(&NODE_SERVICE_GROUP_REQUEST_DURATION_SECONDS.get)
-        }
-        Some(Request::WatchKey(_)) => {
-            NODE_SERVICE_GROUP_REQUEST_TOTAL.watch_key.inc();
-            None
-        }
-        Some(Request::GetSplitKey(_)) => {
-            NODE_SERVICE_GROUP_REQUEST_TOTAL.get.inc();
-            Some(&NODE_SERVICE_GROUP_REQUEST_DURATION_SECONDS.get)
-        }
-        Some(Request::SplitShard(_)) => {
-            NODE_SERVICE_GROUP_REQUEST_TOTAL.split_shard.inc();
-            Some(&NODE_SERVICE_GROUP_REQUEST_DURATION_SECONDS.split_shard)
-        }
-        Some(Request::MergeShard(_)) => {
-            NODE_SERVICE_GROUP_REQUEST_TOTAL.merge_shard.inc();
-            Some(&NODE_SERVICE_GROUP_REQUEST_DURATION_SECONDS.merge_shard)
-        }
-        None => None,
-    }
+        Request::Scan(_) => GroupRequestType::scan,
+        Request::Write(_) | Request::LocalTxnWrite(_) => GroupRequestType::write,
+        Request::WriteIntent(_) => GroupRequestType::write_intent,
+        Request::CommitIntent(_) => GroupRequestType::commit_intent,
+        Request::ClearIntent(_) => GroupRequestType::clear_intent,
+        Request::Transfer(_) => GroupRequestType::transfer,
+        Request::SplitShard(_) => GroupRequestType::split_shard,
+        Request::MergeShard(_) => GroupRequestType::merge_shard,
+        Request::AcceptShard(_) => GroupRequestType::accept_shard,
+        Request::CreateShard(_) => GroupRequestType::create_shard,
+        Request::DeleteShard(_) => GroupRequestType::delete_shard,
+        Request::MoveReplicas(_) => GroupRequestType::move_replicas,
+        Request::ChangeReplicas(_) => GroupRequestType::change_replicas,
+        Request::WatchKey(_) => GroupRequestType::watch_key,
+    };
+
+    NODE_SERVICE_GROUP_REQUEST_TOTAL.get(kind).inc();
+    let bytes = NODE_SERVICE_GROUP_REQUEST_BYTES_TOTAL.get(kind);
+    bytes.received.inc_by(request.encoded_len() as u64);
+    Some(GroupRequestMetrics {
+        duration: (kind != GroupRequestType::watch_key)
+            .then(|| NODE_SERVICE_GROUP_REQUEST_DURATION_SECONDS.get(kind)),
+        response_bytes: &bytes.sent,
+    })
 }
 
 macro_rules! simple_node_method {

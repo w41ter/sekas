@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
@@ -412,11 +413,59 @@ impl Txn {
     /// are ordered by the local commit version or the final intent commit
     /// version. Once a user snapshot has been observed, the distributed-intent
     /// path preserves SI by checking write conflicts during intent preparation.
-    pub async fn commit(mut self) -> AppResult<WriteBatchResponse> {
+    pub async fn commit(self) -> AppResult<WriteBatchResponse> {
+        self.commit_with_metrics(Some(DatabaseOperation::commit)).await
+    }
+
+    pub(crate) async fn commit_with_metrics(
+        self,
+        operation: Option<DatabaseOperation>,
+    ) -> AppResult<WriteBatchResponse> {
+        let _commit_timer = CLIENT_TXN_DURATION_SECONDS.commit.start_timer();
+        let payload_bytes = self
+            .puts
+            .iter()
+            .map(|(_, put)| put.key.len() + put.value.len())
+            .chain(self.deletes.iter().map(|(_, delete)| delete.key.len()))
+            .sum();
+        let _timer = operation.map(|op| op.record_request(payload_bytes));
+        CLIENT_TXN_COMMIT_KEYS.observe(self.write_key_count() as f64);
+
+        let response = self.commit_writes(payload_bytes).await?;
+        CLIENT_TXN_COMMITTED_BYTES_TOTAL.commit.inc_by(payload_bytes as u64);
+        if let Some(operation) = operation {
+            let bytes = response
+                .puts
+                .iter()
+                .chain(&response.deletes)
+                .flatten()
+                .map(value_payload_len)
+                .sum();
+            operation.record_response(bytes);
+        }
+        Ok(response)
+    }
+
+    fn write_key_count(&self) -> usize {
+        let count = self.puts.len() + self.deletes.len();
+        if count <= 1 {
+            return count;
+        }
+        let keys: HashSet<_> = self
+            .puts
+            .iter()
+            .map(|(table, put)| (*table, put.key.as_slice()))
+            .chain(self.deletes.iter().map(|(table, delete)| (*table, delete.key.as_slice())))
+            .collect();
+        keys.len()
+    }
+
+    async fn commit_writes(mut self, payload_bytes: usize) -> AppResult<WriteBatchResponse> {
         self.validate_limits()?;
         if self.start_version.get().is_none()
             && let Some(resp) = self.try_commit_local_txn().await?
         {
+            CLIENT_TXN_COMMITTED_BYTES_TOTAL.local.inc_by(payload_bytes as u64);
             return Ok(resp);
         }
 
@@ -438,64 +487,49 @@ impl Txn {
 
     async fn try_commit_local_txn(&mut self) -> Result<Option<WriteBatchResponse>> {
         let mut retry_state = RetryState::with_deadline_opt(self.deadline);
+        let mut local_timer = None;
         let response = loop {
-            let prepare_start = Instant::now();
-            let Some(mut group) = (match self.prepare_local_txn_group() {
+            let group = {
+                record_latency!(&CLIENT_TXN_LOCAL_PREPARE_GROUP_DURATION_SECONDS);
+                self.prepare_local_txn_group()
+            };
+            let Some(mut group) = (match group {
                 Ok(group) => group,
                 Err(err) if can_retry_local_txn(&err) => {
-                    CLIENT_TXN_LOCAL_PREPARE_GROUP_DURATION_SECONDS
-                        .observe(prepare_start.elapsed().as_secs_f64());
                     trace!("retry local txn route: {err:?}");
                     retry_state.retry(err).await?;
                     continue;
                 }
                 Err(err) => return Err(err),
             }) else {
-                CLIENT_TXN_LOCAL_PREPARE_GROUP_DURATION_SECONDS
-                    .observe(prepare_start.elapsed().as_secs_f64());
                 return Ok(None);
             };
-            CLIENT_TXN_LOCAL_PREPARE_GROUP_DURATION_SECONDS
-                .observe(prepare_start.elapsed().as_secs_f64());
-            let alloc_start = Instant::now();
-            group.request.commit_version =
-                self.db.client.root_client().alloc_txn_id(1, retry_state.timeout()).await?;
-            CLIENT_TXN_LOCAL_ALLOC_VERSION_DURATION_SECONDS
-                .observe(alloc_start.elapsed().as_secs_f64());
+            local_timer.get_or_insert_with(|| CLIENT_TXN_DURATION_SECONDS.local.start_timer());
+            group.request.commit_version = {
+                record_latency!(&CLIENT_TXN_LOCAL_ALLOC_VERSION_DURATION_SECONDS);
+                self.db.client.root_client().alloc_txn_id(1, retry_state.timeout()).await?
+            };
 
             let mut client = GroupClient::new(group.group_state, self.db.client.clone());
             client.set_timeout_opt(retry_state.timeout());
             let request = Request::LocalTxnWrite(group.request);
-            let group_request_start = Instant::now();
-            match client.request(&request).await {
-                Ok(Response::LocalTxnWrite(resp)) => {
-                    CLIENT_TXN_LOCAL_GROUP_REQUEST_DURATION_SECONDS
-                        .observe(group_request_start.elapsed().as_secs_f64());
-                    break resp;
-                }
+            let response = {
+                record_latency!(&CLIENT_TXN_LOCAL_GROUP_REQUEST_DURATION_SECONDS);
+                client.request(&request).await
+            };
+            match response {
+                Ok(Response::LocalTxnWrite(resp)) => break resp,
                 Ok(other) => {
-                    CLIENT_TXN_LOCAL_GROUP_REQUEST_DURATION_SECONDS
-                        .observe(group_request_start.elapsed().as_secs_f64());
                     return Err(Error::Internal(
                         format!("invalid response {other:?}, `LocalTxnWrite` is required").into(),
                     ));
                 }
-                Err(Error::LocalTxnNotAllowed) => {
-                    CLIENT_TXN_LOCAL_GROUP_REQUEST_DURATION_SECONDS
-                        .observe(group_request_start.elapsed().as_secs_f64());
-                    return Ok(None);
-                }
+                Err(Error::LocalTxnNotAllowed) => return Ok(None),
                 Err(err) if can_retry_local_txn(&err) => {
-                    CLIENT_TXN_LOCAL_GROUP_REQUEST_DURATION_SECONDS
-                        .observe(group_request_start.elapsed().as_secs_f64());
                     trace!("retry local txn: {err:?}");
                     retry_state.retry(err).await?;
                 }
-                Err(err) => {
-                    CLIENT_TXN_LOCAL_GROUP_REQUEST_DURATION_SECONDS
-                        .observe(group_request_start.elapsed().as_secs_f64());
-                    return Err(err);
-                }
+                Err(err) => return Err(err),
             }
         };
 
@@ -609,29 +643,31 @@ impl Txn {
         version: Option<u64>,
     ) -> AppResult<Option<Value>> {
         CLIENT_DATABASE_BYTES_TOTAL.rx.inc_by(key.len() as u64);
-        CLIENT_DATABASE_REQUEST_TOTAL.get.inc();
-        record_latency!(&CLIENT_DATABASE_REQUEST_DURATION_SECONDS.get);
+        let _timer = DatabaseOperation::get.record_request(key.len());
+        let value = self.get_raw_value_inner(table_id, &key, options, version).await?;
+        let bytes = value.as_ref().map_or(0, value_payload_len);
+        CLIENT_DATABASE_BYTES_TOTAL.tx.inc_by(bytes as u64);
+        DatabaseOperation::get.record_response(bytes);
+        Ok(value)
+    }
+
+    async fn get_raw_value_inner(
+        &self,
+        table_id: u64,
+        key: &[u8],
+        options: TxnReadOptions,
+        version: Option<u64>,
+    ) -> AppResult<Option<Value>> {
         if options.overlay_writes
-            && let Some(value) = self.local_write_value(table_id, &key).await?
+            && let Some(value) = self.local_write_value(table_id, key).await?
         {
-            CLIENT_DATABASE_BYTES_TOTAL
-                .tx
-                .inc_by(value.content.as_ref().map(Vec::len).unwrap_or_default() as u64);
             return Ok(Some(value));
         }
         let mut retry_state = RetryState::with_deadline_opt(self.deadline);
 
         loop {
-            match self.get_inner(table_id, &key, retry_state.timeout(), version).await {
-                Ok(value) => {
-                    CLIENT_DATABASE_BYTES_TOTAL.tx.inc_by(
-                        value
-                            .as_ref()
-                            .map(|v| v.content.as_ref().map(Vec::len).unwrap_or_default())
-                            .unwrap_or_default() as u64,
-                    );
-                    return Ok(value);
-                }
+            match self.get_inner(table_id, key, retry_state.timeout(), version).await {
+                Ok(value) => return Ok(value),
                 Err(err) => {
                     retry_state.retry(err).await?;
                 }
@@ -715,11 +751,28 @@ impl Txn {
     /// NOTE: This request will be sent to node servers, and the put/delete
     /// requests already buffered in this TXN will be ignored.
     pub async fn scan(&self, mut request: ShardScanRequest) -> AppResult<ShardScanResponse> {
+        let bytes = request.prefix.as_ref().map_or_else(
+            || {
+                request.start_key.as_ref().map_or(0, Vec::len)
+                    + request.end_key.as_ref().map_or(0, Vec::len)
+            },
+            Vec::len,
+        );
+        let _timer = DatabaseOperation::scan.record_request(bytes);
         let mut retry_state = RetryState::with_deadline_opt(self.deadline);
         loop {
             match self.scan_inner(&mut request, retry_state.timeout()).await {
-                Ok(value) => {
-                    return Ok(value);
+                Ok(response) => {
+                    let bytes = response
+                        .data
+                        .iter()
+                        .map(|set| {
+                            set.user_key.len()
+                                + set.values.iter().map(value_payload_len).sum::<usize>()
+                        })
+                        .sum();
+                    DatabaseOperation::scan.record_response(bytes);
+                    return Ok(response);
                 }
                 Err(err) => {
                     retry_state.retry(err).await?;
@@ -802,6 +855,7 @@ impl Txn {
         let timeout = self.deadline.map(|d| d.saturating_duration_since(Instant::now()));
         self.start_version
             .get_or_try_init(|| async {
+                record_latency!(&CLIENT_TXN_PHASE_DURATION_SECONDS.allocate_start_version);
                 self.db.client.root_client().alloc_txn_id(1, timeout).await
             })
             .await
@@ -922,6 +976,10 @@ fn push_local_txn_group(
         *group_state = Some(target_group);
         true
     }
+}
+
+fn value_payload_len(value: &Value) -> usize {
+    value.content.as_ref().map_or(0, Vec::len)
 }
 
 fn approx_write_size(write: &WriteContext) -> usize {
@@ -1076,7 +1134,11 @@ impl WriteBatchContext {
         let deadline_ms = self.async_deadline_ms();
         let txn_table = TxnStateTable::new(self.client.clone(), self.retry_state.timeout());
 
-        let begin = txn_table.begin_async_txn(self.start_version, deadline_ms, keys, total_size);
+        let start_version = self.start_version;
+        let begin = async {
+            record_latency!(&CLIENT_TXN_PHASE_DURATION_SECONDS.begin);
+            txn_table.begin_async_txn(start_version, deadline_ms, keys, total_size).await
+        };
         let prepare = self.prepare_async_intents(deadline_ms);
         if let Err(err) = tokio::try_join!(begin, prepare) {
             self.abort_async_after_error().await?;
@@ -1094,9 +1156,12 @@ impl WriteBatchContext {
             .max()
             .unwrap_or(self.start_version.saturating_add(1));
 
-        TxnStateTable::new(self.client.clone(), self.retry_state.timeout())
-            .commit_async_txn(self.start_version, self.commit_version)
-            .await?;
+        {
+            record_latency!(&CLIENT_TXN_PHASE_DURATION_SECONDS.commit);
+            TxnStateTable::new(self.client.clone(), self.retry_state.timeout())
+                .commit_async_txn(self.start_version, self.commit_version)
+                .await?;
+        }
         let resp = self.take_response(self.commit_version);
         self.detach_commit_intents();
         Ok(Some(resp))
@@ -1104,7 +1169,11 @@ impl WriteBatchContext {
 
     async fn abort_async_after_error(&mut self) -> Result<()> {
         let txn_table = TxnStateTable::new(self.client.clone(), Some(TXN_CLEANUP_TIMEOUT));
-        match txn_table.abort_async_txn(self.start_version).await {
+        let result = {
+            record_latency!(&CLIENT_TXN_PHASE_DURATION_SECONDS.abort);
+            txn_table.abort_async_txn(self.start_version).await
+        };
+        match result {
             Ok(()) => {}
             Err(Error::NotFound(_)) => {
                 let _ = txn_table.abort_txn_if_absent(self.start_version).await?;
@@ -1147,6 +1216,7 @@ impl WriteBatchContext {
     }
 
     async fn prepare_async_intents(&mut self, deadline_ms: u64) -> Result<()> {
+        record_latency!(&CLIENT_TXN_PHASE_DURATION_SECONDS.prepare);
         loop {
             if !self.prepare_intents_inner_with_async(true, deadline_ms).await? {
                 return Ok(());
@@ -1215,6 +1285,7 @@ impl WriteBatchContext {
     }
 
     async fn finish_commit_intents(&mut self) -> Result<()> {
+        record_latency!(&CLIENT_TXN_PHASE_DURATION_SECONDS.finish_commit_intents);
         self.num_doing_writes = self.writes.len();
         for write in &mut self.writes {
             write.done = false;
@@ -1231,6 +1302,7 @@ impl WriteBatchContext {
     }
 
     async fn alloc_txn_version(&mut self) -> Result<u64> {
+        record_latency!(&CLIENT_TXN_PHASE_DURATION_SECONDS.allocate_version);
         let root_client = self.client.root_client();
         loop {
             match root_client.alloc_txn_id(1, self.retry_state.timeout()).await {
@@ -1245,6 +1317,7 @@ impl WriteBatchContext {
     }
 
     async fn start_txn(&mut self) -> Result<()> {
+        record_latency!(&CLIENT_TXN_PHASE_DURATION_SECONDS.begin);
         trace!("start txn, version={}", self.start_version);
         TxnStateTable::new(self.client.clone(), self.retry_state.timeout())
             .begin_txn(self.start_version)
@@ -1371,6 +1444,7 @@ impl WriteBatchContext {
     }
 
     async fn prepare_intents(&mut self) -> Result<()> {
+        record_latency!(&CLIENT_TXN_PHASE_DURATION_SECONDS.prepare);
         loop {
             if !self.prepare_intents_inner().await? {
                 return Ok(());
@@ -1482,6 +1556,7 @@ impl WriteBatchContext {
     }
 
     async fn commit_txn(&mut self) -> Result<()> {
+        record_latency!(&CLIENT_TXN_PHASE_DURATION_SECONDS.commit);
         trace!(
             "commit txn update txn table, start version: {}, commit version: {}",
             self.start_version, self.commit_version
@@ -1492,12 +1567,14 @@ impl WriteBatchContext {
     }
 
     async fn abort_txn(&mut self) -> Result<()> {
+        record_latency!(&CLIENT_TXN_PHASE_DURATION_SECONDS.abort);
         TxnStateTable::new(self.client.clone(), Some(TXN_CLEANUP_TIMEOUT))
             .abort_txn(self.start_version)
             .await
     }
 
     fn detach_commit_intents(&self) {
+        record_latency!(&CLIENT_TXN_PHASE_DURATION_SECONDS.dispatch_commit_intents);
         // A successful commit must publish cleanup for every prepared intent;
         // `done` only tracks progress in the synchronous retry paths below.
         let groups = match self.intent_key_groups(None) {
@@ -1586,6 +1663,7 @@ impl WriteBatchContext {
     }
 
     async fn clear_intents(&mut self) -> Result<()> {
+        record_latency!(&CLIENT_TXN_PHASE_DURATION_SECONDS.clear_intents);
         let mut retry_state = RetryState::new(TXN_CLEANUP_TIMEOUT);
         loop {
             match self.clear_intents_inner(retry_state.timeout()).await {

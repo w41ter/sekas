@@ -27,7 +27,7 @@ use vaelo::{Status, StatusCode as Code};
 
 use crate::metrics::*;
 use crate::rpc::{NodeClient, RouterGroupState, RpcTimeout};
-use crate::{Error, Result, SekasClient, record_latency_opt};
+use crate::{Error, Result, SekasClient};
 
 #[derive(Clone, Debug, Default)]
 struct InvokeOpt<'a> {
@@ -376,7 +376,6 @@ impl GroupClient {
 impl GroupClient {
     pub async fn request(&mut self, request: &Request) -> Result<Response> {
         let op = |ctx: InvokeContext, client: NodeClient| {
-            let latency = take_group_request_metrics(request);
             let build_start = Instant::now();
             let req = GroupRequest {
                 group_id: ctx.group_id,
@@ -385,7 +384,6 @@ impl GroupClient {
             };
             GROUP_CLIENT_RPC_BUILD_DURATION_SECONDS.observe(build_start.elapsed().as_secs_f64());
             async move {
-                record_latency_opt!(latency);
                 client
                     .unary_group_request(RpcTimeout::new(ctx.timeout, req))
                     .await

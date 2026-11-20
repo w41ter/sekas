@@ -14,6 +14,7 @@
 
 use sekas_api::server::v1::*;
 
+use crate::metrics::DatabaseOperation;
 use crate::range::{RangeRequest, RangeStream};
 use crate::txn::WatchKeyStream;
 use crate::{AppError, AppResult, SekasClient, Txn, WriteBuilder};
@@ -72,18 +73,20 @@ impl Database {
     /// A helper function to delete a key.
     #[inline]
     pub async fn delete(&self, table_id: u64, key: Vec<u8>) -> AppResult<()> {
+        let _timer = DatabaseOperation::delete.record_request(key.len());
         let mut txn = Txn::new(self.clone());
         txn.delete(table_id, WriteBuilder::new(key).ensure_delete());
-        txn.commit().await?;
+        txn.commit_with_metrics(None).await?;
         Ok(())
     }
 
     /// A helper function to put a key value.
     #[inline]
     pub async fn put(&self, table_id: u64, key: Vec<u8>, value: Vec<u8>) -> AppResult<()> {
+        let _timer = DatabaseOperation::put.record_request(key.len() + value.len());
         let mut txn = Txn::new(self.clone());
         txn.put(table_id, WriteBuilder::new(key).put(value)?);
-        txn.commit().await?;
+        txn.commit_with_metrics(None).await?;
         Ok(())
     }
 

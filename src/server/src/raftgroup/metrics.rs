@@ -61,6 +61,11 @@ lazy_static! {
     .unwrap();
     pub static ref RAFTGROUP_PROPOSE_TOTAL: ProposeTotal =
         ProposeTotal::from(&RAFTGROUP_PROPOSE_TOTAL_VEC);
+    pub static ref RAFTGROUP_PROPOSE_BYTES_TOTAL: IntCounter = register_int_counter!(
+        "raftgroup_propose_bytes_total",
+        "The encoded payload bytes of proposals accepted by the local Raft node",
+    )
+    .unwrap();
 }
 
 lazy_static! {

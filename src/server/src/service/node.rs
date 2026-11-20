@@ -17,8 +17,8 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use async_stream::try_stream;
-use futures::StreamExt;
 use futures::channel::mpsc;
+use futures::{StreamExt, TryStreamExt};
 use log::trace;
 use sekas_api::server::v1::group_request_union::Request as ShardRequest;
 use sekas_api::server::v1::group_response_union::Response as ShardResponse;
@@ -48,6 +48,7 @@ impl futures::Stream for GroupStream {
 fn handle_group_request(
     server: Server,
     request: GroupRequest,
+    duration: Option<&'static prometheus::Histogram>,
 ) -> impl futures::Stream<Item = Result<GroupResponse, Status>> {
     try_stream! {
         let is_watch_key = {
@@ -62,11 +63,10 @@ fn handle_group_request(
             matches!(inner_request, ShardRequest::WatchKey(_))
         };
         if !is_watch_key {
-            yield handle_unary_group_request(server, request).await;
+            yield handle_unary_group_request(server, request, duration).await;
             return;
         }
 
-        record_latency_opt!(take_group_request_metrics(&request));
         let mut exec_ctx = ExecCtx::default();
         let inner_request = request
             .request
@@ -186,8 +186,12 @@ fn handle_group_request(
     }
 }
 
-async fn handle_unary_group_request(server: Server, request: GroupRequest) -> GroupResponse {
-    record_latency_opt!(take_group_request_metrics(&request));
+async fn handle_unary_group_request(
+    server: Server,
+    request: GroupRequest,
+    duration: Option<&'static prometheus::Histogram>,
+) -> GroupResponse {
+    record_latency_opt!(duration);
     let inner_request = match request.request.as_ref().and_then(|request| request.request.as_ref())
     {
         Some(request) => request,
@@ -217,7 +221,13 @@ impl node_server::Node for Server {
         let span = span_from_rpc_request(&request, span_name::GRPC_NODE_UNARY_GROUP);
         let request = request.into_inner();
         maybe_in_span(span, async move {
-            Ok(Response::new(handle_unary_group_request(self.clone(), request).await))
+            let metrics = record_group_request(&request);
+            let duration = metrics.as_ref().and_then(|metrics| metrics.duration);
+            let response = handle_unary_group_request(self.clone(), request, duration).await;
+            if let Some(metrics) = metrics {
+                metrics.record_response(&response);
+            }
+            Ok(Response::new(response))
         })
         .await
     }
@@ -227,8 +237,16 @@ impl node_server::Node for Server {
         request: Request<GroupRequest>,
     ) -> Result<Response<Self::GroupStream>, Status> {
         let span = span_from_rpc_request(&request, span_name::GRPC_NODE_GROUP);
+        let request = request.into_inner();
+        let metrics = record_group_request(&request);
+        let duration = metrics.as_ref().and_then(|metrics| metrics.duration);
+        let stream = handle_group_request(self.clone(), request, duration);
         let group_response_stream = GroupStream {
-            inner: Box::pin(handle_group_request(self.clone(), request.into_inner())),
+            inner: Box::pin(stream.inspect_ok(move |response| {
+                if let Some(metrics) = &metrics {
+                    metrics.record_response(response);
+                }
+            })),
         };
         maybe_in_span(span, async move {
             Ok(Response::new(Box::pin(group_response_stream) as Self::GroupStream))

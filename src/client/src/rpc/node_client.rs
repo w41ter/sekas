@@ -17,12 +17,14 @@ use std::net::SocketAddr;
 use std::pin::Pin;
 use std::time::Duration;
 
-use futures::{Stream, StreamExt};
+use futures::{Stream, TryStreamExt};
 use prost::Message;
 use sekas_api::server::v1::*;
 use vaelo::{IntoRequest, RpcChannel, Status};
 
 use crate::error::rpc_status;
+use crate::metrics::record_group_request;
+use crate::record_latency_opt;
 use crate::trace::inject_trace_context;
 
 #[derive(Debug, Clone)]
@@ -112,13 +114,18 @@ impl Client {
     ) -> Result<Pin<Box<dyn Stream<Item = Result<GroupResponse, Status>> + Send>>, Status> {
         let client = self.client.clone();
         let (req, timeout) = req.into_timed_request();
+        let metrics = record_group_request(req.get_ref());
         let call = client.group(inject_trace_context(req));
         let res = match timeout {
             Some(timeout) => call.timeout(timeout).await,
             None => call.await,
         }
         .map_err(rpc_status)?;
-        Ok(Box::pin(res.into_inner().map(|result| result.map_err(rpc_status))))
+        Ok(Box::pin(res.into_inner().map_err(rpc_status).inspect_ok(move |response| {
+            if let Some(metrics) = &metrics {
+                metrics.record_response(response);
+            }
+        })))
     }
 
     pub async fn unary_group_request(
@@ -127,12 +134,17 @@ impl Client {
     ) -> Result<GroupResponse, Status> {
         let client = self.client.clone();
         let (req, timeout) = req.into_timed_request();
+        let metrics = record_group_request(req.get_ref());
+        record_latency_opt!(metrics.as_ref().and_then(|metrics| metrics.duration));
         let call = client.unary_group(inject_trace_context(req));
         let res = match timeout {
             Some(timeout) => call.timeout(timeout).await,
             None => call.await,
         }
         .map_err(rpc_status)?;
+        if let Some(metrics) = metrics {
+            metrics.record_response(res.get_ref());
+        }
         Ok(res.into_inner())
     }
 
@@ -140,6 +152,7 @@ impl Client {
     pub fn detach_unary_group_request(&self, req: impl IntoTimedRequest<GroupRequest>) {
         let client = self.client.clone();
         let (req, timeout) = req.into_timed_request();
+        record_group_request(req.get_ref());
         let call = client.unary_group(inject_trace_context(req));
         match timeout {
             Some(timeout) => call.timeout(timeout).start().detach(),
