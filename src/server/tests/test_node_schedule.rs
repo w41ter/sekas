@@ -15,6 +15,7 @@
 mod helper;
 
 use std::collections::HashSet;
+use std::time::Duration;
 
 use helper::context::TestContext;
 use log::info;
@@ -256,4 +257,38 @@ async fn node_schedule_cure_group() {
     info!("cure group by replace offline voters with new replicas");
     ctx.wait_election_timeout().await;
     c.assert_group_not_contains_node(group_id, offline_node_id).await;
+
+    let leader_node = c.get_group_leader_node_id(group_id).await.expect("group leader node");
+    let client = node_client_with_retry(&nodes[&leader_node]).await;
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let heartbeat = client
+                .root_heartbeat(HeartbeatRequest {
+                    piggybacks: vec![PiggybackRequest {
+                        info: Some(piggyback_request::Info::CollectScheduleState(
+                            CollectScheduleStateRequest {},
+                        )),
+                    }],
+                    ..Default::default()
+                })
+                .await
+                .unwrap();
+            let Some(piggyback_response::Info::CollectScheduleState(states)) =
+                &heartbeat.piggybacks[0].info
+            else {
+                panic!("missing schedule state");
+            };
+            if states.schedule_states.iter().any(|state| {
+                state.group_id == group_id
+                    && state.incoming_replicas.is_empty()
+                    && state.outgoing_replicas.is_empty()
+                    && state.replica_repair.is_none()
+            }) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .expect("completed group repair should clear the replica change record");
 }

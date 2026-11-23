@@ -21,7 +21,8 @@ use rand::seq::SliceRandom;
 use sekas_api::server::v1::{GroupDesc, ShardDesc};
 
 use super::{
-    AllocSource, BalanceDecision, BalanceStatus, CountBalance, ReallocateShard, ShardAction,
+    AllocSource, BalanceDecision, BalanceStatus, BalanceThresholds, CountBalance, ReallocateShard,
+    ShardAction,
 };
 use crate::Result;
 use crate::constants::ROOT_GROUP_ID;
@@ -47,11 +48,12 @@ impl<T: AllocSource> ShardCountPolicy<T> {
         stats: &ClusterStats,
         move_size_limit: u64,
         permits: impl Fn(&GroupDesc, &GroupDesc, &ShardDesc) -> bool,
-    ) -> (Vec<ShardAction>, BalanceDecision) {
+    ) -> (Vec<ShardAction>, BalanceDecision, BalanceThresholds) {
         let mut candidates: Vec<_> =
             groups.iter().map(|group| (group, group.shards.len() as u64)).collect();
         let balance = CountBalance::new(&candidates, |_| 0.5);
         candidates.sort_by_key(|(_, count)| Reverse(*count));
+        let thresholds = balance.thresholds(&candidates);
         debug!(
             "group ranked by shard count. mean={}, scored_groups={:?}",
             balance.mean,
@@ -76,11 +78,11 @@ impl<T: AllocSource> ShardCountPolicy<T> {
                     "move shard {}: g{} -> g{}",
                     action.shard, action.source_group, action.target_group
                 ));
-                return (vec![ShardAction::Migrate(action)], decision);
+                return (vec![ShardAction::Migrate(action)], decision, thresholds);
             }
         }
 
-        (vec![], balance.no_action("user_groups", &candidates))
+        (vec![], balance.no_action("user_groups", &candidates), thresholds)
     }
 
     fn rebalance_target(
@@ -196,15 +198,33 @@ mod tests {
         stats.handle_group_stats(&GroupStats {
             group_id: 1,
             shard_stats: vec![
-                ShardStats { shard_id: 1, table_id: 1024, shard_size: 2048, traffic: None },
-                ShardStats { shard_id: 2, table_id: 1024, shard_size: 512, traffic: None },
-                ShardStats { shard_id: 3, table_id: 1024, shard_size: 512, traffic: None },
+                ShardStats {
+                    shard_id: 1,
+                    table_id: 1024,
+                    shard_size: 2048,
+                    traffic: None,
+                    range: None,
+                },
+                ShardStats {
+                    shard_id: 2,
+                    table_id: 1024,
+                    shard_size: 512,
+                    traffic: None,
+                    range: None,
+                },
+                ShardStats {
+                    shard_id: 3,
+                    table_id: 1024,
+                    shard_size: 512,
+                    traffic: None,
+                    range: None,
+                },
             ],
             ..Default::default()
         });
         stats.handle_split_shard(2);
         assert_eq!(policy.preferred_remove_shard(&source, &stats, 1024, |_| true).unwrap().id, 3);
-        stats.handle_move_shard(3, 2);
+        stats.handle_move_shard(3, 1, 2);
         assert_eq!(policy.preferred_remove_shard(&source, &stats, 1024, |_| true).unwrap().id, 1);
         stats.handle_merge_shard(1, 4);
         assert!(policy.preferred_remove_shard(&source, &stats, 1024, |_| true).is_none());

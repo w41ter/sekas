@@ -34,6 +34,8 @@ struct TrafficCounters {
     writes: AtomicU64,
     read_bytes: AtomicU64,
     write_bytes: AtomicU64,
+    read_units: AtomicU64,
+    write_units: AtomicU64,
 }
 
 impl Default for ReplicaTraffic {
@@ -54,8 +56,12 @@ impl ReplicaTraffic {
                 writes: counters.writes.load(Relaxed),
                 read_bytes: counters.read_bytes.load(Relaxed),
                 write_bytes: counters.write_bytes.load(Relaxed),
+                read_units: Some(counters.read_units.load(Relaxed)),
+                write_units: Some(counters.write_units.load(Relaxed)),
             },
-            None => ShardTraffic::default(),
+            None => {
+                ShardTraffic { read_units: Some(0), write_units: Some(0), ..Default::default() }
+            }
         }
     }
 
@@ -135,6 +141,7 @@ impl ReplicaTraffic {
         self.update(shard_id, |counters| {
             counters.reads.fetch_add(1, Relaxed);
             counters.read_bytes.fetch_add(bytes, Relaxed);
+            counters.read_units.fetch_add(request_units(bytes), Relaxed);
         });
     }
 
@@ -142,6 +149,7 @@ impl ReplicaTraffic {
         self.update(shard_id, |counters| {
             counters.writes.fetch_add(1, Relaxed);
             counters.write_bytes.fetch_add(bytes, Relaxed);
+            counters.write_units.fetch_add(request_units(bytes), Relaxed);
         });
     }
 
@@ -153,6 +161,10 @@ impl ReplicaTraffic {
         }
         record(&shards.entry(shard_id).or_default());
     }
+}
+
+fn request_units(bytes: u64) -> u64 {
+    bytes.div_ceil(1024).max(1)
 }
 
 fn value_bytes(value: &Value) -> u64 {
@@ -200,7 +212,8 @@ mod tests {
                 ..Default::default()
             }),
         );
-        assert_eq!(traffic.snapshot(1), ShardTraffic::default());
+        assert_eq!(traffic.snapshot(1).write_units, Some(0));
+        assert_eq!(traffic.snapshot(1).writes, 0);
 
         traffic.record(
             &req,
@@ -225,11 +238,39 @@ mod tests {
         );
         assert_eq!(
             traffic.snapshot(1),
-            ShardTraffic { writes: 2, write_bytes: 12, ..Default::default() }
+            ShardTraffic {
+                writes: 2,
+                write_bytes: 12,
+                read_units: Some(0),
+                write_units: Some(2),
+                ..Default::default()
+            }
         );
         assert_eq!(
             traffic.snapshot(2),
-            ShardTraffic { writes: 1, write_bytes: 3, ..Default::default() }
+            ShardTraffic {
+                writes: 1,
+                write_bytes: 3,
+                read_units: Some(0),
+                write_units: Some(1),
+                ..Default::default()
+            }
         );
+    }
+
+    #[test]
+    fn request_units_round_each_request() {
+        let traffic = ReplicaTraffic::default();
+        for bytes in [0, 1, 1024, 1025, 2048, 2049] {
+            traffic.record_read(1, bytes);
+        }
+        assert_eq!(traffic.snapshot(1).read_units, Some(10));
+        traffic.record_write(1, 1);
+        traffic.record_write(1, 2047);
+        traffic.record_write(2, 1024);
+        traffic.record_write(2, 1024);
+        assert_eq!(traffic.snapshot(1).write_bytes, traffic.snapshot(2).write_bytes);
+        assert_eq!(traffic.snapshot(1).write_units, Some(3));
+        assert_eq!(traffic.snapshot(2).write_units, Some(2));
     }
 }

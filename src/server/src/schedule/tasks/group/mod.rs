@@ -23,7 +23,7 @@ mod watch_replica_states;
 use std::collections::HashMap;
 
 use sekas_api::ALLOC_REPLICA_EPOCH_NOT_MATCH_KEYWORD;
-use sekas_api::server::v1::{ReplicaDesc, ScheduleState};
+use sekas_api::server::v1::{ReplicaDesc, ReplicaRepair, ScheduleState};
 
 pub use self::durable::DurableGroup;
 pub use self::migration::ReplicaMigration;
@@ -57,6 +57,7 @@ pub struct GroupLockTable {
 
 #[derive(Default)]
 pub struct GroupLocks {
+    task_id: u64,
     replicas: Vec<u64>,
 }
 
@@ -100,11 +101,26 @@ impl GroupLockTable {
                 epoch,
                 incoming_replicas: incoming_replicas.to_owned(),
                 outgoing_replicas: outgoing_replicas.to_owned(),
+                replica_repair: None,
             };
             self.states_updated = true;
             self.states.insert(task_id, state);
-            Some(GroupLocks { replicas: replicas.to_owned() })
+            Some(GroupLocks { task_id, replicas: replicas.to_owned() })
         }
+    }
+
+    pub fn replica_repair(
+        &mut self,
+        task_id: u64,
+        epoch: u64,
+        replicas: &[u64],
+        repair: ReplicaRepair,
+        creates_replicas: bool,
+    ) -> Option<GroupLocks> {
+        let incoming = if creates_replicas { &repair.incoming_replicas[..] } else { &[] };
+        let locks = self.config_change(task_id, epoch, replicas, incoming, &[])?;
+        self.states.get_mut(&task_id).unwrap().replica_repair = Some(repair);
+        Some(locks)
     }
 
     pub fn config_change(
@@ -132,8 +148,9 @@ impl GroupLockTable {
         self.config_change.is_some()
     }
 
-    pub fn release(&mut self, task_id: u64, locked: GroupLocks) {
-        for r in locked.replicas {
+    pub fn release(&mut self, locks: GroupLocks) {
+        let GroupLocks { task_id, replicas } = locks;
+        for r in replicas {
             self.locked_replicas.remove(&r);
         }
         if self.states.remove(&task_id).is_some() {
@@ -155,12 +172,16 @@ impl GroupLockTable {
             group_id: self.group_id,
             incoming_replicas: vec![],
             outgoing_replicas: vec![],
+            replica_repair: None,
         };
         for state in self.states.values() {
             accumulated_state.incoming_replicas.extend(state.incoming_replicas.iter().cloned());
             accumulated_state.outgoing_replicas.extend(state.outgoing_replicas.iter().cloned());
             if state.epoch > accumulated_state.epoch {
                 accumulated_state.epoch = state.epoch;
+            }
+            if state.replica_repair.is_some() {
+                accumulated_state.replica_repair.clone_from(&state.replica_repair);
             }
         }
         Some(accumulated_state)
@@ -169,6 +190,7 @@ impl GroupLockTable {
 
 impl ActionTaskWithLocks {
     pub fn new(locks: GroupLocks, inner: ActionTask) -> Self {
+        debug_assert_eq!(locks.task_id, inner.id());
         ActionTaskWithLocks { inner, locks }
     }
 }
@@ -184,7 +206,7 @@ impl Task for ActionTaskWithLocks {
     async fn poll(&mut self, ctx: &mut ScheduleContext<'_>) -> TaskState {
         let state = self.inner.poll(ctx).await;
         if matches!(state, TaskState::Terminated) {
-            ctx.group_lock_table.release(self.inner.id(), std::mem::take(&mut self.locks));
+            ctx.group_lock_table.release(std::mem::take(&mut self.locks));
         }
         state
     }

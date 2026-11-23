@@ -110,6 +110,7 @@ impl HelpStatement {
     fn display_topic(topic: &str) -> String {
         match topic {
             "create" | "CREATE" => Self::display_create_topic(),
+            "config" | "CONFIG" => Self::display_config_topic(),
             "show" | "SHOW" => Self::display_show_topic(),
             "put" | "PUT" => Self::display_put_topic(),
             "delete" | "DELETE" => Self::display_delete_topic(),
@@ -118,6 +119,26 @@ impl HelpStatement {
                 format!("unknown command `{}`. Try `help`?", topic)
             }
         }
+    }
+
+    fn display_config_topic() -> String {
+        r##"
+CONFIG "balancer.priority" "read_units,write_units,disk";
+    Set the highest-priority placement policies in order. Policies omitted from
+    the list retain their default relative order after the configured policies.
+    Default priority is read_units, write_units, cpu, memory, leader_count,
+    disk, shard_size, replica_count, shard_count.
+
+CONFIG "balancer.deadline.disk" "85";
+    Set a hard deadline for a policy. Resource deadlines use percentages.
+    Shard size uses bytes, traffic uses request units per second, and count
+    policies use counts. Use "unlimited" to clear a deadline.
+    CPU, memory, and disk default to 90%. Other policies default to unlimited.
+
+SHOW balancer;
+    Display each policy's priority, deadline, and latest decision.
+"##
+        .to_owned()
     }
 
     fn display_create_topic() -> String {
@@ -143,8 +164,8 @@ SHOW <property:ident> [FROM <name:ident>]
     - groups
     - replicas FROM <group-id>
     - shards FROM <group-id>
-    - nodes
-    - balancer         Last decision and inputs for each root balancing policy
+    - nodes            Node status and CPU, memory, and disk usage and capacity
+    - balancer         Policy priority, deadline, and latest decision
     - scheduler        Root scheduler summary and background job count
     - scheduler_tasks  Outstanding root reconcile tasks
 
@@ -192,6 +213,7 @@ Note:
 List of commands:
 
 create      create database, table ...
+config      change placement priorities and deadlines
 show        show properties, such as databases, tables ...
 put         put value into a table
 delete      delete key from a table

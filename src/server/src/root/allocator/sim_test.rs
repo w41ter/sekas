@@ -22,6 +22,7 @@ use sekas_api::server::v1::*;
 use sekas_runtime::ExecutorOwner;
 
 use super::*;
+use crate::BalanceDimension;
 use crate::constants::REPLICA_PER_GROUP;
 
 fn size_balance_fixture() -> (Arc<MockInfoProvider>, Arc<ClusterStats>, Allocator<MockInfoProvider>)
@@ -68,6 +69,7 @@ fn group_with_sizes(id: u64, contents: &[(u64, u64)]) -> (GroupDesc, GroupStats)
                 table_id,
                 shard_size,
                 traffic: None,
+                range: None,
             })
             .collect(),
         ..Default::default()
@@ -86,7 +88,9 @@ fn shard_size_can_change_counts_and_count_cannot_undo_the_byte_balance() {
 
     let plan = allocator.compute_shard_action();
     assert!(matches!(plan.size, BalanceDecision::ActionNeeded(_)));
-    assert!(matches!(plan.count, BalanceDecision::Deferred("shard size takes priority")));
+    assert!(
+        matches!(plan.count, BalanceDecision::Deferred(ref reason) if reason == "shard size takes priority")
+    );
     assert!(matches!(
         plan.actions.as_slice(),
         [ShardAction::Migrate(ReallocateShard { shard: 2, source_group: 1, target_group: 2 })]
@@ -167,13 +171,137 @@ fn shard_size_plans_a_split_for_an_oversized_shard_only_if_a_piece_can_help() {
 }
 
 #[test]
+fn placement_uses_priority_and_checks_lower_priority_deadlines() {
+    let (source, stats, mut allocator) = size_balance_fixture();
+    allocator.config.enable_shard_size_balance = false;
+    allocator.config.enable_shard_balance = false;
+    allocator.config.enable_leader_balance = false;
+    allocator.config.enable_replica_balance = false;
+    allocator.config.enable_cpu_balance = false;
+    allocator.config.enable_memory_balance = false;
+    let (left, left_stats) = group_with_sizes(1, &[(1, 20), (2, 20), (3, 20)]);
+    let (mut right, right_stats) = group_with_sizes(2, &[(4, 20)]);
+    right.replicas[0].node_id = 2;
+    source.set_nodes(
+        (1..=2)
+            .map(|id| NodeDesc {
+                id,
+                capacity: Some(NodeCapacity::default()),
+                ..Default::default()
+            })
+            .collect(),
+    );
+    source.set_groups(vec![left, right]);
+    for (group, sample, rates) in
+        [(1, left_stats, vec![(60, 55), (100, 10), (40, 45)]), (2, right_stats, vec![(0, 0)])]
+    {
+        let mut sample = sample;
+        for shard in &mut sample.shard_stats {
+            shard.traffic = Some(ShardTraffic {
+                read_units: Some(0),
+                write_units: Some(0),
+                ..Default::default()
+            });
+        }
+        stats.handle_show_group_stats(&sample, group);
+        sample.sample.as_mut().unwrap().elapsed_nanos = 1_000_000_000;
+        for (shard, (read, write)) in sample.shard_stats.iter_mut().zip(rates) {
+            let traffic = shard.traffic.as_mut().unwrap();
+            traffic.read_units = Some(read);
+            traffic.write_units = Some(write);
+        }
+        stats.handle_show_group_stats(&sample, group);
+    }
+    let report_disk = |node, used| {
+        stats.handle_node_resources(
+            node,
+            Some(NodeResourceUsage { disk_capacity: 100, disk_used: used, ..Default::default() }),
+        );
+    };
+    report_disk(1, 80);
+    report_disk(2, 20);
+
+    let assert_shard = |options: &crate::BalanceConfig, id| {
+        let plan = allocator.plan_placement(options);
+        assert!(
+            matches!(plan.action, Some(PlacementAction::Shard(movement)) if movement.shard == id && movement.target_group == 2)
+        );
+    };
+    let mut options = crate::BalanceConfig::default();
+    assert_shard(&options, 2);
+    options.set("priority", "write_units,read_units").unwrap();
+    assert_shard(&options, 1);
+    options.set("deadline.read_units", "45").unwrap();
+    assert_shard(&options, 3);
+    report_disk(2, 50);
+    options.set("deadline.disk", "65").unwrap();
+    let blocked = allocator.plan_placement(&options);
+    assert!(blocked.action.is_none());
+    assert!(blocked.decisions.iter().any(|(kind, decision, _)| matches!(
+        (kind, decision),
+        (BalanceDimension::WriteUnits, BalanceDecision::NoAction(detail)) if detail.contains("read_units, disk")
+    )));
+
+    report_disk(1, 95);
+    report_disk(2, 20);
+    options.set("priority", "disk,write_units,read_units").unwrap();
+    assert_shard(&options, 3);
+    assert!(matches!(
+        allocator.plan_placement(&options).decisions[0],
+        (BalanceDimension::Disk, BalanceDecision::ActionNeeded(_), _)
+    ));
+}
+
+#[test]
+fn placement_needs_migration_status_only_for_groups_in_the_move() {
+    let (source, stats, mut allocator) = size_balance_fixture();
+    allocator.config.enable_shard_size_balance = false;
+    allocator.config.enable_read_balance = false;
+    allocator.config.enable_write_balance = false;
+    allocator.config.enable_leader_balance = false;
+    allocator.config.enable_replica_balance = false;
+    allocator.config.enable_cpu_balance = false;
+    allocator.config.enable_memory_balance = false;
+    allocator.config.enable_disk_balance = false;
+
+    let (mut heavy, mut heavy_stats) = group_with_sizes(1, &[(1, 20), (2, 20), (3, 20)]);
+    let (light, light_stats) = group_with_sizes(2, &[]);
+    let (unreported, _) = group_with_sizes(3, &[]);
+    for (shard, stats) in heavy.shards.iter().zip(&mut heavy_stats.shard_stats) {
+        stats.range = shard.range.clone();
+    }
+    heavy.epoch = sekas_api::Epoch(heavy.epoch).apply_shard_delta().0;
+    let groups = vec![heavy, light, unreported];
+    source.set_groups(groups.clone());
+    stats.handle_show_group_stats(&heavy_stats, 1);
+
+    let options = crate::BalanceConfig::default();
+    let waiting = allocator.plan_placement(&options);
+    assert!(waiting.action.is_none());
+    assert!(waiting.decisions.iter().any(|(dimension, decision, _)| {
+        *dimension == BalanceDimension::ShardCount
+            && matches!(decision, BalanceDecision::Deferred(reason) if reason.contains("g2 no leader stats received"))
+    }));
+    stats.handle_show_group_stats(&light_stats, 1);
+    let plan = allocator.plan_placement(&options);
+    let Some(PlacementAction::Shard(mut action)) = plan.action else {
+        panic!("placement must use the groups that have migration status");
+    };
+    assert_eq!((action.source_group, action.target_group), (1, 2));
+    assert!(allocator.validate_placement_shard(&groups, &options, action.clone()).is_some());
+    action.target_group = 3;
+    assert!(allocator.validate_placement_shard(&groups, &options, action).is_none());
+}
+
+#[test]
 fn sim_boostrap_join_node_balance() {
     let executor_owner = ExecutorOwner::new(1);
     let executor = executor_owner.executor();
     executor.block_on(async {
         let p = Arc::new(MockInfoProvider::new());
         let d = Arc::new(ClusterStats::default());
-        let a = Allocator::new(p.clone(), d.clone(), RootConfig::default());
+        let config = RootConfig { enable_shard_size_balance: false, ..Default::default() };
+        let a = Allocator::new(p.clone(), d.clone(), config);
 
         println!("1. boostrap and no need rebalance");
         p.set_groups(vec![GroupDesc {
@@ -428,7 +556,7 @@ fn sim_boostrap_join_node_balance() {
                 }
             }
         }
-        let (racts, decision) = a.compute_replica_action();
+        let (racts, decision, _) = a.compute_replica_action();
         assert!(racts.is_empty());
         let BalanceDecision::NoAction(detail) = decision else {
             panic!("balanced replica counts must report no action");

@@ -24,12 +24,13 @@ use sekas_api::server::v1::*;
 use sekas_rock::time::timestamp_millis;
 use tokio::sync::Mutex;
 
-use self::status::{BalanceSnapshot, Policy, QueueStatus};
+pub(super) use self::status::Policy;
+use self::status::{BalanceSnapshot, QueueStatus};
 use self::task::reconcile_task::Task;
 pub use self::task::*;
 use super::allocator::*;
 use super::*;
-use crate::Error;
+use crate::{BalanceDimension, Error};
 
 pub struct ReconcileScheduler {
     ctx: ScheduleContext,
@@ -41,6 +42,7 @@ pub struct ReconcileScheduler {
 
 enum BalanceActions {
     CreateGroups(usize),
+    Placement(Option<PlacementAction>),
     Move {
         replicas: Vec<ReplicaAction>,
         leaders: Vec<LeaderAction>,
@@ -100,6 +102,9 @@ impl ReconcileScheduler {
 
     pub async fn setup_task(&self, task: ReconcileTask) {
         let mut tasks = self.tasks.lock().await;
+        if task.is_placement() && tasks.iter().any(|(_, pending)| pending.is_placement()) {
+            return;
+        }
         if let Some(Task::MigrateShard(migration)) = &task.task
             && migration.guard() != ShardMoveGuard::Unrestricted
             && (self.ctx.cluster_stats.has_pending_shard_moves()
@@ -120,7 +125,7 @@ impl ReconcileScheduler {
         }
         match task.task.as_ref().unwrap() {
             Task::MigrateShard(t) => {
-                self.ctx.cluster_stats.handle_move_shard(t.shard, t.dest_group)
+                self.ctx.cluster_stats.handle_move_shard(t.shard, t.src_group, t.dest_group)
             }
             Task::SplitShard(t) => self.ctx.cluster_stats.handle_split_shard(t.shard_id),
             Task::MergeShard(t) => {
@@ -164,13 +169,14 @@ impl ReconcileScheduler {
     }
 
     /// Schedule transfering leader task.
-    pub async fn sched_transfer_leader_task(&self, transfer_leader: TransferLeader) {
+    async fn sched_transfer_leader_task(&self, transfer_leader: TransferLeader, placement: bool) {
         self.setup_task(ReconcileTask {
             task: Some(reconcile_task::Task::TransferGroupLeader(TransferGroupLeaderTask {
                 group: transfer_leader.group,
                 target_replica: transfer_leader.target_replica,
                 src_node: transfer_leader.src_node,
                 dest_node: transfer_leader.target_node,
+                placement,
             })),
             created_at: timestamp_millis(),
             fire_at: 0,
@@ -180,7 +186,7 @@ impl ReconcileScheduler {
     }
 
     /// Schedule migrate replica task.
-    pub async fn sched_migrate_replica_task(&self, action: ReallocateReplica) {
+    async fn sched_migrate_replica_task(&self, action: ReallocateReplica, placement: bool) {
         self.setup_task(ReconcileTask {
             task: Some(reconcile_task::Task::ReallocateReplica(ReallocateReplicaTask {
                 group: action.group,
@@ -188,6 +194,7 @@ impl ReconcileScheduler {
                 src_replica: action.source_replica,
                 dest_node: Some(action.target_node),
                 dest_replica: None,
+                placement,
             })),
             created_at: timestamp_millis(),
             fire_at: 0,
@@ -258,44 +265,58 @@ impl ReconcileScheduler {
         let mut balance = BalanceSnapshot::new(&self.ctx.cfg);
         let needed = match self.evaluate_balance(&mut balance).await? {
             BalanceActions::CreateGroups(_) => true,
+            BalanceActions::Placement(action) => action.is_some(),
             BalanceActions::Move { replicas, leaders, shards, .. } => {
                 !replicas.is_empty() || !leaders.is_empty() || !shards.is_empty()
             }
         };
-        let waiting_for_size = balance.iter().any(|(policy, decision)| {
-            matches!((policy, decision), (Policy::ShardSize, BalanceDecision::Deferred(_)))
-        });
-        Ok(needed || waiting_for_size || self.shard_balance_move_pending())
+        let waiting_for_load =
+            balance.iter().any(|(_, decision)| matches!(decision, BalanceDecision::Deferred(_)));
+        Ok(needed || waiting_for_load || self.shard_balance_move_pending())
     }
 
     async fn generate_schedule_task(&self) -> Result<bool> {
         let _timer = super::metrics::RECONCILE_CHECK_DURATION_SECONDS.start_timer();
         let mut balance = BalanceSnapshot::new(&self.ctx.cfg);
         let actions = self.evaluate_balance(&mut balance).await;
-        *self.balance.lock().unwrap() = balance;
+        {
+            let mut previous = self.balance.lock().unwrap();
+            balance.reuse_thresholds(&previous);
+            *previous = balance;
+        }
 
-        let (replica_actions, leader_actions, shard_actions, shard_guard) = match actions? {
+        match actions? {
             BalanceActions::CreateGroups(count) => {
                 for _ in 0..count {
                     self.ctx.bg_jobs.submit_create_group_job().await?;
                 }
                 return Ok(true);
             }
+            BalanceActions::Placement(action) => match action {
+                Some(PlacementAction::Shard(action)) => {
+                    self.sched_migrate_shard_task(action, ShardMoveGuard::Placement).await;
+                }
+                Some(PlacementAction::Leader(action)) => {
+                    self.sched_transfer_leader_task(action, true).await;
+                }
+                Some(PlacementAction::Replica(action)) => {
+                    self.sched_migrate_replica_task(action, true).await;
+                }
+                None => {}
+            },
             BalanceActions::Move { replicas, leaders, shards, shard_guard } => {
-                (replicas, leaders, shards, shard_guard)
+                for ReplicaAction::Migrate(action) in replicas {
+                    self.sched_migrate_replica_task(action, false).await;
+                }
+                for action in leaders {
+                    if let LeaderAction::Shed(action) = action {
+                        self.sched_transfer_leader_task(action, false).await;
+                    }
+                }
+                for ShardAction::Migrate(action) in shards {
+                    self.sched_migrate_shard_task(action, shard_guard).await;
+                }
             }
-        };
-
-        for ReplicaAction::Migrate(action) in replica_actions {
-            self.sched_migrate_replica_task(action).await;
-        }
-        for action in leader_actions {
-            if let LeaderAction::Shed(action) = action {
-                self.sched_transfer_leader_task(action).await;
-            }
-        }
-        for ShardAction::Migrate(action) in shard_actions {
-            self.sched_migrate_shard_task(action, shard_guard).await;
         }
 
         if self.shard_balance_move_pending() {
@@ -335,10 +356,48 @@ impl ReconcileScheduler {
         }
         metrics::RECONCILE_ALREADY_BALANCED_INFO.cluster_groups.set(1);
 
-        let (replicas, decision) = self.compute_replica_actions();
-        balance.record(Policy::ReplicaCount, decision);
-        let (leaders, decision) = self.compute_leader_actions();
-        balance.record(Policy::LeaderCount, decision);
+        if BalanceDimension::ALL.into_iter().any(|kind| kind.enabled(&self.ctx.cfg)) {
+            let options =
+                self.ctx.shared.schema()?.balance_config(self.ctx.cfg.balance.clone()).await?;
+            if self.ctx.cfg.has_resource_or_traffic_balancing()
+                || options.priority.as_slice() != BalanceDimension::ALL
+                || !options.deadlines.is_empty()
+            {
+                let plan = self.ctx.alloc.plan_placement(&options);
+                for (dimension, decision, thresholds) in plan.decisions {
+                    let gauges = &metrics::RECONCILE_ALREADY_BALANCED_INFO;
+                    let gauge = match dimension {
+                        BalanceDimension::LeaderCount => Some(&gauges.node_leader_count),
+                        BalanceDimension::ReplicaCount => Some(&gauges.node_replica_count),
+                        BalanceDimension::ShardSize => Some(&gauges.group_shard_size),
+                        BalanceDimension::ShardCount => Some(&gauges.group_shard_count),
+                        _ => None,
+                    };
+                    if let Some(gauge) = gauge {
+                        gauge.set(i64::from(matches!(decision, BalanceDecision::NoAction(_))));
+                    }
+                    balance.record_with_thresholds(
+                        Policy::Placement(dimension),
+                        decision,
+                        thresholds,
+                    );
+                }
+                return Ok(BalanceActions::Placement(plan.action));
+            }
+        }
+
+        let (replicas, decision, thresholds) = self.compute_replica_actions();
+        balance.record_with_thresholds(
+            Policy::Placement(BalanceDimension::ReplicaCount),
+            decision,
+            thresholds,
+        );
+        let (leaders, decision, thresholds) = self.compute_leader_actions();
+        balance.record_with_thresholds(
+            Policy::Placement(BalanceDimension::LeaderCount),
+            decision,
+            thresholds,
+        );
         let shards = self.ctx.alloc.compute_shard_action();
         let shard_guard = if matches!(shards.size, BalanceDecision::ActionNeeded(_)) {
             ShardMoveGuard::ImproveSize
@@ -347,29 +406,41 @@ impl ReconcileScheduler {
         } else {
             ShardMoveGuard::Unrestricted
         };
-        balance.record(Policy::ShardSize, shards.size);
-        balance.record(Policy::ShardCount, shards.count);
+        balance.record_with_thresholds(
+            Policy::Placement(BalanceDimension::ShardSize),
+            shards.size,
+            shards.size_thresholds,
+        );
+        balance.record_with_thresholds(
+            Policy::Placement(BalanceDimension::ShardCount),
+            shards.count,
+            shards.count_thresholds,
+        );
         Ok(BalanceActions::Move { replicas, leaders, shards: shards.actions, shard_guard })
     }
 
     fn shard_balance_move_pending(&self) -> bool {
-        self.ctx.cfg.enable_shard_size_balance && self.ctx.cluster_stats.has_pending_shard_moves()
+        self.ctx.cluster_stats.has_pending_shard_moves()
     }
 
-    fn compute_replica_actions(&self) -> (Vec<ReplicaAction>, BalanceDecision) {
-        let (actions, decision) = self.ctx.alloc.compute_replica_action();
+    fn compute_replica_actions(
+        &self,
+    ) -> (Vec<ReplicaAction>, BalanceDecision, Option<BalanceThresholds>) {
+        let (actions, decision, thresholds) = self.ctx.alloc.compute_replica_action();
         metrics::RECONCILE_ALREADY_BALANCED_INFO
             .node_replica_count
             .set(i64::from(actions.is_empty()));
-        (actions, decision)
+        (actions, decision, thresholds)
     }
 
-    fn compute_leader_actions(&self) -> (Vec<LeaderAction>, BalanceDecision) {
-        let (actions, decision) = self.ctx.alloc.compute_leader_action();
+    fn compute_leader_actions(
+        &self,
+    ) -> (Vec<LeaderAction>, BalanceDecision, Option<BalanceThresholds>) {
+        let (actions, decision, thresholds) = self.ctx.alloc.compute_leader_action();
         metrics::RECONCILE_ALREADY_BALANCED_INFO
             .node_leader_count
             .set(i64::from(actions.is_empty()));
-        (actions, decision)
+        (actions, decision, thresholds)
     }
 }
 
@@ -670,6 +741,18 @@ impl ScheduleContext {
         task: &mut ReallocateReplicaTask,
     ) -> Result<SchedResult> {
         let schema = self.shared.schema()?;
+        if task.placement {
+            let action = PlacementAction::Replica(ReallocateReplica {
+                group: task.group,
+                source_node: task.src_node,
+                source_replica: task.src_replica,
+                target_node: task.dest_node.clone().expect("placement target"),
+            });
+            let groups = self.placement_groups().await?;
+            if !self.validate_placement(&groups, &action).await? {
+                return Ok(SchedResult::ack());
+            }
+        }
 
         let group = task.group;
         let replica = task.src_replica;
@@ -715,19 +798,25 @@ impl ScheduleContext {
             task.dest_node.as_ref().unwrap().id
         );
         let next_replica = schema.next_replica_id().await?;
-        match self
-            .try_move_replica(
-                group,
-                ReplicaDesc {
-                    id: next_replica,
-                    node_id: task.dest_node.as_ref().unwrap().id,
-                    role: ReplicaRole::Voter as i32,
-                },
-                src_replica.unwrap().to_owned(),
-            )
-            .await
-        {
-            Ok(schedule_state) => {
+        let incoming = ReplicaDesc {
+            id: next_replica,
+            node_id: task.dest_node.as_ref().unwrap().id,
+            role: ReplicaRole::Voter as i32,
+        };
+        let outgoing = src_replica.unwrap().clone();
+        match self.try_move_replica(group, incoming.clone(), outgoing.clone()).await {
+            Ok(mut schedule_state) => {
+                if task.placement && schedule_state.incoming_replicas.is_empty() {
+                    // The RPC may finish before the group publishes its active
+                    // state. A subsequent heartbeat can confirm completion.
+                    schedule_state = ScheduleState {
+                        group_id: group,
+                        epoch: group_desc.unwrap().epoch,
+                        incoming_replicas: vec![incoming],
+                        outgoing_replicas: vec![outgoing],
+                        replica_repair: None,
+                    };
+                }
                 self.cluster_stats.handle_schedule_update(&[schedule_state], None);
                 Ok(SchedResult::ack())
             }
@@ -773,18 +862,25 @@ impl ScheduleContext {
                 ),
             )
         } else {
-            let mut planned_groups = self.shared.schema()?.list_group().await?;
-            planned_groups.retain(|group| group.id != ROOT_GROUP_ID);
+            let planned_groups = self.placement_groups().await?;
             let action = ReallocateShard {
                 shard: task.shard,
                 source_group: task.src_group,
                 target_group: task.dest_group,
             };
-            let Some(placement) = self.alloc.validate_shard_balance_move(
-                &planned_groups,
-                &action,
-                guard == ShardMoveGuard::ImproveSize,
-            ) else {
+            let placement = if guard == ShardMoveGuard::Placement {
+                let options =
+                    self.shared.schema()?.balance_config(self.cfg.balance.clone()).await?;
+                self.alloc.refresh_for_balance().await?;
+                self.alloc.validate_placement_shard(&planned_groups, &options, action)
+            } else {
+                self.alloc.validate_shard_balance_move(
+                    &planned_groups,
+                    &action,
+                    guard == ShardMoveGuard::ImproveSize,
+                )
+            };
+            let Some(placement) = placement else {
                 self.cluster_stats.finish_move_shard(task.shard);
                 return Ok(SchedResult::ack());
             };
@@ -851,6 +947,19 @@ impl ScheduleContext {
         &self,
         task: &mut TransferGroupLeaderTask,
     ) -> Result<SchedResult> {
+        if task.placement {
+            let action = PlacementAction::Leader(TransferLeader {
+                group: task.group,
+                src_node: task.src_node,
+                src_replica: 0,
+                target_node: task.dest_node,
+                target_replica: task.target_replica,
+            });
+            let groups = self.placement_groups().await?;
+            if !self.validate_placement(&groups, &action).await? {
+                return Ok(SchedResult::ack());
+            }
+        }
         match self.try_transfer_leader(task.group, task.target_replica).await {
             Ok(_) => {}
             Err(crate::Error::EpochNotMatch(new_group)) => {
@@ -878,6 +987,23 @@ impl ScheduleContext {
             )
             .await;
         Ok(SchedResult::next())
+    }
+
+    async fn placement_groups(&self) -> Result<Vec<GroupDesc>> {
+        let mut groups = self.shared.schema()?.list_group().await?;
+        groups.retain(|group| group.id != ROOT_GROUP_ID);
+        groups.sort_unstable_by_key(|group| group.id);
+        Ok(groups)
+    }
+
+    async fn validate_placement(
+        &self,
+        groups: &[GroupDesc],
+        action: &PlacementAction,
+    ) -> Result<bool> {
+        let options = self.shared.schema()?.balance_config(self.cfg.balance.clone()).await?;
+        self.alloc.refresh_for_balance().await?;
+        Ok(self.alloc.validate_placement(groups, &options, action))
     }
 
     async fn handle_shed_leader(&self, shed: &mut ShedLeaderTask) -> Result<SchedResult> {
@@ -1456,8 +1582,10 @@ mod tests {
         let table_id = sekas_schema::FIRST_USER_TABLE_ID;
         let left = ShardDesc::with_range(1, table_id, b"a".to_vec(), b"m".to_vec());
         let right = ShardDesc::with_range(2, table_id, b"m".to_vec(), b"z".to_vec());
-        let left_stats = ShardStats { shard_id: 1, table_id, shard_size: 400, traffic: None };
-        let right_stats = ShardStats { shard_id: 2, table_id, shard_size: 600, traffic: None };
+        let left_stats =
+            ShardStats { shard_id: 1, table_id, shard_size: 400, traffic: None, range: None };
+        let right_stats =
+            ShardStats { shard_id: 2, table_id, shard_size: 600, traffic: None, range: None };
 
         assert!(is_merge_candidate(&left, &right, &left_stats, &right_stats, 1000, false));
         assert!(!is_merge_candidate(&left, &right, &left_stats, &right_stats, 999, false));
@@ -1473,9 +1601,9 @@ mod tests {
         let system_left = ShardDesc::with_range(4, 2, b"a".to_vec(), b"m".to_vec());
         let system_right = ShardDesc::with_range(5, 2, b"m".to_vec(), b"z".to_vec());
         let system_left_stats =
-            ShardStats { shard_id: 4, table_id: 2, shard_size: 400, traffic: None };
+            ShardStats { shard_id: 4, table_id: 2, shard_size: 400, traffic: None, range: None };
         let system_right_stats =
-            ShardStats { shard_id: 5, table_id: 2, shard_size: 600, traffic: None };
+            ShardStats { shard_id: 5, table_id: 2, shard_size: 600, traffic: None, range: None };
         assert!(!is_merge_candidate(
             &system_left,
             &system_right,

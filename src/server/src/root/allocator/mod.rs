@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::borrow::Cow;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -28,12 +29,15 @@ use crate::{Result, RootConfig};
 #[cfg(test)]
 mod sim_test;
 
+mod balance;
+mod placement;
 mod policy_leader_cnt;
 mod policy_replica_cnt;
 mod policy_shard_cnt;
 mod policy_shard_size;
 mod source;
 
+pub(super) use placement::PlacementAction;
 pub use source::{AllocSource, SysAllocSource};
 
 #[derive(Clone, Debug)]
@@ -63,6 +67,8 @@ pub(super) struct ShardBalancePlan {
     pub actions: Vec<ShardAction>,
     pub size: BalanceDecision,
     pub count: BalanceDecision,
+    pub size_thresholds: Option<BalanceThresholds>,
+    pub count_thresholds: Option<BalanceThresholds>,
 }
 
 impl ShardBalancePlan {
@@ -72,6 +78,8 @@ impl ShardBalancePlan {
             actions: Vec::new(),
             size: status(cfg.enable_shard_size_balance),
             count: status(cfg.enable_shard_balance),
+            size_thresholds: None,
+            count_thresholds: None,
         }
     }
 }
@@ -118,11 +126,26 @@ enum BalanceStatus {
 pub(super) enum BalanceDecision {
     Unknown,
     Disabled,
-    Deferred(&'static str),
+    Deferred(Cow<'static, str>),
     NoAction(String),
     ActionNeeded(String),
     Unsupported(String),
     Error(String),
+}
+
+#[derive(Clone, Copy)]
+pub(in crate::root) struct BalanceThresholds {
+    pub avg: f64,
+    pub low: f64,
+    pub high: f64,
+    pub max: f64,
+    pub tolerance: f64,
+}
+
+impl BalanceThresholds {
+    fn new(avg: f64, tolerance: f64, max: f64) -> Self {
+        Self { avg, low: (avg - tolerance).max(0.), high: avg + tolerance, max, tolerance }
+    }
 }
 
 // Use the same counts and tolerance to choose a move and explain a no-op.
@@ -147,6 +170,11 @@ impl CountBalance {
         } else {
             BalanceStatus::Balanced
         }
+    }
+
+    fn thresholds<T>(&self, sorted: &[(T, u64)]) -> BalanceThresholds {
+        let max = sorted.first().map_or(0, |(_, count)| *count);
+        BalanceThresholds::new(self.mean, self.tolerance, max as f64)
     }
 
     // The candidates are sorted by descending count.
@@ -202,6 +230,7 @@ impl<T: AllocSource> Allocator<T> {
             || self.config.enable_leader_balance
             || self.config.enable_shard_balance
             || self.config.enable_shard_size_balance
+            || self.config.has_resource_or_traffic_balancing()
         {
             self.alloc_source.refresh_all().await?;
         }
@@ -257,14 +286,17 @@ impl<T: AllocSource> Allocator<T> {
     }
 
     /// Compute replica change action.
-    pub fn compute_replica_action(&self) -> (Vec<ReplicaAction>, BalanceDecision) {
+    pub fn compute_replica_action(
+        &self,
+    ) -> (Vec<ReplicaAction>, BalanceDecision, Option<BalanceThresholds>) {
         if !self.config.enable_replica_balance {
-            return (vec![], BalanceDecision::Disabled);
+            return (vec![], BalanceDecision::Disabled, None);
         }
 
-        // TODO: try QPS rebalancing.
-        ReplicaCountPolicy::with(self.alloc_source.clone(), self.cluster_stats.clone())
-            .compute_balance()
+        let (actions, decision, thresholds) =
+            ReplicaCountPolicy::with(self.alloc_source.clone(), self.cluster_stats.clone())
+                .compute_balance();
+        (actions, decision, Some(thresholds))
     }
 
     pub fn compute_shard_action(&self) -> ShardBalancePlan {
@@ -297,14 +329,13 @@ impl<T: AllocSource> Allocator<T> {
         }
         let policy = ShardCountPolicy::with(self.alloc_source.clone());
         let groups = policy.current_user_groups();
-        let mut plan =
-            ShardBalancePlan::idle(cfg, BalanceDecision::Deferred("shard size takes priority"));
+        let mut plan = ShardBalancePlan::idle(
+            cfg,
+            BalanceDecision::Deferred("shard size takes priority".into()),
+        );
         let size_balance = if cfg.enable_shard_size_balance && groups.len() >= 2 {
-            if self.cluster_stats.has_pending_shard_moves() {
-                return ShardBalancePlan::idle(
-                    cfg,
-                    BalanceDecision::Deferred("waiting for a shard migration to settle"),
-                );
+            if let Some(reason) = self.cluster_stats.shard_migration_wait(&[]) {
+                return ShardBalancePlan::idle(cfg, BalanceDecision::Deferred(reason.into()));
             }
             let balance = match ShardSizeBalance::new(
                 &groups,
@@ -319,6 +350,7 @@ impl<T: AllocSource> Allocator<T> {
             let (action, decision) =
                 balance.compute_balance(&groups, &self.cluster_stats, cfg.enable_auto_shard_split);
             plan.size = decision;
+            plan.size_thresholds = Some(balance.thresholds());
             if let Some(action) = action {
                 plan.actions.push(ShardAction::Migrate(action));
                 return plan;
@@ -332,7 +364,7 @@ impl<T: AllocSource> Allocator<T> {
         };
 
         if cfg.enable_shard_balance {
-            (plan.actions, plan.count) = policy.compute_balance(
+            let (actions, decision, thresholds) = policy.compute_balance(
                 &groups,
                 &self.cluster_stats,
                 cfg.move_shard_size_limit,
@@ -342,6 +374,9 @@ impl<T: AllocSource> Allocator<T> {
                     })
                 },
             );
+            plan.actions = actions;
+            plan.count = decision;
+            plan.count_thresholds = Some(thresholds);
         }
         plan
     }
@@ -387,17 +422,19 @@ impl<T: AllocSource> Allocator<T> {
         ShardCountPolicy::with(self.alloc_source.to_owned()).allocate_shard(n, required_replicas)
     }
 
-    pub fn compute_leader_action(&self) -> (Vec<LeaderAction>, BalanceDecision) {
+    pub fn compute_leader_action(
+        &self,
+    ) -> (Vec<LeaderAction>, BalanceDecision, Option<BalanceThresholds>) {
         if !self.config.enable_leader_balance {
-            return (vec![], BalanceDecision::Disabled);
+            return (vec![], BalanceDecision::Disabled, None);
         }
-        let (action, decision) =
+        let (action, decision, thresholds) =
             LeaderCountPolicy::with(self.alloc_source.clone()).compute_balance();
         let actions = match action {
             LeaderAction::Noop => vec![],
             action => vec![action],
         };
-        (actions, decision)
+        (actions, decision, Some(thresholds))
     }
 }
 

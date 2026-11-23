@@ -22,7 +22,8 @@ use sekas_api::server::v1::{NodeDesc, RaftRole, ReplicaDesc, ReplicaRole};
 
 use super::source::NodeFilter;
 use super::{
-    AllocSource, BalanceDecision, BalanceStatus, CountBalance, LeaderAction, TransferLeader,
+    AllocSource, BalanceDecision, BalanceStatus, BalanceThresholds, CountBalance, LeaderAction,
+    TransferLeader,
 };
 use crate::constants::ROOT_GROUP_ID;
 
@@ -35,7 +36,7 @@ impl<T: AllocSource> LeaderCountPolicy<T> {
         Self { alloc_source }
     }
 
-    pub fn compute_balance(&self) -> (LeaderAction, BalanceDecision) {
+    pub fn compute_balance(&self) -> (LeaderAction, BalanceDecision, BalanceThresholds) {
         let mut candidates: Vec<_> = self
             .alloc_source
             .nodes(NodeFilter::Schedulable)
@@ -47,6 +48,7 @@ impl<T: AllocSource> LeaderCountPolicy<T> {
             .collect();
         let balance = CountBalance::new(&candidates, |_| 0.5);
         candidates.sort_by_key(|(_, count)| Reverse(*count));
+        let thresholds = balance.thresholds(&candidates);
         debug!(
             "node ranked by leader count. mean={}, scored_nodes={:?}",
             balance.mean,
@@ -64,10 +66,10 @@ impl<T: AllocSource> LeaderCountPolicy<T> {
                     "transfer leader of group {}: n{} -> n{}",
                     action.group, action.src_node, action.target_node
                 ));
-                return (LeaderAction::Shed(action), decision);
+                return (LeaderAction::Shed(action), decision, thresholds);
             }
         }
-        (LeaderAction::Noop, balance.no_action("schedulable_nodes", &candidates))
+        (LeaderAction::Noop, balance.no_action("schedulable_nodes", &candidates), thresholds)
     }
 
     fn try_transfer_leader(

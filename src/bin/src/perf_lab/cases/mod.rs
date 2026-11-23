@@ -379,6 +379,12 @@ impl Case {
     pub(super) fn configure(&self, cfg: &mut LabConfig) {
         // Fix layout and version state unless the scenario explicitly changes them.
         cfg.cluster.root.enable_shard_balance = false;
+        cfg.cluster.root.enable_shard_size_balance = false;
+        cfg.cluster.root.enable_read_balance = false;
+        cfg.cluster.root.enable_write_balance = false;
+        cfg.cluster.root.enable_cpu_balance = false;
+        cfg.cluster.root.enable_memory_balance = false;
+        cfg.cluster.root.enable_disk_balance = false;
         cfg.cluster.root.enable_auto_shard_split = false;
         cfg.cluster.root.enable_auto_shard_merge = false;
         cfg.cluster.root.enable_leader_balance = false;

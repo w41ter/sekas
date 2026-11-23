@@ -16,44 +16,47 @@ use std::collections::BTreeMap;
 
 use super::ReconcileTask;
 use super::reconcile_task::Task;
-use crate::root::allocator::BalanceDecision;
-use crate::{Error, RootConfig};
+use crate::root::allocator::{BalanceDecision, BalanceThresholds};
+use crate::{BalanceDimension, Error, RootConfig};
 
 #[derive(Clone, Copy)]
 pub enum Policy {
     GroupCount,
-    ReplicaCount,
-    LeaderCount,
-    ShardCount,
-    ShardSize,
+    Placement(BalanceDimension),
 }
 
 impl Policy {
-    const ALL: [Self; 5] = [
+    const ALL: [Self; BalanceDimension::ALL.len() + 1] = [
         Self::GroupCount,
-        Self::ReplicaCount,
-        Self::LeaderCount,
-        Self::ShardCount,
-        Self::ShardSize,
+        Self::Placement(BalanceDimension::ReplicaCount),
+        Self::Placement(BalanceDimension::LeaderCount),
+        Self::Placement(BalanceDimension::ShardCount),
+        Self::Placement(BalanceDimension::ShardSize),
+        Self::Placement(BalanceDimension::ReadUnits),
+        Self::Placement(BalanceDimension::WriteUnits),
+        Self::Placement(BalanceDimension::Cpu),
+        Self::Placement(BalanceDimension::Memory),
+        Self::Placement(BalanceDimension::Disk),
     ];
 
     pub fn name(self) -> &'static str {
         match self {
             Self::GroupCount => "group_count",
-            Self::ReplicaCount => "replica_count",
-            Self::LeaderCount => "leader_count",
-            Self::ShardCount => "shard_count",
-            Self::ShardSize => "shard_size",
+            Self::Placement(dimension) => dimension.name(),
         }
     }
 
     fn enabled(self, cfg: &RootConfig) -> bool {
         match self {
             Self::GroupCount => cfg.enable_group_balance,
-            Self::ReplicaCount => cfg.enable_replica_balance,
-            Self::LeaderCount => cfg.enable_leader_balance,
-            Self::ShardCount => cfg.enable_shard_balance,
-            Self::ShardSize => cfg.enable_shard_size_balance,
+            Self::Placement(dimension) => dimension.enabled(cfg),
+        }
+    }
+
+    fn index(self) -> usize {
+        match self {
+            Self::GroupCount => 0,
+            Self::Placement(dimension) => dimension as usize + 1,
         }
     }
 }
@@ -61,28 +64,55 @@ impl Policy {
 #[derive(Clone)]
 pub struct BalanceSnapshot {
     reports: [BalanceDecision; Policy::ALL.len()],
+    thresholds: [Option<BalanceThresholds>; Policy::ALL.len()],
 }
 
 impl BalanceSnapshot {
     pub(super) fn new(cfg: &RootConfig) -> Self {
-        let reports = Policy::ALL.map(|policy| {
-            if policy.enabled(cfg) { BalanceDecision::Unknown } else { BalanceDecision::Disabled }
-        });
-        Self { reports }
+        let mut reports = std::array::from_fn(|_| BalanceDecision::Disabled);
+        for policy in Policy::ALL {
+            if policy.enabled(cfg) {
+                reports[policy.index()] = BalanceDecision::Unknown;
+            }
+        }
+        Self { reports, thresholds: [None; Policy::ALL.len()] }
     }
 
     pub fn iter(&self) -> impl Iterator<Item = (Policy, &BalanceDecision)> {
-        Policy::ALL.into_iter().zip(&self.reports)
+        Policy::ALL.into_iter().map(|policy| (policy, &self.reports[policy.index()]))
     }
 
     pub(super) fn record(&mut self, policy: Policy, decision: BalanceDecision) {
-        self.reports[policy as usize] = decision;
+        self.reports[policy.index()] = decision;
+    }
+
+    pub fn thresholds(&self, policy: Policy) -> Option<BalanceThresholds> {
+        self.thresholds[policy.index()]
+    }
+
+    pub(super) fn record_with_thresholds(
+        &mut self,
+        policy: Policy,
+        decision: BalanceDecision,
+        thresholds: Option<BalanceThresholds>,
+    ) {
+        self.record(policy, decision);
+        self.thresholds[policy.index()] = thresholds;
+    }
+
+    pub(super) fn reuse_thresholds(&mut self, previous: &Self) {
+        for policy in Policy::ALL {
+            let index = policy.index();
+            if !matches!(self.reports[index], BalanceDecision::Disabled) {
+                self.thresholds[index] = self.thresholds[index].or(previous.thresholds[index]);
+            }
+        }
     }
 
     pub(super) fn record_refresh_error(&mut self, err: &Error) {
         let decision = BalanceDecision::Error(format!("refresh cluster metadata: {err}"));
         for policy in Policy::ALL {
-            if !matches!(self.reports[policy as usize], BalanceDecision::Disabled) {
+            if !matches!(self.reports[policy.index()], BalanceDecision::Disabled) {
                 self.record(policy, decision.clone());
             }
         }
@@ -91,7 +121,7 @@ impl BalanceSnapshot {
     pub(super) fn defer(&mut self, reason: &'static str) {
         for report in &mut self.reports {
             if matches!(report, BalanceDecision::Unknown) {
-                *report = BalanceDecision::Deferred(reason);
+                *report = BalanceDecision::Deferred(reason.into());
             }
         }
     }

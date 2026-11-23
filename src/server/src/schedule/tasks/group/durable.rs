@@ -60,13 +60,16 @@ impl DurableGroup {
             voters.keys(),
             learners.keys()
         );
-        let epoch = ctx.replica.epoch();
-        let locks = ctx
-            .group_lock_table
-            .config_change(task_id, epoch, &peers, &[], &[])
-            .expect("Check conflicts in before steps");
         let learners = learners.values().cloned().collect::<Vec<_>>();
         let voters = voters.values().cloned().collect::<Vec<_>>();
+        let repair = ReplicaRepair {
+            incoming_replicas: learners.clone(),
+            outgoing_replicas: voters.clone(),
+        };
+        let locks = ctx
+            .group_lock_table
+            .replica_repair(task_id, ctx.replica.epoch(), &peers, repair, false)
+            .expect("Check conflicts in before steps");
         let replace_voters_action = Box::new(ReplaceVoters {
             providers: self.providers.clone(),
             incoming_voters: learners,
@@ -95,12 +98,15 @@ impl DurableGroup {
             incoming_voters.iter().map(|r| r.id),
             outgoing_voters.keys()
         );
-        let epoch = ctx.replica.epoch();
+        let outgoing_voters = outgoing_voters.values().cloned().collect::<Vec<_>>();
+        let repair = ReplicaRepair {
+            incoming_replicas: incoming_voters.clone(),
+            outgoing_replicas: outgoing_voters.clone(),
+        };
         let locks = ctx
             .group_lock_table
-            .config_change(task_id, epoch, &peers, &incoming_voters, &[])
+            .replica_repair(task_id, ctx.replica.epoch(), &peers, repair, true)
             .expect("Check conflicts in before steps");
-        let outgoing_voters = outgoing_voters.values().cloned().collect::<Vec<_>>();
         let create_replicas_action = Box::new(CreateReplicas::new(incoming_voters.clone()));
         let add_learners_action = Box::new(AddLearners {
             providers: self.providers.clone(),
@@ -116,7 +122,7 @@ impl DurableGroup {
             learners: outgoing_voters,
         });
         let action_task = ActionTask::new(
-            ctx.next_task_id(),
+            task_id,
             vec![
                 create_replicas_action,
                 add_learners_action,
@@ -140,17 +146,16 @@ impl DurableGroup {
             ctx.replica_id,
             learners.keys()
         );
-        let epoch = ctx.replica.epoch();
+        let learners = learners.into_values().collect::<Vec<_>>();
+        let repair =
+            ReplicaRepair { incoming_replicas: Vec::new(), outgoing_replicas: learners.clone() };
         let locks = ctx
             .group_lock_table
-            .config_change(task_id, epoch, &peers, &[], &[])
+            .replica_repair(task_id, ctx.replica.epoch(), &peers, repair, false)
             .expect("Check conflicts in before steps");
         let action_task = ActionTask::new(
             task_id,
-            vec![Box::new(RemoveLearners {
-                providers: self.providers.clone(),
-                learners: learners.values().cloned().collect(),
-            })],
+            vec![Box::new(RemoveLearners { providers: self.providers.clone(), learners })],
         );
         ctx.delegate(Box::new(ActionTaskWithLocks::new(locks, action_task)));
     }

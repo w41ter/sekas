@@ -127,6 +127,7 @@ impl Root {
         let last_heartbeat = Instant::now();
         let mut heartbeat_tasks = Vec::new();
         let groups = schema.list_group().await?;
+        self.cluster_stats.retain_display_samples(&all_nodes, &groups);
         for (i, resp) in resps.iter().enumerate() {
             let n = nodes.get(i).unwrap();
             match resp {
@@ -141,10 +142,15 @@ impl Root {
                                 self.handle_collect_stats(&schema, resp, n, requested_at).await?
                             }
                             piggyback_response::Info::CollectGroupDetail(resp) => {
+                                self.cluster_stats
+                                    .handle_replica_report(n.id, &resp.replica_states);
                                 self.handle_group_detail(&schema, resp, &groups).await?
                             }
                             piggyback_response::Info::CollectScheduleState(resp) => {
-                                self.handle_schedule_state(resp).await?
+                                self.cluster_stats.handle_heartbeat_schedule_update(
+                                    &resp.schedule_states,
+                                    requested_at,
+                                );
                             }
                         }
                     }
@@ -177,6 +183,7 @@ impl Root {
         requested_at: Instant,
     ) -> Result<()> {
         if let Some(ns) = &resp.node_stats {
+            self.cluster_stats.handle_node_resources(node.id, ns.resources);
             let mut node = node.to_owned();
             let _timer = super::metrics::HEARTBEAT_HANDLE_NODE_STATS_DURATION_SECONDS.start_timer();
             let new_group_count = ns.group_count as u64;
@@ -275,11 +282,6 @@ impl Root {
             self.watcher_hub().notify_updates(update_events).await;
         }
 
-        Ok(())
-    }
-
-    async fn handle_schedule_state(&self, resp: &CollectScheduleStateResponse) -> Result<()> {
-        self.cluster_stats.handle_schedule_update(&resp.schedule_states, None);
         Ok(())
     }
 

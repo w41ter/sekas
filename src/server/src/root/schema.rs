@@ -31,7 +31,7 @@ use super::store::RootStore;
 use crate::constants::*;
 use crate::engine::{GroupEngine, SnapshotMode};
 use crate::transport::TransportManager;
-use crate::{Error, Result};
+use crate::{BalanceConfig, Error, Result};
 
 const META_CLUSTER_ID_KEY: &str = "cluster_id";
 const META_TABLE_ID_KEY: &str = "table_id";
@@ -42,6 +42,7 @@ const META_REPLICA_ID_KEY: &str = "replica_id";
 const META_SHARD_ID_KEY: &str = "shard_id";
 const META_JOB_ID_KEY: &str = "job_id";
 const META_TXN_ID_KEY: &str = "txn_id";
+const META_BALANCER_PREFIX: &str = "balancer.";
 
 lazy_static! {
     pub static ref ID_GEN_LOCKS: HashMap<String, Mutex<()>> = HashMap::from([
@@ -65,6 +66,28 @@ pub struct Schema {
 impl Schema {
     pub fn new(store: Arc<RootStore>) -> Self {
         Self { store }
+    }
+
+    pub async fn balance_config(&self, mut config: BalanceConfig) -> Result<BalanceConfig> {
+        let values = self
+            .store
+            .list_entries(table::shard_id(table::META_ID), META_BALANCER_PREFIX.as_bytes())
+            .await?;
+        for (key, value) in values {
+            let key = std::str::from_utf8(&key)
+                .ok()
+                .and_then(|key| key.strip_prefix(META_BALANCER_PREFIX))
+                .ok_or_else(|| Error::InvalidArgument("invalid balancer metadata key".into()))?;
+            let value = std::str::from_utf8(&value)
+                .map_err(|_| Error::InvalidArgument("invalid balancer metadata value".into()))?;
+            config.set(key, value)?;
+        }
+        Ok(config)
+    }
+
+    pub async fn set_balance_config(&self, key: &str, value: &str) -> Result<()> {
+        self.put_meta(format!("{META_BALANCER_PREFIX}{key}").as_bytes(), value.as_bytes().to_vec())
+            .await
     }
 
     pub async fn cluster_id(&self) -> Result<Option<Vec<u8>>> {

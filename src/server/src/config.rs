@@ -13,6 +13,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -300,8 +301,14 @@ pub struct RootConfig {
     /// Balance approximate shard bytes between user groups before balancing
     /// shard counts. Requires current size and migration status reports.
     ///
-    /// Default: false
+    /// Default: true
     pub enable_shard_size_balance: bool,
+    pub enable_read_balance: bool,
+    pub enable_write_balance: bool,
+    pub enable_cpu_balance: bool,
+    pub enable_memory_balance: bool,
+    pub enable_disk_balance: bool,
+    pub balance: BalanceConfig,
     /// Minimum allowed deviation from mean group size, in bytes. The policy
     /// uses the larger of this value and 10% of the mean.
     ///
@@ -346,6 +353,142 @@ pub struct RootConfig {
     /// Default: 0.
     pub mvcc_gc_retention_ms: u64,
     pub max_create_group_retry_before_rollback: u64,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BalanceDimension {
+    ReadUnits,
+    WriteUnits,
+    Cpu,
+    Memory,
+    LeaderCount,
+    Disk,
+    ShardSize,
+    ReplicaCount,
+    ShardCount,
+}
+
+impl BalanceDimension {
+    pub(crate) const ALL: [Self; 9] = [
+        Self::ReadUnits,
+        Self::WriteUnits,
+        Self::Cpu,
+        Self::Memory,
+        Self::LeaderCount,
+        Self::Disk,
+        Self::ShardSize,
+        Self::ReplicaCount,
+        Self::ShardCount,
+    ];
+
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::Cpu => "cpu",
+            Self::Memory => "memory",
+            Self::Disk => "disk",
+            Self::ReadUnits => "read_units",
+            Self::WriteUnits => "write_units",
+            Self::ShardSize => "shard_size",
+            Self::LeaderCount => "leader_count",
+            Self::ReplicaCount => "replica_count",
+            Self::ShardCount => "shard_count",
+        }
+    }
+
+    pub(crate) fn parse(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|dimension| dimension.name() == name)
+    }
+
+    pub(crate) fn enabled(self, cfg: &RootConfig) -> bool {
+        match self {
+            Self::Cpu => cfg.enable_cpu_balance,
+            Self::Memory => cfg.enable_memory_balance,
+            Self::Disk => cfg.enable_disk_balance,
+            Self::ReadUnits => cfg.enable_read_balance,
+            Self::WriteUnits => cfg.enable_write_balance,
+            Self::ShardSize => cfg.enable_shard_size_balance,
+            Self::LeaderCount => cfg.enable_leader_balance,
+            Self::ReplicaCount => cfg.enable_replica_balance,
+            Self::ShardCount => cfg.enable_shard_balance,
+        }
+    }
+
+    pub(crate) fn is_resource(self) -> bool {
+        matches!(self, Self::Cpu | Self::Memory | Self::Disk)
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default)]
+pub struct BalanceConfig {
+    /// Highest priority first. Omitted dimensions follow in the default order.
+    pub priority: Vec<BalanceDimension>,
+    /// Resource deadlines are percentages, while other deadlines use the
+    /// dimension's native unit. The shell accepts "unlimited" to clear a cap.
+    pub deadlines: BTreeMap<BalanceDimension, Option<f64>>,
+    /// Per-shard traffic thresholds used to classify neighboring ranges.
+    pub hot_read_units_per_sec: f64,
+    pub hot_write_units_per_sec: f64,
+}
+
+impl Default for BalanceConfig {
+    fn default() -> Self {
+        Self {
+            priority: BalanceDimension::ALL.to_vec(),
+            deadlines: BTreeMap::new(),
+            hot_read_units_per_sec: 1000.,
+            hot_write_units_per_sec: 1000.,
+        }
+    }
+}
+
+impl BalanceConfig {
+    pub(crate) fn deadline(&self, dimension: BalanceDimension) -> Option<f64> {
+        self.deadlines
+            .get(&dimension)
+            .copied()
+            .unwrap_or_else(|| dimension.is_resource().then_some(90.))
+    }
+
+    pub(crate) fn dimensions(&self) -> impl Iterator<Item = BalanceDimension> {
+        let mut seen = [false; BalanceDimension::ALL.len()];
+        self.priority
+            .iter()
+            .copied()
+            .chain(BalanceDimension::ALL)
+            .filter(move |kind| !std::mem::replace(&mut seen[*kind as usize], true))
+    }
+
+    pub(crate) fn set(&mut self, key: &str, value: &str) -> Result<(), crate::Error> {
+        let invalid =
+            || crate::Error::InvalidArgument(format!("invalid balancer setting {key}={value}"));
+        if key == "priority" {
+            let mut priority = Vec::new();
+            for name in value.split(',') {
+                let kind = BalanceDimension::parse(name.trim()).ok_or_else(invalid)?;
+                if priority.contains(&kind) {
+                    return Err(invalid());
+                }
+                priority.push(kind);
+            }
+            self.priority = priority;
+            return Ok(());
+        }
+        let kind =
+            key.strip_prefix("deadline.").and_then(BalanceDimension::parse).ok_or_else(invalid)?;
+        let deadline = if value.eq_ignore_ascii_case("unlimited") {
+            None
+        } else {
+            let limit = value.parse::<f64>().map_err(|_| invalid())?;
+            if !limit.is_finite() || limit < 0. || (kind.is_resource() && limit > 100.) {
+                return Err(invalid());
+            }
+            Some(limit)
+        };
+        self.deadlines.insert(kind, deadline);
+        Ok(())
+    }
 }
 
 impl Default for NodeConfig {
@@ -458,6 +601,14 @@ impl Default for RaftConfig {
 }
 
 impl RootConfig {
+    pub(crate) fn has_resource_or_traffic_balancing(&self) -> bool {
+        self.enable_read_balance
+            || self.enable_write_balance
+            || self.enable_cpu_balance
+            || self.enable_memory_balance
+            || self.enable_disk_balance
+    }
+
     pub fn heartbeat_interval(&self) -> Duration {
         Duration::from_secs(self.liveness_threshold_sec - self.heartbeat_timeout_sec)
     }
@@ -470,7 +621,13 @@ impl Default for RootConfig {
             enable_group_balance: true,
             enable_replica_balance: true,
             enable_shard_balance: true,
-            enable_shard_size_balance: false,
+            enable_shard_size_balance: true,
+            enable_read_balance: true,
+            enable_write_balance: true,
+            enable_cpu_balance: true,
+            enable_memory_balance: true,
+            enable_disk_balance: true,
+            balance: BalanceConfig::default(),
             shard_size_balance_tolerance_bytes: 8 * 1024 * 1024,
             enable_leader_balance: true,
             enable_auto_shard_split: true,

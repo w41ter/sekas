@@ -20,7 +20,8 @@ use sekas_api::server::v1::{NodeDesc, ReplicaDesc};
 
 use super::source::NodeFilter;
 use super::{
-    AllocSource, BalanceDecision, BalanceStatus, CountBalance, ReallocateReplica, ReplicaAction,
+    AllocSource, BalanceDecision, BalanceStatus, BalanceThresholds, CountBalance,
+    ReallocateReplica, ReplicaAction,
 };
 use crate::Result;
 use crate::constants::{REPLICA_PER_GROUP, ROOT_GROUP_ID};
@@ -54,7 +55,7 @@ impl<T: AllocSource> ReplicaCountPolicy<T> {
         Ok(candidate_nodes.into_iter().take(wanted_count).collect())
     }
 
-    pub fn compute_balance(&self) -> (Vec<ReplicaAction>, BalanceDecision) {
+    pub fn compute_balance(&self) -> (Vec<ReplicaAction>, BalanceDecision, BalanceThresholds) {
         let mut candidates: Vec<_> = self
             .alloc_source
             .nodes(NodeFilter::Schedulable)
@@ -66,6 +67,7 @@ impl<T: AllocSource> ReplicaCountPolicy<T> {
             .collect();
         let balance = CountBalance::new(&candidates, |mean| (mean * 0.05).max(2.0));
         candidates.sort_by_key(|(_, count)| Reverse(*count));
+        let thresholds = balance.thresholds(&candidates);
         tracing::debug!(
             scored_nodes = ?candidates.iter().map(|(n, count)| (n.id, count, balance.classify(*count))).collect::<Vec<_>>(),
             mean = balance.mean,
@@ -80,11 +82,11 @@ impl<T: AllocSource> ReplicaCountPolicy<T> {
                     "move replica {} of group {}: n{} -> n{}",
                     action.source_replica, action.group, action.source_node, action.target_node.id
                 ));
-                return (vec![ReplicaAction::Migrate(action)], decision);
+                return (vec![ReplicaAction::Migrate(action)], decision, thresholds);
             }
         }
 
-        (Vec::new(), balance.no_action("schedulable_nodes", &candidates))
+        (Vec::new(), balance.no_action("schedulable_nodes", &candidates), thresholds)
     }
 
     fn rebalance_target(

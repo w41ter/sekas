@@ -24,6 +24,19 @@ pub struct ReconcileTask {
     pub task: ::core::option::Option<reconcile_task::Task>,
 }
 
+impl ReconcileTask {
+    pub(super) fn is_placement(&self) -> bool {
+        match &self.task {
+            Some(reconcile_task::Task::ReallocateReplica(task)) => task.placement,
+            Some(reconcile_task::Task::TransferGroupLeader(task)) => task.placement,
+            Some(reconcile_task::Task::MigrateShard(task)) => {
+                task.guard() == ShardMoveGuard::Placement
+            }
+            _ => false,
+        }
+    }
+}
+
 /// Nested message and enum types in `ReconcileTask`.
 pub mod reconcile_task {
     #[derive(Clone, PartialEq, ::prost::Oneof)]
@@ -57,6 +70,8 @@ pub struct ReallocateReplicaTask {
     pub dest_node: ::core::option::Option<::sekas_api::server::v1::NodeDesc>,
     #[prost(message, optional, tag = "5")]
     pub dest_replica: ::core::option::Option<::sekas_api::server::v1::ReplicaDesc>,
+    #[prost(bool, tag = "6")]
+    pub placement: bool,
 }
 
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -78,6 +93,7 @@ pub enum ShardMoveGuard {
     Unrestricted = 0,
     PreserveSize = 1,
     ImproveSize = 2,
+    Placement = 3,
 }
 
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -90,6 +106,8 @@ pub struct TransferGroupLeaderTask {
     pub src_node: u64,
     #[prost(uint64, tag = "4")]
     pub dest_node: u64,
+    #[prost(bool, tag = "5")]
+    pub placement: bool,
 }
 
 #[derive(Clone, PartialEq, ::prost::Message)]

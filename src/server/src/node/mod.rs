@@ -17,6 +17,7 @@ pub mod metrics;
 
 pub mod job;
 pub mod move_shard;
+mod resources;
 pub mod route_table;
 
 use std::collections::{HashMap, HashSet};
@@ -93,6 +94,7 @@ where
     /// A lock is used to ensure serialization of create/terminate replica
     /// operations.
     replica_mutation: Arc<Mutex<()>>,
+    resources: std::sync::Mutex<resources::ResourceSampler>,
 }
 
 impl Node {
@@ -125,6 +127,7 @@ impl Node {
             task_group: TaskGroup::default(),
             node_state: Arc::new(Mutex::new(NodeState::default())),
             replica_mutation: Arc::default(),
+            resources: Default::default(),
         })
     }
 
@@ -576,8 +579,10 @@ impl Node {
     }
 
     pub async fn collect_stats(&self, _req: &CollectStatsRequest) -> CollectStatsResponse {
-        // TODO(walter) add read/write qps.
         let mut ns = NodeStats::default();
+        let resources = self.resources.lock().unwrap().sample(self.engines.db_path());
+        ns.available_space = resources.disk_capacity.saturating_sub(resources.disk_used);
+        ns.resources = Some(resources);
         let mut group_stats = vec![];
         let mut replica_stats = vec![];
         let group_id_list = self.serving_group_id_list().await;

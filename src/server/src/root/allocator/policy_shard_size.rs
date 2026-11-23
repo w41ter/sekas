@@ -18,7 +18,7 @@ use std::time::Duration;
 
 use sekas_api::server::v1::GroupDesc;
 
-use super::{BalanceDecision, ReallocateShard, ShardSizePlacement};
+use super::{BalanceDecision, BalanceThresholds, ReallocateShard, ShardSizePlacement};
 use crate::root::ClusterStats;
 use crate::root::stats::ShowSnapshot;
 
@@ -31,6 +31,11 @@ pub(super) struct ShardSizeBalance {
 }
 
 impl ShardSizeBalance {
+    pub fn thresholds(&self) -> BalanceThresholds {
+        let max = self.totals.values().copied().max().unwrap_or(0);
+        BalanceThresholds::new(self.mean as f64, self.tolerance as f64, max as f64)
+    }
+
     pub fn new(
         groups: &[GroupDesc],
         stats: &ClusterStats,
@@ -39,8 +44,10 @@ impl ShardSizeBalance {
         move_size_limit: u64,
     ) -> Result<Self, BalanceDecision> {
         let sizes = stats.show_snapshot(groups, max_age);
-        if sizes.migration_in_progress {
-            return Err(BalanceDecision::Deferred("waiting for a shard migration to settle"));
+        if sizes.migration_in_progress
+            && let Some(reason) = stats.shard_migration_wait(&sizes.active_migration_groups())
+        {
+            return Err(BalanceDecision::Deferred(reason.into()));
         }
         let mut totals = HashMap::with_capacity(groups.len());
         let mut seen = HashSet::new();
@@ -48,19 +55,18 @@ impl ShardSizeBalance {
             let mut total = 0;
             for shard in &group.shards {
                 if !seen.insert(shard.id) {
-                    return Err(BalanceDecision::Deferred("waiting for shard ownership to settle"));
+                    return Err(BalanceDecision::Deferred(
+                        "waiting for shard ownership to settle".into(),
+                    ));
                 }
                 let Some(bytes) = sizes.shard(group.id, shard.id).bytes else {
                     return Err(BalanceDecision::Deferred(
-                        "waiting for current shard size samples",
+                        "waiting for current shard size samples".into(),
                     ));
                 };
                 total += u128::from(bytes);
             }
             totals.insert(group.id, total);
-        }
-        if !sizes.has_current_migration_status {
-            return Err(BalanceDecision::Deferred("waiting for current shard migration status"));
         }
         let mean = totals.values().sum::<u128>() / groups.len().max(1) as u128;
         let tolerance = (mean / 10).max(u128::from(min_tolerance));
@@ -73,14 +79,24 @@ impl ShardSizeBalance {
         stats: &ClusterStats,
         allow_split: bool,
     ) -> (Option<ReallocateShard>, BalanceDecision) {
-        let Some((&target, &min)) = self.totals.iter().min_by_key(|&(&id, &bytes)| (bytes, id))
+        let Some((&target, &min)) = self
+            .totals
+            .iter()
+            .filter(|&(&id, _)| self.sizes.migration_idle(id))
+            .min_by_key(|&(&id, &bytes)| (bytes, id))
         else {
-            return (None, BalanceDecision::NoAction("user_groups=0".into()));
+            return (
+                None,
+                BalanceDecision::Deferred(self.sizes.migration_report_wait(groups).into()),
+            );
         };
         let max = self.totals.values().copied().max().unwrap_or(min);
         let mut best_move = None;
         let mut best_score = (false, 0, Reverse(u64::MAX), Reverse(u64::MAX), Reverse(u64::MAX));
-        for group in groups.iter().filter(|group| self.totals[&group.id] > min) {
+        for group in groups
+            .iter()
+            .filter(|group| self.totals[&group.id] > min && self.sizes.migration_idle(group.id))
+        {
             // The penalty is convex, so adding a shard to the lightest group
             // costs no more than adding the same shard to any other group.
             for shard in &group.shards {
@@ -113,8 +129,9 @@ impl ShardSizeBalance {
                 }
             }
         }
+        let smallest = self.totals.values().copied().min().unwrap_or(min);
         let summary = format!(
-            "user_groups={}, mean_bytes={}, tolerance_bytes={}\nrange_bytes={min}..{max}",
+            "user_groups={}, mean_bytes={}, tolerance_bytes={}\nrange_bytes={smallest}..{max}",
             groups.len(),
             self.mean,
             self.tolerance
@@ -136,7 +153,14 @@ impl ShardSizeBalance {
                 (Some(action), decision)
             }
             None => {
-                let reason = if self.penalty(min) == 0 && self.penalty(max) == 0 {
+                let within_tolerance = self.totals.values().all(|&bytes| self.penalty(bytes) == 0);
+                if !within_tolerance && !self.sizes.has_current_migration_status {
+                    return (
+                        None,
+                        BalanceDecision::Deferred(self.sizes.migration_report_wait(groups).into()),
+                    );
+                }
+                let reason = if within_tolerance {
                     "within byte tolerance"
                 } else {
                     "no eligible move improves byte balance"
@@ -147,7 +171,9 @@ impl ShardSizeBalance {
     }
 
     pub fn preserves_balance(&self, source: u64, target: u64, shard: u64) -> bool {
-        self.totals.contains_key(&target)
+        self.sizes.migration_idle(source)
+            && self.sizes.migration_idle(target)
+            && self.totals.contains_key(&target)
             && self
                 .move_bytes(source, shard)
                 .is_some_and(|bytes| self.preserves_group_penalties(source, target, bytes))
@@ -160,7 +186,9 @@ impl ShardSizeBalance {
         allow_split: bool,
     ) -> Option<ShardSizePlacement> {
         let size = self.sizes.shard(action.source_group, action.shard).bytes?;
-        if !self.totals.contains_key(&action.target_group)
+        if !self.sizes.migration_idle(action.source_group)
+            || !self.sizes.migration_idle(action.target_group)
+            || !self.totals.contains_key(&action.target_group)
             || (size > self.move_size_limit && !(require_improvement && allow_split))
         {
             return None;

@@ -429,6 +429,19 @@ message NodeStats {
     uint64 orphan_replica_count = 4;
     float read_qps = 5;
     float write_qps = 6;
+    NodeResourceUsage resources = 7;
+}
+
+message NodeResourceUsage {
+    // CPU usage measured in cores, including non-Sekas host activity.
+    optional double cpu_used = 1;
+    double cpu_capacity = 2;
+    optional double process_cpu_used = 3;
+    uint64 memory_used = 4;
+    uint64 memory_capacity = 5;
+    uint64 process_memory_used = 6;
+    uint64 disk_used = 7;
+    uint64 disk_capacity = 8;
 }
 
 // The stats of an shard.
@@ -441,6 +454,8 @@ message ShardStats {
     uint64 shard_size = 3;
     // Cumulative data-plane traffic since the replica started.
     ShardTraffic traffic = 4;
+    // Range at the time of the sample. Older replicas omit this field.
+    RangePartition range = 5;
 }
 
 message ShardTraffic {
@@ -448,6 +463,9 @@ message ShardTraffic {
     uint64 writes = 2;
     uint64 read_bytes = 3;
     uint64 write_bytes = 4;
+    // Absence indicates a replica that does not report request units.
+    optional uint64 read_units = 5;
+    optional uint64 write_units = 6;
 }
 
 // Identifies the leader and the monotonic clock used for a stats sample.

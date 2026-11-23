@@ -81,6 +81,28 @@ impl RootStore {
     }
 
     pub async fn list(&self, shard_id: u64, prefix: &[u8]) -> Result<Vec<Vec<u8>>> {
+        Ok(self
+            .scan(shard_id, prefix)
+            .await?
+            .into_iter()
+            .filter_map(|mut entry| entry.values.pop()?.content)
+            .collect())
+    }
+
+    pub(super) async fn list_entries(
+        &self,
+        shard_id: u64,
+        prefix: &[u8],
+    ) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
+        Ok(self
+            .scan(shard_id, prefix)
+            .await?
+            .into_iter()
+            .filter_map(|mut entry| Some((entry.user_key, entry.values.pop()?.content?)))
+            .collect())
+    }
+
+    async fn scan(&self, shard_id: u64, prefix: &[u8]) -> Result<Vec<ValueSet>> {
         let resp = self
             .submit_request(Scan(ShardScanRequest {
                 shard_id,
@@ -96,11 +118,7 @@ impl RootStore {
             .ok_or_else(|| Error::InvalidArgument("PrefixListUnionResponse".into()))?;
 
         if let group_response_union::Response::Scan(resp) = resp {
-            Ok(resp
-                .data
-                .into_iter()
-                .filter_map(|v| v.values.last().and_then(|v| v.content.clone()))
-                .collect())
+            Ok(resp.data)
         } else {
             Err(Error::InvalidArgument("PrefixListResponse".into()))
         }

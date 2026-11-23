@@ -132,4 +132,10 @@ message ScheduleState {
 	uint64 epoch = 2;
 	repeated ReplicaDesc incoming_replicas = 3;
 	repeated ReplicaDesc outgoing_replicas = 4;
+	ReplicaRepair replica_repair = 5;
+}
+
+message ReplicaRepair {
+	repeated ReplicaDesc incoming_replicas = 1;
+	repeated ReplicaDesc outgoing_replicas = 2;
 }

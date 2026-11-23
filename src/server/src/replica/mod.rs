@@ -358,7 +358,16 @@ impl Replica {
 
     #[inline]
     pub fn schedule_state(&self) -> ScheduleState {
-        self.lease_state.lock().unwrap().schedule_state.clone()
+        let lease = self.lease_state.lock().unwrap();
+        let mut state = lease.schedule_state.clone();
+        state.group_id = self.info.group_id;
+        if state.incoming_replicas.is_empty()
+            && state.outgoing_replicas.is_empty()
+            && state.replica_repair.is_none()
+        {
+            state.epoch = lease.descriptor.epoch;
+        }
+        state
     }
 
     pub async fn monitor(&self) -> Result<ReplicaPerfContext> {
@@ -401,7 +410,13 @@ impl Replica {
                     continue;
                 }
             };
-            shard_stats.push(ShardStats { shard_id, table_id, shard_size, traffic });
+            shard_stats.push(ShardStats {
+                shard_id,
+                table_id,
+                shard_size,
+                traffic,
+                range: shard.range,
+            });
         }
         self.traffic.retain_shards(|shard_id| self.group_engine.shard_desc(shard_id).is_ok());
         let state = self.lease_state.lock().unwrap();

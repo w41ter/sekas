@@ -25,6 +25,7 @@ use serde_json::Value;
 
 use super::Root;
 use super::allocator::BalanceDecision;
+use super::schedule::Policy;
 use super::stats::{ShowMetrics, ShowSnapshot};
 use crate::{Error, Result};
 
@@ -58,8 +59,15 @@ impl Root {
     }
 
     async fn handle_config_stmt(&self, config_stmt: ConfigStatement) -> Result<ExecuteResult> {
-        let _ = config_stmt;
-        Ok(ExecuteResult::Msg("the CONFIG statement is not supported yet".to_owned()))
+        let invalid_utf8 = |_| Error::InvalidArgument("CONFIG expects UTF-8 text".into());
+        let key = std::str::from_utf8(&config_stmt.key).map_err(invalid_utf8)?;
+        let Some(key) = key.strip_prefix("balancer.") else {
+            return Err(Error::InvalidArgument(format!("unknown CONFIG setting {key}")));
+        };
+        let value = std::str::from_utf8(&config_stmt.value).map_err(invalid_utf8)?.trim();
+        self.cfg.balance.clone().set(key, value)?;
+        self.schema()?.set_balance_config(key, value).await?;
+        Ok(ExecuteResult::Msg(format!("balancer.{key} updated")))
     }
 
     async fn handle_show_stmt(&self, show_stmt: ShowStatement) -> Result<ExecuteResult> {
@@ -69,24 +77,33 @@ impl Root {
             "groups" => self.handle_show_groups(show_stmt).await,
             "replicas" => self.handle_show_replicas(show_stmt).await,
             "shards" => self.handle_show_shards(show_stmt).await,
-            "nodes" => self.handle_show_nodes(show_stmt).await,
-            "balancer" | "scheduler" | "scheduler_tasks" => self.handle_show_scheduling(show_stmt),
+            "node" | "nodes" => self.handle_show_nodes(show_stmt).await,
+            "balancer" | "scheduler" | "scheduler_tasks" => {
+                self.handle_show_scheduling(show_stmt).await
+            }
             others => Ok(ExecuteResult::Msg(format!("unknown property: {others}"))),
         }
     }
 
-    fn handle_show_scheduling(&self, show_stmt: ShowStatement) -> Result<ExecuteResult> {
+    async fn handle_show_scheduling(&self, show_stmt: ShowStatement) -> Result<ExecuteResult> {
         let property = show_stmt.property.as_str();
         if show_stmt.from.is_some() {
             return Ok(ExecuteResult::Msg(format!(
                 "FROM clause is not supported by '{property}' property"
             )));
         }
-        self.schema()?;
+        let schema = self.schema()?;
 
         let now = timestamp_millis();
         let data = match property {
             "balancer" => {
+                let config = schema.balance_config(self.cfg.balance.clone()).await?;
+                let priorities: HashMap<_, _> = config
+                    .dimensions()
+                    .filter(|kind| kind.enabled(&self.cfg))
+                    .enumerate()
+                    .map(|(index, kind)| (kind as usize, index + 1))
+                    .collect();
                 let snapshot = self.scheduler.balance_status();
                 let rows = snapshot
                     .iter()
@@ -94,7 +111,7 @@ impl Root {
                         let (status, decision) = match report {
                             BalanceDecision::Unknown => ("unknown", "awaiting first check"),
                             BalanceDecision::Disabled => ("disabled", "-"),
-                            BalanceDecision::Deferred(reason) => ("deferred", *reason),
+                            BalanceDecision::Deferred(reason) => ("deferred", reason.as_ref()),
                             BalanceDecision::NoAction(detail) => ("no_action", detail.as_str()),
                             BalanceDecision::ActionNeeded(detail) => {
                                 ("action_needed", detail.as_str())
@@ -104,10 +121,53 @@ impl Root {
                             }
                             BalanceDecision::Error(detail) => ("error", detail.as_str()),
                         };
-                        Row { values: vec![policy.name().into(), status.into(), decision.into()] }
+                        let (priority, deadline) = match policy {
+                            Policy::GroupCount => {
+                                (self.cfg.enable_group_balance.then_some(0), None)
+                            }
+                            Policy::Placement(kind) => {
+                                (priorities.get(&(kind as usize)).copied(), config.deadline(kind))
+                            }
+                        };
+                        let display_load = |load| match policy {
+                            Policy::Placement(crate::BalanceDimension::ShardSize) => {
+                                display_balance_bytes(load).into()
+                            }
+                            _ => Value::from(load),
+                        };
+                        let deadline = deadline.map_or_else(|| "unlimited".into(), display_load);
+                        let thresholds = snapshot.thresholds(policy);
+                        Row {
+                            values: vec![
+                                policy.name().into(),
+                                status.into(),
+                                priority.into(),
+                                deadline,
+                                thresholds.map(|values| display_load(values.avg)).into(),
+                                thresholds.map(|values| display_load(values.low)).into(),
+                                thresholds.map(|values| display_load(values.high)).into(),
+                                thresholds.map(|values| display_load(values.max)).into(),
+                                thresholds.map(|values| display_load(values.tolerance)).into(),
+                                decision.into(),
+                            ],
+                        }
                     })
                     .collect();
-                show_columns(["policy", "status", "decision"], rows)
+                show_columns(
+                    [
+                        "policy",
+                        "status",
+                        "priority",
+                        "deadline",
+                        "avg",
+                        "low",
+                        "high",
+                        "max",
+                        "tolerance",
+                        "decision",
+                    ],
+                    rows,
+                )
             }
             "scheduler" => {
                 let summary = self.scheduler.scheduler_status(now);
@@ -122,7 +182,7 @@ impl Root {
                 show_columns(["ready", "running", "waiting", "background_jobs"], vec![row])
             }
             "scheduler_tasks" => {
-                let rows = self
+                let mut rows: Vec<_> = self
                     .scheduler
                     .task_statuses()
                     .into_iter()
@@ -146,6 +206,49 @@ impl Root {
                         }
                     })
                     .collect();
+                let running =
+                    |kind: &'static str, target: String, age_s: u64, state: &'static str| Row {
+                        values: vec![
+                            kind.into(),
+                            target.into(),
+                            state.into(),
+                            age_s.into(),
+                            "-".into(),
+                            "-".into(),
+                        ],
+                    };
+                for repair in self.cluster_stats.replica_changes() {
+                    let kind = if repair.repair { "replica_repair" } else { "replica_change" };
+                    let peers = |sign, mut replicas: Vec<ReplicaDesc>| {
+                        replicas.sort_unstable_by_key(|replica| replica.id);
+                        replicas.into_iter().map(move |replica| {
+                            format!("{sign}r{}@n{}", replica.id, replica.node_id)
+                        })
+                    };
+                    let replicas = peers('+', repair.change.incoming_replicas)
+                        .chain(peers('-', repair.change.outgoing_replicas))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    rows.push(running(
+                        kind,
+                        format!("g{} {replicas}", repair.group),
+                        repair.age_s,
+                        "running",
+                    ));
+                }
+                for migration in self.cluster_stats.shard_moves() {
+                    if let Some(submitted) = migration.submitted_at {
+                        rows.push(running(
+                            "migrate_shard",
+                            format!(
+                                "shard {} g{} -> g{}",
+                                migration.shard, migration.source, migration.destination
+                            ),
+                            submitted.elapsed().as_secs(),
+                            "awaiting_confirmation",
+                        ));
+                    }
+                }
                 show_columns(
                     ["task", "target", "state", "age_s", "error_retries", "ready_in_s"],
                     rows,
@@ -192,6 +295,8 @@ impl Root {
                 "num_shards",
                 "read_bytes_per_sec",
                 "write_bytes_per_sec",
+                "read_units_per_sec",
+                "write_units_per_sec",
             ],
             rows,
         )))
@@ -248,6 +353,8 @@ impl Root {
                 "num_shards",
                 "read_bytes_per_sec",
                 "write_bytes_per_sec",
+                "read_units_per_sec",
+                "write_units_per_sec",
             ],
             rows,
         )))
@@ -259,11 +366,30 @@ impl Root {
                 "FROM clause is not required by 'groups' property".to_owned(),
             ));
         }
-        let groups = self.list_group().await?;
+        let (groups, nodes) = tokio::try_join!(self.list_group(), self.list_node())?;
         let stats = self.show_snapshot(&groups);
+        let max_age = Duration::from_secs(self.cfg.liveness_threshold_sec);
+        let mut replica_issues = HashMap::<u64, Vec<String>>::new();
+        for issue in self.cluster_stats.replica_issues(&groups, &nodes, &self.liveness, max_age) {
+            replica_issues
+                .entry(issue.group)
+                .or_default()
+                .push(format!("r{}@n{} {}", issue.replica, issue.node, issue.reason));
+        }
         let group_to_row = |group: GroupDesc| -> Row {
             let (shard_epoch, config_epoch) = (group.epoch >> 32, group.epoch & ((1 << 32) - 1));
             let metrics = stats.group(&group);
+            let mut issues = replica_issues.remove(&group.id).unwrap_or_default();
+            let voters = group
+                .replicas
+                .iter()
+                .filter(|replica| replica.role == ReplicaRole::Voter as i32)
+                .count();
+            let missing = self.cfg.replicas_per_group.saturating_sub(voters);
+            if missing > 0 {
+                issues.insert(0, format!("{missing} unfilled voter slots"));
+            }
+            let issues = if issues.is_empty() { "-".to_owned() } else { issues.join(", ") };
             let mut values = vec![
                 group.id.into(),
                 shard_epoch.into(),
@@ -273,6 +399,7 @@ impl Root {
                 display_size(metrics.bytes).into(),
             ];
             append_rates(&mut values, metrics);
+            values.push(issues.into());
             Row { values }
         };
         let rows = groups.into_iter().map(group_to_row).collect();
@@ -288,6 +415,7 @@ impl Root {
                 "write_qps",
                 "read_bytes_per_sec",
                 "write_bytes_per_sec",
+                "bad_replicas",
             ],
             rows,
         )))
@@ -316,6 +444,7 @@ impl Root {
 
         let timeout = Duration::from_secs(self.cfg.heartbeat_timeout_sec);
         let transport = &self.shared.transport_manager;
+        let stats = &self.cluster_stats;
         let rows = try_join_all(group.replicas.into_iter().map(|replica| {
             let schema = &schema;
             async move {
@@ -333,6 +462,7 @@ impl Root {
                 } else {
                     None
                 };
+                let progress = stats.display_replica_progress(group_id, &replica, progress);
                 let role = ReplicaRole::try_from(replica.role)
                     .unwrap_or_default()
                     .as_str_name()
@@ -418,16 +548,25 @@ impl Root {
             ));
         }
 
-        let nodes = self.list_node().await?;
+        let (groups, nodes) = tokio::try_join!(self.list_group(), self.list_node())?;
 
-        let columns = ["id", "status", "addr", "cpu_nums", "leader_count", "replica_count"]
-            .into_iter()
-            .map(ToString::to_string)
-            .collect::<Vec<_>>();
+        let resources = self.cluster_stats.display_node_resources();
+        let max_age = Duration::from_secs(self.cfg.liveness_threshold_sec);
+        let mut bad_counts = HashMap::<u64, usize>::new();
+        for issue in self.cluster_stats.replica_issues(&groups, &nodes, &self.liveness, max_age) {
+            *bad_counts.entry(issue.node).or_default() += 1;
+        }
 
         let node_to_row = |node: NodeDesc| -> Row {
             let capacity = node.capacity.unwrap_or_default();
             let status = NodeStatus::try_from(node.status).unwrap_or_default();
+            let usage = resources.get(&node.id).copied().unwrap_or_default();
+            let cpu_total = (usage.cpu_capacity > 0.).then(|| usage.cpu_capacity.to_string());
+            let cpu = (usage.cpu_used.is_some() || cpu_total.is_some()).then(|| {
+                let used =
+                    usage.cpu_used.map_or_else(|| "-".to_owned(), |used| format!("{used:.2}"));
+                format!("{used}/{}", cpu_total.as_deref().unwrap_or("-"))
+            });
             Row {
                 values: vec![
                     node.id.into(),
@@ -436,21 +575,61 @@ impl Root {
                     (capacity.cpu_nums as u32).into(),
                     capacity.leader_count.into(),
                     capacity.replica_count.into(),
+                    cpu.into(),
+                    display_storage_usage(usage.memory_used, usage.memory_capacity).into(),
+                    display_storage_usage(usage.disk_used, usage.disk_capacity).into(),
+                    bad_counts.get(&node.id).copied().unwrap_or(0).into(),
                 ],
             }
         };
         let rows = nodes.into_iter().map(node_to_row).collect::<Vec<_>>();
-        Ok(ExecuteResult::Data(ColumnResult { columns, rows }))
+        Ok(ExecuteResult::Data(show_columns(
+            [
+                "id",
+                "status",
+                "addr",
+                "cpu_nums",
+                "leader_count",
+                "replica_count",
+                "cpu",
+                "mem",
+                "disk",
+                "bad_replica_count",
+            ],
+            rows,
+        )))
     }
 
     fn show_snapshot(&self, groups: &[GroupDesc]) -> ShowSnapshot {
         let max_age = Duration::from_secs(self.cfg.liveness_threshold_sec);
-        self.get_cluster_stats().show_snapshot(groups, max_age)
+        self.cluster_stats.display_snapshot(groups, max_age)
     }
 }
 
 fn show_columns<const N: usize>(columns: [&str; N], rows: Vec<Row>) -> ColumnResult {
     ColumnResult { columns: columns.into_iter().map(str::to_owned).collect(), rows }
+}
+
+fn display_storage_usage(used: u64, total: u64) -> Option<String> {
+    const BYTES_PER_GIB: f64 = (1_u64 << 30) as f64;
+    (total > 0).then(|| {
+        format!("{:.2}/{:.2} GiB", used as f64 / BYTES_PER_GIB, total as f64 / BYTES_PER_GIB)
+    })
+}
+
+fn display_balance_bytes(bytes: f64) -> String {
+    for (unit, factor) in [
+        ("PiB", 1_u64 << 50),
+        ("TiB", 1_u64 << 40),
+        ("GiB", 1_u64 << 30),
+        ("MiB", 1_u64 << 20),
+        ("KiB", 1_u64 << 10),
+    ] {
+        if bytes >= factor as f64 {
+            return format!("{:.2} {unit}", bytes / factor as f64);
+        }
+    }
+    format!("{bytes:.0} B")
 }
 
 fn append_table_metrics(values: &mut Vec<Value>, metrics: ShowMetrics) {
@@ -460,6 +639,8 @@ fn append_table_metrics(values: &mut Vec<Value>, metrics: ShowMetrics) {
     values.push(metrics.num_shards.into());
     values.push(metrics.rates.map(|rates| rates.read_bytes_per_sec).into());
     values.push(metrics.rates.map(|rates| rates.write_bytes_per_sec).into());
+    values.push(metrics.rates.and_then(|rates| rates.read_units_per_sec).into());
+    values.push(metrics.rates.and_then(|rates| rates.write_units_per_sec).into());
 }
 
 fn append_rates(values: &mut Vec<Value>, metrics: ShowMetrics) {

@@ -168,7 +168,7 @@ impl RawDb {
 #[derive(Clone)]
 pub(crate) struct Engines {
     log_path: PathBuf,
-    _db_path: PathBuf,
+    db_path: PathBuf,
     log: Arc<raft_engine::Engine>,
     db: Arc<RawDb>,
     state: StateEngine,
@@ -181,7 +181,7 @@ impl Engines {
         let db = Arc::new(open_raw_db(db_cfg, &db_path)?);
         let log = Arc::new(open_raft_engine(&log_path)?);
         let state = StateEngine::new(log.clone());
-        Ok(Engines { log_path, _db_path: db_path, log, db, state })
+        Ok(Engines { log_path, db_path, log, db, state })
     }
 
     #[inline]
@@ -192,6 +192,10 @@ impl Engines {
     #[inline]
     pub(crate) fn db(&self) -> Arc<RawDb> {
         self.db.clone()
+    }
+
+    pub(crate) fn db_path(&self) -> &Path {
+        &self.db_path
     }
 
     #[inline]
