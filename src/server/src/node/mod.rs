@@ -558,6 +558,23 @@ impl Node {
         &self.raft_mgr
     }
 
+    pub(crate) async fn replica_progress(
+        &self,
+        req: GetReplicaProgressRequest,
+    ) -> Option<ReplicaProgress> {
+        let replica = self.replica_route_table.find(req.group_id)?;
+        let info = replica.replica_info();
+        if info.replica_id != req.replica_id || info.is_terminated() {
+            return None;
+        }
+        let state = replica.raft_node().raft_group_state().await?;
+        Some(ReplicaProgress {
+            wal_index: state.last_index,
+            committed_index: state.committed,
+            applied_index: state.applied,
+        })
+    }
+
     pub async fn collect_stats(&self, _req: &CollectStatsRequest) -> CollectStatsResponse {
         // TODO(walter) add read/write qps.
         let mut ns = NodeStats::default();

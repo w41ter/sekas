@@ -159,6 +159,57 @@ async fn admin_show_traffic() {
     }
 }
 
+#[sekas_macro::test]
+async fn admin_show_replica_progress() {
+    let mut ctx = TestContext::new(fn_name!());
+    ctx.set_replicas_per_group(3);
+    let nodes = ctx.bootstrap_servers(3).await;
+    let cluster = ClusterClient::new(nodes).await;
+    cluster.assert_root_group_has_promoted().await;
+    let client = cluster.app_client().await;
+    let statement = "show replicas from 0";
+    let index_columns = ["wal_index", "committed_index", "applied_index"];
+
+    let replicas = tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            let replicas = show(&client, statement).await;
+            assert_eq!(
+                replicas.columns,
+                ["id", "node_id", "role", "wal_index", "committed_index", "applied_index"]
+            );
+            if replicas.rows.len() == 3
+                && replicas.rows.iter().all(|row| {
+                    let (Some(wal), Some(committed), Some(applied)) =
+                        (row.values[3].as_u64(), row.values[4].as_u64(), row.values[5].as_u64())
+                    else {
+                        return false;
+                    };
+                    applied > 0 && applied <= committed && applied <= wal
+                })
+            {
+                break replicas;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("all replicas must report progress");
+
+    let offline = replicas.rows.iter().find(|row| row.values[1].as_u64() == Some(2)).unwrap();
+    let offline_id = offline.values[0].as_u64().unwrap();
+    ctx.stop_server(2).await;
+    let replicas = show(&client, statement).await;
+    assert_eq!(replicas.rows.len(), 3);
+    for column in index_columns {
+        assert!(show_cell(&replicas, offline_id, column).is_null(), "{column}");
+    }
+    for row in &replicas.rows {
+        if row.values[0].as_u64() != Some(offline_id) {
+            assert!(row.values[3..].iter().all(serde_json::Value::is_u64));
+        }
+    }
+}
+
 async fn show(client: &SekasClient, statement: &str) -> ColumnResult {
     let body = client.handle_statement(statement).await.unwrap();
     let ExecuteResult::Data(result) = serde_json::from_slice(&body).unwrap() else {

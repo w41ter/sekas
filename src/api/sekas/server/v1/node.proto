@@ -270,6 +270,7 @@ message NodeAdminRequest {
         // replica no longer belongs to the group.
         RemoveReplicaRequest remove_replica = 3;
         HeartbeatRequest heartbeat = 4;
+        GetReplicaProgressRequest get_replica_progress = 5;
     }
 }
 
@@ -279,6 +280,7 @@ message NodeAdminResponse {
         CreateReplicaResponse create_replica = 2;
         RemoveReplicaResponse remove_replica = 3;
         HeartbeatResponse heartbeat = 4;
+        GetReplicaProgressResponse get_replica_progress = 5;
     }
 }
 
@@ -299,6 +301,23 @@ message RemoveReplicaRequest {
 }
 
 message RemoveReplicaResponse {}
+
+message GetReplicaProgressRequest {
+    uint64 group_id = 1;
+    uint64 replica_id = 2;
+}
+
+message GetReplicaProgressResponse {
+    // Absent if the requested replica cannot report its progress.
+    ReplicaProgress progress = 1;
+}
+
+message ReplicaProgress {
+    // The last Raft log index in local storage.
+    uint64 wal_index = 1;
+    uint64 committed_index = 2;
+    uint64 applied_index = 3;
+}
 
 message CreateShardRequest { ShardDesc shard = 1; }
 

@@ -15,6 +15,7 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
+use futures::future::try_join_all;
 use log::warn;
 use sekas_api::server::v1::*;
 use sekas_parser::{ColumnResult, ConfigStatement, ExecuteResult, Row, ShowStatement};
@@ -308,20 +309,51 @@ impl Root {
             }
         };
 
-        let Some(group) = self.get_group(group_id).await? else {
+        let schema = self.schema()?;
+        let Some(group) = schema.get_group(group_id).await? else {
             return Ok(ExecuteResult::Msg("No such group exists".to_owned()));
         };
 
-        let columns =
-            ["id", "node_id", "role"].into_iter().map(ToString::to_string).collect::<Vec<_>>();
-
-        let replica_to_row = |replica: ReplicaDesc| -> Row {
-            let role =
-                ReplicaRole::try_from(replica.role).unwrap_or_default().as_str_name().to_owned();
-            Row { values: vec![replica.id.into(), replica.node_id.into(), role.into()] }
-        };
-        let rows = group.replicas.into_iter().map(replica_to_row).collect::<Vec<_>>();
-        Ok(ExecuteResult::Data(ColumnResult { columns, rows }))
+        let timeout = Duration::from_secs(self.cfg.heartbeat_timeout_sec);
+        let transport = &self.shared.transport_manager;
+        let rows = try_join_all(group.replicas.into_iter().map(|replica| {
+            let schema = &schema;
+            async move {
+                let progress = if let Some(node) = schema.get_node(replica.node_id).await?
+                    && let Ok(client) = transport.get_node_client(node.addr)
+                {
+                    client
+                        .get_replica_progress(
+                            GetReplicaProgressRequest { group_id, replica_id: replica.id },
+                            timeout,
+                        )
+                        .await
+                        .ok()
+                        .flatten()
+                } else {
+                    None
+                };
+                let role = ReplicaRole::try_from(replica.role)
+                    .unwrap_or_default()
+                    .as_str_name()
+                    .to_owned();
+                Ok::<_, Error>(Row {
+                    values: vec![
+                        replica.id.into(),
+                        replica.node_id.into(),
+                        role.into(),
+                        progress.map(|p| p.wal_index).into(),
+                        progress.map(|p| p.committed_index).into(),
+                        progress.map(|p| p.applied_index).into(),
+                    ],
+                })
+            }
+        }))
+        .await?;
+        Ok(ExecuteResult::Data(show_columns(
+            ["id", "node_id", "role", "wal_index", "committed_index", "applied_index"],
+            rows,
+        )))
     }
 
     async fn handle_show_shards(&self, show_stmt: ShowStatement) -> Result<ExecuteResult> {

@@ -108,6 +108,28 @@ impl Client {
         }
     }
 
+    pub async fn get_replica_progress(
+        &self,
+        req: GetReplicaProgressRequest,
+        timeout: Duration,
+    ) -> Result<Option<ReplicaProgress>, Status> {
+        let resp = self
+            .client
+            .clone()
+            .admin(NodeAdminRequest {
+                request: Some(node_admin_request::Request::GetReplicaProgress(req)),
+            })
+            .timeout(timeout)
+            .await
+            .map_err(rpc_status)?;
+        match resp.into_inner().response {
+            Some(node_admin_response::Response::GetReplicaProgress(resp)) => Ok(resp.progress),
+            _ => Err(Status::internal(
+                "Invalid response type, `GetReplicaProgressResponse` is required".to_owned(),
+            )),
+        }
+    }
+
     pub async fn group_request(
         &self,
         req: impl IntoTimedRequest<GroupRequest>,

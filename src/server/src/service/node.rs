@@ -275,6 +275,12 @@ impl node_server::Node for Server {
             node_admin_request::Request::Heartbeat(req) => {
                 node_admin_response::Response::Heartbeat(self.root_heartbeat(req).await?)
             }
+            node_admin_request::Request::GetReplicaProgress(req) => {
+                let progress = self.node.replica_progress(req).await;
+                node_admin_response::Response::GetReplicaProgress(GetReplicaProgressResponse {
+                    progress,
+                })
+            }
         };
         Ok(Response::new(NodeAdminResponse { response: Some(resp) }))
     }

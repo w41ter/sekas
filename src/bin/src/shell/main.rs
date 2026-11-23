@@ -259,6 +259,9 @@ impl Session {
                     }
                     builder.push_record(row.values.iter().map(|v| match v {
                         serde_json::Value::String(str) => str.clone(),
+                        serde_json::Value::Number(number) if number.is_f64() => {
+                            format!("{:.2}", number.as_f64().unwrap())
+                        }
                         _ => v.to_string(),
                     }));
                 }
