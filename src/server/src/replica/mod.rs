@@ -703,16 +703,16 @@ impl Replica {
         if let Some(barrier) = self.cfg.testing_knobs.after_overlay_insert.as_ref() {
             barrier.on_reached().await;
         }
-        let submit = async {
+        let submit_future = {
             let eval_result = eval_result.into_eval_result(&self.group_engine)?;
             let proposal = self.raft_group.propose(eval_result, Some(exec_ctx.current_term))?;
             drop(prepare);
             drop(eval_latches);
             let _raft = write_metrics.timer(WriteStage::RaftResult);
-            proposal.wait_result().await
+            proposal.wait_result()
         };
         let (pending_fence_result, propose_result) =
-            futures::join!(pending_fences.wait_for_write(write_metrics), submit);
+            futures::join!(pending_fences.wait_for_write(write_metrics), submit_future);
         let _cleanup = write_metrics.timer(WriteStage::OverlayCleanup);
         self.pending_overlay.remove_batch(&pending_mutations);
         watcher.complete_result(pending_fence_result.and(propose_result))
