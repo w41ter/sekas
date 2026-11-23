@@ -14,7 +14,7 @@
 
 use std::sync::Arc;
 
-use sekas_schema::system::txn::TXN_MAX_VERSION;
+use sekas_schema::system::txn::{TXN_INTENT_VERSION, TXN_MAX_VERSION};
 use tokio::sync::{Mutex, Notify};
 
 #[derive(Clone, Debug, Default)]
@@ -55,7 +55,7 @@ pub struct PendingLocalTxnGuard {
 
 impl LocalTxnManager {
     pub async fn before_read(&self, read_version: u64) {
-        if read_version == TXN_MAX_VERSION {
+        if matches!(read_version, TXN_MAX_VERSION | TXN_INTENT_VERSION) {
             return;
         }
 
@@ -189,9 +189,25 @@ mod tests {
     async fn read_without_version_does_not_advance_served_read_version() {
         let manager = LocalTxnManager::default();
         manager.before_read(TXN_MAX_VERSION).await;
+        manager.before_read(TXN_INTENT_VERSION).await;
 
         let pending = manager.begin_commit(50).await;
         assert_eq!(pending.commit_version(), 50);
+        pending.finish().await;
+    }
+
+    #[sekas_macro::test]
+    async fn reserved_read_versions_do_not_wait_for_pending_commits() {
+        let manager = LocalTxnManager::default();
+        let pending = manager.begin_commit(100).await;
+
+        for version in [TXN_MAX_VERSION, TXN_INTENT_VERSION] {
+            tokio::time::timeout(Duration::from_millis(100), manager.before_read(version))
+                .await
+                .expect("reserved read versions must bypass pending commits");
+        }
+
+        assert_eq!(manager.pending_count().await, 1);
         pending.finish().await;
     }
 
