@@ -18,6 +18,10 @@ use std::sync::{Arc, Mutex};
 use rand::RngExt;
 use sekas_api::server::v1::*;
 
+mod show;
+
+pub(super) use show::{ShowMetrics, ShowSnapshot};
+
 struct GroupDelta {
     epoch: u64,
     incoming: Vec<ReplicaDesc>,
@@ -35,7 +39,7 @@ pub struct ClusterStats {
     sched_stats: Arc<Mutex<SchedStats>>,
     job_stats: Arc<Mutex<JobStats>>,
     table_set_stats: Arc<Mutex<TableSetStats>>,
-    group_set_stats: Arc<Mutex<HashMap<u64, GroupStats>>>,
+    show_stats: Arc<Mutex<show::ShowStats>>,
 }
 
 #[derive(Default)]
@@ -64,7 +68,7 @@ pub struct TableStats {
 }
 
 impl ClusterStats {
-    pub fn handle_group_stats(&self, group_stats: GroupStats) {
+    pub fn handle_group_stats(&self, group_stats: &GroupStats) {
         {
             let mut sched_stats = self.sched_stats.lock().expect("poisoned");
             for shard in &group_stats.shard_stats {
@@ -86,10 +90,18 @@ impl ClusterStats {
                 table_stats.shard_indexes.insert(shard_id, group_stats.group_id);
             }
         }
-        {
-            let mut group_set = self.group_set_stats.lock().expect("poisoned");
-            group_set.insert(group_stats.group_id, group_stats);
-        }
+    }
+
+    pub(super) fn handle_show_group_stats(&self, group_stats: &GroupStats, node_id: u64) {
+        self.show_stats.lock().unwrap().update(group_stats, node_id);
+    }
+
+    pub(super) fn show_snapshot(
+        &self,
+        groups: &[GroupDesc],
+        max_age: std::time::Duration,
+    ) -> ShowSnapshot {
+        self.show_stats.lock().unwrap().snapshot(groups, max_age)
     }
 
     pub fn handle_schedule_update(
@@ -221,12 +233,6 @@ impl ClusterStats {
         table_set.tables.values().filter_map(|v| v.shards.get(&shard_id)).next().cloned()
     }
 
-    /// Get the stats of a group.
-    pub fn get_group_stats(&self, group_id: u64) -> Option<GroupStats> {
-        let group_set = self.group_set_stats.lock().expect("poisoned");
-        group_set.get(&group_id).cloned()
-    }
-
     pub fn reset(&self) {
         {
             let mut inner = self.sched_stats.lock().unwrap();
@@ -244,6 +250,7 @@ impl ClusterStats {
             let mut inner = self.table_set_stats.lock().expect("poisoned");
             inner.tables.clear();
         }
+        self.show_stats.lock().unwrap().clear();
     }
 }
 

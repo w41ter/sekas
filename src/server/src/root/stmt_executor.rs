@@ -12,15 +12,19 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use chrono::{DateTime, SecondsFormat};
+use std::collections::HashMap;
+use std::time::Duration;
+
 use log::warn;
 use sekas_api::server::v1::*;
 use sekas_parser::{ColumnResult, ConfigStatement, ExecuteResult, Row, ShowStatement};
 use sekas_rock::ascii::escape_bytes;
 use sekas_rock::time::timestamp_millis;
+use serde_json::Value;
 
 use super::Root;
 use super::allocator::BalanceDecision;
+use super::stats::{ShowMetrics, ShowSnapshot};
 use crate::{Error, Result};
 
 impl Root {
@@ -86,7 +90,7 @@ impl Root {
                 let rows = snapshot
                     .iter()
                     .map(|(policy, report)| {
-                        let (status, decision) = match &report.decision {
+                        let (status, decision) = match report {
                             BalanceDecision::Unknown => ("unknown", "awaiting first check"),
                             BalanceDecision::Disabled => ("disabled", "-"),
                             BalanceDecision::Deferred(reason) => ("deferred", *reason),
@@ -99,17 +103,10 @@ impl Root {
                             }
                             BalanceDecision::Error(detail) => ("error", detail.as_str()),
                         };
-                        Row {
-                            values: vec![
-                                policy.name().into(),
-                                status.into(),
-                                decision.into(),
-                                display_time(report.checked_at).into(),
-                            ],
-                        }
+                        Row { values: vec![policy.name().into(), status.into(), decision.into()] }
                     })
                     .collect();
-                show_columns(["policy", "status", "decision", "checked_at"], rows)
+                show_columns(["policy", "status", "decision"], rows)
             }
             "scheduler" => {
                 let summary = self.scheduler.scheduler_status(now);
@@ -119,13 +116,9 @@ impl Root {
                         summary.running.into(),
                         summary.waiting.into(),
                         self.jobs.pending_jobs().into(),
-                        display_time(summary.last_poll_at).into(),
                     ],
                 };
-                show_columns(
-                    ["ready", "running", "waiting", "background_jobs", "last_poll_at"],
-                    vec![row],
-                )
+                show_columns(["ready", "running", "waiting", "background_jobs"], vec![row])
             }
             "scheduler_tasks" => {
                 let rows = self
@@ -169,12 +162,38 @@ impl Root {
             ));
         }
         let databases = self.list_database().await?;
-        let columns = ["id", "name"].into_iter().map(ToString::to_string).collect::<Vec<_>>();
+        let tables = self.schema()?.list_table().await?;
+        let groups = self.list_group().await?;
+        let stats = self.show_snapshot(&groups).tables(&groups);
+        let mut db_stats = HashMap::<u64, ShowMetrics>::new();
+        for table in tables {
+            let table_stats = stats.get(&table.id).copied().unwrap_or(ShowMetrics::unavailable(0));
+            db_stats.entry(table.db).or_default().add(table_stats);
+        }
         let rows = databases
             .into_iter()
-            .map(|db| Row { values: vec![db.id.into(), db.name.into()] })
-            .collect::<Vec<_>>();
-        Ok(ExecuteResult::Data(ColumnResult { columns, rows }))
+            .map(|db| {
+                let mut values = vec![db.id.into(), db.name.into()];
+                append_table_metrics(
+                    &mut values,
+                    db_stats.get(&db.id).copied().unwrap_or_default(),
+                );
+                Row { values }
+            })
+            .collect();
+        Ok(ExecuteResult::Data(show_columns(
+            [
+                "id",
+                "name",
+                "bytes",
+                "read_qps",
+                "write_qps",
+                "num_shards",
+                "read_bytes_per_sec",
+                "write_bytes_per_sec",
+            ],
+            rows,
+        )))
     }
 
     async fn handle_show_tables(&self, show_stmt: ShowStatement) -> Result<ExecuteResult> {
@@ -188,10 +207,8 @@ impl Root {
         };
 
         let tables = self.list_table(&db_desc).await?;
-        let columns = ["id", "name", "type", "replication", "replicas_per_group", "properties"]
-            .into_iter()
-            .map(ToString::to_string)
-            .collect::<Vec<_>>();
+        let groups = self.list_group().await?;
+        let stats = self.show_snapshot(&groups).tables(&groups);
         let table_to_row = |table: TableDesc| -> Row {
             use sekas_schema::property::*;
             let mut properties = vec![];
@@ -201,7 +218,7 @@ impl Root {
                 }
             }
             properties.sort_unstable();
-            let values: Vec<serde_json::Value> = vec![
+            let mut values = vec![
                 table.id.into(),
                 table.name.into(),
                 table.properties.get(TABLE_TYPE).cloned().unwrap_or_default().into(),
@@ -209,10 +226,30 @@ impl Root {
                 table.properties.get(REPLICAS_PER_GROUP).cloned().unwrap_or_default().into(),
                 properties.join(", ").into(),
             ];
+            append_table_metrics(
+                &mut values,
+                stats.get(&table.id).copied().unwrap_or(ShowMetrics::unavailable(0)),
+            );
             Row { values }
         };
-        let rows = tables.into_iter().map(table_to_row).collect::<Vec<_>>();
-        Ok(ExecuteResult::Data(ColumnResult { columns, rows }))
+        let rows = tables.into_iter().map(table_to_row).collect();
+        Ok(ExecuteResult::Data(show_columns(
+            [
+                "id",
+                "name",
+                "type",
+                "replication",
+                "replicas_per_group",
+                "properties",
+                "bytes",
+                "read_qps",
+                "write_qps",
+                "num_shards",
+                "read_bytes_per_sec",
+                "write_bytes_per_sec",
+            ],
+            rows,
+        )))
     }
 
     async fn handle_show_groups(&self, show_stmt: ShowStatement) -> Result<ExecuteResult> {
@@ -222,37 +259,37 @@ impl Root {
             ));
         }
         let groups = self.list_group().await?;
-
-        let columns =
-            ["id", "shard_epoch", "config_epoch", "num_replicas", "num_shards", "qps(w/r)", "size"]
-                .into_iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>();
-
-        let cluster_stats = self.get_cluster_stats();
+        let stats = self.show_snapshot(&groups);
         let group_to_row = |group: GroupDesc| -> Row {
             let (shard_epoch, config_epoch) = (group.epoch >> 32, group.epoch & ((1 << 32) - 1));
-            let mut values: Vec<serde_json::Value> = vec![
+            let metrics = stats.group(&group);
+            let mut values = vec![
                 group.id.into(),
                 shard_epoch.into(),
                 config_epoch.into(),
                 group.replicas.len().into(),
-                group.shards.len().into(),
+                metrics.num_shards.into(),
+                display_size(metrics.bytes).into(),
             ];
-            if let Some(group_stats) = cluster_stats.get_group_stats(group.id) {
-                let read_qps = group_stats.read_qps as u64;
-                let write_qps = group_stats.write_qps as u64;
-                let group_size = group_stats.shard_stats.iter().map(|s| s.shard_size).sum();
-                values.push(format!("{read_qps}/{write_qps}").into());
-                values.push(display_size(group_size).into())
-            } else {
-                values.push("-/-".to_owned().into());
-                values.push("-".to_owned().into());
-            }
+            append_rates(&mut values, metrics);
             Row { values }
         };
-        let rows = groups.into_iter().map(group_to_row).collect::<Vec<_>>();
-        Ok(ExecuteResult::Data(ColumnResult { columns, rows }))
+        let rows = groups.into_iter().map(group_to_row).collect();
+        Ok(ExecuteResult::Data(show_columns(
+            [
+                "id",
+                "shard_epoch",
+                "config_epoch",
+                "num_replicas",
+                "num_shards",
+                "size",
+                "read_qps",
+                "write_qps",
+                "read_bytes_per_sec",
+                "write_bytes_per_sec",
+            ],
+            rows,
+        )))
     }
 
     async fn handle_show_replicas(&self, show_stmt: ShowStatement) -> Result<ExecuteResult> {
@@ -307,35 +344,39 @@ impl Root {
             return Ok(ExecuteResult::Msg("No such group exists".to_owned()));
         };
 
-        let columns = ["id", "table_id", "start", "end", "size"]
-            .into_iter()
-            .map(ToString::to_string)
-            .collect::<Vec<_>>();
-
-        let cluster_stats = self.get_cluster_stats();
+        let stats = self.show_snapshot(std::slice::from_ref(&group));
         let shard_to_row = |shard: ShardDesc| -> Row {
             let (start, end) = match shard.range {
                 Some(range) => (range.start, range.end),
                 None => (vec![], vec![]),
             };
             let (start, end) = (escape_bytes(&start), escape_bytes(&end));
-            let size = if let Some(shard_stats) = cluster_stats.get_shard_stats(shard.id) {
-                display_size(shard_stats.shard_size)
-            } else {
-                "-".to_owned()
-            };
-            Row {
-                values: vec![
-                    shard.id.into(),
-                    shard.table_id.into(),
-                    start.into(),
-                    end.into(),
-                    size.into(),
-                ],
-            }
+            let metrics = stats.shard(group_id, shard.id);
+            let mut values = vec![
+                shard.id.into(),
+                shard.table_id.into(),
+                start.into(),
+                end.into(),
+                display_size(metrics.bytes).into(),
+            ];
+            append_rates(&mut values, metrics);
+            Row { values }
         };
-        let rows = group.shards.into_iter().map(shard_to_row).collect::<Vec<_>>();
-        Ok(ExecuteResult::Data(ColumnResult { columns, rows }))
+        let rows = group.shards.into_iter().map(shard_to_row).collect();
+        Ok(ExecuteResult::Data(show_columns(
+            [
+                "id",
+                "table_id",
+                "start",
+                "end",
+                "size",
+                "read_qps",
+                "write_qps",
+                "read_bytes_per_sec",
+                "write_bytes_per_sec",
+            ],
+            rows,
+        )))
     }
 
     async fn handle_show_nodes(&self, show_stmt: ShowStatement) -> Result<ExecuteResult> {
@@ -369,24 +410,41 @@ impl Root {
         let rows = nodes.into_iter().map(node_to_row).collect::<Vec<_>>();
         Ok(ExecuteResult::Data(ColumnResult { columns, rows }))
     }
+
+    fn show_snapshot(&self, groups: &[GroupDesc]) -> ShowSnapshot {
+        let max_age = Duration::from_secs(self.cfg.liveness_threshold_sec);
+        self.get_cluster_stats().show_snapshot(groups, max_age)
+    }
 }
 
 fn show_columns<const N: usize>(columns: [&str; N], rows: Vec<Row>) -> ColumnResult {
     ColumnResult { columns: columns.into_iter().map(str::to_owned).collect(), rows }
 }
 
-fn display_time(millis: Option<u64>) -> String {
-    millis
-        .and_then(|millis| i64::try_from(millis).ok())
-        .and_then(DateTime::from_timestamp_millis)
-        .map_or_else(|| "-".to_owned(), |time| time.to_rfc3339_opts(SecondsFormat::Secs, true))
+fn append_table_metrics(values: &mut Vec<Value>, metrics: ShowMetrics) {
+    values.push(metrics.bytes.into());
+    values.push(metrics.rates.map(|rates| rates.read_qps).into());
+    values.push(metrics.rates.map(|rates| rates.write_qps).into());
+    values.push(metrics.num_shards.into());
+    values.push(metrics.rates.map(|rates| rates.read_bytes_per_sec).into());
+    values.push(metrics.rates.map(|rates| rates.write_bytes_per_sec).into());
+}
+
+fn append_rates(values: &mut Vec<Value>, metrics: ShowMetrics) {
+    values.extend([
+        metrics.rates.map(|rates| rates.read_qps).into(),
+        metrics.rates.map(|rates| rates.write_qps).into(),
+        metrics.rates.map(|rates| rates.read_bytes_per_sec).into(),
+        metrics.rates.map(|rates| rates.write_bytes_per_sec).into(),
+    ]);
 }
 
 /// Convert bytes size into readable unit.
-fn display_size(size: u64) -> String {
+fn display_size(size: Option<u64>) -> String {
     const KB: u64 = 1024;
     const MB: u64 = 1024 * KB;
     const GB: u64 = 1024 * MB;
+    let Some(size) = size else { return "-".to_owned() };
     match size {
         0..KB => format!("{size}"),
         KB..MB => format!("{}KB", size / KB),

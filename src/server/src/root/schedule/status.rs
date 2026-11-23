@@ -14,8 +14,6 @@
 
 use std::collections::BTreeMap;
 
-use sekas_rock::time::timestamp_millis;
-
 use super::ReconcileTask;
 use super::reconcile_task::Task;
 use crate::root::allocator::BalanceDecision;
@@ -53,42 +51,30 @@ impl Policy {
 }
 
 #[derive(Clone)]
-pub struct PolicyReport {
-    pub decision: BalanceDecision,
-    pub checked_at: Option<u64>,
-}
-
-#[derive(Clone)]
 pub struct BalanceSnapshot {
-    reports: [PolicyReport; Policy::ALL.len()],
+    reports: [BalanceDecision; Policy::ALL.len()],
 }
 
 impl BalanceSnapshot {
     pub(super) fn new(cfg: &RootConfig) -> Self {
-        let reports = Policy::ALL.map(|policy| PolicyReport {
-            decision: if policy.enabled(cfg) {
-                BalanceDecision::Unknown
-            } else {
-                BalanceDecision::Disabled
-            },
-            checked_at: None,
+        let reports = Policy::ALL.map(|policy| {
+            if policy.enabled(cfg) { BalanceDecision::Unknown } else { BalanceDecision::Disabled }
         });
         Self { reports }
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = (Policy, &PolicyReport)> {
+    pub fn iter(&self) -> impl Iterator<Item = (Policy, &BalanceDecision)> {
         Policy::ALL.into_iter().zip(&self.reports)
     }
 
     pub(super) fn record(&mut self, policy: Policy, decision: BalanceDecision) {
-        let checked_at = (!matches!(decision, BalanceDecision::Disabled)).then(timestamp_millis);
-        self.reports[policy as usize] = PolicyReport { decision, checked_at };
+        self.reports[policy as usize] = decision;
     }
 
     pub(super) fn record_refresh_error(&mut self, err: &Error) {
         let decision = BalanceDecision::Error(format!("refresh cluster metadata: {err}"));
         for policy in Policy::ALL {
-            if !matches!(self.reports[policy as usize].decision, BalanceDecision::Disabled) {
+            if !matches!(self.reports[policy as usize], BalanceDecision::Disabled) {
                 self.record(policy, decision.clone());
             }
         }
@@ -96,8 +82,8 @@ impl BalanceSnapshot {
 
     pub(super) fn defer(&mut self, reason: &'static str) {
         for report in &mut self.reports {
-            if matches!(report.decision, BalanceDecision::Unknown) {
-                report.decision = BalanceDecision::Deferred(reason);
+            if matches!(report, BalanceDecision::Unknown) {
+                *report = BalanceDecision::Deferred(reason);
             }
         }
     }
@@ -106,7 +92,6 @@ impl BalanceSnapshot {
 #[derive(Default)]
 pub(super) struct QueueStatus {
     next_id: u64,
-    pub(super) last_poll_at: Option<u64>,
     pub(super) tasks: BTreeMap<u64, TaskStatus>,
 }
 
@@ -115,7 +100,6 @@ pub struct SchedulerSummary {
     pub ready: usize,
     pub running: usize,
     pub waiting: usize,
-    pub last_poll_at: Option<u64>,
 }
 
 #[derive(Clone)]
@@ -219,8 +203,7 @@ impl QueueStatus {
     }
 
     pub(super) fn summary(&self, now: u64) -> SchedulerSummary {
-        let mut summary =
-            SchedulerSummary { last_poll_at: self.last_poll_at, ..Default::default() };
+        let mut summary = SchedulerSummary::default();
         for task in self.tasks.values() {
             match task.state(now) {
                 TaskState::Ready => summary.ready += 1,

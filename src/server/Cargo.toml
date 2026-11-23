@@ -22,7 +22,6 @@ sekas-etcd-proxy = { path = "../../layers/etcd", optional = true }
 async-stream.workspace = true
 async-trait.workspace = true
 bytes.workspace = true
-chrono = { version = "0.4", default-features = false, features = ["std"] }
 crc32fast.workspace = true
 fastrace.workspace = true
 futures.workspace = true

@@ -194,7 +194,8 @@ impl Root {
         }
         for gs in &resp.group_stats {
             info!("update group stats {}", gs.group_id);
-            self.cluster_stats.handle_group_stats(gs.clone());
+            self.cluster_stats.handle_group_stats(gs);
+            self.cluster_stats.handle_show_group_stats(gs, node.id);
         }
         Ok(())
     }

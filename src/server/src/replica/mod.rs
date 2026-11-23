@@ -21,6 +21,7 @@ mod move_shard;
 mod pending;
 pub mod retry;
 mod state;
+mod traffic;
 mod write_view;
 
 use std::sync::atomic::AtomicI32;
@@ -143,6 +144,7 @@ where
     local_txn_mgr: LocalTxnManager,
     pending_overlay: PendingMutationOverlay,
     write_view: PendingWriteView,
+    traffic: traffic::ReplicaTraffic,
     sekas_client: sekas_client::SekasClient,
     cfg: ReplicaConfig,
 }
@@ -202,6 +204,7 @@ impl Replica {
             local_txn_mgr: LocalTxnManager::default(),
             pending_overlay,
             write_view,
+            traffic: traffic::ReplicaTraffic::default(),
             sekas_client,
             cfg,
         }
@@ -366,15 +369,28 @@ impl Replica {
         Ok(ReplicaPerfContext { take_acl_guard, propose, raft })
     }
 
-    /// Collect the group stats of the leader replica.
-    pub fn collect_group_stats(&self) -> GroupStats {
-        let descriptor = self.descriptor();
+    pub(crate) fn record_traffic(&self, request: &Request, response: &Response) {
+        self.traffic.record(request, response);
+    }
+
+    /// Collect one stats sample from the serving leader.
+    pub fn collect_group_stats(&self) -> Option<GroupStats> {
+        let (descriptor, term) = {
+            let state = self.lease_state.lock().unwrap();
+            if !state.is_ready_for_serving() {
+                return None;
+            }
+            (state.descriptor.clone(), state.replica_state.term)
+        };
+        let elapsed_nanos = self.traffic.elapsed_nanos();
+        let group_epoch = descriptor.epoch;
         let shard_count = descriptor.shards.len();
         let group_id = self.info.group_id;
         let mut shard_stats = Vec::with_capacity(shard_count);
         for shard in descriptor.shards {
             let shard_id = shard.id;
             let table_id = shard.table_id;
+            let traffic = Some(self.traffic.snapshot(shard_id));
             let shard_size = match self.group_engine.get_approximate_size(shard_id) {
                 Ok(size) => size,
                 Err(err) => {
@@ -385,15 +401,29 @@ impl Replica {
                     continue;
                 }
             };
-            shard_stats.push(ShardStats { shard_id, table_id, shard_size });
+            shard_stats.push(ShardStats { shard_id, table_id, shard_size, traffic });
         }
-        GroupStats {
+        self.traffic.retain_shards(|shard_id| self.group_engine.shard_desc(shard_id).is_ok());
+        let state = self.lease_state.lock().unwrap();
+        if !state.is_ready_for_serving()
+            || state.replica_state.term != term
+            || state.descriptor.epoch != group_epoch
+        {
+            return None;
+        }
+        Some(GroupStats {
             group_id,
             shard_count: shard_count as u64,
             read_qps: 0.,
             write_qps: 0.,
             shard_stats,
-        }
+            sample: Some(GroupStatsSample {
+                group_epoch,
+                replica_id: self.info.replica_id,
+                term,
+                elapsed_nanos,
+            }),
+        })
     }
 }
 

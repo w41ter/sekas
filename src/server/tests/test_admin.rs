@@ -20,7 +20,7 @@ use log::info;
 use prost::Message;
 use sekas_api::server::v1::*;
 use sekas_client::{ClientOptions, NodeClient, SekasClient};
-use sekas_parser::ExecuteResult;
+use sekas_parser::{ColumnResult, ExecuteResult};
 use sekas_rock::fn_name;
 use sekas_server::diagnosis;
 
@@ -46,13 +46,21 @@ async fn admin_show_scheduling() {
     let client =
         SekasClient::new(ClientOptions::default(), nodes.into_values().collect()).await.unwrap();
 
-    let scheduler = tokio::time::timeout(Duration::from_secs(15), async {
+    let body = client.handle_statement("show scheduler;").await.unwrap();
+    let ExecuteResult::Data(scheduler) = serde_json::from_slice(&body).unwrap() else {
+        panic!("show scheduler must return a table");
+    };
+    assert_eq!(scheduler.columns, ["ready", "running", "waiting", "background_jobs"]);
+    assert_eq!(scheduler.rows.len(), 1);
+    assert_eq!(scheduler.rows[0].values.len(), 4);
+
+    let balancer = tokio::time::timeout(Duration::from_secs(15), async {
         loop {
-            let body = client.handle_statement("show scheduler;").await.unwrap();
+            let body = client.handle_statement("show balancer;").await.unwrap();
             let ExecuteResult::Data(status) = serde_json::from_slice(&body).unwrap() else {
-                panic!("show scheduler must return a table");
+                panic!("show balancer must return a table");
             };
-            if status.rows[0].values[4] != "-" {
+            if status.rows[0].values[1] == "no_action" && status.rows[3].values[1] == "no_action" {
                 break status;
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
@@ -60,23 +68,13 @@ async fn admin_show_scheduling() {
     })
     .await
     .expect("scheduler must complete a poll");
-    assert_eq!(
-        scheduler.columns,
-        ["ready", "running", "waiting", "background_jobs", "last_poll_at"]
-    );
-    assert!(scheduler.rows[0].values[4].as_str().unwrap().ends_with('Z'));
-
-    let body = client.handle_statement("show balancer;").await.unwrap();
-    let ExecuteResult::Data(balancer) = serde_json::from_slice(&body).unwrap() else {
-        panic!("show balancer must return a table");
-    };
-    assert_eq!(balancer.columns, ["policy", "status", "decision", "checked_at"]);
+    assert_eq!(balancer.columns, ["policy", "status", "decision"]);
     assert_eq!(balancer.rows.len(), 4);
     let groups = &balancer.rows[0].values;
     assert_eq!(groups[0], "group_count");
     assert_eq!(groups[1], "no_action");
     assert_eq!(groups[2], "nodes=1, min_nodes=1, cpus=2, groups=2, desired_groups=2");
-    assert!(groups[3].as_str().unwrap().ends_with('Z'));
+    assert_eq!(groups.len(), 3);
     assert!(balancer.rows[1..3].iter().all(|row| row.values[1] == "disabled"));
     let shards = &balancer.rows[3].values;
     assert_eq!(shards[0], "shard_count");
@@ -94,6 +92,86 @@ async fn admin_show_scheduling() {
 
     let body = client.handle_statement("show scheduler from root;").await.unwrap();
     assert!(matches!(serde_json::from_slice(&body).unwrap(), ExecuteResult::Msg(_)));
+}
+
+#[sekas_macro::test]
+async fn admin_show_traffic() {
+    let mut ctx = TestContext::new(fn_name!());
+    ctx.set_replicas_per_group(1);
+    ctx.set_heartbeat_interval_sec(1);
+    ctx.set_schedule_interval_sec(1);
+    let nodes = ctx.bootstrap_servers(1).await;
+    let cluster = ClusterClient::new(nodes).await;
+    let client = cluster.app_client().await;
+    let empty = client.create_database("empty".into()).await.unwrap();
+    let db = client.create_database("traffic".into()).await.unwrap();
+    let table = db.create_table("data".into()).await.unwrap();
+    cluster.assert_table_ready_with_voters(table.id, 1).await;
+    let group = cluster.find_router_group_state_by_key(table.id, b"key").await.unwrap();
+    let shard = cluster.get_shard_desc(table.id, b"key").await.unwrap();
+
+    let databases = show(&client, "show databases").await;
+    for metric in [
+        "bytes",
+        "num_shards",
+        "read_qps",
+        "write_qps",
+        "read_bytes_per_sec",
+        "write_bytes_per_sec",
+    ] {
+        assert_eq!(show_cell(&databases, empty.desc().id, metric).as_f64(), Some(0.));
+    }
+
+    let shards_cmd = format!("show shards from {}", group.id);
+    for (command, id) in [
+        ("show tables from traffic", table.id),
+        ("show databases", db.desc().id),
+        ("show groups", group.id),
+        (&shards_cmd, shard.id),
+    ] {
+        let result = tokio::time::timeout(Duration::from_secs(15), async {
+            loop {
+                db.put(table.id, b"key".to_vec(), b"value".to_vec()).await.unwrap();
+                assert_eq!(
+                    db.get(table.id, b"key".to_vec()).await.unwrap(),
+                    Some(b"value".to_vec())
+                );
+                let result = show(&client, command).await;
+                let read = show_cell(&result, id, "read_qps").as_f64().unwrap_or(0.);
+                let write = show_cell(&result, id, "write_qps").as_f64().unwrap_or(0.);
+                if read > 0. && write > 0. {
+                    break (result, read, write);
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("{command} must report read and write traffic"));
+        let (rows, read, write) = result;
+        let read_bytes = show_cell(&rows, id, "read_bytes_per_sec").as_f64().unwrap();
+        let write_bytes = show_cell(&rows, id, "write_bytes_per_sec").as_f64().unwrap();
+        assert!((read_bytes / read - 5.).abs() < 0.0001, "{command} read payload ratio");
+        assert!((write_bytes / write - 8.).abs() < 0.0001, "{command} write payload ratio");
+        if command.starts_with("show table") || command == "show databases" {
+            assert_eq!(show_cell(&rows, id, "num_shards").as_u64(), Some(1));
+            assert!(show_cell(&rows, id, "bytes").is_u64());
+        }
+    }
+}
+
+async fn show(client: &SekasClient, statement: &str) -> ColumnResult {
+    let body = client.handle_statement(statement).await.unwrap();
+    let ExecuteResult::Data(result) = serde_json::from_slice(&body).unwrap() else {
+        panic!("{statement} must return a table");
+    };
+    assert!(result.rows.iter().all(|row| row.values.len() == result.columns.len()));
+    result
+}
+
+fn show_cell<'a>(data: &'a ColumnResult, id: u64, column: &str) -> &'a serde_json::Value {
+    let row = data.rows.iter().find(|row| row.values[0].as_u64() == Some(id)).unwrap();
+    let index = data.columns.iter().position(|name| name == column).unwrap();
+    &row.values[index]
 }
 
 #[sekas_macro::test]
@@ -142,6 +220,7 @@ async fn admin_unsplittable_shard_does_not_leave_a_retry_task() {
             shard_id: shard.id,
             table_id: table.id,
             shard_size: 8 * 1024,
+            traffic: None,
         }],
         ..Default::default()
     }];

@@ -182,12 +182,12 @@ mod tests {
         let stats = ClusterStats::default();
         let mut source = group(1, 3, 0);
         source.shards = (1..=3).map(|id| ShardDesc::whole(id, 1024)).collect();
-        stats.handle_group_stats(GroupStats {
+        stats.handle_group_stats(&GroupStats {
             group_id: 1,
             shard_stats: vec![
-                ShardStats { shard_id: 1, table_id: 1024, shard_size: 2048 },
-                ShardStats { shard_id: 2, table_id: 1024, shard_size: 512 },
-                ShardStats { shard_id: 3, table_id: 1024, shard_size: 512 },
+                ShardStats { shard_id: 1, table_id: 1024, shard_size: 2048, traffic: None },
+                ShardStats { shard_id: 2, table_id: 1024, shard_size: 512, traffic: None },
+                ShardStats { shard_id: 3, table_id: 1024, shard_size: 512, traffic: None },
             ],
             ..Default::default()
         });

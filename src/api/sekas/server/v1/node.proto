@@ -420,6 +420,23 @@ message ShardStats {
     uint64 table_id = 2;
     // The size of the shard
     uint64 shard_size = 3;
+    // Cumulative data-plane traffic since the replica started.
+    ShardTraffic traffic = 4;
+}
+
+message ShardTraffic {
+    uint64 reads = 1;
+    uint64 writes = 2;
+    uint64 read_bytes = 3;
+    uint64 write_bytes = 4;
+}
+
+// Identifies the leader and the monotonic clock used for a stats sample.
+message GroupStatsSample {
+    uint64 group_epoch = 1;
+    uint64 replica_id = 2;
+    uint64 term = 3;
+    uint64 elapsed_nanos = 4;
 }
 
 message GroupStats {
@@ -428,6 +445,7 @@ message GroupStats {
     float read_qps = 3;
     float write_qps = 4;
     repeated ShardStats shard_stats = 5;
+    GroupStatsSample sample = 6;
 }
 
 message ReplicaStats {

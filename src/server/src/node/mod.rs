@@ -411,31 +411,24 @@ impl Node {
         let Some(replica) = self.replica_route_table.find(request.group_id) else {
             return Err(Error::GroupNotFound(request.group_id));
         };
-        let metrics = request
-            .request
-            .as_ref()
-            .and_then(|request| request.request.as_ref())
-            .map(WriteMetrics::for_request)
-            .unwrap_or_default();
+        let inner = request.request.as_ref().and_then(|request| request.request.as_ref());
+        let metrics = inner.map(WriteMetrics::for_request).unwrap_or_default();
         let _request = metrics.timer(WriteStage::Request);
 
-        match execute(&replica, exec_ctx, request).await {
+        let response = match execute(&replica, exec_ctx, request).await {
             Err(Error::PartialForward(partial)) => {
                 let _forward = metrics.timer(WriteStage::Forward);
                 let resp = self.complete_partial_forward(partial).await?;
                 Ok(GroupResponse::new(resp))
             }
             Err(Error::Forward(forward_ctx)) => {
-                let request = request
-                    .request
-                    .as_ref()
-                    .and_then(|request| request.request.as_ref())
-                    .ok_or_else(|| {
-                        Error::InvalidArgument("GroupRequest::request is None".into())
-                    })?;
+                let request = inner.ok_or_else(|| {
+                    Error::InvalidArgument("GroupRequest::request is None".into())
+                })?;
                 if let Request::Scan(scan_request) = request {
-                    let scan_resp =
-                        self.forward_scan_request(replica, forward_ctx, scan_request).await?;
+                    let scan_resp = self
+                        .forward_scan_request(replica.clone(), forward_ctx, scan_request)
+                        .await?;
                     Ok(GroupResponse::new(Response::Scan(scan_resp)))
                 } else {
                     let _forward = metrics.timer(WriteStage::Forward);
@@ -445,7 +438,14 @@ impl Node {
             }
             Ok(resp) => Ok(resp),
             Err(err) => Err(err),
+        }?;
+        // The final response includes any forwarded parts. Account once at ingress.
+        if let (Some(request), Some(result)) =
+            (inner, response.response.as_ref().and_then(|response| response.response.as_ref()))
+        {
+            replica.record_traffic(request, result);
         }
+        Ok(response)
     }
 
     async fn complete_partial_forward(
@@ -581,7 +581,9 @@ impl Node {
                 let replica_state = replica.replica_state();
                 if replica_state.role == RaftRole::Leader as i32 {
                     ns.leader_count += 1;
-                    group_stats.push(replica.collect_group_stats());
+                    if let Some(stats) = replica.collect_group_stats() {
+                        group_stats.push(stats);
+                    }
                 }
                 let rs = ReplicaStats {
                     replica_id: info.replica_id,

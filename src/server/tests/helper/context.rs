@@ -129,6 +129,10 @@ impl TestContext {
         self.root_cfg.schedule_interval_sec = secs;
     }
 
+    pub fn set_heartbeat_interval_sec(&mut self, secs: u64) {
+        self.root_cfg.liveness_threshold_sec = secs + self.root_cfg.heartbeat_timeout_sec;
+    }
+
     pub fn set_replicas_per_group(&mut self, replicas: usize) {
         self.root_cfg.replicas_per_group = replicas;
     }

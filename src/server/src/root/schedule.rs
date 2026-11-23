@@ -66,7 +66,6 @@ impl ReconcileScheduler {
 
     pub(super) fn reset_status(&self) {
         *self.balance.lock().unwrap() = BalanceSnapshot::new(&self.ctx.cfg);
-        self.queue_status.lock().unwrap().last_poll_at = None;
     }
 
     pub(super) fn balance_status(&self) -> BalanceSnapshot {
@@ -87,7 +86,6 @@ impl ReconcileScheduler {
             let _step_timer = metrics::RECONCILE_STEP_DURATION_SECONDS.start_timer();
             while self.advance_tasks().await {}
         }
-        self.queue_status.lock().unwrap().last_poll_at = Some(timestamp_millis());
         Duration::from_secs(self.ctx.cfg.schedule_interval_sec)
     }
 
@@ -1319,14 +1317,14 @@ mod tests {
         assert_eq!(
             precheck_migrate_shard_stats(
                 &cfg,
-                Some(&ShardStats { shard_id: 1, table_id: 2, shard_size: 1025 })
+                Some(&ShardStats { shard_id: 1, table_id: 2, shard_size: 1025, traffic: None })
             ),
             MigrateShardPrecheck::Split
         );
         assert_eq!(
             precheck_migrate_shard_stats(
                 &cfg,
-                Some(&ShardStats { shard_id: 1, table_id: 2, shard_size: 1024 })
+                Some(&ShardStats { shard_id: 1, table_id: 2, shard_size: 1024, traffic: None })
             ),
             MigrateShardPrecheck::Move
         );
@@ -1368,8 +1366,8 @@ mod tests {
         let table_id = sekas_schema::FIRST_USER_TABLE_ID;
         let left = ShardDesc::with_range(1, table_id, b"a".to_vec(), b"m".to_vec());
         let right = ShardDesc::with_range(2, table_id, b"m".to_vec(), b"z".to_vec());
-        let left_stats = ShardStats { shard_id: 1, table_id, shard_size: 400 };
-        let right_stats = ShardStats { shard_id: 2, table_id, shard_size: 600 };
+        let left_stats = ShardStats { shard_id: 1, table_id, shard_size: 400, traffic: None };
+        let right_stats = ShardStats { shard_id: 2, table_id, shard_size: 600, traffic: None };
 
         assert!(is_merge_candidate(&left, &right, &left_stats, &right_stats, 1000, false));
         assert!(!is_merge_candidate(&left, &right, &left_stats, &right_stats, 999, false));
@@ -1384,8 +1382,10 @@ mod tests {
 
         let system_left = ShardDesc::with_range(4, 2, b"a".to_vec(), b"m".to_vec());
         let system_right = ShardDesc::with_range(5, 2, b"m".to_vec(), b"z".to_vec());
-        let system_left_stats = ShardStats { shard_id: 4, table_id: 2, shard_size: 400 };
-        let system_right_stats = ShardStats { shard_id: 5, table_id: 2, shard_size: 600 };
+        let system_left_stats =
+            ShardStats { shard_id: 4, table_id: 2, shard_size: 400, traffic: None };
+        let system_right_stats =
+            ShardStats { shard_id: 5, table_id: 2, shard_size: 600, traffic: None };
         assert!(!is_merge_candidate(
             &system_left,
             &system_right,
