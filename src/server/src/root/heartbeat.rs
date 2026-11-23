@@ -90,6 +90,7 @@ impl Root {
             }
         }
 
+        let requested_at = Instant::now();
         let resps = {
             let _timer = metrics::HEARTBEAT_NODES_RPC_DURATION_SECONDS.start_timer();
             metrics::HEARTBEAT_NODES_BATCH_SIZE.set(nodes.len() as i64);
@@ -137,7 +138,7 @@ impl Root {
                             | piggyback_response::Info::CollectMovingShardState(_)
                             | piggyback_response::Info::SyncGroupGcVersion(_) => {}
                             piggyback_response::Info::CollectStats(resp) => {
-                                self.handle_collect_stats(&schema, resp, n.to_owned()).await?
+                                self.handle_collect_stats(&schema, resp, n, requested_at).await?
                             }
                             piggyback_response::Info::CollectGroupDetail(resp) => {
                                 self.handle_group_detail(&schema, resp, &groups).await?
@@ -173,6 +174,7 @@ impl Root {
         schema: &Schema,
         resp: &CollectStatsResponse,
         node: &NodeDesc,
+        requested_at: Instant,
     ) -> Result<()> {
         if let Some(ns) = &resp.node_stats {
             let mut node = node.to_owned();
@@ -195,7 +197,9 @@ impl Root {
         for gs in &resp.group_stats {
             info!("update group stats {}", gs.group_id);
             self.cluster_stats.handle_group_stats(gs);
-            self.cluster_stats.handle_show_group_stats(gs, node.id);
+            if self.cluster_stats.handle_show_group_stats(gs, node.id) {
+                self.cluster_stats.confirm_shard_moves(gs, requested_at);
+            }
         }
         Ok(())
     }

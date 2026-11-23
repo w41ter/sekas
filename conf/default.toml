@@ -44,8 +44,11 @@ enable_log_recycle = false
 [root]
 enable_group_balance = true
 enable_leader_balance = true
+enable_proactive_shard_split = true
 enable_replica_balance = true
 enable_shard_balance = true
+enable_shard_size_balance = false
+shard_size_balance_tolerance_bytes = 8388608
 heartbeat_timeout_sec = 4
 liveness_threshold_sec = 30
 max_create_group_retry_before_rollback = 10

@@ -17,6 +17,7 @@ use std::sync::{Arc, Mutex};
 
 use rand::RngExt;
 use sekas_api::server::v1::*;
+use tokio::time::Instant;
 
 mod show;
 
@@ -47,8 +48,14 @@ struct SchedStats {
     raw_group_delta: HashMap<u64 /* group */, GroupDelta>,
     node_view: HashMap<u64 /* node */, NodeDelta>,
     split_shards: HashSet<u64>,
-    moving_shards: HashMap<u64, u64 /* dest group */>,
+    moving_shards: HashMap<u64, ShardMove>,
     merge_shards: HashSet<(u64, u64)>,
+    split_retry_at: HashMap<u64, Instant>,
+}
+
+struct ShardMove {
+    destination: u64,
+    submitted_at: Option<Instant>,
 }
 
 #[derive(Default)]
@@ -72,11 +79,10 @@ impl ClusterStats {
         {
             let mut sched_stats = self.sched_stats.lock().expect("poisoned");
             for shard in &group_stats.shard_stats {
-                if sched_stats
-                    .moving_shards
-                    .get(&shard.shard_id)
-                    .is_some_and(|dest_group| *dest_group == group_stats.group_id)
-                {
+                if sched_stats.moving_shards.get(&shard.shard_id).is_some_and(|migration| {
+                    migration.destination == group_stats.group_id
+                        && migration.submitted_at.is_none()
+                }) {
                     sched_stats.moving_shards.remove(&shard.shard_id);
                 }
             }
@@ -92,8 +98,27 @@ impl ClusterStats {
         }
     }
 
-    pub(super) fn handle_show_group_stats(&self, group_stats: &GroupStats, node_id: u64) {
-        self.show_stats.lock().unwrap().update(group_stats, node_id);
+    pub(super) fn handle_show_group_stats(&self, group_stats: &GroupStats, node_id: u64) -> bool {
+        self.show_stats.lock().unwrap().update(group_stats, node_id)
+    }
+
+    pub(super) fn confirm_shard_moves(&self, stats: &GroupStats, requested_at: Instant) {
+        let migration_in_progress =
+            stats.sample.and_then(|sample| sample.shard_migration_in_progress);
+        if migration_in_progress == Some(true) {
+            return;
+        }
+        self.sched_stats.lock().unwrap().moving_shards.retain(|shard, migration| {
+            if migration.destination != stats.group_id
+                || migration.submitted_at.is_none_or(|submitted| requested_at <= submitted)
+            {
+                return true;
+            }
+            // A report requested after submission can observe completion or
+            // rollback. Older nodes can still confirm ownership at the destination.
+            migration_in_progress.is_none()
+                && !stats.shard_stats.iter().any(|s| s.shard_id == *shard)
+        });
     }
 
     pub(super) fn show_snapshot(
@@ -133,9 +158,37 @@ impl ClusterStats {
         sched_stats.split_shards.remove(&shard_id);
     }
 
+    pub(super) fn defer_shard_split(&self, shard_id: u64, delay: std::time::Duration) {
+        let now = Instant::now();
+        let mut stats = self.sched_stats.lock().unwrap();
+        stats.split_retry_at.retain(|_, retry_at| *retry_at > now);
+        stats.split_retry_at.insert(shard_id, now + delay);
+    }
+
+    pub(super) fn is_shard_split_cooling_down(&self, shard_id: u64) -> bool {
+        self.sched_stats
+            .lock()
+            .unwrap()
+            .split_retry_at
+            .get(&shard_id)
+            .is_some_and(|retry_at| *retry_at > Instant::now())
+    }
+
     pub fn handle_move_shard(&self, shard_id: u64, dest_group_id: u64) {
         let mut sched_stats = self.sched_stats.lock().expect("poisoned");
-        sched_stats.moving_shards.insert(shard_id, dest_group_id);
+        sched_stats
+            .moving_shards
+            .insert(shard_id, ShardMove { destination: dest_group_id, submitted_at: None });
+    }
+
+    pub(super) fn mark_shard_move_submitted(&self, shard_id: u64) {
+        if let Some(migration) = self.sched_stats.lock().unwrap().moving_shards.get_mut(&shard_id) {
+            migration.submitted_at = Some(Instant::now());
+        }
+    }
+
+    pub(super) fn has_pending_shard_moves(&self) -> bool {
+        !self.sched_stats.lock().unwrap().moving_shards.is_empty()
     }
 
     pub fn finish_move_shard(&self, shard_id: u64) {
@@ -192,7 +245,15 @@ impl ClusterStats {
         }
         let scheduled_shards = {
             let sched_stats = self.sched_stats.lock().expect("poisoned");
-            sched_stats.scheduled_shards()
+            let mut excluded = sched_stats.scheduled_shards();
+            let now = Instant::now();
+            excluded.extend(
+                sched_stats
+                    .split_retry_at
+                    .iter()
+                    .filter_map(|(&shard, &retry_at)| (retry_at > now).then_some(shard)),
+            );
+            excluded
         };
         let table_set = self.table_set_stats.lock().expect("poisoned");
         let mut target_shards = Vec::with_capacity(limit);
@@ -241,6 +302,7 @@ impl ClusterStats {
             inner.split_shards.clear();
             inner.moving_shards.clear();
             inner.merge_shards.clear();
+            inner.split_retry_at.clear();
         }
         {
             let mut inner = self.job_stats.lock().unwrap();
@@ -314,5 +376,39 @@ impl SchedStats {
             }
         }
         self.node_view = new_node_view;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn guarded_migration_waits_for_a_destination_sample_requested_after_submission() {
+        let stats = ClusterStats::default();
+        stats.handle_move_shard(1, 2);
+        let submitted = Instant::now();
+        stats.mark_shard_move_submitted(1);
+        let mut sample = GroupStats {
+            group_id: 2,
+            sample: Some(GroupStatsSample {
+                shard_migration_in_progress: Some(false),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        stats.confirm_shard_moves(&sample, submitted);
+        assert!(stats.has_pending_shard_moves());
+
+        let later = Instant::now() + std::time::Duration::from_secs(1);
+        sample.sample.as_mut().unwrap().shard_migration_in_progress = Some(true);
+        stats.confirm_shard_moves(&sample, later);
+        assert!(stats.has_pending_shard_moves());
+
+        sample.sample.as_mut().unwrap().shard_migration_in_progress = Some(false);
+        // An accepted migration may roll back without ever reporting the shard at the
+        // destination.
+        stats.confirm_shard_moves(&sample, later);
+        assert!(!stats.has_pending_shard_moves());
     }
 }

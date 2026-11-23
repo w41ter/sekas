@@ -422,6 +422,7 @@ impl Replica {
                 replica_id: self.info.replica_id,
                 term,
                 elapsed_nanos,
+                shard_migration_in_progress: Some(state.has_shard_moving()),
             }),
         })
     }

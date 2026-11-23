@@ -97,7 +97,8 @@ make_static_metric! {
             cluster_groups,
             node_replica_count,
             node_leader_count,
-            group_shard_count
+            group_shard_count,
+            group_shard_size
         }
     }
 }

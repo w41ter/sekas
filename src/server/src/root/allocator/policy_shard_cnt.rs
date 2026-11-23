@@ -43,17 +43,13 @@ impl<T: AllocSource> ShardCountPolicy<T> {
 
     pub fn compute_balance(
         &self,
+        groups: &[GroupDesc],
         stats: &ClusterStats,
         move_size_limit: u64,
+        permits: impl Fn(&GroupDesc, &GroupDesc, &ShardDesc) -> bool,
     ) -> (Vec<ShardAction>, BalanceDecision) {
-        let mut candidates: Vec<_> = self
-            .current_user_groups()
-            .into_iter()
-            .map(|group| {
-                let count = group.shards.len() as u64;
-                (group, count)
-            })
-            .collect();
+        let mut candidates: Vec<_> =
+            groups.iter().map(|group| (group, group.shards.len() as u64)).collect();
         let balance = CountBalance::new(&candidates, |_| 0.5);
         candidates.sort_by_key(|(_, count)| Reverse(*count));
         debug!(
@@ -68,9 +64,14 @@ impl<T: AllocSource> ShardCountPolicy<T> {
             if balance.classify(*count) != BalanceStatus::Overfull {
                 break;
             }
-            if let Some(action) =
-                self.rebalance_target(src_group, &candidates, &balance, stats, move_size_limit)
-            {
+            if let Some(action) = self.rebalance_target(
+                src_group,
+                &candidates,
+                &balance,
+                stats,
+                move_size_limit,
+                &permits,
+            ) {
                 let decision = BalanceDecision::ActionNeeded(format!(
                     "move shard {}: g{} -> g{}",
                     action.shard, action.source_group, action.target_group
@@ -85,10 +86,11 @@ impl<T: AllocSource> ShardCountPolicy<T> {
     fn rebalance_target(
         &self,
         source_group: &GroupDesc,
-        ranked_candidates: &[(GroupDesc, u64)],
+        ranked_candidates: &[(&GroupDesc, u64)],
         balance: &CountBalance,
         stats: &ClusterStats,
         move_size_limit: u64,
+        permits: &impl Fn(&GroupDesc, &GroupDesc, &ShardDesc) -> bool,
     ) -> Option<ReallocateShard> {
         for (target, count) in ranked_candidates.iter().rev() {
             if balance.classify(*count) != BalanceStatus::Underfull {
@@ -97,7 +99,13 @@ impl<T: AllocSource> ShardCountPolicy<T> {
             if balance.classify(count + 1) == BalanceStatus::Overfull {
                 continue;
             }
-            let source_shard = self.preferred_remove_shard(source_group, stats, move_size_limit)?;
+            let Some(source_shard) =
+                self.preferred_remove_shard(source_group, stats, move_size_limit, |shard| {
+                    permits(source_group, target, shard)
+                })
+            else {
+                continue;
+            };
             return Some(ReallocateShard {
                 shard: source_shard.id,
                 source_group: source_group.id,
@@ -113,11 +121,12 @@ impl<T: AllocSource> ShardCountPolicy<T> {
         src_group: &GroupDesc,
         stats: &ClusterStats,
         move_size_limit: u64,
+        permits: impl Fn(&ShardDesc) -> bool,
     ) -> Option<ShardDesc> {
         let mut shards = src_group
             .shards
             .iter()
-            .filter(|shard| !stats.is_shard_scheduled(shard.id))
+            .filter(|shard| !stats.is_shard_scheduled(shard.id) && permits(shard))
             .collect::<Vec<_>>();
         shards.shuffle(&mut rand::rng());
         // Prefer a shard that can move immediately. Shuffle ties so an
@@ -128,13 +137,15 @@ impl<T: AllocSource> ShardCountPolicy<T> {
             .find(|shard| {
                 stats.get_shard_stats(shard.id).is_some_and(|s| s.shard_size <= move_size_limit)
             })
-            .or_else(|| shards.first().copied())
+            .or_else(|| {
+                shards.iter().copied().find(|shard| !stats.is_shard_split_cooling_down(shard.id))
+            })
             .cloned()
     }
 
-    fn current_user_groups(&self) -> Vec<GroupDesc> {
+    pub(super) fn current_user_groups(&self) -> Vec<GroupDesc> {
         let groups = self.alloc_source.groups();
-        groups.values().filter(|g| g.id != ROOT_GROUP_ID).map(ToOwned::to_owned).collect()
+        groups.into_values().filter(|g| g.id != ROOT_GROUP_ID).collect()
     }
 }
 
@@ -192,10 +203,10 @@ mod tests {
             ..Default::default()
         });
         stats.handle_split_shard(2);
-        assert_eq!(policy.preferred_remove_shard(&source, &stats, 1024).unwrap().id, 3);
+        assert_eq!(policy.preferred_remove_shard(&source, &stats, 1024, |_| true).unwrap().id, 3);
         stats.handle_move_shard(3, 2);
-        assert_eq!(policy.preferred_remove_shard(&source, &stats, 1024).unwrap().id, 1);
+        assert_eq!(policy.preferred_remove_shard(&source, &stats, 1024, |_| true).unwrap().id, 1);
         stats.handle_merge_shard(1, 4);
-        assert!(policy.preferred_remove_shard(&source, &stats, 1024).is_none());
+        assert!(policy.preferred_remove_shard(&source, &stats, 1024, |_| true).is_none());
     }
 }

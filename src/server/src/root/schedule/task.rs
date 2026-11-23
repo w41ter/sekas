@@ -69,6 +69,15 @@ pub struct MigrateShardTask {
     pub dest_group: u64,
     #[prost(message, optional, tag = "4")]
     pub split_task: Option<SplitShardTask>,
+    #[prost(enumeration = "ShardMoveGuard", tag = "5")]
+    pub guard: i32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ::prost::Enumeration)]
+pub enum ShardMoveGuard {
+    Unrestricted = 0,
+    PreserveSize = 1,
+    ImproveSize = 2,
 }
 
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -107,6 +116,9 @@ pub struct SplitShardTask {
     /// Bind execution to the metadata used to validate the task.
     #[prost(uint64, optional, tag = "4")]
     pub group_epoch: Option<u64>,
+    /// Estimated size of the piece to create for a byte-balance move.
+    #[prost(uint64, optional, tag = "5")]
+    pub target_size: Option<u64>,
 }
 
 #[derive(Clone, PartialEq, ::prost::Message)]

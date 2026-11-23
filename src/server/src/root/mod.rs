@@ -125,6 +125,9 @@ impl Root {
         self.shared.schema()?;
         for group in stats {
             self.cluster_stats.handle_group_stats(&group);
+            if group.sample.is_some() {
+                self.cluster_stats.handle_show_group_stats(&group, 0);
+            }
         }
         self.scheduler.poll_and_schedule().await;
         Ok(())

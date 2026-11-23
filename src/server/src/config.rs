@@ -297,6 +297,16 @@ pub struct RootConfig {
     ///
     /// Default: true
     pub enable_shard_balance: bool,
+    /// Balance approximate shard bytes between user groups before balancing
+    /// shard counts. Requires current size and migration status reports.
+    ///
+    /// Default: false
+    pub enable_shard_size_balance: bool,
+    /// Minimum allowed deviation from mean group size, in bytes. The policy
+    /// uses the larger of this value and 10% of the mean.
+    ///
+    /// Default: 8 MiB
+    pub shard_size_balance_tolerance_bytes: u64,
     /// Enable balance leaders between nodes.
     ///
     /// Default: true
@@ -305,6 +315,11 @@ pub struct RootConfig {
     ///
     /// Default: true
     pub enable_auto_shard_split: bool,
+    /// Scan for oversized shards and split them before placement needs them.
+    /// Turn this off while keeping auto split enabled to split on demand.
+    ///
+    /// Default: true
+    pub enable_proactive_shard_split: bool,
     /// The max approximate bytes of a shard that can be moved directly.
     /// Larger shards are split before moving.
     ///
@@ -455,8 +470,11 @@ impl Default for RootConfig {
             enable_group_balance: true,
             enable_replica_balance: true,
             enable_shard_balance: true,
+            enable_shard_size_balance: false,
+            shard_size_balance_tolerance_bytes: 8 * 1024 * 1024,
             enable_leader_balance: true,
             enable_auto_shard_split: true,
+            enable_proactive_shard_split: true,
             move_shard_size_limit: 64 * 1024 * 1024,
             enable_auto_shard_merge: true,
             liveness_threshold_sec: 30,

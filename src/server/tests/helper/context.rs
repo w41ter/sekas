@@ -121,6 +121,15 @@ impl TestContext {
         self.root_cfg.enable_shard_balance = true;
     }
 
+    pub fn enable_shard_size_balance(&mut self, tolerance_bytes: u64) {
+        self.root_cfg.enable_shard_size_balance = true;
+        self.root_cfg.shard_size_balance_tolerance_bytes = tolerance_bytes;
+    }
+
+    pub fn disable_proactive_shard_split(&mut self) {
+        self.root_cfg.enable_proactive_shard_split = false;
+    }
+
     pub fn set_move_shard_size_limit(&mut self, limit: u64) {
         self.root_cfg.move_shard_size_limit = limit;
     }

@@ -53,23 +53,25 @@ pub(in crate::root) struct ShowMetrics {
 
 pub(in crate::root) struct ShowSnapshot {
     shards: HashMap<(u64, u64), ShowMetrics>,
+    pub migration_in_progress: bool,
+    pub has_current_migration_status: bool,
 }
 
 impl ShowStats {
-    pub(super) fn update(&mut self, stats: &GroupStats, node_id: u64) {
+    pub(super) fn update(&mut self, stats: &GroupStats, node_id: u64) -> bool {
         let previous = self.groups.get(&stats.group_id);
         let mut interval = None;
         if let (Some(old), Some(new)) = (previous.and_then(|s| s.metadata.as_ref()), &stats.sample)
         {
             if new.term < old.term || new.group_epoch < old.group_epoch {
-                return;
+                return false;
             }
             if new.term == old.term
                 && new.replica_id == old.replica_id
                 && new.group_epoch == old.group_epoch
             {
                 if new.elapsed_nanos <= old.elapsed_nanos {
-                    return;
+                    return false;
                 }
                 interval = Some(Duration::from_nanos(new.elapsed_nanos - old.elapsed_nanos));
             }
@@ -93,15 +95,24 @@ impl ShowStats {
             stats.group_id,
             GroupSample { metadata: stats.sample, node_id, received_at: Instant::now(), shards },
         );
+        true
     }
 
     pub(super) fn snapshot(&self, groups: &[GroupDesc], max_age: Duration) -> ShowSnapshot {
         let now = Instant::now();
         let mut shards = HashMap::new();
+        let mut migration_in_progress = false;
+        let mut migration_status_reports = 0;
         for group in groups {
             let Some(report) = self.groups.get(&group.id) else { continue };
             if now.duration_since(report.received_at) > max_age || !report.matches(group) {
                 continue;
+            }
+            if let Some(active) =
+                report.metadata.and_then(|sample| sample.shard_migration_in_progress)
+            {
+                migration_status_reports += 1;
+                migration_in_progress |= active;
             }
             for shard in &group.shards {
                 if let Some(sample) = report.shards.get(&shard.id)
@@ -118,7 +129,11 @@ impl ShowStats {
                 }
             }
         }
-        ShowSnapshot { shards }
+        ShowSnapshot {
+            shards,
+            migration_in_progress,
+            has_current_migration_status: migration_status_reports == groups.len(),
+        }
     }
 
     pub(super) fn clear(&mut self) {
@@ -233,6 +248,7 @@ mod tests {
                 replica_id: id,
                 term,
                 elapsed_nanos: Duration::from_secs(sec).as_nanos() as u64,
+                shard_migration_in_progress: None,
             }),
             shard_stats: vec![ShardStats {
                 shard_id: shard.id,

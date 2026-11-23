@@ -69,7 +69,7 @@ async fn admin_show_scheduling() {
     .await
     .expect("scheduler must complete a poll");
     assert_eq!(balancer.columns, ["policy", "status", "decision"]);
-    assert_eq!(balancer.rows.len(), 4);
+    assert_eq!(balancer.rows.len(), 5);
     let groups = &balancer.rows[0].values;
     assert_eq!(groups[0], "group_count");
     assert_eq!(groups[1], "no_action");
@@ -82,6 +82,8 @@ async fn admin_show_scheduling() {
     let decision = shards[2].as_str().unwrap();
     assert!(decision.contains("user_groups=1"), "{decision}");
     assert!(decision.contains("tolerance=0.50"), "{decision}");
+    assert_eq!(balancer.rows[4].values[0], "shard_size");
+    assert_eq!(balancer.rows[4].values[1], "disabled");
 
     let body = client.handle_statement("show scheduler_tasks;").await.unwrap();
     let ExecuteResult::Data(tasks) = serde_json::from_slice(&body).unwrap() else {
@@ -290,6 +292,141 @@ async fn admin_unsplittable_shard_does_not_leave_a_retry_task() {
     assert!(tasks.rows.is_empty(), "an empty split result must complete the task");
     db.put(table.id, b"key".to_vec(), b"updated".to_vec()).await.unwrap();
     assert_eq!(db.get(table.id, b"key".to_vec()).await.unwrap(), Some(b"updated".to_vec()));
+}
+
+#[sekas_macro::test]
+async fn admin_size_balance_splits_lazily_and_moves_a_piece() {
+    let mut ctx = TestContext::new(fn_name!());
+    ctx.set_num_cpus(3);
+    ctx.set_replicas_per_group(1);
+    ctx.enable_group_balance();
+    ctx.enable_shard_size_balance(0);
+    ctx.disable_proactive_shard_split();
+    ctx.set_move_shard_size_limit(512);
+    ctx.set_schedule_interval_sec(60);
+    ctx.set_heartbeat_interval_sec(1);
+    let addr = ctx.next_listen_address();
+    let server = ctx.spawn_server_with_handle(0, &addr, true, vec![]).await.unwrap();
+    let cluster = ClusterClient::new([(0, addr.clone())].into_iter().collect()).await;
+    let client = cluster.app_client().await;
+    let metadata = || current_metadata(vec![addr.clone()]);
+    let await_groups = async {
+        loop {
+            if client.handle_statement("show balancer;").await.is_ok() {
+                let current = metadata().await;
+                if current.groups.len() == 3 && current.groups_ready && current.ongoing_jobs == 0 {
+                    break;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    };
+    tokio::time::timeout(Duration::from_secs(15), await_groups).await.unwrap();
+
+    let db = client.create_database("db".into()).await.unwrap();
+    let left = db.create_table("source".into()).await.unwrap();
+    cluster.assert_table_ready_with_voters(left.id, 1).await;
+    let right = db.create_table("destination".into()).await.unwrap();
+    cluster.assert_table_ready_with_voters(right.id, 1).await;
+    let value = vec![b'v'; 512];
+    for i in 0..16 {
+        db.put(left.id, format!("key-{i:02}").into_bytes(), value.clone()).await.unwrap();
+    }
+    let initial = metadata().await;
+    let group_for_table = |table| {
+        initial
+            .groups
+            .iter()
+            .find(|group| group.shards.iter().any(|shard| shard.table == table))
+            .unwrap()
+    };
+    let source = group_for_table(left.id);
+    let destination = group_for_table(right.id);
+    assert_ne!(source.id, destination.id);
+    let sample = |group: &diagnosis::Group, elapsed, sizes: &[u64]| {
+        assert_eq!(group.shards.len(), sizes.len());
+        let replica = group
+            .replicas
+            .iter()
+            .find(|replica| replica.raft_role == RaftRole::Leader as i32)
+            .unwrap();
+        GroupStats {
+            group_id: group.id,
+            shard_count: sizes.len() as u64,
+            sample: Some(GroupStatsSample {
+                group_epoch: group.epoch,
+                replica_id: replica.id,
+                term: replica.term,
+                elapsed_nanos: elapsed,
+                shard_migration_in_progress: Some(false),
+            }),
+            shard_stats: group
+                .shards
+                .iter()
+                .zip(sizes)
+                .map(|(shard, size)| ShardStats {
+                    shard_id: shard.id,
+                    table_id: shard.table,
+                    shard_size: *size,
+                    traffic: None,
+                })
+                .collect(),
+            ..Default::default()
+        }
+    };
+
+    let poll = |stats| sekas_server::testutil::drive_scheduling(&server, stats);
+    poll(vec![sample(source, u64::MAX - 2, &[2048]), sample(destination, u64::MAX - 2, &[2048])])
+        .await
+        .unwrap();
+    let status = show(&client, "show balancer;").await;
+    let size_status = status.rows.iter().find(|row| row.values[0] == "shard_size").unwrap();
+    assert_eq!(size_status.values[1], "no_action", "{:?}", size_status.values);
+    assert_eq!(
+        metadata().await.groups.iter().find(|group| group.id == source.id).unwrap().shards.len(),
+        1
+    );
+
+    poll(vec![sample(source, u64::MAX - 1, &[2048]), sample(destination, u64::MAX - 1, &[0])])
+        .await
+        .unwrap();
+    let after_split = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let current = metadata().await;
+            if current.groups.iter().any(|group| group.id == source.id && group.shards.len() == 2) {
+                break current;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .expect("the oversized shard should split when a move can improve byte balance");
+    let source_after_split = after_split.groups.iter().find(|group| group.id == source.id).unwrap();
+    let piece = cluster.get_shard_desc(left.id, b"key-00").await.unwrap();
+    let piece_sizes: Vec<_> = source_after_split
+        .shards
+        .iter()
+        .map(|shard| if shard.id == piece.id { 500 } else { 1548 })
+        .collect();
+    poll(vec![
+        sample(source_after_split, u64::MAX, &piece_sizes),
+        sample(destination, u64::MAX, &[0]),
+    ])
+    .await
+    .unwrap();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if cluster.group_contains_shard(destination.id, piece.id)
+                && !cluster.group_contains_shard(source.id, piece.id)
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .expect("the selected piece should finish migrating");
+    assert_eq!(db.get(left.id, b"key-00".to_vec()).await.unwrap(), Some(value));
 }
 
 #[sekas_macro::test]

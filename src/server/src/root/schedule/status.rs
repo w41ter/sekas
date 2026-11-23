@@ -25,11 +25,17 @@ pub enum Policy {
     ReplicaCount,
     LeaderCount,
     ShardCount,
+    ShardSize,
 }
 
 impl Policy {
-    const ALL: [Self; 4] =
-        [Self::GroupCount, Self::ReplicaCount, Self::LeaderCount, Self::ShardCount];
+    const ALL: [Self; 5] = [
+        Self::GroupCount,
+        Self::ReplicaCount,
+        Self::LeaderCount,
+        Self::ShardCount,
+        Self::ShardSize,
+    ];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -37,6 +43,7 @@ impl Policy {
             Self::ReplicaCount => "replica_count",
             Self::LeaderCount => "leader_count",
             Self::ShardCount => "shard_count",
+            Self::ShardSize => "shard_size",
         }
     }
 
@@ -46,6 +53,7 @@ impl Policy {
             Self::ReplicaCount => cfg.enable_replica_balance,
             Self::LeaderCount => cfg.enable_leader_balance,
             Self::ShardCount => cfg.enable_shard_balance,
+            Self::ShardSize => cfg.enable_shard_size_balance,
         }
     }
 }

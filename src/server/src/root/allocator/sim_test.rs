@@ -24,6 +24,148 @@ use sekas_runtime::ExecutorOwner;
 use super::*;
 use crate::constants::REPLICA_PER_GROUP;
 
+fn size_balance_fixture() -> (Arc<MockInfoProvider>, Arc<ClusterStats>, Allocator<MockInfoProvider>)
+{
+    let source = Arc::new(MockInfoProvider::new());
+    source.set_nodes(vec![NodeDesc {
+        id: 1,
+        capacity: Some(NodeCapacity::default()),
+        ..Default::default()
+    }]);
+    let stats = Arc::new(ClusterStats::default());
+    let cfg = RootConfig {
+        replicas_per_group: 1,
+        enable_shard_size_balance: true,
+        shard_size_balance_tolerance_bytes: 0,
+        move_shard_size_limit: 64,
+        ..Default::default()
+    };
+    let allocator = Allocator::new(source.clone(), stats.clone(), cfg);
+    (source, stats, allocator)
+}
+
+fn group_with_sizes(id: u64, contents: &[(u64, u64)]) -> (GroupDesc, GroupStats) {
+    let table_id = sekas_schema::FIRST_USER_TABLE_ID;
+    let group = GroupDesc {
+        id,
+        epoch: 1,
+        replicas: vec![ReplicaDesc { id, node_id: 1, role: ReplicaRole::Voter as i32 }],
+        shards: contents.iter().map(|(shard, _)| ShardDesc::whole(*shard, table_id)).collect(),
+        ..Default::default()
+    };
+    let stats = GroupStats {
+        group_id: id,
+        sample: Some(GroupStatsSample {
+            group_epoch: group.epoch,
+            replica_id: id,
+            shard_migration_in_progress: Some(false),
+            ..Default::default()
+        }),
+        shard_stats: contents
+            .iter()
+            .map(|&(shard_id, shard_size)| ShardStats {
+                shard_id,
+                table_id,
+                shard_size,
+                traffic: None,
+            })
+            .collect(),
+        ..Default::default()
+    };
+    (group, stats)
+}
+
+#[test]
+fn shard_size_can_change_counts_and_count_cannot_undo_the_byte_balance() {
+    let (source, stats, allocator) = size_balance_fixture();
+    let (heavy, heavy_stats) = group_with_sizes(1, &[(1, 40), (2, 30)]);
+    let (light, light_stats) = group_with_sizes(2, &[(3, 5), (4, 5)]);
+    source.set_groups(vec![heavy, light]);
+    stats.handle_show_group_stats(&heavy_stats, 1);
+    stats.handle_show_group_stats(&light_stats, 1);
+
+    let plan = allocator.compute_shard_action();
+    assert!(matches!(plan.size, BalanceDecision::ActionNeeded(_)));
+    assert!(matches!(plan.count, BalanceDecision::Deferred("shard size takes priority")));
+    assert!(matches!(
+        plan.actions.as_slice(),
+        [ShardAction::Migrate(ReallocateShard { shard: 2, source_group: 1, target_group: 2 })]
+    ));
+
+    stats.reset();
+    let (heavy, heavy_stats) = group_with_sizes(1, &[(1, 40)]);
+    let (light, light_stats) = group_with_sizes(2, &[(2, 30), (3, 5), (4, 5)]);
+    source.set_groups(vec![heavy, light]);
+    stats.handle_show_group_stats(&heavy_stats, 1);
+    stats.handle_show_group_stats(&light_stats, 1);
+    let plan = allocator.compute_shard_action();
+    assert!(matches!(plan.size, BalanceDecision::NoAction(_)));
+    assert!(matches!(plan.count, BalanceDecision::NoAction(_)));
+    assert!(plan.actions.is_empty());
+}
+
+#[test]
+fn shard_count_can_move_a_shard_that_preserves_byte_balance() {
+    let (source, stats, mut allocator) = size_balance_fixture();
+    allocator.config.enable_auto_shard_split = false;
+    let (left, left_stats) = group_with_sizes(1, &[(1, 5), (2, 40), (3, 0)]);
+    let (right, mut right_stats) = group_with_sizes(2, &[(4, 30)]);
+    let (large, large_stats) = group_with_sizes(3, &[(5, 75)]);
+    source.set_groups(vec![left, right, large]);
+    stats.handle_show_group_stats(&left_stats, 1);
+    stats.handle_show_group_stats(&large_stats, 1);
+    right_stats.sample.as_mut().unwrap().group_epoch = 0;
+    stats.handle_show_group_stats(&right_stats, 1);
+    let plan = allocator.compute_shard_action();
+    assert!(matches!(plan.size, BalanceDecision::Deferred(_)));
+    assert!(matches!(plan.count, BalanceDecision::Deferred(_)));
+    assert!(plan.actions.is_empty());
+
+    right_stats.sample.as_mut().unwrap().group_epoch = 1;
+    stats.handle_show_group_stats(&right_stats, 1);
+    let plan = allocator.compute_shard_action();
+    assert!(matches!(plan.size, BalanceDecision::NoAction(_)));
+    assert!(matches!(plan.count, BalanceDecision::ActionNeeded(_)));
+    // Moving five bytes to group 2 would balance counts at the same total
+    // penalty, but it would push group 1 out of the byte tolerance band.
+    assert!(matches!(
+        plan.actions.as_slice(),
+        [ShardAction::Migrate(ReallocateShard { shard: 3, source_group: 1, .. })]
+    ));
+}
+
+#[test]
+fn shard_size_plans_a_split_for_an_oversized_shard_only_if_a_piece_can_help() {
+    let (source, stats, allocator) = size_balance_fixture();
+    let (heavy, heavy_stats) = group_with_sizes(1, &[(1, 160)]);
+    let (light, light_stats) = group_with_sizes(2, &[]);
+    source.set_groups(vec![heavy, light]);
+    stats.handle_show_group_stats(&heavy_stats, 1);
+    stats.handle_show_group_stats(&light_stats, 1);
+    let plan = allocator.compute_shard_action();
+    assert!(
+        matches!(plan.size, BalanceDecision::ActionNeeded(detail) if detail.contains("split shard 1"))
+    );
+    assert!(matches!(
+        plan.actions.as_slice(),
+        [ShardAction::Migrate(ReallocateShard { shard: 1, source_group: 1, target_group: 2 })]
+    ));
+
+    stats.defer_shard_split(1, Duration::from_secs(60));
+    assert!(allocator.compute_shard_action().actions.is_empty());
+
+    stats.reset();
+    let (heavy, heavy_stats) = group_with_sizes(1, &[(1, 130)]);
+    let (light, light_stats) = group_with_sizes(2, &[(2, 100)]);
+    source.set_groups(vec![heavy, light]);
+    stats.handle_show_group_stats(&heavy_stats, 1);
+    stats.handle_show_group_stats(&light_stats, 1);
+    let plan = allocator.compute_shard_action();
+    assert!(
+        matches!(plan.size, BalanceDecision::ActionNeeded(detail) if detail.contains("up to 15 bytes"))
+    );
+}
+
 #[test]
 fn sim_boostrap_join_node_balance() {
     let executor_owner = ExecutorOwner::new(1);
@@ -296,7 +438,7 @@ fn sim_boostrap_join_node_balance() {
         p.display();
 
         println!("9. balance shards between groups");
-        let sact = a.compute_shard_action().0;
+        let sact = a.compute_shard_action().actions;
         assert!(!sact.is_empty());
         for act in &sact {
             match act {
@@ -310,7 +452,7 @@ fn sim_boostrap_join_node_balance() {
                 }
             }
         }
-        let sact = a.compute_shard_action().0;
+        let sact = a.compute_shard_action().actions;
         assert!(!sact.is_empty());
         for act in &sact {
             match act {
@@ -324,7 +466,7 @@ fn sim_boostrap_join_node_balance() {
                 }
             }
         }
-        let sact = a.compute_shard_action().0;
+        let sact = a.compute_shard_action().actions;
         assert!(sact.is_empty());
         p.display();
 

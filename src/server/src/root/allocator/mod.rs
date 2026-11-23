@@ -13,12 +13,14 @@
 // limitations under the License.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use sekas_api::server::v1::{GroupDesc, NodeDesc};
 
 use self::policy_leader_cnt::LeaderCountPolicy;
 use self::policy_replica_cnt::ReplicaCountPolicy;
 use self::policy_shard_cnt::ShardCountPolicy;
+use self::policy_shard_size::ShardSizeBalance;
 use self::source::NodeFilter;
 use super::{ClusterStats, RootShared, metrics};
 use crate::{Result, RootConfig};
@@ -29,6 +31,7 @@ mod sim_test;
 mod policy_leader_cnt;
 mod policy_replica_cnt;
 mod policy_shard_cnt;
+mod policy_shard_size;
 mod source;
 
 pub use source::{AllocSource, SysAllocSource};
@@ -49,6 +52,28 @@ pub enum ReplicaAction {
 #[derive(Clone, Debug)]
 pub enum ShardAction {
     Migrate(ReallocateShard),
+}
+
+pub(super) enum ShardSizePlacement {
+    Move,
+    Split(u64),
+}
+
+pub(super) struct ShardBalancePlan {
+    pub actions: Vec<ShardAction>,
+    pub size: BalanceDecision,
+    pub count: BalanceDecision,
+}
+
+impl ShardBalancePlan {
+    fn idle(cfg: &RootConfig, decision: BalanceDecision) -> Self {
+        let status = |enabled| if enabled { decision.clone() } else { BalanceDecision::Disabled };
+        Self {
+            actions: Vec::new(),
+            size: status(cfg.enable_shard_size_balance),
+            count: status(cfg.enable_shard_balance),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -176,6 +201,7 @@ impl<T: AllocSource> Allocator<T> {
             || self.config.enable_replica_balance
             || self.config.enable_leader_balance
             || self.config.enable_shard_balance
+            || self.config.enable_shard_size_balance
         {
             self.alloc_source.refresh_all().await?;
         }
@@ -241,28 +267,101 @@ impl<T: AllocSource> Allocator<T> {
             .compute_balance()
     }
 
-    pub fn compute_shard_action(&self) -> (Vec<ShardAction>, BalanceDecision) {
-        if !self.config.enable_shard_balance {
-            return (vec![], BalanceDecision::Disabled);
+    pub fn compute_shard_action(&self) -> ShardBalancePlan {
+        let plan = self.plan_shard_balance();
+        for (decision, gauge) in [
+            (&plan.size, &metrics::RECONCILE_ALREADY_BALANCED_INFO.group_shard_size),
+            (&plan.count, &metrics::RECONCILE_ALREADY_BALANCED_INFO.group_shard_count),
+        ] {
+            if !matches!(decision, BalanceDecision::Disabled) {
+                gauge.set(i64::from(matches!(decision, BalanceDecision::NoAction(_))));
+            }
         }
+        plan
+    }
 
+    fn plan_shard_balance(&self) -> ShardBalancePlan {
+        let cfg = &self.config;
+        if !cfg.enable_shard_balance && !cfg.enable_shard_size_balance {
+            return ShardBalancePlan::idle(cfg, BalanceDecision::Disabled);
+        }
         let node_count = self.alloc_source.nodes(NodeFilter::All).len();
-        let min_nodes = self.config.replicas_per_group;
-        let (actions, decision) = if node_count >= min_nodes {
-            ShardCountPolicy::with(self.alloc_source.clone())
-                .compute_balance(&self.cluster_stats, self.config.move_shard_size_limit)
-        } else {
-            (
-                vec![],
+        let min_nodes = cfg.replicas_per_group;
+        if node_count < min_nodes {
+            return ShardBalancePlan::idle(
+                cfg,
                 BalanceDecision::NoAction(format!(
                     "too few nodes. nodes={node_count}, min_nodes={min_nodes}"
                 )),
-            )
+            );
+        }
+        let policy = ShardCountPolicy::with(self.alloc_source.clone());
+        let groups = policy.current_user_groups();
+        let mut plan =
+            ShardBalancePlan::idle(cfg, BalanceDecision::Deferred("shard size takes priority"));
+        let size_balance = if cfg.enable_shard_size_balance && groups.len() >= 2 {
+            if self.cluster_stats.has_pending_shard_moves() {
+                return ShardBalancePlan::idle(
+                    cfg,
+                    BalanceDecision::Deferred("waiting for a shard migration to settle"),
+                );
+            }
+            let balance = match ShardSizeBalance::new(
+                &groups,
+                &self.cluster_stats,
+                Duration::from_secs(cfg.liveness_threshold_sec),
+                cfg.shard_size_balance_tolerance_bytes,
+                cfg.move_shard_size_limit,
+            ) {
+                Ok(balance) => balance,
+                Err(decision) => return ShardBalancePlan::idle(cfg, decision),
+            };
+            let (action, decision) =
+                balance.compute_balance(&groups, &self.cluster_stats, cfg.enable_auto_shard_split);
+            plan.size = decision;
+            if let Some(action) = action {
+                plan.actions.push(ShardAction::Migrate(action));
+                return plan;
+            }
+            Some(balance)
+        } else {
+            if cfg.enable_shard_size_balance {
+                plan.size = BalanceDecision::NoAction(format!("user_groups={}", groups.len()));
+            }
+            None
         };
-        metrics::RECONCILE_ALREADY_BALANCED_INFO
-            .group_shard_count
-            .set(i64::from(actions.is_empty()));
-        (actions, decision)
+
+        if cfg.enable_shard_balance {
+            (plan.actions, plan.count) = policy.compute_balance(
+                &groups,
+                &self.cluster_stats,
+                cfg.move_shard_size_limit,
+                |source, target, shard| {
+                    size_balance.as_ref().is_none_or(|balance| {
+                        balance.preserves_balance(source.id, target.id, shard.id)
+                    })
+                },
+            );
+        }
+        plan
+    }
+
+    pub fn validate_shard_balance_move(
+        &self,
+        groups: &[GroupDesc],
+        action: &ReallocateShard,
+        require_improvement: bool,
+    ) -> Option<ShardSizePlacement> {
+        let cfg = &self.config;
+        let balance = ShardSizeBalance::new(
+            groups,
+            &self.cluster_stats,
+            Duration::from_secs(cfg.liveness_threshold_sec),
+            cfg.shard_size_balance_tolerance_bytes,
+            cfg.move_shard_size_limit,
+        )
+        .ok()?;
+        balance.validate_placement(action, require_improvement, cfg.enable_auto_shard_split)
     }
 
     /// Allocate new replica in one group.

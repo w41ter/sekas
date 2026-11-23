@@ -456,6 +456,8 @@ message GroupStatsSample {
     uint64 replica_id = 2;
     uint64 term = 3;
     uint64 elapsed_nanos = 4;
+    // True while the serving replica has an active shard migration.
+    optional bool shard_migration_in_progress = 5;
 }
 
 message GroupStats {
