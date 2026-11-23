@@ -14,12 +14,12 @@
 // limitations under the License.
 use std::path::Path;
 
-use log::{debug, error, info};
+use log::debug;
 use sekas_api::server::v1::GroupDesc;
 
-use crate::engine::{GroupEngine, RawIterator};
+use crate::engine::{GroupEngine, PreparedGroupSnapshot, RawIterator};
 use crate::raftgroup::SnapshotBuilder;
-use crate::serverpb::v1::ApplyState;
+use crate::serverpb::v1::{ApplyState, SnapshotMeta};
 use crate::{Error, ReplicaConfig, Result};
 
 pub struct GroupSnapshotBuilder {
@@ -93,53 +93,41 @@ async fn write_partial_to_file(
     }
 }
 
-pub(crate) fn apply_snapshot(engine: &GroupEngine, replica_id: u64, snap_dir: &Path) -> Result<()> {
-    if !snap_dir.is_dir() {
-        error!(
-            "replica {replica_id} apply snapshot {}: snap dir is not a directory",
+pub(crate) fn prepare_snapshot(
+    engine: &GroupEngine,
+    snap_dir: &Path,
+    meta: &SnapshotMeta,
+) -> Result<PreparedGroupSnapshot> {
+    let (Some(state), Some(desc)) = (meta.apply_state, meta.group_desc.as_ref()) else {
+        return Err(Error::InvalidData(format!(
+            "incomplete snapshot metadata in {}",
             snap_dir.display()
-        );
-        return Err(Error::InvalidArgument(format!("{} is not a directory", snap_dir.display())));
+        )));
+    };
+    if meta.files.is_empty() {
+        return Err(Error::InvalidData(format!("no snapshot SST files in {}", snap_dir.display())));
     }
 
-    let mut files = vec![];
-    for entry in snap_dir.read_dir()? {
-        let entry = entry?;
-        let path = entry.path();
-        if is_sst_file(&path) {
-            debug!("replica {replica_id} apply snapshot with sst file {}", path.display());
-            files.push(path.file_name().unwrap().to_owned());
+    let mut files = Vec::with_capacity(meta.files.len());
+    for file in &meta.files {
+        let relative = Path::new(&file.name);
+        if relative.parent() != Some(Path::new("DATA"))
+            || relative.extension().is_none_or(|ext| ext != "sst")
+        {
+            return Err(Error::InvalidData(format!("invalid snapshot SST file {}", file.name)));
         }
+        let path = snap_dir.join(relative.file_name().unwrap());
+        let metadata = path.metadata()?;
+        if !metadata.is_file() || metadata.len() != file.size {
+            return Err(Error::InvalidData(format!(
+                "incomplete snapshot SST file {}",
+                path.display()
+            )));
+        }
+        files.push(path);
     }
-
-    if files.is_empty() {
-        error!("replica {replica_id} apply snapshot {}: snap dir is empty", snap_dir.display());
-        return Err(Error::InvalidArgument(format!("{} is empty", snap_dir.display())));
-    }
-
-    debug!(
-        "replica {replica_id} apply snapshot {} found {} sst files",
-        snap_dir.display(),
-        files.len()
-    );
-
     files.sort_unstable();
-    let files = files.into_iter().map(|f| snap_dir.join(f)).collect();
-    engine.ingest(files)?;
-
-    info!(
-        "replica {replica_id} apply snapshot {}, apply state {:?}",
-        snap_dir.display(),
-        engine.flushed_apply_state()
-    );
-
-    Ok(())
-}
-
-#[inline]
-fn is_sst_file<P: AsRef<Path>>(path: P) -> bool {
-    let path = path.as_ref();
-    path.is_file() && path.extension().map(|ext| ext == "sst").unwrap_or_default()
+    engine.prepare_snapshot(files, state, desc)
 }
 
 #[cfg(test)]
@@ -223,7 +211,23 @@ mod tests {
         std::fs::create_dir_all(&snap_dir).unwrap();
         let data = snap_dir.join("DATA");
         let builder = GroupSnapshotBuilder::new(cfg, engine.clone());
-        builder.checkpoint(&data).await.unwrap();
-        apply_snapshot(&engine, 1, &data).unwrap();
+        let (state, desc) = builder.checkpoint(&data).await.unwrap();
+        let meta = SnapshotMeta {
+            apply_state: Some(state),
+            group_desc: Some(desc),
+            files: vec![crate::serverpb::v1::SnapshotFile {
+                name: "DATA/0.sst".into(),
+                size: data.join("0.sst").metadata().unwrap().len(),
+                ..Default::default()
+            }],
+        };
+        let prepared = prepare_snapshot(&engine, &data, &meta).unwrap();
+        let old_name = engine.column_family();
+        let mut reader = engine.raw_iter().unwrap();
+        engine.activate_snapshot(prepared);
+        assert_ne!(engine.column_family(), old_name);
+        assert_eq!(reader.descriptor().id, 1);
+        assert!(reader.next().unwrap().is_ok());
+        drop(reader);
     }
 }

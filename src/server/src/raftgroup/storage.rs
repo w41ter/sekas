@@ -28,6 +28,7 @@ use super::RaftConfig;
 use super::node::WriteTask;
 use super::snap::SnapManager;
 use crate::Result;
+use crate::engine::StateEngine;
 use crate::serverpb::v1::{EntryId, EvalResult, RaftLocalState};
 
 #[derive(Clone)]
@@ -167,7 +168,7 @@ impl Storage {
                 "Does not stable entries during appling snapshot"
             );
             batch.add_command(self.replica_id, Command::Clean);
-            let metadata = snapshot.get_metadata();
+            let metadata = snapshot.snapshot.get_metadata();
             let raft_local_state = RaftLocalState {
                 replica_id: self.replica_id,
                 last_truncated: Some(EntryId { index: metadata.index, term: metadata.term }),
@@ -179,6 +180,7 @@ impl Storage {
             batch
                 .put_message(self.replica_id, keys::HARD_STATE_KEY.to_owned(), &self.hard_state)
                 .unwrap();
+            StateEngine::write_active_cf(batch, self.replica_id, snapshot.column_family.clone())?;
             self.cache = EntryCache::new();
             self.first_index = metadata.index + 1;
             self.last_index = metadata.index;
@@ -245,7 +247,7 @@ impl Storage {
         self.last_truncated_entry_id().term
     }
 
-    #[inline]
+    #[cfg(test)]
     pub fn range(&self) -> std::ops::Range<u64> {
         self.first_index..(self.last_index + 1)
     }
@@ -582,6 +584,122 @@ mod tests {
     use crate::serverpb::v1::{AddShard, SyncOp};
     use crate::testutil::TempDir;
 
+    #[sekas_macro::test]
+    async fn snapshot_commit_recovers_matching_cf_and_raft_state() {
+        use crate::engine::{Engines, GroupEngine, WriteBatch, WriteStates};
+        use crate::raftgroup::node::SnapshotWrite;
+        use crate::{DbConfig, EngineConfig};
+
+        let dir = TempDir::new(fn_name!()).unwrap();
+        let cfg = EngineConfig::default();
+        let sst = dir.path().join("snapshot.sst");
+        let position = EntryId { index: 42, term: 3 };
+        let (old_name, prepared_name, desc) = {
+            let engines = Engines::open(dir.path(), &DbConfig::default()).unwrap();
+            write_initial_state(&RaftConfig::default(), &engines.log(), 2, vec![], vec![])
+                .await
+                .unwrap();
+            let engine = GroupEngine::create(&cfg, engines.db(), 1, 2).await.unwrap();
+            let old_name = engine.column_family();
+            engines.state().create_replica(1, 2, old_name.clone()).unwrap();
+
+            let source = GroupEngine::create(&cfg, engines.db(), 1, 3).await.unwrap();
+            let mut desc = source.descriptor();
+            desc.shards.push(sekas_api::server::v1::ShardDesc::whole(4, 5));
+            source
+                .commit(
+                    WriteBatch::default(),
+                    WriteStates { descriptor: Some(desc.clone()), ..Default::default() },
+                    true,
+                )
+                .unwrap();
+            let mut writes = WriteBatch::default();
+            source.put(&mut writes, 4, b"key", b"snapshot data", 0).unwrap();
+            source
+                .commit(
+                    writes,
+                    WriteStates { apply_state: Some(position), ..Default::default() },
+                    true,
+                )
+                .unwrap();
+            let options = rocksdb::Options::default();
+            let mut writer = rocksdb::SstFileWriter::create(&options);
+            writer.open(&sst).unwrap();
+            for entry in source.raw_iter().unwrap() {
+                let (key, value) = entry.unwrap();
+                writer.put(key, value).unwrap();
+            }
+            writer.finish().unwrap();
+
+            let invalid = EntryId { index: 41, ..position };
+            assert!(engine.prepare_snapshot(vec![&sst], invalid, &desc).is_err());
+            assert_eq!(engine.column_family(), old_name);
+            let prepared = engine.prepare_snapshot(vec![&sst], position, &desc).unwrap();
+            (old_name, prepared.column_family().to_owned(), desc)
+        };
+
+        {
+            let engines = Engines::open(dir.path(), &DbConfig::default()).unwrap();
+            assert_eq!(engines.state().active_cf(2).unwrap().as_deref(), Some(old_name.as_str()));
+            let old = GroupEngine::open(&cfg, engines.db(), 1, 2, old_name.clone()).await.unwrap();
+            assert_eq!(old.flushed_apply_state().unwrap().index, 0);
+            let cfg = RaftConfig::default();
+            let mut storage = Storage::open(
+                &cfg,
+                2,
+                0,
+                ConfState::default(),
+                engines.log(),
+                SnapManager::new(engines.snap_dir()),
+            )
+            .await
+            .unwrap();
+            assert_eq!(storage.truncated_index(), 0);
+            let mut batch = LogBatch::default();
+            let mut task = WriteTask::default();
+            task.hard_state = Some(HardState { term: position.term, ..Default::default() });
+            task.snapshot = Some(SnapshotWrite {
+                snapshot: Snapshot {
+                    metadata: Some(SnapshotMetadata {
+                        index: position.index,
+                        term: position.term,
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+                column_family: prepared_name.clone(),
+            });
+            storage.write(&mut batch, &task).unwrap();
+            engines.log().write(&mut batch, true).unwrap();
+            assert_eq!(old.column_family(), old_name);
+        }
+
+        let engines = Engines::open(dir.path(), &DbConfig::default()).unwrap();
+        let active = engines.state().active_cf(2).unwrap().unwrap();
+        assert_eq!(active, prepared_name);
+        let restored = GroupEngine::open(&cfg, engines.db(), 1, 2, active).await.unwrap();
+        assert_eq!(restored.descriptor(), desc);
+        assert_eq!(restored.flushed_apply_state().unwrap(), position);
+        assert_eq!(
+            restored.get(4, b"key").await.unwrap().unwrap().content,
+            Some(b"snapshot data".to_vec())
+        );
+        let storage = Storage::open(
+            &RaftConfig::default(),
+            2,
+            position.index,
+            ConfState::default(),
+            engines.log(),
+            SnapManager::new(engines.snap_dir()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            (storage.truncated_index(), storage.truncated_term()),
+            (position.index, position.term)
+        );
+    }
+
     fn mocked_entries(select_term: Option<u64>) -> Vec<(u64, u64)> {
         let entries = vec![
             // term 1
@@ -701,13 +819,16 @@ mod tests {
         let snap_index = 123;
         let snap_term = 123;
         let mut task = WriteTask::with_entries(vec![]);
-        task.snapshot = Some(Snapshot {
-            data: vec![],
-            metadata: Some(SnapshotMetadata {
-                conf_state: None,
-                index: snap_index,
-                term: snap_term,
-            }),
+        task.snapshot = Some(crate::raftgroup::node::SnapshotWrite {
+            snapshot: Snapshot {
+                data: vec![],
+                metadata: Some(SnapshotMetadata {
+                    conf_state: None,
+                    index: snap_index,
+                    term: snap_term,
+                }),
+            },
+            column_family: "test-cf".to_owned(),
         });
 
         let mut lb = LogBatch::default();
@@ -747,13 +868,16 @@ mod tests {
         let snap_index = 123;
         let snap_term = 123;
         let mut task = WriteTask::with_entries(vec![]);
-        task.snapshot = Some(Snapshot {
-            data: vec![],
-            metadata: Some(SnapshotMetadata {
-                conf_state: None,
-                index: snap_index,
-                term: snap_term,
-            }),
+        task.snapshot = Some(crate::raftgroup::node::SnapshotWrite {
+            snapshot: Snapshot {
+                data: vec![],
+                metadata: Some(SnapshotMetadata {
+                    conf_state: None,
+                    index: snap_index,
+                    term: snap_term,
+                }),
+            },
+            column_family: "test-cf".to_owned(),
         });
 
         let mut lb = LogBatch::default();

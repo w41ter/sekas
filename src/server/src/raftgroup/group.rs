@@ -15,6 +15,7 @@
 use std::time::Instant;
 
 use futures::channel::{mpsc, oneshot};
+use futures::future::{FutureExt, Shared};
 use sekas_api::server::v1::ChangeReplicas;
 use sekas_client::trace::{TraceFutureExt, local_span, span_name};
 
@@ -46,12 +47,13 @@ where
     Self: Send,
 {
     request_sender: mpsc::Sender<Request>,
+    stopped: Shared<oneshot::Receiver<()>>,
 }
 
 impl RaftGroup {
     /// Open the existed raft group.
-    pub fn open(sender: mpsc::Sender<Request>) -> Self {
-        RaftGroup { request_sender: sender }
+    pub fn open(sender: mpsc::Sender<Request>, stopped: oneshot::Receiver<()>) -> Self {
+        RaftGroup { request_sender: sender, stopped: stopped.shared() }
     }
 
     /// Submit a data to replicate, and returns corresponding future value.
@@ -136,8 +138,9 @@ impl RaftGroup {
         Ok(receiver.await?)
     }
 
-    pub fn terminate(&self) {
+    pub async fn terminate(&self) {
         self.request_sender.clone().close_channel();
+        let _ = self.stopped.clone().await;
     }
 
     fn send(&self, req: Request) -> Result<()> {

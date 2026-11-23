@@ -35,7 +35,7 @@ use sekas_runtime::TaskGroup;
 use self::job::StateChannel;
 use self::move_shard::{ForwardCtx, MoveShardController};
 pub use self::route_table::{RaftRouteTable, ReplicaRouteTable};
-use crate::engine::{Engines, GroupEngine, RawDb, StateEngine};
+use crate::engine::{Engines, GroupEngine, StateEngine};
 use crate::raftgroup::snap::RecycleSnapMode;
 use crate::raftgroup::{ChannelManager, RaftGroup, RaftManager, SnapManager};
 pub use crate::replica::Replica;
@@ -45,7 +45,7 @@ use crate::replica::{ExecCtx, LeaseState, LeaseStateObserver, ReplicaInfo};
 use crate::schedule::MoveReplicasProvider;
 use crate::serverpb::v1::*;
 use crate::transport::TransportManager;
-use crate::{Config, EngineConfig, Error, NodeConfig, Result};
+use crate::{Config, Error, NodeConfig, Result};
 
 struct ReplicaContext {
     #[allow(dead_code)]
@@ -135,6 +135,7 @@ impl Node {
     pub async fn bootstrap(&self, node_ident: &NodeIdent) -> Result<()> {
         use self::job::*;
 
+        let _mutation = self.replica_mutation.lock().await;
         let mut node_state = self.node_state.lock().await;
         debug_assert!(
             node_state.serving_replicas.is_empty(),
@@ -144,8 +145,27 @@ impl Node {
         node_state.ident = Some(node_ident.to_owned());
         let state_channel = Arc::new(setup_report_state(&self.transport_manager));
 
+        let replicas = self.state_engine.replica_states().await?;
+        let db = self.engines.db();
+        let mut active_cfs = HashSet::new();
+        for &(group, replica, state) in &replicas {
+            if let Some(name) = self.state_engine.active_cf(replica)? {
+                active_cfs.insert(name);
+            } else if !matches!(state, ReplicaLocalState::Tombstone | ReplicaLocalState::Terminated)
+            {
+                return Err(Error::InvalidData(format!(
+                    "group {group} replica {replica} has no column family mapping"
+                )));
+            }
+        }
+        for name in db.list_cfs()? {
+            if GroupEngine::is_group_cf(&name) && !active_cfs.contains(&name) {
+                db.drop_cf(&name)?;
+            }
+        }
+
         let node_id = node_ident.node_id;
-        for (group_id, replica_id, state) in self.state_engine.replica_states().await? {
+        for (group_id, replica_id, state) in replicas {
             if state == ReplicaLocalState::Terminated {
                 let destory_replica_handle =
                     setup_destory_replica(group_id, replica_id, self.engines.clone());
@@ -186,16 +206,28 @@ impl Node {
             return Ok(());
         }
 
-        // To ensure crash-recovery consistency, first create raft metadata, and then
-        // save replica state. In this way, even if the node is restarted before
-        // the group is successfully created, a replica can be recreated by
-        // retrying.
-        Replica::create(replica_id, &group, &self.raft_mgr.cfg, &self.raft_mgr.engine()).await?;
-        self.state_engine
-            .save_replica_state(group_id, replica_id, ReplicaLocalState::Initial)
-            .await?;
-
-        info!("group {group_id} create replica {replica_id} and write initial state success");
+        // Cluster initialization can restart after publishing a replica and before
+        // saving NodeIdent. Resume the existing replica when initialization is retried.
+        let local_state = if let Some(meta) = self.state_engine.replica_state(replica_id)? {
+            let state = ReplicaLocalState::try_from(meta.state)
+                .map_err(|err| Error::InvalidData(err.to_string()))?;
+            if meta.group_id != group_id
+                || matches!(state, ReplicaLocalState::Terminated | ReplicaLocalState::Tombstone)
+            {
+                return Err(Error::AlreadyExists(format!("replica {replica_id}")));
+            }
+            state
+        } else {
+            // Publish ReplicaMeta and its CF together after both engines are initialized.
+            Replica::create(replica_id, &group, &self.raft_mgr.cfg, &self.raft_mgr.engine())
+                .await?;
+            let engine =
+                GroupEngine::create(&self.cfg.engine, self.engines.db(), group_id, replica_id)
+                    .await?;
+            self.state_engine.create_replica(group_id, replica_id, engine.column_family())?;
+            info!("group {group_id} create replica {replica_id} and write initial state success");
+            ReplicaLocalState::Initial
+        };
 
         // If this node has not completed initialization, then there is no need to
         // record `ReplicaInfo`. Because the recovery operation will be
@@ -211,7 +243,7 @@ impl Node {
                 .serve_replica(
                     group_id,
                     desc,
-                    ReplicaLocalState::Initial,
+                    local_state,
                     node_state.channel.as_ref().unwrap().clone(),
                 )
                 .await?;
@@ -244,8 +276,8 @@ impl Node {
         let group_id = actual_desc.id;
         debug!("group {group_id} remove replica {replica_id}");
         let replica = match self.replica_route_table.find(group_id) {
-            Some(replica) => replica,
-            None => {
+            Some(replica) if replica.replica_info().replica_id == replica_id => replica,
+            _ => {
                 warn!("group {group_id} remove replica {replica_id}: replica not existed");
                 return Ok(());
             }
@@ -293,9 +325,14 @@ impl Node {
     ) -> Result<ReplicaContext> {
         use crate::schedule::setup_scheduler;
 
+        let name = self.state_engine.active_cf(desc.id)?.ok_or_else(|| {
+            Error::InvalidData(format!(
+                "group {group_id} replica {} has no column family mapping",
+                desc.id
+            ))
+        })?;
         let group_engine =
-            open_group_engine(&self.cfg.engine, self.engines.db(), group_id, desc.id, local_state)
-                .await?;
+            GroupEngine::open(&self.cfg.engine, self.engines.db(), group_id, desc.id, name).await?;
         let task_group = TaskGroup::default();
         let (sender, receiver) = mpsc::unbounded();
 
@@ -852,26 +889,6 @@ impl NodeState {
     }
 }
 
-async fn open_group_engine(
-    cfg: &EngineConfig,
-    raw_db: Arc<RawDb>,
-    group_id: u64,
-    replica_id: u64,
-    replica_state: ReplicaLocalState,
-) -> Result<GroupEngine> {
-    match GroupEngine::open(cfg, raw_db.clone(), group_id, replica_id).await? {
-        Some(group_engine) => Ok(group_engine),
-        None if matches!(replica_state, ReplicaLocalState::Initial) => {
-            GroupEngine::create(cfg, raw_db, group_id, replica_id).await
-        }
-        None => {
-            panic!(
-                "group {group_id} replica {replica_id} open group engine: no such group engine exists"
-            );
-        }
-    }
-}
-
 #[allow(clippy::too_many_arguments)]
 async fn start_raft_group(
     cfg: &NodeConfig,
@@ -992,20 +1009,62 @@ mod tests {
     #[sekas_macro::test]
     async fn create_then_bootstrap_replica() {
         let dir = TempDir::new(fn_name!()).unwrap();
-        {
+        let (active, orphan) = {
             // Create new replica.
             let node = create_node(dir.path()).await;
 
             let group_desc = group_descriptor();
             node.create_replica(REPLICA_ID, group_desc).await.unwrap();
-        }
+            let active = node.state_engine.active_cf(REPLICA_ID).unwrap().unwrap();
+            let orphan =
+                GroupEngine::create(&node.cfg.engine, node.engines.db(), GROUP_ID, REPLICA_ID)
+                    .await
+                    .unwrap()
+                    .column_family();
+            (active, orphan)
+        };
 
         {
             // Bootstrap replica after restart node.
             let node = create_node(dir.path()).await;
             let ident = NodeIdent { cluster_id: vec![], node_id: NODE_ID };
             node.bootstrap(&ident).await.unwrap();
+            assert!(node.replica_table().find(GROUP_ID).is_some());
+            assert!(node.engines.db().cf_handle(&active).is_some());
+            assert!(node.engines.db().cf_handle(&orphan).is_none());
         }
+    }
+
+    #[sekas_macro::test]
+    async fn cluster_init_retry_reuses_persisted_replica() {
+        let dir = TempDir::new(fn_name!()).unwrap();
+        let group = sekas_schema::system::root_group();
+        let root_replica = group.replicas[0].id;
+        let root_group = group.id;
+        let name = {
+            let node = create_node(dir.path()).await;
+            node.create_replica(root_replica, group).await.unwrap();
+            assert!(node.state_engine.read_ident().await.unwrap().is_none());
+            assert!(node.replica_table().find(root_group).is_none());
+            node.state_engine.active_cf(root_replica).unwrap().unwrap()
+        };
+
+        let node = create_node(dir.path()).await;
+        assert!(!node.check_replica_existence(root_group, root_replica).await.unwrap());
+        let ident = crate::bootstrap::bootstrap_cluster(&node, "127.0.0.1:20001").await.unwrap();
+        assert_eq!(node.state_engine.active_cf(root_replica).unwrap().unwrap(), name);
+        assert_eq!(
+            node.engines
+                .db()
+                .list_cfs()
+                .unwrap()
+                .iter()
+                .filter(|cf| cf.starts_with(&format!("{root_group}-{root_replica}-")))
+                .count(),
+            1
+        );
+        node.bootstrap(&ident).await.unwrap();
+        assert!(node.replica_table().find(root_group).is_some());
     }
 
     #[sekas_macro::test]

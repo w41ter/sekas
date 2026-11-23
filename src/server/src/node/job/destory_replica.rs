@@ -17,11 +17,11 @@ use std::sync::Arc;
 use log::error;
 use sekas_runtime::JoinHandle;
 
-use crate::engine::{Engines, GroupEngine, RawDb, StateEngine};
+use crate::engine::{Engines, RawDb, StateEngine};
 use crate::node::metrics::*;
 use crate::raftgroup::destory_storage;
 use crate::serverpb::v1::ReplicaLocalState;
-use crate::{Error, Result, record_latency};
+use crate::{Result, record_latency};
 
 /// Clean a group engine and save the replica state to
 /// [`ReplicaLocalState::Tombstone`].
@@ -44,12 +44,10 @@ async fn destory_replica(
     raft_engine: Arc<raft_engine::Engine>,
 ) -> Result<()> {
     record_latency!(take_destory_replica_metrics());
-    match GroupEngine::destory(group_id, replica_id, raw_db).await {
-        Ok(()) => {}
-        Err(Error::RocksDb(err)) if err.to_string().contains("Invalid column family") => {}
-        e => {
-            return e;
-        }
+    if let Some(name) = state_engine.active_cf(replica_id)?
+        && raw_db.cf_handle(&name).is_some()
+    {
+        raw_db.drop_cf(&name)?;
     }
     destory_storage(&raft_engine, replica_id).await?;
     state_engine.save_replica_state(group_id, replica_id, ReplicaLocalState::Tombstone).await?;

@@ -109,13 +109,15 @@ impl RaftManager {
     ) -> Result<RaftGroup> {
         let worker =
             RaftWorker::open(group_id, replica_id, node_id, state_machine, self, observer).await?;
-        let raft_group = RaftGroup::open(worker.request_sender());
+        let (stopped_tx, stopped_rx) = futures::channel::oneshot::channel();
+        let raft_group = RaftGroup::open(worker.request_sender(), stopped_rx);
         let log_writer = self.log_writer.clone();
         let task_handle = sekas_runtime::spawn(async move {
             if let Err(err) = worker.run(log_writer).await {
                 // TODO(walter) handle result.
                 panic!("run raft group worker: {err:?}");
             }
+            let _ = stopped_tx.send(());
         });
         task_group.add_task(task_handle);
         Ok(raft_group)

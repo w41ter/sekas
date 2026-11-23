@@ -17,22 +17,27 @@ use super::{SNAP_DATA, SnapManager};
 use crate::raftgroup::StateMachine;
 use crate::raftgroup::applier::Applier;
 use crate::raftgroup::metrics::*;
-use crate::record_latency;
+use crate::{Error, Result, record_latency};
 
-pub fn apply_snapshot<M: StateMachine>(
+pub fn prepare_snapshot<M: StateMachine>(
     replica_id: u64,
     snap_mgr: &SnapManager,
     applier: &mut Applier<M>,
     snapshot: &Snapshot,
-) {
+) -> Result<String> {
     record_latency!(take_apply_snapshot_metrics());
     let snap_id = &snapshot.data;
-    let snap_info = snap_mgr
-        .lock_snap(replica_id, snap_id)
-        .expect("The snapshot should does not be gc before apply");
-    // TODO(walter) check snapshot data integrity.
+    let snap_info = snap_mgr.lock_snap(replica_id, snap_id).ok_or_else(|| {
+        Error::InvalidData(format!("replica {replica_id} cannot find snapshot {snap_id:?}"))
+    })?;
+    let expected = snapshot.get_metadata();
+    if snap_info
+        .meta
+        .apply_state
+        .is_none_or(|state| state.index != expected.index || state.term != expected.term)
+    {
+        return Err(Error::InvalidData(format!("replica {replica_id} snapshot position changed")));
+    }
     let snap_dir = snap_info.base_dir.join(SNAP_DATA);
-    applier
-        .apply_snapshot(&snap_dir)
-        .expect("apply snapshot must success, because the data integrity might broken");
+    applier.prepare_snapshot(&snap_dir, &snap_info.meta)
 }

@@ -17,9 +17,9 @@ use std::sync::Arc;
 
 use sekas_api::server::v1::*;
 
-use crate::Result;
 use crate::constants::STATE_REPLICA_ID;
 use crate::serverpb::v1::*;
+use crate::{Error, Result};
 
 /// A structure supports saving and loading local states.
 ///
@@ -86,13 +86,54 @@ impl StateEngine {
     ) -> Result<()> {
         use raft_engine::LogBatch;
 
-        let replica_meta = ReplicaMeta { group_id, replica_id, state: state.into() };
-
         let mut lb = LogBatch::default();
-        let state_key = keys::replica_state(replica_id);
-        lb.put_message(STATE_REPLICA_ID, state_key.to_vec(), &replica_meta)
-            .expect("RootDesc is Serializable");
-        self.raw.write(&mut lb, false)?;
+        Self::write_replica_state(&mut lb, group_id, replica_id, state)?;
+        if state == ReplicaLocalState::Tombstone {
+            lb.delete(STATE_REPLICA_ID, keys::active_cf(replica_id));
+        }
+        self.raw.write(&mut lb, true)?;
+        Ok(())
+    }
+
+    pub fn active_cf(&self, replica_id: u64) -> Result<Option<String>> {
+        self.raw
+            .get(STATE_REPLICA_ID, &keys::active_cf(replica_id))
+            .map(String::from_utf8)
+            .transpose()
+            .map_err(|err| {
+                Error::InvalidData(format!("invalid CF name for replica {replica_id}: {err}"))
+            })
+    }
+
+    pub fn write_active_cf(
+        batch: &mut raft_engine::LogBatch,
+        replica_id: u64,
+        name: String,
+    ) -> Result<()> {
+        batch.put(STATE_REPLICA_ID, keys::active_cf(replica_id), name.into_bytes())?;
+        Ok(())
+    }
+
+    pub fn create_replica(&self, group_id: u64, replica_id: u64, name: String) -> Result<()> {
+        let mut batch = raft_engine::LogBatch::default();
+        Self::write_replica_state(&mut batch, group_id, replica_id, ReplicaLocalState::Initial)?;
+        Self::write_active_cf(&mut batch, replica_id, name)?;
+        self.raw.write(&mut batch, true)?;
+        Ok(())
+    }
+
+    pub fn replica_state(&self, replica_id: u64) -> Result<Option<ReplicaMeta>> {
+        Ok(self.raw.get_message(STATE_REPLICA_ID, &keys::replica_state(replica_id))?)
+    }
+
+    fn write_replica_state(
+        batch: &mut raft_engine::LogBatch,
+        group_id: u64,
+        replica_id: u64,
+        state: ReplicaLocalState,
+    ) -> Result<()> {
+        let meta = ReplicaMeta { group_id, replica_id, state: state.into() };
+        batch.put_message(STATE_REPLICA_ID, keys::replica_state(replica_id).to_vec(), &meta)?;
         Ok(())
     }
 
@@ -147,6 +188,12 @@ mod keys {
         buf[..1].copy_from_slice(REPLICA_STATE_PREFIX);
         buf[1..].copy_from_slice(&replica_id.to_le_bytes());
         buf
+    }
+
+    pub fn active_cf(replica_id: u64) -> Vec<u8> {
+        let mut key = vec![0x5];
+        key.extend_from_slice(&replica_id.to_le_bytes());
+        key
     }
 }
 

@@ -36,7 +36,7 @@ use super::io::{Channel, ChannelManager, LogWriter};
 use super::metrics::*;
 use super::monitor::WorkerPerfContext;
 use super::node::RaftNode;
-use super::snap::apply::apply_snapshot;
+use super::snap::apply::prepare_snapshot;
 use super::snap::{RecycleSnapMode, SnapManager};
 use super::{RaftManager, ReadPolicy};
 use crate::raftgroup::monitor::record_perf_point;
@@ -170,8 +170,12 @@ impl<'a> super::node::AdvanceTemplate for AdvanceImpl<'a> {
     }
 
     #[inline]
-    fn apply_snapshot<M: StateMachine>(&mut self, applier: &mut Applier<M>, snapshot: &Snapshot) {
-        apply_snapshot(self.replica_id, self.snap_mgr, applier, snapshot);
+    fn prepare_snapshot<M: StateMachine>(
+        &mut self,
+        applier: &mut Applier<M>,
+        snapshot: &Snapshot,
+    ) -> Result<String> {
+        prepare_snapshot(self.replica_id, self.snap_mgr, applier, snapshot)
     }
 }
 
@@ -447,7 +451,9 @@ where
             observer: &mut self.observer,
             replica_cache: &mut self.replica_cache,
         };
-        if let Some(write_task) = self.raft_node.advance(&mut ctx.perf_ctx.advance, &mut template) {
+        if let Some(write_task) =
+            self.raft_node.advance(&mut ctx.perf_ctx.advance, &mut template)?
+        {
             let mut batch = LogBatch::default();
             self.raft_node.mut_store().write(&mut batch, &write_task).expect("write log batch");
 
@@ -456,8 +462,12 @@ where
             ctx.perf_ctx.num_writes = write_task.entries.len();
             {
                 record_latency!(&RAFTGROUP_WORKER_WRITE_DURATION_SECONDS);
-                // TODO(walter) handle io error.
-                writer.submit(batch).await.unwrap_or(Ok(())).unwrap();
+                if write_task.snapshot.is_some() {
+                    self.engine.write(&mut batch, true)?;
+                } else {
+                    // TODO(walter) handle io error.
+                    writer.submit(batch).await.unwrap_or(Ok(())).unwrap();
+                }
             }
             let post_ready = write_task.post_ready();
             self.raft_node.post_advance(&mut ctx.perf_ctx.advance, post_ready, &mut template);

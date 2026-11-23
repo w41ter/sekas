@@ -26,7 +26,7 @@ use super::monitor::ApplierPerfContext;
 use super::storage::Storage;
 use crate::raftgroup::metrics::*;
 use crate::raftgroup::monitor::record_perf_point;
-use crate::serverpb::v1::{EntryId, EvalResult};
+use crate::serverpb::v1::{EntryId, EvalResult, SnapshotMeta};
 use crate::{Error, Result, record_latency};
 
 struct ProposalContext {
@@ -122,11 +122,14 @@ impl<M: StateMachine> Applier<M> {
         &mut self.state_machine
     }
 
-    pub fn apply_snapshot(&mut self, snap_dir: &Path) -> Result<()> {
+    pub fn prepare_snapshot(&mut self, snap_dir: &Path, meta: &SnapshotMeta) -> Result<String> {
+        self.state_machine.prepare_snapshot(snap_dir, meta)
+    }
+
+    pub fn activate_snapshot(&mut self) {
         let state_machine = self.mut_state_machine();
-        state_machine.apply_snapshot(snap_dir)?;
+        state_machine.activate_snapshot();
         self.last_applied_index = state_machine.flushed_index();
-        Ok(())
     }
 
     #[inline]

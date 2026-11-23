@@ -289,7 +289,7 @@ async fn shard_cleanup_observes_plug_state() {
                 }
                 // finish_plug disables WAL; flushed_apply_state reads only the
                 // persisted tier, so flush before checking the durable index.
-                db.flush_cf(&db.cf_handle(&format!("{group_id}-{replica_id}")).unwrap()).unwrap();
+                db.flush_cf(&db.cf_handle(&engine.column_family()).unwrap()).unwrap();
                 assert_eq!(engine.flushed_apply_state().unwrap(), ApplyState { index, term: 2 });
                 assert!(engine.move_shard_state().is_none());
                 let final_desc = engine.descriptor();

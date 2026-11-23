@@ -214,12 +214,12 @@ impl Replica {
     pub async fn shutdown(&self, _actual_desc: &GroupDesc) -> Result<()> {
         // TODO(walter) check actual desc.
         self.info.terminate();
-        self.raft_group.terminate();
 
         {
             let mut lease_state = self.lease_state.lock().unwrap();
             lease_state.terminate();
         }
+        self.raft_group.terminate().await;
 
         Ok(())
     }

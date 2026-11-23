@@ -27,8 +27,8 @@ use log::info;
 use sekas_rock::fs::create_dir_all_if_not_exists;
 
 pub(crate) use self::group::{
-    GroupEngine, MvccEntry, MvccIterator, RawIterator, Snapshot, SnapshotMode, WriteBatch,
-    WriteStates,
+    GroupEngine, MvccEntry, MvccIterator, PreparedGroupSnapshot, RawIterator, Snapshot,
+    SnapshotMode, WriteBatch, WriteStates,
 };
 pub(crate) use self::state::StateEngine;
 use crate::{DbConfig, Result};
@@ -57,6 +57,10 @@ impl RawDb {
     }
 
     #[inline]
+    pub fn list_cfs(&self) -> DbResult<Vec<String>> {
+        rocksdb::DB::list_cf(&self.options_for_cf("default"), self.db.path())
+    }
+
     pub fn create_cf<N: AsRef<str>>(&self, name: N) -> DbResult<()> {
         self.db.create_cf(name.as_ref(), &self.options_for_cf(name.as_ref()))
     }

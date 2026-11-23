@@ -686,7 +686,7 @@ pub mod remote {
                     .unwrap();
             let engine = create_group_engine(dir.path(), 1, 1, 1).await;
             let (sender, _receiver) = mpsc::channel(1024);
-            let raft_group = RaftGroup::open(sender);
+            let raft_group = RaftGroup::open(sender, futures::channel::oneshot::channel().1);
             let latch_mgr = RemoteLatchManager::new(client, engine, raft_group);
 
             let shard_id = 1;

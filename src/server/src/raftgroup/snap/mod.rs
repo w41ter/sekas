@@ -153,7 +153,7 @@ impl SnapManager {
                     .entry(replica_id)
                     .or_insert_with(|| ReplicaSnapManager::new(replica_id, replica_dir.clone()));
                 replica_mgr.next_snapshot_index =
-                    std::cmp::max(replica_mgr.next_snapshot_index, index as usize);
+                    std::cmp::max(replica_mgr.next_snapshot_index, index as usize + 1);
                 replica_mgr.push(info);
                 num_snaps += 1;
             }
@@ -284,7 +284,10 @@ impl ReplicaSnapManager {
     }
 
     fn push(&mut self, info: SnapshotInfo) {
-        let index = self.snapshots.partition_point(|i| i.snapshot_id < info.snapshot_id);
+        let index = self.snapshots.partition_point(|item| {
+            (item.snapshot_id.len(), &item.snapshot_id)
+                < (info.snapshot_id.len(), &info.snapshot_id)
+        });
         self.snapshots.insert(index, info);
     }
 

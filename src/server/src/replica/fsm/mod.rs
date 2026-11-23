@@ -27,7 +27,7 @@ use sekas_api::server::v1::*;
 use sekas_api::{Epoch, apply_config_delta, apply_shard_delta};
 
 use super::ReplicaInfo;
-use crate::engine::{GroupEngine, MvccEntry, WriteBatch, WriteStates};
+use crate::engine::{GroupEngine, MvccEntry, PreparedGroupSnapshot, WriteBatch, WriteStates};
 use crate::raftgroup::{ApplyEntry, SnapshotBuilder, StateMachine};
 use crate::serverpb::v1::*;
 use crate::{Error, ReplicaConfig, Result};
@@ -130,6 +130,7 @@ where
     info: Arc<ReplicaInfo>,
 
     group_engine: GroupEngine,
+    prepared_snapshot: Option<PreparedGroupSnapshot>,
     observer: Box<dyn StateMachineObserver>,
     watch_hub: WatchHub,
 
@@ -156,6 +157,7 @@ impl GroupStateMachine {
             cfg,
             info,
             group_engine,
+            prepared_snapshot: None,
             observer,
             watch_hub,
             plugged_write_batches: Vec::default(),
@@ -526,12 +528,21 @@ impl StateMachine for GroupStateMachine {
         Ok(())
     }
 
-    fn apply_snapshot(&mut self, snap_dir: &Path) -> Result<()> {
-        checkpoint::apply_snapshot(&self.group_engine, self.info.replica_id, snap_dir)?;
+    fn prepare_snapshot(&mut self, snap_dir: &Path, meta: &SnapshotMeta) -> Result<String> {
+        let prepared = checkpoint::prepare_snapshot(&self.group_engine, snap_dir, meta)?;
+        let name = prepared.column_family().to_owned();
+        self.prepared_snapshot = Some(prepared);
+        Ok(name)
+    }
+
+    fn activate_snapshot(&mut self) {
+        self.group_engine
+            .activate_snapshot(self.prepared_snapshot.take().expect("prepared snapshot"));
         self.observer.on_descriptor_updated(self.group_engine.descriptor());
         let apply_state = self.flushed_apply_state();
+        self.last_applied_term = apply_state.term;
+        self.observer.on_move_shard_state_updated(self.group_engine.move_shard_state());
         self.observer.on_term_updated(apply_state.term);
-        Ok(())
     }
 
     fn snapshot_builder(&self) -> Box<dyn SnapshotBuilder> {

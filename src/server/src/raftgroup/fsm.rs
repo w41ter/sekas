@@ -17,7 +17,7 @@ use std::path::Path;
 use sekas_api::server::v1::{ChangeReplicas, GroupDesc};
 
 use crate::Result;
-use crate::serverpb::v1::{ApplyState, EvalResult};
+use crate::serverpb::v1::{ApplyState, EvalResult, SnapshotMeta};
 
 /// A helper structure to used to access the internal field of entries.
 pub enum ApplyEntry {
@@ -33,7 +33,8 @@ pub trait StateMachine: Send {
     fn apply(&mut self, index: u64, term: u64, entry: ApplyEntry) -> Result<()>;
     fn finish_plug(&mut self) -> Result<()>;
 
-    fn apply_snapshot(&mut self, snap_dir: &Path) -> Result<()>;
+    fn prepare_snapshot(&mut self, snap_dir: &Path, meta: &SnapshotMeta) -> Result<String>;
+    fn activate_snapshot(&mut self);
 
     fn snapshot_builder(&self) -> Box<dyn SnapshotBuilder>;
 

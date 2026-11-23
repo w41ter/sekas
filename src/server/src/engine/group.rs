@@ -16,6 +16,7 @@
 use std::collections::HashMap;
 use std::ops::{Deref, DerefMut};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
@@ -54,16 +55,40 @@ where
     Self: Send,
 {
     cfg: EngineConfig,
-    name: String,
+    replica_id: u64,
     raw_db: Arc<RawDb>,
     core: Arc<RwLock<GroupEngineCore>>,
 }
 
-#[derive(Default)]
 struct GroupEngineCore {
+    cf: Arc<GroupColumnFamily>,
     group_desc: GroupDesc,
     shard_descs: HashMap<u64, ShardDesc>,
     move_shard_state: Option<MoveShardState>,
+}
+
+struct GroupColumnFamily {
+    db: Arc<RawDb>,
+    name: String,
+    retired: AtomicBool,
+}
+
+impl Drop for GroupColumnFamily {
+    fn drop(&mut self) {
+        if self.retired.load(Ordering::Relaxed)
+            && let Err(err) = self.db.drop_cf(&self.name)
+        {
+            warn!("drop retired group column family {}: {err}", self.name);
+        }
+    }
+}
+
+pub(crate) struct PreparedGroupSnapshot(GroupEngineCore);
+
+impl PreparedGroupSnapshot {
+    pub fn column_family(&self) -> &str {
+        &self.0.cf.name
+    }
 }
 
 /// Traverse the data of the group engine, but don't care about the data format.
@@ -71,6 +96,7 @@ pub(crate) struct RawIterator<'a> {
     apply_state: ApplyState,
     descriptor: GroupDesc,
     db_iter: rocksdb::DBIterator<'a>,
+    _cf: Arc<GroupColumnFamily>,
 }
 
 #[derive(Debug)]
@@ -94,6 +120,7 @@ pub(crate) struct SnapshotCore<'a> {
     db_iter: rocksdb::DBIterator<'a>,
     current_key: Option<Vec<u8>>,
     cached_entry: Option<MvccEntry>,
+    _cf: Arc<GroupColumnFamily>,
 }
 
 impl std::fmt::Debug for SnapshotCore<'_> {
@@ -143,7 +170,7 @@ impl GroupEngine {
         group_id: u64,
         replica_id: u64,
     ) -> Result<Self> {
-        let name = Self::cf_name(group_id, replica_id);
+        let name = Self::new_cf_name(group_id, replica_id);
         info!("group {group_id} replica {replica_id} create group engine, cf name is {name}");
         debug_assert!(raw_db.cf_handle(&name).is_none());
         raw_db.create_cf(&name)?;
@@ -159,9 +186,14 @@ impl GroupEngine {
         let cf_handle = raw_db.cf_handle(&name).expect("cf must exists because it just created");
         let engine = GroupEngine {
             cfg: cfg.clone(),
-            name,
+            replica_id,
             raw_db: raw_db.clone(),
             core: Arc::new(RwLock::new(GroupEngineCore {
+                cf: Arc::new(GroupColumnFamily {
+                    db: raw_db.clone(),
+                    name,
+                    retired: AtomicBool::new(false),
+                }),
                 group_desc: desc.clone(),
                 shard_descs: Default::default(),
                 move_shard_state: None,
@@ -188,36 +220,51 @@ impl GroupEngine {
         raw_db: Arc<RawDb>,
         group_id: u64,
         replica_id: u64,
-    ) -> Result<Option<Self>> {
-        let name = Self::cf_name(group_id, replica_id);
-        let cf_handle = match raw_db.cf_handle(&name) {
-            Some(cf_handle) => cf_handle,
-            None => {
-                return Ok(None);
-            }
-        };
+        name: String,
+    ) -> Result<Self> {
+        let core = Self::load_core(raw_db.clone(), name, group_id)?;
+        Ok(Self { cfg: cfg.clone(), replica_id, raw_db, core: Arc::new(RwLock::new(core)) })
+    }
+
+    fn load_core(raw_db: Arc<RawDb>, name: String, group_id: u64) -> Result<GroupEngineCore> {
+        let cf_handle = raw_db.cf_handle(&name).ok_or_else(|| {
+            Error::InvalidData(format!("missing column family {name} for group {group_id}"))
+        })?;
         let group_desc = internal::descriptor(&raw_db, &cf_handle)?;
+        if group_desc.id != group_id {
+            return Err(Error::InvalidData(format!(
+                "column family {name} belongs to group {}, expected {group_id}",
+                group_desc.id
+            )));
+        }
         let move_shard_state = internal::move_shard_state(&raw_db, &cf_handle)?;
         let mut shard_descs = internal::shard_descs(&group_desc);
         if let Some(shard_desc) = move_shard_state.as_ref().map(|m| m.get_shard_desc()) {
             shard_descs.entry(shard_desc.id).or_insert_with(|| shard_desc.clone());
         }
-        let core = GroupEngineCore { move_shard_state, group_desc, shard_descs };
-
-        Ok(Some(GroupEngine {
-            cfg: cfg.clone(),
-            name,
-            raw_db: raw_db.clone(),
-            core: Arc::new(RwLock::new(core)),
-        }))
+        Ok(GroupEngineCore {
+            cf: Arc::new(GroupColumnFamily {
+                db: raw_db.clone(),
+                name,
+                retired: AtomicBool::new(false),
+            }),
+            move_shard_state,
+            group_desc,
+            shard_descs,
+        })
     }
 
-    /// Destory a group engine.
-    pub(crate) async fn destory(group_id: u64, replica_id: u64, raw_db: Arc<RawDb>) -> Result<()> {
-        let name = Self::cf_name(group_id, replica_id);
-        raw_db.drop_cf(&name)?;
-        info!("destory column family {}", name);
-        Ok(())
+    pub fn column_family(&self) -> String {
+        self.core.read().unwrap().cf.name.clone()
+    }
+
+    pub fn is_group_cf(name: &str) -> bool {
+        let mut fields = name.splitn(3, '-');
+        matches!((fields.next(), fields.next(), fields.next()), (Some(group), Some(replica), Some(id))
+            if group.parse::<u64>().is_ok()
+                && replica.parse::<u64>().is_ok()
+                && id.len() == 32
+                && u128::from_str_radix(id, 16).is_ok())
     }
 
     /// Return the move shard state.
@@ -235,7 +282,8 @@ impl GroupEngine {
     /// Return the persisted apply state of raft.
     #[inline]
     pub fn flushed_apply_state(&self) -> Result<ApplyState> {
-        internal::flushed_apply_state(&self.raw_db, &self.cf_handle())
+        let core = self.core.read().unwrap();
+        internal::flushed_apply_state(&self.raw_db, &self.cf_for(&core.cf))
     }
 
     /// Get the latest key value from the corresponding shard.
@@ -369,7 +417,8 @@ impl GroupEngine {
     ) -> Result<()> {
         use rocksdb::WriteOptions;
 
-        let cf_handle = self.cf_handle();
+        let cf = self.core.read().unwrap().cf.clone();
+        let cf_handle = self.cf_for(&cf);
         let mut inner_wb = rocksdb::WriteBatch::default();
         for wb in wbs {
             {
@@ -403,10 +452,22 @@ impl GroupEngine {
     }
 
     pub fn snapshot(&self, shard_id: u64, mode: SnapshotMode) -> Result<Snapshot<'_>> {
-        self.snapshot_with_desc(&self.shard_desc(shard_id)?, mode)
+        let core = self.core.read().unwrap();
+        let desc = core.shard_descs.get(&shard_id).ok_or(Error::ShardNotFound(shard_id))?;
+        self.snapshot_for(desc, mode, core.cf.clone())
     }
 
     fn snapshot_with_desc(&self, desc: &ShardDesc, mode: SnapshotMode) -> Result<Snapshot<'_>> {
+        let cf = self.core.read().unwrap().cf.clone();
+        self.snapshot_for(desc, mode, cf)
+    }
+
+    fn snapshot_for(
+        &self,
+        desc: &ShardDesc,
+        mode: SnapshotMode,
+        cf: Arc<GroupColumnFamily>,
+    ) -> Result<Snapshot<'_>> {
         use rocksdb::{Direction, IteratorMode, ReadOptions};
 
         let table_id = desc.table_id;
@@ -435,34 +496,53 @@ impl GroupEngine {
             }
         };
         let inner_mode = IteratorMode::From(&key, Direction::Forward);
-        let iter = self.raw_db.iterator_cf_opt(&self.cf_handle(), opts, inner_mode);
-        Ok(Snapshot::new(table_id, iter, mode, desc))
+        let iter = self.raw_db.iterator_cf_opt(&self.cf_for(&cf), opts, inner_mode);
+        Ok(Snapshot::new(table_id, iter, mode, desc, cf))
     }
 
     pub fn raw_iter(&self) -> Result<RawIterator<'_>> {
         use rocksdb::{IteratorMode, ReadOptions};
 
         let opts = ReadOptions::default();
-        let iter = self.raw_db.iterator_cf_opt(&self.cf_handle(), opts, IteratorMode::Start);
-        RawIterator::new(iter)
+        let cf = self.core.read().unwrap().cf.clone();
+        let iter = self.raw_db.iterator_cf_opt(&self.cf_for(&cf), opts, IteratorMode::Start);
+        RawIterator::new(iter, cf)
     }
 
-    /// Ingest data into group engine.
-    pub fn ingest<P: AsRef<Path>>(&self, files: Vec<P>) -> Result<()> {
-        use rocksdb::IngestExternalFileOptions;
+    pub fn prepare_snapshot<P: AsRef<Path>>(
+        &self,
+        files: Vec<P>,
+        expected_state: ApplyState,
+        expected_desc: &GroupDesc,
+    ) -> Result<PreparedGroupSnapshot> {
+        let group_id = self.core.read().unwrap().group_desc.id;
+        let name = Self::new_cf_name(group_id, self.replica_id);
+        self.raw_db.create_cf(&name)?;
+        let prepared = (|| {
+            let handle = self.raw_db.cf_handle(&name).expect("new column family");
+            let opts = rocksdb::IngestExternalFileOptions::default();
+            self.raw_db.ingest_external_file_cf_opts(&handle, &opts, files)?;
+            let core = Self::load_core(self.raw_db.clone(), name.clone(), group_id)?;
+            let state = internal::flushed_apply_state(&self.raw_db, &handle)?;
+            if state != expected_state || &core.group_desc != expected_desc {
+                return Err(Error::InvalidData(format!(
+                    "group {group_id} replica {} snapshot metadata differs from SST contents",
+                    self.replica_id
+                )));
+            }
+            Ok(PreparedGroupSnapshot(core))
+        })();
+        if prepared.is_err()
+            && let Err(err) = self.raw_db.drop_cf(&name)
+        {
+            warn!("drop failed snapshot column family {name}: {err}");
+        }
+        prepared
+    }
 
-        self.raw_db.drop_cf(&self.name)?;
-        self.raw_db.create_cf(&self.name)?;
-
-        let opts = IngestExternalFileOptions::default();
-        let cf_handle = self.cf_handle();
-        self.raw_db.ingest_external_file_cf_opts(&cf_handle, &opts, files)?;
-
-        let group_desc = internal::descriptor(&self.raw_db, &cf_handle)?;
-        let move_shard_state = internal::move_shard_state(&self.raw_db, &cf_handle)?;
-        self.apply_core_states(Some(group_desc), move_shard_state);
-
-        Ok(())
+    pub fn activate_snapshot(&self, snapshot: PreparedGroupSnapshot) {
+        let previous = std::mem::replace(&mut *self.core.write().unwrap(), snapshot.0);
+        previous.cf.retired.store(true, Ordering::Relaxed);
     }
 
     pub fn apply_core_states(
@@ -495,23 +575,26 @@ impl GroupEngine {
 
     /// Get the approximates size of the target shard.
     pub fn get_approximate_size(&self, shard_id: u64) -> Result<u64> {
-        let (start, end) = self.shard_raw_boundary(shard_id)?;
-        self.raw_db.get_approximate_size(&self.cf_handle(), &start, &end)
+        let core = self.core.read().unwrap();
+        let shard = core.shard_descs.get(&shard_id).ok_or(Error::ShardNotFound(shard_id))?;
+        let (start, end) = Self::shard_raw_range(shard)?;
+        self.raw_db.get_approximate_size(&self.cf_for(&core.cf), &start, &end)
     }
 
     /// Estimate the split keys (in user key) of the target shard.
     pub fn estimate_split_key(&self, shard_id: u64) -> Result<Option<Vec<u8>>> {
-        let shard = self.shard_desc(shard_id)?;
-        let (start, end) = self.shard_raw_boundary(shard_id)?;
-        let estimated_split_keys =
-            self.raw_db.estimate_split_keys_in_range(&self.cf_handle(), &start, &end)?;
+        let core = self.core.read().unwrap();
+        let shard = core.shard_descs.get(&shard_id).ok_or(Error::ShardNotFound(shard_id))?;
+        let (start, end) = Self::shard_raw_range(shard)?;
+        let cf = self.cf_for(&core.cf);
+        let estimated_split_keys = self.raw_db.estimate_split_keys_in_range(&cf, &start, &end)?;
         if let Some(key) = estimate_user_split_key(&estimated_split_keys)
             && shard::belong_to(&shard, &key)
             && key > shard::start_key(&shard)
         {
             return Ok(Some(key));
         }
-        self.estimate_memtable_split_key(&shard, &shard::start_key(&shard))
+        self.estimate_memtable_split_key(shard, &shard::start_key(shard), &cf)
     }
 
     /// Estimate a split key after `split_start_key` whose approximate bytes
@@ -523,23 +606,22 @@ impl GroupEngine {
         split_start_key: &[u8],
         split_target_size: u64,
     ) -> Result<Option<Vec<u8>>> {
-        let shard_desc = self.shard_desc(shard_id)?;
-        if !shard::belong_to(&shard_desc, split_start_key) {
+        let core = self.core.read().unwrap();
+        let shard_desc = core.shard_descs.get(&shard_id).ok_or(Error::ShardNotFound(shard_id))?;
+        let cf = self.cf_for(&core.cf);
+        if !shard::belong_to(shard_desc, split_start_key) {
             return Err(Error::InvalidArgument(format!(
                 "split start key is not belong to shard {shard_id}"
             )));
         }
 
-        let (_, shard_end) = self.shard_raw_boundary(shard_id)?;
+        let (_, shard_end) = Self::shard_raw_range(shard_desc)?;
         let split_start = keys::raw(shard_desc.table_id, split_start_key);
-        let estimated_split_keys = self.raw_db.estimate_split_keys_in_range(
-            &self.cf_handle(),
-            &split_start,
-            &shard_end,
-        )?;
+        let estimated_split_keys =
+            self.raw_db.estimate_split_keys_in_range(&cf, &split_start, &shard_end)?;
         let Some(split_key) = estimate_user_split_key_by_size(
             &self.raw_db,
-            &self.cf_handle(),
+            &cf,
             &split_start,
             &estimated_split_keys,
             split_target_size,
@@ -548,15 +630,14 @@ impl GroupEngine {
             // The size estimate includes memtables, while SST properties do
             // not. A bounded memtable sample can provide a smaller split when
             // the requested size has no corresponding SST sample.
-            if self.raw_db.get_approximate_size(&self.cf_handle(), &split_start, &shard_end)?
-                < split_target_size
+            if self.raw_db.get_approximate_size(&cf, &split_start, &shard_end)? < split_target_size
             {
                 return Ok(None);
             }
-            return self.estimate_memtable_split_key(&shard_desc, split_start_key);
+            return self.estimate_memtable_split_key(shard_desc, split_start_key, &cf);
         };
 
-        if !shard::belong_to(&shard_desc, &split_key) || split_key.as_slice() <= split_start_key {
+        if !shard::belong_to(shard_desc, &split_key) || split_key.as_slice() <= split_start_key {
             return Ok(None);
         }
         Ok(Some(split_key))
@@ -568,6 +649,7 @@ impl GroupEngine {
         &self,
         shard_desc: &ShardDesc,
         start_key: &[u8],
+        cf: &impl rocksdb::AsColumnFamilyRef,
     ) -> Result<Option<Vec<u8>>> {
         use rocksdb::{Direction, IteratorMode, ReadOptions, ReadTier};
 
@@ -580,11 +662,8 @@ impl GroupEngine {
         opts.set_read_tier(ReadTier::Memtable);
         opts.fill_cache(false);
         opts.set_iterate_upper_bound(end);
-        let iter = self.raw_db.iterator_cf_opt(
-            &self.cf_handle(),
-            opts,
-            IteratorMode::From(&start, Direction::Forward),
-        );
+        let iter =
+            self.raw_db.iterator_cf_opt(cf, opts, IteratorMode::From(&start, Direction::Forward));
         let started = Instant::now();
         let mut samples = Vec::new();
         let mut first_user_key = None;
@@ -636,21 +715,17 @@ impl GroupEngine {
             .ok_or(Error::ShardNotFound(shard_id))
     }
 
-    #[inline]
+    fn cf_for(&self, cf: &GroupColumnFamily) -> Arc<rocksdb::BoundColumnFamily<'_>> {
+        self.raw_db.cf_handle(&cf.name).expect("active column family handle")
+    }
+
+    #[cfg(test)]
     fn cf_handle(&self) -> Arc<rocksdb::BoundColumnFamily<'_>> {
-        self.raw_db.cf_handle(&self.name).expect("column family handle")
+        self.cf_for(&self.core.read().unwrap().cf)
     }
 
-    #[inline]
-    fn cf_name(group_id: u64, replica_id: u64) -> String {
-        // Using the replica id avoids the problem of creating a new replica immediately
-        // after deleting the replica.
-        format!("{group_id}-{replica_id}")
-    }
-
-    /// Get the raw db boundary of the target shard.
-    fn shard_raw_boundary(&self, shard_id: u64) -> Result<(Vec<u8>, Vec<u8>)> {
-        Self::shard_raw_range(&self.shard_desc(shard_id)?)
+    fn new_cf_name(group_id: u64, replica_id: u64) -> String {
+        format!("{group_id}-{replica_id}-{:032x}", rand::random::<u128>())
     }
 
     /// Build a range from the caller's current shard metadata, including all
@@ -670,14 +745,14 @@ impl GroupEngine {
 }
 
 impl<'a> RawIterator<'a> {
-    fn new(mut db_iter: rocksdb::DBIterator<'a>) -> Result<Self> {
+    fn new(mut db_iter: rocksdb::DBIterator<'a>, cf: Arc<GroupColumnFamily>) -> Result<Self> {
         use rocksdb::IteratorMode;
 
         let apply_state = next_message(&mut db_iter, &keys::apply_state())?;
         let descriptor = next_message(&mut db_iter, &keys::descriptor())?;
         db_iter.set_mode(IteratorMode::Start);
 
-        Ok(RawIterator { apply_state, descriptor, db_iter })
+        Ok(RawIterator { apply_state, descriptor, db_iter, _cf: cf })
     }
 
     #[inline]
@@ -707,6 +782,7 @@ impl<'a> Snapshot<'a> {
         db_iter: rocksdb::DBIterator<'a>,
         snapshot_mode: SnapshotMode<'b>,
         desc: &ShardDesc,
+        cf: Arc<GroupColumnFamily>,
     ) -> Self {
         let range = match snapshot_mode {
             SnapshotMode::Key { key } => Some(SnapshotRange::Target { target_key: key.to_owned() }),
@@ -720,7 +796,7 @@ impl<'a> Snapshot<'a> {
         Snapshot {
             table_id,
             range,
-            core: SnapshotCore { db_iter, current_key: None, cached_entry: None },
+            core: SnapshotCore { db_iter, current_key: None, cached_entry: None, _cf: cf },
         }
     }
 
@@ -1178,7 +1254,7 @@ mod internal {
     ) -> Result<GroupDesc> {
         let value = db
             .get_pinned_cf(cf_handle, keys::descriptor())?
-            .expect("group descriptor will persisted when creating group");
+            .ok_or_else(|| Error::InvalidData("group engine has no descriptor".into()))?;
         Ok(GroupDesc::decode(value.as_ref())?)
     }
 
@@ -1200,9 +1276,10 @@ mod internal {
         use rocksdb::{ReadOptions, ReadTier};
         let mut opt = ReadOptions::default();
         opt.set_read_tier(ReadTier::Persisted);
-        let value = db
-            .get_pinned_cf_opt(cf_handle, keys::apply_state(), &opt)?
-            .expect("apply state will persisted when creating group");
+        let value =
+            db.get_pinned_cf_opt(cf_handle, keys::apply_state(), &opt)?.ok_or_else(|| {
+                Error::InvalidData("group engine has no persisted apply state".into())
+            })?;
         Ok(ApplyState::decode(value.as_ref())?)
     }
 
@@ -1387,27 +1464,25 @@ mod tests {
         let group_id = 1;
         let replica_id = 1;
 
-        // 1. create engine
-        let raw_db = {
-            let group_engine = create_engine(group_id, replica_id, dir.path()).await;
-            group_engine.raw_db.clone()
-        };
+        let engine = create_engine(group_id, replica_id, dir.path()).await;
+        let raw_db = engine.raw_db.clone();
+        let name = engine.column_family();
 
-        // 2. open engine
-        let engine =
-            GroupEngine::open(&EngineConfig::default(), raw_db.clone(), group_id, replica_id)
+        GroupEngine::open(
+            &EngineConfig::default(),
+            raw_db.clone(),
+            group_id,
+            replica_id,
+            name.clone(),
+        )
+        .await
+        .unwrap();
+        raw_db.drop_cf(&name).unwrap();
+        assert!(
+            GroupEngine::open(&EngineConfig::default(), raw_db, group_id, replica_id, name)
                 .await
-                .unwrap();
-        assert!(engine.is_some());
-
-        // 3. drop engine
-        GroupEngine::destory(group_id, replica_id, raw_db.clone()).await.unwrap();
-
-        let engine =
-            GroupEngine::open(&EngineConfig::default(), raw_db.clone(), group_id, replica_id)
-                .await
-                .unwrap();
-        assert!(engine.is_none());
+                .is_err()
+        );
     }
 
     #[sekas_macro::test]
@@ -2108,7 +2183,7 @@ mod tests {
         }
         engine.commit(wb, WriteStates::default(), false).unwrap();
         // No flush: SST samples are empty but live memtable data is splitable.
-        let (start, end) = engine.shard_raw_boundary(1).unwrap();
+        let (start, end) = GroupEngine::shard_raw_range(&engine.shard_desc(1).unwrap()).unwrap();
         assert!(
             engine
                 .raw_db
