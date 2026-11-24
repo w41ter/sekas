@@ -14,6 +14,7 @@
 // limitations under the License.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use futures::StreamExt;
 use futures::channel::mpsc;
@@ -29,7 +30,7 @@ use crate::node::Replica;
 use crate::node::metrics::*;
 use crate::serverpb::v1::*;
 use crate::transport::TransportManager;
-use crate::{Error, NodeConfig, Result, record_latency};
+use crate::{NodeConfig, Result, record_latency};
 
 #[derive(Clone, Debug)]
 pub struct ForwardCtx {
@@ -99,7 +100,24 @@ impl MoveShardController {
                         desc: desc.clone(),
                     });
                 }
-                coord.as_mut().unwrap().next_step(state).await;
+                let coordinator = coord.as_mut().unwrap();
+                let mut delay = Duration::from_millis(200);
+                while let Some(current) = replica.move_shard_state() {
+                    if current.get_move_shard_desc() != &coordinator.desc
+                        || (!coordinator.is_dest_group() && current.step() != MoveShardStep::Moved)
+                        || !matches!(replica.on_leader("move shard", true).await, Ok(Some(_)))
+                    {
+                        break;
+                    }
+                    let before = current.step;
+                    coordinator.next_step(current).await;
+                    if replica.move_shard_state().is_some_and(|current| current.step == before) {
+                        sekas_runtime::time::sleep(delay).await;
+                        delay = (delay * 2).min(Duration::from_secs(3));
+                    } else {
+                        delay = Duration::from_millis(200);
+                    }
+                }
             }
             debug!(
                 "move shard state watcher is stopped. replica_id={replica_id}, group_id={group_id}"
@@ -176,15 +194,14 @@ impl MoveShardCoordinator {
                 self.enter_pulling_step().await;
             }
             Err(sekas_client::Error::EpochNotMatch(group_desc)) => {
-                // Since the epoch is not matched, this moving shard should be rollback.
-                warn!(
-                    "abort moving shard since epoch not match, new epoch is {}. replica={}, group={}, desc={}",
-                    Epoch(group_desc.epoch),
-                    self.replica_id,
-                    self.group_id,
-                    self.desc
-                );
-                self.abort_moving_shard().await;
+                // Only a newer applied epoch prevents a delayed AcquireShard.
+                if group_desc.epoch > self.desc.src_group_epoch {
+                    warn!(
+                        "abort shard migration at expired source epoch {}",
+                        Epoch(group_desc.epoch)
+                    );
+                    self.abort_moving_shard().await;
+                }
             }
             Err(err) => {
                 error!(
@@ -209,7 +226,18 @@ impl MoveShardCoordinator {
             self.replica_id, self.group_id, self.desc
         );
 
-        self.clean_move_shard_state().await;
+        if self.client.inspect_group().await.is_ok_and(|state| {
+            state.group.as_ref().is_some_and(|group| {
+                group.epoch > self.desc.src_group_epoch
+                    && group.shard(self.desc.get_shard_id()).is_none()
+            }) && !state
+                .shard_migration
+                .as_ref()
+                .and_then(|migration| migration.desc.as_ref())
+                .is_some_and(|desc| desc == &self.desc)
+        }) {
+            self.clean_move_shard_state().await;
+        }
     }
 
     async fn commit_dest_group(&self) {
@@ -278,9 +306,6 @@ impl MoveShardCoordinator {
                 "pull shard from source group: {e:?}. replica={}, group={}, desc={}",
                 self.replica_id, self.group_id, self.desc
             );
-            if abort_on_pull_error(&e) {
-                self.abort_moving_shard().await;
-            }
             return;
         }
 
@@ -291,16 +316,6 @@ impl MoveShardCoordinator {
     fn is_dest_group(&self) -> bool {
         self.group_id == self.desc.dest_group_id
     }
-}
-
-fn abort_on_pull_error(error: &Error) -> bool {
-    matches!(
-        error,
-        Error::ResourceExhausted(_)
-            | Error::InvalidArgument(_)
-            | Error::InvalidData(_)
-            | Error::ShardNotFound(_)
-    )
 }
 
 pub async fn pull_shard(
@@ -328,18 +343,4 @@ pub async fn pull_shard(
         NODE_INGEST_CHUNK_TOTAL.inc();
     }
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::error::BusyReason;
-
-    #[test]
-    fn aborts_only_terminal_pull_errors() {
-        assert!(abort_on_pull_error(&Error::ResourceExhausted("message too large".into())));
-        assert!(abort_on_pull_error(&Error::InvalidArgument("bad shard".into())));
-        assert!(!abort_on_pull_error(&Error::ServiceIsBusy(BusyReason::Transfering)));
-        assert!(!abort_on_pull_error(&Error::GroupNotReady(7)));
-    }
 }

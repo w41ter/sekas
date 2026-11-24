@@ -16,21 +16,19 @@ use std::cmp::Ordering;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::time::Duration;
 
-use sekas_api::server::v1::{
-    GroupDesc, NodeDesc, NodeResourceUsage, RaftRole, ReplicaRole, ShardDesc,
-};
+use sekas_api::server::v1::{GroupDesc, NodeResourceUsage, ReplicaRole, ShardDesc};
 
 use super::balance::{Axis, Change};
 use super::{
-    AllocSource, Allocator, BalanceDecision, BalanceThresholds, ReallocateReplica, ReallocateShard,
-    ShardSizePlacement, TransferLeader,
+    BalanceDecision, BalanceThresholds, ReallocateReplica, ReallocateShard, TransferLeader,
 };
 use crate::constants::ROOT_GROUP_ID;
 use crate::root::ClusterStats;
+use crate::root::schedule::ClusterView;
 use crate::root::stats::ShowSnapshot;
 use crate::{BalanceConfig, BalanceDimension as Dimension, RootConfig};
 
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 pub(in crate::root) enum PlacementAction {
     Shard(ReallocateShard),
     Leader(TransferLeader),
@@ -38,6 +36,13 @@ pub(in crate::root) enum PlacementAction {
 }
 
 impl PlacementAction {
+    fn split_bytes(&self) -> Option<u64> {
+        match self {
+            Self::Shard(action) => action.split_bytes,
+            _ => None,
+        }
+    }
+
     fn detail(&self) -> String {
         match self {
             Self::Shard(move_shard) => format!(
@@ -53,7 +58,7 @@ impl PlacementAction {
                 migration.source_replica,
                 migration.group,
                 migration.source_node,
-                migration.target_node.id,
+                migration.target_node,
             ),
         }
     }
@@ -62,32 +67,88 @@ impl PlacementAction {
         match self {
             Self::Leader(a) => (0, a.group, a.src_node, a.target_node),
             Self::Shard(a) => (1, a.shard, a.source_group, a.target_group),
-            Self::Replica(a) => (2, a.group, a.source_node, a.target_node.id),
+            Self::Replica(a) => (2, a.group, a.source_node, a.target_node),
         }
     }
 }
 
 pub(in crate::root) struct PlacementPlan {
-    pub action: Option<(Dimension, PlacementAction)>,
+    pub choice: Option<PlacementChoice>,
     pub decisions: Vec<(Dimension, BalanceDecision, Option<BalanceThresholds>)>,
 }
 
-struct Placement<'a, T: AllocSource> {
-    allocator: &'a Allocator<T>,
+pub(in crate::root) struct PlacementChoice {
+    pub dimension: Dimension,
+    pub action: PlacementAction,
+    pub priority: PlacementPriority,
+    pub reason: String,
+}
+
+pub(in crate::root) struct CapacityChoice {
+    pub action: CapacityAction,
+    pub priority: PlacementPriority,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(in crate::root) enum PlacementPriority {
+    Imbalance,
+    PlanningWatermark,
+    LoadDeadline,
+    CapacityLimit,
+}
+
+impl CapacityChoice {
+    fn new(action: CapacityAction, over_limit: bool) -> Self {
+        let priority = if over_limit {
+            PlacementPriority::CapacityLimit
+        } else {
+            PlacementPriority::PlanningWatermark
+        };
+        Self { action, priority }
+    }
+}
+
+pub(in crate::root) enum CapacityAction {
+    CreateGroup,
+    Place(ReallocateShard),
+}
+
+struct ShardTarget {
+    group: u64,
+    bytes: u64,
+    move_budget: u64,
+}
+
+impl ShardTarget {
+    fn fit(
+        &self,
+        source_group: u64,
+        shard: u64,
+        bytes: u64,
+        split_goal: Option<u64>,
+    ) -> Option<ReallocateShard> {
+        let amount = movable_bytes(bytes, self.move_budget, split_goal)?;
+        Some(ReallocateShard {
+            shard,
+            source_group,
+            target_group: self.group,
+            split_bytes: (amount < bytes).then_some(amount),
+        })
+    }
+}
+
+struct Placement<'a> {
+    view: &'a ClusterView,
+    config: &'a RootConfig,
     groups: &'a [GroupDesc],
-    nodes: HashMap<u64, NodeDesc>,
     resources: HashMap<u64, NodeResourceUsage>,
-    leaders: HashMap<u64, u64>,
     group_sizes: HashMap<u64, u64>,
-    current_traffic_groups: HashSet<u64>,
-    migration_ready_groups: HashSet<u64>,
     storage_sizes: HashMap<u64, u64>,
     serving_units: HashMap<u64, Option<f64>>,
-    occupied: HashSet<(u64, u64)>,
-    snapshot: ShowSnapshot,
     locality: Locality,
     axes: Vec<Axis>,
-    duplicate_shards: bool,
+    overlapping_groups: HashSet<u64>,
+    shard_targets: Vec<ShardTarget>,
 }
 
 type Changes = [Change; Dimension::ALL.len()];
@@ -105,12 +166,7 @@ struct Neighbor {
 }
 
 impl Locality {
-    fn new(
-        groups: &[GroupDesc],
-        snapshot: &ShowSnapshot,
-        current_traffic_groups: &HashSet<u64>,
-        cfg: &BalanceConfig,
-    ) -> Self {
+    fn new(groups: &[GroupDesc], snapshot: &ShowSnapshot, cfg: &BalanceConfig) -> Self {
         let mut locality = Self::default();
         let mut ranges: HashMap<u64, Vec<(u64, &ShardDesc)>> = HashMap::new();
         for group in groups {
@@ -118,7 +174,7 @@ impl Locality {
                 if shard.range.is_some() {
                     ranges.entry(shard.table_id).or_default().push((group.id, shard));
                 }
-                if !current_traffic_groups.contains(&group.id) {
+                if snapshot.leader(group.id).is_none() {
                     continue;
                 }
                 let Some(rates) = snapshot.shard(group.id, shard.id).rates else { continue };
@@ -183,15 +239,18 @@ struct RankedAction {
     rank: usize,
     score: (f64, f64, bool),
     locality: i32,
-    split_bytes: Option<u64>,
 }
 
 impl RankedAction {
     fn compare(&self, other: &Self) -> Ordering {
-        other
-            .rank
-            .cmp(&self.rank)
-            .then(self.split_bytes.is_none().cmp(&other.split_bytes.is_none()))
+        (self.score.0 > 0.)
+            .cmp(&(other.score.0 > 0.))
+            .then(other.rank.cmp(&self.rank))
+            .then(
+                matches!(other.action, PlacementAction::Replica(_))
+                    .cmp(&matches!(self.action, PlacementAction::Replica(_))),
+            )
+            .then(self.action.split_bytes().is_none().cmp(&other.action.split_bytes().is_none()))
             .then_with(|| self.score.0.total_cmp(&other.score.0))
             .then_with(|| self.score.1.total_cmp(&other.score.1))
             .then(self.score.2.cmp(&other.score.2))
@@ -200,45 +259,28 @@ impl RankedAction {
     }
 }
 
-impl<'a, T: AllocSource> Placement<'a, T> {
-    pub fn new(
-        allocator: &'a Allocator<T>,
-        groups: &'a [GroupDesc],
+impl<'a> Placement<'a> {
+    fn new(
+        view: &'a ClusterView,
+        config: &'a RootConfig,
         options: &BalanceConfig,
+        stats: &ClusterStats,
     ) -> Self {
-        use super::source::NodeFilter;
-
-        let max_age = Duration::from_secs(allocator.config.liveness_threshold_sec);
-        let snapshot = allocator.cluster_stats.show_snapshot(groups, max_age);
-        let nodes: HashMap<_, _> = allocator
-            .alloc_source
-            .nodes(NodeFilter::Schedulable)
-            .into_iter()
-            .map(|node| (node.id, node))
-            .collect();
-        let resources = allocator.cluster_stats.node_resources(max_age);
-        let states = allocator.alloc_source.replica_states();
-        let mut group_terms = HashMap::new();
-        let mut occupied = HashSet::new();
-        for state in states {
-            occupied.insert((state.group_id, state.node_id));
-            if state.role == RaftRole::Leader as i32 {
-                let leader = group_terms.entry(state.group_id).or_insert((0, 0));
-                *leader = (*leader).max((state.term, state.node_id));
-            }
-        }
-        let mut leaders = HashMap::with_capacity(groups.len());
+        let groups = &view.groups[view.groups.partition_point(|group| group.id == ROOT_GROUP_ID)..];
+        let snapshot = &view.samples;
+        let resources = stats.node_resources(Duration::from_secs(config.liveness_threshold_sec));
         let mut group_sizes = HashMap::with_capacity(groups.len());
-        let mut current_traffic_groups = HashSet::new();
-        let mut migration_ready_groups = HashSet::new();
         let mut storage_sizes = HashMap::<u64, u64>::new();
-        let mut serving_units: HashMap<_, _> = nodes.keys().map(|&node| (node, Some(0.))).collect();
-        let mut seen = HashSet::new();
-        let mut duplicate_shards = false;
+        let mut serving_units: HashMap<_, _> =
+            view.available.iter().map(|&node| (node, Some(0.))).collect();
+        let mut seen = HashMap::new();
+        let mut overlapping_groups = HashSet::new();
         for group in groups {
             let mut known_size = 0_u64;
             for shard in &group.shards {
-                duplicate_shards |= !seen.insert(shard.id);
+                if let Some(previous) = seen.insert(shard.id, group.id) {
+                    overlapping_groups.extend([previous, group.id]);
+                }
                 known_size = known_size
                     .saturating_add(snapshot.shard(group.id, shard.id).bytes.unwrap_or(0));
             }
@@ -251,29 +293,11 @@ impl<'a, T: AllocSource> Placement<'a, T> {
                 *total = total.saturating_add(known_size);
             }
 
-            let reported = snapshot.leader(group.id);
-            let elected = group_terms.get(&group.id).copied().max(reported);
-            if reported.is_some() && reported == elected && snapshot.migration_idle(group.id) {
-                migration_ready_groups.insert(group.id);
-            }
-            let leader = elected.map(|(_, node)| node);
-            let traffic_current =
-                group.shards.is_empty() || (reported.is_some() && reported == elected);
-            if traffic_current {
-                current_traffic_groups.insert(group.id);
-            }
-            if let Some(leader) =
-                leader.filter(|node| group.replicas.iter().any(|r| r.node_id == *node))
-            {
-                leaders.insert(group.id, leader);
-                if let Some(total) = serving_units.get_mut(&leader) {
-                    let units = if traffic_current {
-                        sample.rates.and_then(|rates| {
-                            rates.read_units_per_sec.zip(rates.write_units_per_sec)
-                        })
-                    } else {
-                        None
-                    };
+            if let Some(leader) = view.samples.leader(group.id) {
+                if let Some(total) = serving_units.get_mut(&leader.node_id) {
+                    let units = sample
+                        .rates
+                        .and_then(|rates| rates.read_units_per_sec.zip(rates.write_units_per_sec));
                     *total = total.zip(units).map(|(a, (read, write))| a + read + write);
                 }
             } else if !group.shards.is_empty() {
@@ -285,43 +309,53 @@ impl<'a, T: AllocSource> Placement<'a, T> {
             }
         }
 
-        let locality = Locality::new(groups, &snapshot, &current_traffic_groups, options);
+        let locality = Locality::new(groups, snapshot, options);
         let mut placement = Self {
-            allocator,
+            view,
+            config,
             groups,
-            nodes,
             resources,
-            leaders,
             group_sizes,
-            current_traffic_groups,
-            migration_ready_groups,
             storage_sizes,
             serving_units,
-            occupied,
-            snapshot,
             locality,
             axes: Vec::new(),
-            duplicate_shards,
+            overlapping_groups,
+            shard_targets: Vec::new(),
         };
+        placement.shard_targets = groups
+            .iter()
+            .filter_map(|group| {
+                if !placement.receives_shards(group) {
+                    return None;
+                }
+                let bytes = *placement.group_sizes.get(&group.id)?;
+                Some(ShardTarget {
+                    group: group.id,
+                    bytes,
+                    move_budget: placement.shard_move_budget(bytes),
+                })
+            })
+            .collect();
         placement.axes = options
             .dimensions()
-            .filter(|kind| kind.enabled(&allocator.config))
-            .map(|kind| placement.axis(kind, options.deadline(kind)))
+            .filter(|kind| kind.enabled(config))
+            .map(|kind| placement.axis(kind, options.deadline(kind), stats))
             .collect();
         placement
     }
 
-    fn axis(&self, kind: Dimension, deadline: Option<f64>) -> Axis {
+    fn axis(&self, kind: Dimension, deadline: Option<f64>, stats: &ClusterStats) -> Axis {
         let (loads, expected, floor, relative) = match kind {
             Dimension::ReadUnits | Dimension::WriteUnits => {
                 let loads = self
                     .groups
                     .iter()
                     .filter_map(|group| {
-                        if !self.current_traffic_groups.contains(&group.id) {
+                        if !self.traffic_is_current(group) {
                             return None;
                         }
-                        let rates = self.snapshot.group(group).rates?;
+                        let rates = self.view.samples.group(group).rates?;
                         let value = if kind == Dimension::ReadUnits {
                             rates.read_units_per_sec
                         } else {
@@ -338,7 +372,7 @@ impl<'a, T: AllocSource> Placement<'a, T> {
                 (
                     loads,
                     self.groups.len(),
-                    self.config().shard_size_balance_tolerance_bytes as f64,
+                    self.config.shard_size_balance_tolerance_bytes as f64,
                     0.1,
                 )
             }
@@ -349,8 +383,9 @@ impl<'a, T: AllocSource> Placement<'a, T> {
             }
             Dimension::Cpu | Dimension::Memory | Dimension::Disk => {
                 let loads = self
-                    .nodes
-                    .keys()
+                    .view
+                    .available
+                    .iter()
                     .filter_map(|&node| {
                         let resources = self.resources.get(&node)?;
                         let (used, capacity) = match kind {
@@ -366,18 +401,20 @@ impl<'a, T: AllocSource> Placement<'a, T> {
                         (capacity > 0.).then(|| (node, 100. * used / capacity))
                     })
                     .collect();
-                (loads, self.nodes.len(), 5., 0.)
+                (loads, self.view.available.len(), 5., 0.)
             }
             Dimension::LeaderCount | Dimension::ReplicaCount => {
                 let loads = self
+                    .view
                     .nodes
-                    .values()
+                    .iter()
+                    .filter(|node| self.view.available.contains(&node.id))
                     .filter_map(|node| {
                         let capacity = node.capacity.as_ref()?;
                         let count = if kind == Dimension::LeaderCount {
                             capacity.leader_count as f64
                         } else {
-                            let delta = self.stats().get_node_delta(node.id).replica_count;
+                            let delta = stats.get_node_delta(node.id).replica_count;
                             (capacity.replica_count as f64 + delta as f64).max(0.)
                         };
                         Some((node.id, count))
@@ -385,45 +422,141 @@ impl<'a, T: AllocSource> Placement<'a, T> {
                     .collect();
                 let (floor, relative) =
                     if kind == Dimension::LeaderCount { (0.5, 0.) } else { (2., 0.05) };
-                (loads, self.nodes.len(), floor, relative)
+                (loads, self.view.available.len(), floor, relative)
             }
         };
         Axis::new(kind, loads, expected, floor, relative, deadline)
     }
 
-    fn config(&self) -> &RootConfig {
-        &self.allocator.config
+    fn watermark(&self) -> u64 {
+        let limit = self.config.group_size_limit;
+        (limit - limit / 5).max(1)
     }
 
-    fn stats(&self) -> &ClusterStats {
-        &self.allocator.cluster_stats
+    fn shard_move_budget(&self, target_bytes: u64) -> u64 {
+        self.watermark().saturating_sub(target_bytes).min(self.config.move_shard_size_limit)
+    }
+
+    /// A hard-cap breach takes precedence over ordinary capacity headroom.
+    fn capacity(&self) -> Option<CapacityChoice> {
+        if !self.config.enable_group_balance && !self.config.enable_shard_size_balance {
+            return None;
+        }
+        let high = self.watermark();
+        let limit = self.config.group_size_limit;
+        let over_limit = self.group_sizes.values().any(|&size| size > limit);
+        let can_build = self.config.enable_group_balance
+            && self.view.available.len() >= self.config.replicas_per_group;
+        let creating = self.view.creating;
+        let published =
+            self.view.published_groups().filter(|group| group.id != ROOT_GROUP_ID).count();
+        let known: u128 = self
+            .group_sizes
+            .iter()
+            .filter(|(group, _)| {
+                !self.overlapping_groups.contains(group)
+                    && !self.view.busy.contains(group)
+                    && !self.view.unpublished.contains(group)
+            })
+            .map(|(_, &size)| u128::from(size))
+            .sum();
+        if can_build
+            && known.div_ceil(u128::from(high)) > published.saturating_add(creating) as u128
+        {
+            return Some(CapacityChoice::new(CapacityAction::CreateGroup, over_limit));
+        }
+
+        if !self.config.enable_shard_size_balance {
+            return None;
+        }
+
+        let mut best = None;
+        let mut can_use_new_group = false;
+        let empty_target_budget = self.shard_move_budget(0);
+        for source in self.groups.iter().filter(|group| self.shard_moves_ready(group.id)) {
+            let Some(&source_size) = self.group_sizes.get(&source.id).filter(|&&size| size > high)
+            else {
+                continue;
+            };
+            for shard in source
+                .shards
+                .iter()
+                .filter(|shard| shard.table_id >= sekas_schema::FIRST_USER_TABLE_ID)
+            {
+                let Some(bytes) =
+                    self.view.samples.shard(source.id, shard.id).bytes.filter(|&size| size != 0)
+                else {
+                    continue;
+                };
+                let split_goal = self.can_split(shard.id).then_some(source_size - high);
+                can_use_new_group |=
+                    movable_bytes(bytes, empty_target_budget, split_goal).is_some();
+                for target in self.shard_targets.iter().filter(|target| target.group != source.id) {
+                    let Some(movement) = target.fit(source.id, shard.id, bytes, split_goal) else {
+                        continue;
+                    };
+                    let amount = movement.split_bytes.unwrap_or(bytes);
+                    let action = PlacementAction::Shard(movement);
+                    let changes = self.changes(&action);
+                    if self
+                        .axes
+                        .iter()
+                        .any(|axis| axis.effect(&changes[axis.kind as usize]).is_none())
+                    {
+                        continue;
+                    }
+                    let score = (
+                        (source_size.saturating_sub(limit)).min(amount),
+                        movement.split_bytes.is_none(),
+                        (source_size - high).min(amount),
+                        std::cmp::Reverse(amount),
+                        std::cmp::Reverse(action.tie_breaker()),
+                    );
+                    if best.as_ref().is_none_or(|(previous, _)| score > *previous) {
+                        best = Some((score, movement));
+                    }
+                }
+            }
+        }
+        if let Some((score, movement)) = best {
+            return Some(CapacityChoice::new(CapacityAction::Place(movement), score.0 > 0));
+        }
+        if can_build
+            && can_use_new_group
+            && creating == 0
+            && self.shard_targets.len() == self.groups.len()
+        {
+            return Some(CapacityChoice::new(CapacityAction::CreateGroup, over_limit));
+        }
+        None
+    }
+
+    fn group_available(&self, group: u64) -> bool {
+        !self.overlapping_groups.contains(&group) && self.view.group_available(group)
     }
 
     fn shard_moves_ready(&self, group: u64) -> bool {
-        !self.duplicate_shards
-            && !self.snapshot.migration_in_progress
-            && self.migration_ready_groups.contains(&group)
+        self.group_available(group) && self.view.migration_idle(group)
+    }
+
+    fn can_split(&self, shard: u64) -> bool {
+        self.config.enable_auto_shard_split && !self.view.split_cooldowns.contains(&shard)
     }
 
     pub fn plan(&self) -> PlacementPlan {
         let mut best = None::<RankedAction>;
         let mut blocked = BTreeSet::new();
-        let migration_wait =
-            self.stats().shard_migration_wait(&self.snapshot.active_migration_groups());
-        let active_replica_change = self.stats().has_pending_replica_changes();
-        if migration_wait.is_none() && !active_replica_change {
-            self.visit_candidates(|action| match self.rank(&action) {
-                Ok(Some(candidate))
-                    if best.as_ref().is_none_or(|best| candidate.compare(best).is_gt()) =>
-                {
-                    best = Some(candidate);
-                }
-                Err(kind) => {
-                    blocked.insert(kind);
-                }
-                _ => {}
-            });
-        }
+        self.visit_candidates(|action| match self.rank(&action) {
+            Ok(Some(candidate))
+                if best.as_ref().is_none_or(|best| candidate.compare(best).is_gt()) =>
+            {
+                best = Some(candidate);
+            }
+            Err(kind) => {
+                blocked.insert(kind);
+            }
+            _ => {}
+        });
         let no_action = if blocked.is_empty() {
             "no eligible move improves balance".to_owned()
         } else {
@@ -432,159 +565,85 @@ impl<'a, T: AllocSource> Placement<'a, T> {
                 "no eligible move improves balance. Deadlines or missing load data blocked candidates for {policies}"
             )
         };
-        let report_wait = (self.migration_ready_groups.len() != self.groups.len()).then(|| {
-            let groups = self
-                .groups
-                .iter()
-                .filter(|group| !self.migration_ready_groups.contains(&group.id))
-                .map(|group| {
-                    if let Some(reason) = self.snapshot.migration_report_issue(group.id) {
-                        format!("g{} {reason}", group.id)
-                    } else if let Some(node) = self.leaders.get(&group.id) {
-                        format!("g{} awaiting current leader report from n{node}", group.id)
+        let waiting = self
+            .groups
+            .iter()
+            .filter(|group| !self.view.migration_idle(group.id))
+            .map(|group| {
+                let reason = self.view.samples.migration_report_issue(group.id).unwrap_or(
+                    if self.view.samples.leader(group.id).is_some() {
+                        "shard migration in progress"
                     } else {
-                        format!("g{} awaiting current leader report", group.id)
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join("\n");
-            format!("Waiting for current shard migration status\n{groups}")
+                        "awaiting current leader report"
+                    },
+                );
+                format!("g{} {reason}", group.id)
+            })
+            .collect::<Vec<_>>();
+        let report_wait = (!waiting.is_empty())
+            .then(|| format!("Waiting for current shard migration status\n{}", waiting.join("\n")));
+        let choice = best.as_ref().map(|candidate| {
+            let priority = if candidate.score.0 > 0. {
+                PlacementPriority::LoadDeadline
+            } else {
+                PlacementPriority::Imbalance
+            };
+            let benefit = match priority {
+                PlacementPriority::LoadDeadline => "reduces load above the configured deadline",
+                _ => "reduces load imbalance",
+            };
+            let reason = candidate.action.split_bytes().map_or_else(
+                || format!("This move {benefit}"),
+                |bytes| format!("Splitting and moving up to {bytes} B {benefit}"),
+            );
+            PlacementChoice {
+                dimension: self.axes[candidate.rank].kind,
+                action: candidate.action,
+                priority,
+                reason,
+            }
         });
         let decisions = self
             .axes
             .iter()
             .enumerate()
             .map(|(index, axis)| {
-                let decision = match &best {
-                    Some(choice) if index == choice.rank => {
-                        let detail = choice.split_bytes.map_or_else(
-                            || choice.action.detail(),
-                            |bytes| {
-                                format!(
-                                    "split before moving a piece of up to {bytes} bytes ({})",
-                                    choice.action.detail()
-                                )
-                            },
-                        );
-                        let benefit = if choice.score.0 > 0. {
-                            "reduces load above the configured deadline"
-                        } else {
-                            "reduces load imbalance"
-                        };
-                        let reason = choice.split_bytes.map_or_else(
-                            || format!("This move {benefit}"),
-                            |bytes| format!("Splitting and moving up to {bytes} B {benefit}"),
-                        );
-                        BalanceDecision::ActionNeeded { detail, reason }
-                    }
-                    Some(choice) if index > choice.rank => BalanceDecision::Deferred(
-                        "higher-priority placement takes precedence".into(),
-                    ),
-                    _ if let Some(reason) = &migration_wait => {
-                        BalanceDecision::Deferred(reason.clone().into())
-                    }
-                    _ if active_replica_change => {
-                        BalanceDecision::Deferred("waiting for a replica change to settle".into())
-                    }
-                    _ if self.duplicate_shards && is_group_dimension(axis.kind) => {
-                        BalanceDecision::Deferred("waiting for shard ownership to settle".into())
-                    }
-                    _ if is_group_dimension(axis.kind)
-                        && let Some(reason) = &report_wait =>
-                    {
-                        BalanceDecision::Deferred(reason.clone().into())
-                    }
-                    _ => axis.report(&no_action),
+                let decision = if let Some(choice) = &choice
+                    && axis.kind == choice.dimension
+                {
+                    let detail = choice.action.split_bytes().map_or_else(
+                        || choice.action.detail(),
+                        |bytes| {
+                            format!(
+                                "split before moving a piece of up to {bytes} bytes ({})",
+                                choice.action.detail()
+                            )
+                        },
+                    );
+                    BalanceDecision::ActionNeeded(detail)
+                } else if best.as_ref().is_some_and(|candidate| index > candidate.rank) {
+                    BalanceDecision::Deferred("higher-priority placement takes precedence".into())
+                } else if is_group_dimension(axis.kind)
+                    && let Some(reason) = &report_wait
+                {
+                    BalanceDecision::Deferred(reason.clone().into())
+                } else {
+                    axis.report(&no_action)
                 };
                 (axis.kind, decision, axis.thresholds())
             })
             .collect();
-        PlacementPlan {
-            action: best.map(|choice| (self.axes[choice.rank].kind, choice.action)),
-            decisions,
-        }
-    }
-
-    fn revalidate(&self, action: &PlacementAction) -> Option<RankedAction> {
-        if self.stats().has_pending_replica_changes()
-            || (!matches!(action, PlacementAction::Shard(_))
-                && self.stats().has_pending_shard_moves())
-            || !self.eligible(action)
-        {
-            return None;
-        }
-        self.rank(action).ok().flatten()
-    }
-
-    fn eligible(&self, action: &PlacementAction) -> bool {
-        if self.snapshot.migration_in_progress {
-            return false;
-        }
-        match action {
-            PlacementAction::Shard(a) => {
-                self.shard_moves_ready(a.source_group)
-                    && self.group(a.source_group).is_some_and(|g| g.shard(a.shard).is_some())
-                    && self.group(a.target_group).is_some_and(|g| self.receives_shards(g))
-                    && !self.stats().is_replica_change_pending(a.source_group)
-            }
-            PlacementAction::Leader(a) => {
-                self.leaders.get(&a.group) == Some(&a.src_node)
-                    && self.nodes.contains_key(&a.target_node)
-                    && self.group(a.group).is_some_and(|g| {
-                        g.replicas.iter().any(|r| {
-                            r.id == a.target_replica
-                                && r.node_id == a.target_node
-                                && r.role == ReplicaRole::Voter as i32
-                        })
-                    })
-                    && !self.stats().is_replica_change_pending(a.group)
-            }
-            PlacementAction::Replica(a) => {
-                self.shard_moves_ready(a.group)
-                    && self.nodes.contains_key(&a.target_node.id)
-                    && self.leaders.get(&a.group).is_some_and(|&node| node != a.source_node)
-                    && !self.occupied.contains(&(a.group, a.target_node.id))
-                    && self.group(a.group).is_some_and(|g| {
-                        g.replicas.len() >= self.config().replicas_per_group
-                            && !g.replicas.iter().any(|r| r.node_id == a.target_node.id)
-                            && g.replicas.iter().any(|r| {
-                                r.id == a.source_replica
-                                    && r.node_id == a.source_node
-                                    && r.role == ReplicaRole::Voter as i32
-                            })
-                    })
-                    && !self.stats().is_replica_change_pending(a.group)
-            }
-        }
+        PlacementPlan { choice, decisions }
     }
 
     fn receives_shards(&self, group: &GroupDesc) -> bool {
         self.shard_moves_ready(group.id)
-            && group.replicas.len() == self.config().replicas_per_group
-            && self.leaders.contains_key(&group.id)
-            && group
-                .replicas
-                .iter()
-                .all(|r| r.role == ReplicaRole::Voter as i32 && self.nodes.contains_key(&r.node_id))
-            && !self.stats().is_replica_change_pending(group.id)
-    }
-
-    fn shard_placement(&self, action: &ReallocateShard) -> Option<ShardSizePlacement> {
-        let size = self.snapshot.shard(action.source_group, action.shard).bytes?;
-        let limit = self.config().move_shard_size_limit;
-        if size <= limit {
-            return Some(ShardSizePlacement::Move);
-        }
-        if !self.config().enable_shard_size_balance
-            || !self.config().enable_auto_shard_split
-            || self.stats().is_shard_split_cooling_down(action.shard)
-        {
-            return None;
-        }
-        let source = *self.group_sizes.get(&action.source_group)?;
-        let target = *self.group_sizes.get(&action.target_group)?;
-        let piece = (source.saturating_sub(target) / 2).min(limit);
-        (piece > 0).then_some(ShardSizePlacement::Split(piece))
+            && group.replicas.len() == self.config.replicas_per_group
+            && group.replicas.iter().all(|r| {
+                r.role == ReplicaRole::Voter as i32
+                    && self.view.available.contains(&r.node_id)
+                    && !self.view.copying_nodes.contains(&r.node_id)
+            })
     }
 
     fn visit_candidates(&self, mut visit: impl FnMut(PlacementAction)) {
@@ -593,29 +652,16 @@ impl<'a, T: AllocSource> Placement<'a, T> {
                 .iter()
                 .any(|axis| is_group_dimension(axis.kind) == from_group && axis.may_donate(id))
         };
-        let shard_targets: Vec<_> =
-            self.groups.iter().filter(|group| self.receives_shards(group)).collect();
         for group in self.groups {
-            let leader = self.leaders.get(&group.id).copied();
-            if self.stats().is_replica_change_pending(group.id) {
+            if !self.group_available(group.id) {
                 continue;
             }
-            let donor_replica = group.replicas.iter().any(|r| can_donate(r.node_id, false));
-            if self.shard_moves_ready(group.id) && (donor_replica || can_donate(group.id, true)) {
-                for shard in &group.shards {
-                    if self.stats().is_shard_scheduled(shard.id) {
-                        continue;
-                    }
-                    for target in &shard_targets {
-                        if target.id != group.id {
-                            visit(PlacementAction::Shard(ReallocateShard {
-                                shard: shard.id,
-                                source_group: group.id,
-                                target_group: target.id,
-                            }));
-                        }
-                    }
-                }
+            let leader = self.leader_node(group.id);
+            let shard_moves_ready = self.view.migration_idle(group.id);
+            let donor_replica =
+                group.replicas.iter().any(|replica| can_donate(replica.node_id, false));
+            if shard_moves_ready && (donor_replica || can_donate(group.id, true)) {
+                self.visit_shard_candidates(group, &mut visit);
             }
             if !donor_replica {
                 continue;
@@ -626,10 +672,13 @@ impl<'a, T: AllocSource> Placement<'a, T> {
                     continue;
                 }
                 if leader == Some(replica.node_id) {
+                    if !self.config.enable_leader_balance {
+                        continue;
+                    }
                     for voter in &group.replicas {
                         if voter.node_id != replica.node_id
                             && voter.role == ReplicaRole::Voter as i32
-                            && self.nodes.contains_key(&voter.node_id)
+                            && self.view.available.contains(&voter.node_id)
                         {
                             visit(PlacementAction::Leader(TransferLeader {
                                 group: group.id,
@@ -640,19 +689,21 @@ impl<'a, T: AllocSource> Placement<'a, T> {
                             }));
                         }
                     }
-                } else if leader.is_some()
-                    && self.shard_moves_ready(group.id)
-                    && group.replicas.len() >= self.config().replicas_per_group
+                } else if self.config.enable_replica_balance
+                    && leader.is_some()
+                    && shard_moves_ready
+                    && group.replicas.len() >= self.config.replicas_per_group
                 {
-                    for target in self.nodes.values() {
-                        if !self.occupied.contains(&(group.id, target.id))
-                            && !group.replicas.iter().any(|r| r.node_id == target.id)
+                    for &target in &self.view.available {
+                        if !self.view.copying_nodes.contains(&target)
+                            && !self.view.occupied.contains(&(group.id, target))
+                            && !group.replicas.iter().any(|replica| replica.node_id == target)
                         {
                             visit(PlacementAction::Replica(ReallocateReplica {
                                 group: group.id,
                                 source_replica: replica.id,
                                 source_node: replica.node_id,
-                                target_node: target.clone(),
+                                target_node: target,
                             }));
                         }
                     }
@@ -661,62 +712,75 @@ impl<'a, T: AllocSource> Placement<'a, T> {
         }
     }
 
-    fn rank(&self, action: &PlacementAction) -> Result<Option<RankedAction>, Dimension> {
-        let split_bytes = if let PlacementAction::Shard(migration) = action {
-            match self.shard_placement(migration) {
-                Some(ShardSizePlacement::Move) => None,
-                Some(ShardSizePlacement::Split(bytes)) => Some(bytes),
-                None => return Ok(None),
+    fn visit_shard_candidates(&self, source: &GroupDesc, visit: &mut impl FnMut(PlacementAction)) {
+        for shard in
+            source.shards.iter().filter(|shard| shard.table_id >= sekas_schema::FIRST_USER_TABLE_ID)
+        {
+            let Some(bytes) = self.view.samples.shard(source.id, shard.id).bytes else {
+                continue;
+            };
+            let split_source_size =
+                if self.config.enable_shard_size_balance && self.can_split(shard.id) {
+                    self.group_sizes.get(&source.id).copied()
+                } else {
+                    None
+                };
+            for target in self.shard_targets.iter().filter(|target| target.group != source.id) {
+                let split_goal =
+                    split_source_size.map(|size| size.saturating_sub(target.bytes) / 2);
+                if let Some(movement) = target.fit(source.id, shard.id, bytes, split_goal) {
+                    visit(PlacementAction::Shard(movement));
+                }
             }
-        } else {
-            None
-        };
-        let changes = self.changes(action, split_bytes);
-        let mut choice = None;
+        }
+    }
+
+    fn rank(&self, action: &PlacementAction) -> Result<Option<RankedAction>, Dimension> {
+        let split_bytes = action.split_bytes();
+        let changes = self.changes(action);
+        let mut choice: Option<RankedAction> = None;
         let mut preserves_higher = true;
         for (rank, axis) in self.axes.iter().enumerate() {
             let effect = axis.effect(&changes[axis.kind as usize]).ok_or(axis.kind)?;
-            if choice.is_none()
-                && preserves_higher
+            if preserves_higher
                 && (split_bytes.is_none() || axis.kind == Dimension::ShardSize)
-                && let Some(score) = effect.score()
+                && let Some(score) = axis.score(&effect)
+                && choice.as_ref().is_none_or(|previous| score.0 > 0. && previous.score.0 == 0.)
             {
                 let locality = match action {
                     PlacementAction::Shard(movement) => self.locality.score(movement),
                     _ => 0,
                 };
-                choice = Some(RankedAction {
-                    action: action.clone(),
-                    rank,
-                    score,
-                    locality,
-                    split_bytes,
-                });
+                choice = Some(RankedAction { action: *action, rank, score, locality });
             }
-            preserves_higher &= effect.preserves_balance();
+            preserves_higher &= !axis.drives_placement() || effect.preserves_balance();
         }
         Ok(choice)
     }
 
-    fn group(&self, id: u64) -> Option<&GroupDesc> {
-        self.groups.binary_search_by_key(&id, |group| group.id).ok().map(|idx| &self.groups[idx])
+    fn leader_node(&self, group: u64) -> Option<u64> {
+        Some(self.view.samples.leader(group)?.node_id)
     }
 
-    fn changes(&self, action: &PlacementAction, split_bytes: Option<u64>) -> Changes {
+    fn traffic_is_current(&self, group: &GroupDesc) -> bool {
+        group.shards.is_empty() || self.view.samples.leader(group.id).is_some()
+    }
+
+    fn changes(&self, action: &PlacementAction) -> Changes {
         let mut changes: Changes = Default::default();
         match action {
             PlacementAction::Shard(movement) => {
-                let source = self.group(movement.source_group).unwrap();
-                let target = self.group(movement.target_group).unwrap();
-                let sample = self.snapshot.shard(source.id, movement.shard);
+                let split_bytes = movement.split_bytes;
+                let source = self.view.group(movement.source_group).unwrap();
+                let target = self.view.group(movement.target_group).unwrap();
+                let sample = self.view.samples.shard(source.id, movement.shard);
                 let bytes = split_bytes.or(sample.bytes).map(|size| size as f64);
                 let scale = match (split_bytes, sample.bytes) {
                     // Recheck the new piece's own samples before migrating it.
                     (Some(piece), Some(whole)) => piece as f64 / whole as f64,
                     _ => 1.,
                 };
-                let rates =
-                    sample.rates.filter(|_| self.current_traffic_groups.contains(&source.id));
+                let rates = sample.rates.filter(|_| self.traffic_is_current(source));
                 let read =
                     rates.and_then(|rates| rates.read_units_per_sec).map(|rate| rate * scale);
                 let write =
@@ -738,14 +802,14 @@ impl<'a, T: AllocSource> Placement<'a, T> {
                 self.storage_changes(&mut changes, origins, destinations, bytes);
                 self.serving_change(
                     &mut changes,
-                    self.leaders.get(&source.id).copied(),
-                    self.leaders.get(&target.id).copied(),
+                    self.leader_node(source.id),
+                    self.leader_node(target.id),
                     read.zip(write).map(|(r, w)| r + w),
                 );
             }
             PlacementAction::Replica(movement) => {
                 let source = movement.source_node;
-                let target = movement.target_node.id;
+                let target = movement.target_node;
                 changes[Dimension::ReplicaCount as usize].transfer(source, target, Some(1.));
                 self.storage_changes(
                     &mut changes,
@@ -760,12 +824,13 @@ impl<'a, T: AllocSource> Placement<'a, T> {
                     transfer.target_node,
                     Some(1.),
                 );
-                let group = self.group(transfer.group).unwrap();
+                let group = self.view.group(transfer.group).unwrap();
                 let units = self
-                    .snapshot
+                    .view
+                    .samples
                     .group(group)
                     .rates
-                    .filter(|_| self.current_traffic_groups.contains(&group.id))
+                    .filter(|_| self.traffic_is_current(group))
                     .and_then(|rates| {
                         rates.read_units_per_sec.zip(rates.write_units_per_sec).map(|(r, w)| r + w)
                     });
@@ -886,6 +951,17 @@ fn is_group_dimension(kind: Dimension) -> bool {
     )
 }
 
+/// Prefer the whole shard. When it does not fit, a caller's split goal is
+/// bounded by the same move budget, including when testing an empty group as a
+/// target.
+fn movable_bytes(bytes: u64, move_budget: u64, split_goal: Option<u64>) -> Option<u64> {
+    if bytes <= move_budget {
+        return Some(bytes);
+    }
+    let piece = split_goal?.min(move_budget);
+    (piece > 0).then_some(piece)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -900,7 +976,8 @@ mod tests {
                 Neighbor { shard: 2, group: 2, weight: 2 },
             ],
         );
-        let movement = ReallocateShard { shard: 3, source_group: 1, target_group: 2 };
+        let movement =
+            ReallocateShard { shard: 3, source_group: 1, target_group: 2, split_bytes: None };
         locality.hot.extend([(1, false), (2, false), (3, false)]);
         assert_eq!(locality.score(&movement), 1);
         locality.hot.extend([(1, true), (2, true), (3, true)]);
@@ -910,35 +987,13 @@ mod tests {
     }
 }
 
-impl<T: AllocSource> Allocator<T> {
-    pub(in crate::root) fn plan_placement(&self, options: &BalanceConfig) -> PlacementPlan {
-        let mut groups: Vec<_> = self
-            .alloc_source
-            .groups()
-            .into_values()
-            .filter(|group| group.id != ROOT_GROUP_ID)
-            .collect();
-        groups.sort_unstable_by_key(|group| group.id);
-        Placement::new(self, &groups, options).plan()
-    }
-
-    pub(in crate::root) fn validate_placement(
-        &self,
-        groups: &[GroupDesc],
-        options: &BalanceConfig,
-        action: &PlacementAction,
-    ) -> bool {
-        Placement::new(self, groups, options).revalidate(action).is_some()
-    }
-
-    pub(in crate::root) fn validate_placement_shard(
-        &self,
-        groups: &[GroupDesc],
-        options: &BalanceConfig,
-        action: ReallocateShard,
-    ) -> Option<ShardSizePlacement> {
-        let choice =
-            Placement::new(self, groups, options).revalidate(&PlacementAction::Shard(action))?;
-        Some(choice.split_bytes.map_or(ShardSizePlacement::Move, ShardSizePlacement::Split))
-    }
+pub(in crate::root) fn plan_round(
+    view: &ClusterView,
+    config: &RootConfig,
+    options: &BalanceConfig,
+    stats: &ClusterStats,
+) -> (Option<CapacityChoice>, PlacementPlan) {
+    let placement = Placement::new(view, config, options, stats);
+    let capacity = placement.capacity();
+    (capacity, placement.plan())
 }

@@ -13,73 +13,184 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+mod action;
+mod execute;
 mod status;
 mod task;
 
 use std::sync::Mutex as SyncMutex;
 
-use log::{debug, error, info, warn};
-use prometheus::HistogramTimer;
+use futures::stream::{FuturesUnordered, StreamExt};
+use log::warn;
 use sekas_api::server::v1::*;
 use sekas_rock::time::timestamp_millis;
-use tokio::sync::Mutex;
+use sekas_runtime::sync::{AsyncMutex, Notify};
 
-use self::status::{BalanceSnapshot, QueueStatus};
+pub(super) use self::action::PlacementJob;
+use self::action::{
+    Action, GroupVersion, LearnerAdmission, MergeShards, MoveReplica, MoveShard, Outcome,
+    OutcomeKind, PreparedSplit, SplitShard, TransferLeader,
+};
+use self::background_job::Job;
+use self::status::{BalanceSnapshot, SchedulerSummary, TaskStatus};
 pub(super) use self::status::{Policy, TaskReason};
-use self::task::reconcile_task::Task;
 pub use self::task::*;
 use super::allocator::*;
+use super::stats::ShowSnapshot;
 use super::*;
-use crate::{BalanceDimension, Error};
+use crate::Error;
 
 pub struct ReconcileScheduler {
     ctx: ScheduleContext,
-    tasks: Mutex<LinkedList<(u64, ReconcileTask)>>,
+    poll: AsyncMutex<bool>,
     balance: SyncMutex<BalanceSnapshot>,
-    // Keep status readable while the execution queue is held across a task RPC.
-    queue_status: SyncMutex<QueueStatus>,
+    attempts: SyncMutex<HashMap<u64, ExecutionStatus>>,
+    wake: Notify,
 }
 
-enum BalanceActions {
-    CreateGroups(usize),
-    Reconcile(Vec<(Task, TaskReason)>),
+#[derive(Default)]
+struct ExecutionStatus {
+    fire_at: u64,
+    retry_count: u32,
+    running: bool,
+    waiting: Option<String>,
 }
 
-fn balance_task(action: PlacementAction, shard_guard: ShardMoveGuard) -> Task {
-    let placement = shard_guard == ShardMoveGuard::Placement;
-    match action {
-        PlacementAction::Leader(action) => Task::TransferGroupLeader(TransferGroupLeaderTask {
-            group: action.group,
-            target_replica: action.target_replica,
-            src_node: action.src_node,
-            dest_node: action.target_node,
-            placement,
-        }),
-        PlacementAction::Replica(action) => Task::ReallocateReplica(ReallocateReplicaTask {
-            group: action.group,
-            src_node: action.source_node,
-            src_replica: action.source_replica,
-            dest_node: Some(action.target_node),
-            dest_replica: None,
-            placement,
-        }),
-        PlacementAction::Shard(action) => Task::MigrateShard(MigrateShardTask {
-            shard: action.shard,
-            src_group: action.source_group,
-            dest_group: action.target_group,
-            split_task: None,
-            guard: shard_guard as i32,
-        }),
-    }
+enum Plan {
+    Placement(PlacementJob),
+    CreateGroup,
+    Drained(NodeDesc),
+}
+
+/// A step reads committed business state, prepares a request, or submits one
+/// mutation.
+enum Step {
+    Pending(&'static str),
+    Prepared(Action),
+    Finished(OutcomeKind, &'static str),
 }
 
 pub struct ScheduleContext {
     shared: Arc<RootShared>,
-    alloc: Arc<Allocator<SysAllocSource>>,
+    alloc: Arc<Allocator>,
     heartbeat_queue: Arc<HeartbeatQueue>,
     cluster_stats: Arc<ClusterStats>,
     bg_jobs: Arc<Jobs>,
     cfg: RootConfig,
+}
+
+/// Read-only inputs for a scheduling round. Active jobs supply resource
+/// ownership.
+pub(super) struct ClusterView {
+    pub(super) groups: Vec<GroupDesc>,
+    pub(super) nodes: Vec<NodeDesc>,
+    pub(super) available: HashSet<u64>,
+    pub(super) occupied: HashSet<(u64, u64)>,
+    pub(super) split_cooldowns: HashSet<u64>,
+    changing_membership: HashSet<u64>,
+    pub(super) samples: ShowSnapshot,
+    pub(super) busy: HashSet<u64>,
+    pub(super) creating: usize,
+    pub(super) unpublished: HashSet<u64>,
+    pub(super) copying_nodes: HashSet<u64>,
+}
+
+impl ClusterView {
+    /// Resolve serving leaders once. A newer term from any current member
+    /// invalidates an older stats report even before a leader is observed.
+    pub(super) fn new(
+        nodes: Vec<NodeDesc>,
+        mut groups: Vec<GroupDesc>,
+        states: Vec<ReplicaState>,
+        available: HashSet<u64>,
+        stats: &ClusterStats,
+        max_age: Duration,
+    ) -> Self {
+        groups.sort_unstable_by_key(|group| group.id);
+        let mut samples = stats.show_snapshot(&groups, max_age);
+        let (changing_membership, split_cooldowns) = stats.placement_blockers();
+        let mut occupied = HashSet::with_capacity(states.len());
+        let mut latest = HashMap::<u64, ReplicaState>::new();
+        for state in states {
+            occupied.insert((state.group_id, state.node_id));
+            let Ok(index) = groups.binary_search_by_key(&state.group_id, |group| group.id) else {
+                continue;
+            };
+            if !groups[index]
+                .replicas
+                .iter()
+                .any(|r| r.id == state.replica_id && r.node_id == state.node_id)
+            {
+                continue;
+            }
+            let current = latest.entry(state.group_id).or_insert(state);
+            if (state.term, state.role() == RaftRole::Leader)
+                > (current.term, current.role() == RaftRole::Leader)
+            {
+                *current = state;
+            }
+        }
+        samples.leaders.retain(|group, report| {
+            latest.get(group).is_none_or(|state| {
+                report.term > state.term
+                    || (report.term == state.term
+                        && (state.role() != RaftRole::Leader
+                            || report.replica_id == state.replica_id))
+            })
+        });
+        Self {
+            nodes,
+            groups,
+            available,
+            occupied,
+            samples,
+            changing_membership,
+            split_cooldowns,
+            busy: HashSet::new(),
+            creating: 0,
+            unpublished: HashSet::new(),
+            copying_nodes: HashSet::new(),
+        }
+    }
+
+    pub(super) fn group(&self, id: u64) -> Option<&GroupDesc> {
+        self.groups
+            .binary_search_by_key(&id, |group| group.id)
+            .ok()
+            .map(|index| &self.groups[index])
+    }
+
+    pub(super) fn group_available(&self, id: u64) -> bool {
+        !self.busy.contains(&id)
+            && !self.unpublished.contains(&id)
+            && !self.changing_membership.contains(&id)
+    }
+
+    pub(super) fn published_groups(&self) -> impl Iterator<Item = &GroupDesc> {
+        self.groups.iter().filter(|group| !self.unpublished.contains(&group.id))
+    }
+
+    pub(super) fn migration_idle(&self, group: u64) -> bool {
+        self.samples.leader(group).is_some() && self.samples.migration_idle(group)
+    }
+
+    fn version(&self, group: u64) -> Option<GroupVersion> {
+        Some(GroupVersion {
+            epoch: self.group(group)?.epoch,
+            term: self.samples.leader(group)?.term,
+        })
+    }
+}
+
+impl Plan {
+    fn placement(action: Action, reason: TaskReason) -> Self {
+        Self::Placement(PlacementJob {
+            action: Some(action),
+            reason: reason.detail.to_string(),
+            policy: reason.policy.map(|policy| policy.name().to_owned()),
+            ..Default::default()
+        })
+    }
 }
 
 impl ReconcileScheduler {
@@ -87,1553 +198,535 @@ impl ReconcileScheduler {
         let balance = BalanceSnapshot::new(&ctx.cfg);
         Self {
             ctx,
-            tasks: Default::default(),
             balance: balance.into(),
-            queue_status: Default::default(),
+            poll: Default::default(),
+            attempts: Default::default(),
+            wake: Notify::new(),
         }
     }
 
     pub(super) fn reset_status(&self) {
         *self.balance.lock().unwrap() = BalanceSnapshot::new(&self.ctx.cfg);
+        self.attempts.lock().unwrap().clear();
     }
 
     pub(super) fn balance_status(&self) -> BalanceSnapshot {
         self.balance.lock().unwrap().clone()
     }
 
-    pub(super) fn scheduler_status(&self, now: u64) -> status::SchedulerSummary {
-        self.queue_status.lock().unwrap().summary(now)
+    pub(super) fn scheduler_status(&self, now: u64) -> SchedulerSummary {
+        SchedulerSummary::from_tasks(&self.task_statuses(), now)
     }
 
-    pub(super) fn task_statuses(&self) -> Vec<status::TaskStatus> {
-        self.queue_status.lock().unwrap().tasks.values().cloned().collect()
+    pub(super) fn task_statuses(&self) -> Vec<TaskStatus> {
+        let mut jobs = self.ctx.bg_jobs.placement_jobs();
+        jobs.sort_unstable_by_key(|job| job.id);
+        let attempts = self.attempts.lock().unwrap();
+        jobs.iter()
+            .filter_map(|job| {
+                let task = placement(job);
+                Some(TaskStatus::new(job.id, task, task.action.as_ref()?, attempts.get(&job.id)))
+            })
+            .collect()
+    }
+
+    pub fn pending_tasks(&self) -> usize {
+        self.ctx.bg_jobs.placement_jobs().len()
+    }
+
+    pub(super) fn need_reconcile(&self) -> bool {
+        self.balance.lock().unwrap().iter().any(|(_, decision)| {
+            matches!(
+                decision,
+                BalanceDecision::ActionNeeded(..)
+                    | BalanceDecision::Deferred(_)
+                    | BalanceDecision::Unknown
+            )
+        })
     }
 
     pub async fn poll_and_schedule(&self) -> Duration {
-        let cr = self.generate_schedule_task().await; // TODO: take care self.tasks then can give more > 1 value here.
-        if matches!(cr, Ok(true)) || !self.is_empty().await {
-            let _step_timer = metrics::RECONCILE_STEP_DURATION_SECONDS.start_timer();
-            while self.advance_tasks().await {}
+        let mut recover = self.poll.lock().await;
+        if *recover {
+            if let Err(error) = self.ctx.bg_jobs.recover_placement().await {
+                warn!("recover placement tasks: {error:?}");
+                return Duration::from_secs(self.ctx.cfg.schedule_interval_sec.max(1));
+            }
+            self.attempts.lock().unwrap().clear();
+            *recover = false;
         }
-        Duration::from_secs(self.ctx.cfg.schedule_interval_sec)
+        match self.tick().await {
+            Ok(true) => return Duration::from_millis(20),
+            Ok(false) => {}
+            Err(error) => {
+                *recover = true;
+                self.balance.lock().unwrap().record_refresh_error(&error);
+                warn!("advance Root scheduling: {error:?}");
+                return Duration::from_secs(self.ctx.cfg.schedule_interval_sec.max(1));
+            }
+        }
+        let interval = Duration::from_secs(self.ctx.cfg.schedule_interval_sec.max(1));
+        let now = timestamp_millis();
+        self.attempts
+            .lock()
+            .unwrap()
+            .values()
+            .map(|status| Duration::from_millis(status.fire_at.saturating_sub(now).max(20)))
+            .fold(interval, Duration::min)
     }
 
-    pub async fn wait_one_heartbeat_tick(&self) {
-        self.ctx.heartbeat_queue.wait_one_heartbeat_tick().await
+    pub(super) fn wake(&self) {
+        self.wake.notify_one();
     }
 
-    async fn setup_task(&self, task: Task, reason: TaskReason) {
-        let task = ReconcileTask {
-            task: Some(task),
-            created_at: timestamp_millis(),
-            ..Default::default()
+    pub(super) async fn wait(&self, interval: Duration) {
+        let _ = sekas_runtime::time::timeout(interval, self.wake.notified()).await;
+    }
+
+    async fn tick(&self) -> Result<bool> {
+        let schema = self.ctx.shared.schema()?;
+        let term = schema.term().await?;
+        let _timer = metrics::RECONCILE_STEP_DURATION_SECONDS.start_timer();
+        let jobs = self.ctx.bg_jobs.placement_jobs();
+        metrics::RECONCILE_SCHEDULER_TASK_QUEUE_SIZE.set(jobs.len() as i64);
+        let now = timestamp_millis();
+        let due: Vec<_> = {
+            let mut attempts = self.attempts.lock().unwrap();
+            let mut due = Vec::new();
+            for job in &jobs {
+                let status = attempts.entry(job.id).or_default();
+                if status.fire_at <= now {
+                    status.running = true;
+                    due.push(job);
+                }
+            }
+            due
         };
-        let mut tasks = self.tasks.lock().await;
-        if task.is_placement() && tasks.iter().any(|(_, pending)| pending.is_placement()) {
-            return;
+        let mut due = due.into_iter();
+        let mut running = FuturesUnordered::new();
+        for job in due.by_ref().take(8) {
+            running.push(self.ctx.step(job, &schema, term));
         }
-        if let Some(Task::MigrateShard(migration)) = &task.task
-            && migration.guard() != ShardMoveGuard::Unrestricted
-            && (self.ctx.cluster_stats.has_pending_shard_moves()
-                || tasks
-                    .iter()
-                    .any(|(_, pending)| matches!(pending.task, Some(Task::MigrateShard(_)))))
-        {
-            return;
-        }
-        let shards = task.shards();
-        if shards.iter().flatten().any(|shard| self.ctx.cluster_stats.is_shard_scheduled(*shard))
-            || tasks.iter().any(|(_, pending)| {
-                pending.shards().iter().flatten().any(|shard| shards.contains(&Some(*shard)))
-            })
-        {
-            debug!("skip conflicting reconcile task: {task:?}");
-            return;
-        }
-        match task.task.as_ref().unwrap() {
-            Task::MigrateShard(t) => self.ctx.cluster_stats.handle_move_shard(
-                t.shard,
-                t.src_group,
-                t.dest_group,
-                Some(reason.clone()),
-            ),
-            Task::SplitShard(t) => self.ctx.cluster_stats.handle_split_shard(t.shard_id),
-            Task::MergeShard(t) => {
-                self.ctx.cluster_stats.handle_merge_shard(t.left_shard_id, t.right_shard_id)
+
+        let mut write_error = None;
+        let mut progress = false;
+        while let Some((job, result)) = running.next().await {
+            if let Some(job) = due.next() {
+                running.push(self.ctx.step(job, &schema, term));
             }
-            _ => {}
-        }
-        let id = self.queue_status.lock().unwrap().insert(&task, reason);
-        info!("setup new reconcile task. len={}, task={:?}", tasks.len() + 1, task);
-        tasks.push_back((id, task));
-    }
-
-    async fn is_empty(&self) -> bool {
-        self.tasks.lock().await.is_empty()
-    }
-
-    pub async fn pending_tasks(&self) -> usize {
-        self.tasks.lock().await.len()
-    }
-
-    /// Schedule moving root leader task.
-    pub async fn sched_root_leader(&self, node_id: u64) {
-        self.setup_task(
-            Task::ShedRoot(ShedRootLeaderTask { node_id }),
-            TaskReason::new("Move root leadership before draining the node"),
-        )
-        .await;
-    }
-
-    /// Schedule moving leader task.
-    pub async fn sched_leader(&self, node_id: u64) {
-        self.setup_task(
-            Task::ShedLeader(ShedLeaderTask { node_id }),
-            TaskReason::new("Node drain requested"),
-        )
-        .await;
-    }
-
-    /// Schedule split shard task.
-    pub async fn sched_split_shard_task(&self, group_id: u64, shard_id: u64) {
-        debug!("sched split shard task, group_id {group_id}, shard_id {shard_id}");
-        self.setup_task(
-            Task::SplitShard(SplitShardTask { group_id, shard_id, ..Default::default() }),
-            TaskReason::new(format!(
-                "Shard exceeds the automatic split threshold of {} B",
-                self.ctx.cfg.move_shard_size_limit
-            )),
-        )
-        .await;
-    }
-
-    /// Schedule merge shard task.
-    pub async fn sched_merge_shard_task(
-        &self,
-        group_id: u64,
-        left_shard_id: u64,
-        right_shard_id: u64,
-    ) {
-        debug!(
-            "sched merge shard task, group_id {group_id}, left {left_shard_id}, right {right_shard_id}"
-        );
-        self.setup_task(
-            Task::MergeShard(MergeShardTask { group_id, left_shard_id, right_shard_id }),
-            TaskReason::new(format!(
-                "Adjacent shards fit within the automatic merge limit of {} B",
-                self.ctx.cfg.move_shard_size_limit
-            )),
-        )
-        .await;
-    }
-}
-
-impl ReconcileScheduler {
-    pub async fn need_reconcile(&self) -> Result<bool> {
-        let mut balance = BalanceSnapshot::new(&self.ctx.cfg);
-        let needed = match self.evaluate_balance(&mut balance).await? {
-            BalanceActions::CreateGroups(_) => true,
-            BalanceActions::Reconcile(tasks) => !tasks.is_empty(),
-        };
-        let waiting_for_load =
-            balance.iter().any(|(_, decision)| matches!(decision, BalanceDecision::Deferred(_)));
-        Ok(needed || waiting_for_load || self.shard_balance_move_pending())
-    }
-
-    async fn generate_schedule_task(&self) -> Result<bool> {
-        let _timer = super::metrics::RECONCILE_CHECK_DURATION_SECONDS.start_timer();
-        let mut balance = BalanceSnapshot::new(&self.ctx.cfg);
-        let actions = self.evaluate_balance(&mut balance).await;
-        {
-            let mut previous = self.balance.lock().unwrap();
-            balance.reuse_thresholds(&previous);
-            *previous = balance;
-        }
-
-        match actions? {
-            BalanceActions::CreateGroups(count) => {
-                for _ in 0..count {
-                    self.ctx.bg_jobs.submit_create_group_job().await?;
+            let result = match result {
+                Ok(Step::Pending(reason)) => {
+                    self.defer(job.id, reason.to_owned(), false);
+                    continue;
                 }
-                return Ok(true);
-            }
-            BalanceActions::Reconcile(tasks) => {
-                for (task, reason) in tasks {
-                    self.setup_task(task, reason).await;
+                Err(error) => {
+                    placement(job).action.as_ref().unwrap().record_retry();
+                    self.defer(job.id, error.to_string(), true);
+                    continue;
                 }
-            }
-        }
-
-        if self.shard_balance_move_pending() {
-            return Ok(!self.is_empty().await);
-        }
-
-        if self.ctx.cfg.enable_auto_shard_split && self.ctx.cfg.enable_proactive_shard_split {
-            for (group_id, shard_id) in
-                self.ctx.cluster_stats.get_large_shards(5, self.ctx.cfg.move_shard_size_limit)
-            {
-                self.sched_split_shard_task(group_id, shard_id).await;
-            }
-        }
-
-        if self.ctx.cfg.enable_auto_shard_merge {
-            for (group_id, left_shard_id, right_shard_id) in
-                self.ctx.merge_shard_candidates().await?
-            {
-                self.sched_merge_shard_task(group_id, left_shard_id, right_shard_id).await;
-            }
-        }
-
-        Ok(!self.is_empty().await)
-    }
-
-    async fn evaluate_balance(&self, balance: &mut BalanceSnapshot) -> Result<BalanceActions> {
-        if let Err(err) = self.ctx.alloc.refresh_for_balance().await {
-            balance.record_refresh_error(&err);
-            return Err(err);
-        }
-        let (group_action, decision) = self.ctx.alloc.compute_group_action();
-        balance.record(Policy::GroupCount, decision);
-        if let GroupAction::Add(count) = group_action {
-            metrics::RECONCILE_ALREADY_BALANCED_INFO.cluster_groups.set(0);
-            balance.defer("group creation takes priority");
-            return Ok(BalanceActions::CreateGroups(count));
-        }
-        metrics::RECONCILE_ALREADY_BALANCED_INFO.cluster_groups.set(1);
-
-        if BalanceDimension::ALL.into_iter().any(|kind| kind.enabled(&self.ctx.cfg)) {
-            let options =
-                self.ctx.shared.schema()?.balance_config(self.ctx.cfg.balance.clone()).await?;
-            if self.ctx.cfg.has_resource_or_traffic_balancing()
-                || options.priority.as_slice() != BalanceDimension::ALL
-                || !options.deadlines.is_empty()
-            {
-                let plan = self.ctx.alloc.plan_placement(&options);
-                let tasks = plan
-                    .action
-                    .into_iter()
-                    .map(|(dimension, action)| {
-                        let (_, decision, _) = plan
-                            .decisions
-                            .iter()
-                            .find(|(kind, _, _)| *kind == dimension)
-                            .expect("a selected placement has a decision");
-                        (
-                            balance_task(action, ShardMoveGuard::Placement),
-                            TaskReason::for_balance(dimension, decision),
-                        )
-                    })
-                    .collect();
-                for (dimension, decision, thresholds) in plan.decisions {
-                    let gauges = &metrics::RECONCILE_ALREADY_BALANCED_INFO;
-                    let gauge = match dimension {
-                        BalanceDimension::LeaderCount => Some(&gauges.node_leader_count),
-                        BalanceDimension::ReplicaCount => Some(&gauges.node_replica_count),
-                        BalanceDimension::ShardSize => Some(&gauges.group_shard_size),
-                        BalanceDimension::ShardCount => Some(&gauges.group_shard_count),
-                        _ => None,
-                    };
-                    if let Some(gauge) = gauge {
-                        gauge.set(i64::from(matches!(decision, BalanceDecision::NoAction(_))));
-                    }
-                    balance.record_with_thresholds(
-                        Policy::Placement(dimension),
-                        decision,
-                        thresholds,
-                    );
+                Ok(Step::Prepared(action)) => {
+                    PlacementJob { action: Some(action), ..placement(job).clone() }
                 }
-                return Ok(BalanceActions::Reconcile(tasks));
-            }
-        }
-
-        let mut tasks = Vec::new();
-        let (replicas, decision, thresholds) = self.compute_replica_actions();
-        for ReplicaAction::Migrate(action) in replicas {
-            tasks.push((
-                balance_task(PlacementAction::Replica(action), ShardMoveGuard::Unrestricted),
-                TaskReason::for_balance(BalanceDimension::ReplicaCount, &decision),
-            ));
-        }
-        balance.record_with_thresholds(
-            Policy::Placement(BalanceDimension::ReplicaCount),
-            decision,
-            thresholds,
-        );
-        let (leaders, decision, thresholds) = self.compute_leader_actions();
-        for action in leaders {
-            if let LeaderAction::Shed(action) = action {
-                tasks.push((
-                    balance_task(PlacementAction::Leader(action), ShardMoveGuard::Unrestricted),
-                    TaskReason::for_balance(BalanceDimension::LeaderCount, &decision),
-                ));
-            }
-        }
-        balance.record_with_thresholds(
-            Policy::Placement(BalanceDimension::LeaderCount),
-            decision,
-            thresholds,
-        );
-        let shards = self.ctx.alloc.compute_shard_action();
-        let (shard_policy, shard_decision, shard_guard) = if shards.size.action_reason().is_some() {
-            (BalanceDimension::ShardSize, &shards.size, ShardMoveGuard::ImproveSize)
-        } else {
-            let guard = if self.ctx.cfg.enable_shard_size_balance {
-                ShardMoveGuard::PreserveSize
-            } else {
-                ShardMoveGuard::Unrestricted
+                Ok(Step::Finished(kind, detail)) => {
+                    let mut change = placement(job).clone();
+                    change.outcome = Some(Outcome {
+                        kind: kind as i32,
+                        detail: detail.into(),
+                        finished_at: timestamp_millis(),
+                    });
+                    change
+                }
             };
-            (BalanceDimension::ShardCount, &shards.count, guard)
-        };
-        for ShardAction::Migrate(action) in shards.actions {
-            tasks.push((
-                balance_task(PlacementAction::Shard(action), shard_guard),
-                TaskReason::for_balance(shard_policy, shard_decision),
-            ));
-        }
-        balance.record_with_thresholds(
-            Policy::Placement(BalanceDimension::ShardSize),
-            shards.size,
-            shards.size_thresholds,
-        );
-        balance.record_with_thresholds(
-            Policy::Placement(BalanceDimension::ShardCount),
-            shards.count,
-            shards.count_thresholds,
-        );
-        Ok(BalanceActions::Reconcile(tasks))
-    }
-
-    fn shard_balance_move_pending(&self) -> bool {
-        self.ctx.cluster_stats.has_pending_shard_moves()
-    }
-
-    fn compute_replica_actions(
-        &self,
-    ) -> (Vec<ReplicaAction>, BalanceDecision, Option<BalanceThresholds>) {
-        let (actions, decision, thresholds) = self.ctx.alloc.compute_replica_action();
-        metrics::RECONCILE_ALREADY_BALANCED_INFO
-            .node_replica_count
-            .set(i64::from(actions.is_empty()));
-        (actions, decision, thresholds)
-    }
-
-    fn compute_leader_actions(
-        &self,
-    ) -> (Vec<LeaderAction>, BalanceDecision, Option<BalanceThresholds>) {
-        let (actions, decision, thresholds) = self.ctx.alloc.compute_leader_action();
-        metrics::RECONCILE_ALREADY_BALANCED_INFO
-            .node_leader_count
-            .set(i64::from(actions.is_empty()));
-        (actions, decision, thresholds)
-    }
-}
-
-impl ReconcileScheduler {
-    async fn advance_tasks(&self) -> bool {
-        let mut tasks = self.tasks.lock().await;
-        metrics::RECONCILE_SCHEDULER_TASK_QUEUE_SIZE.set(tasks.len() as i64);
-        let mut immediately_next = false;
-        let mut cursor = tasks.cursor_front_mut();
-        while let Some((id, task)) = cursor.current() {
-            if timestamp_millis() < task.fire_at {
-                cursor.move_next();
-                continue;
-            }
-
-            let id = *id;
-            let reason = self.queue_status.lock().unwrap().start_attempt(id);
-            let _timer = Self::record_exec(task);
-            let sched_result = self.ctx.handle_task(task, &reason).await;
-            let retry_at = timestamp_millis();
-            match sched_result {
-                Ok(result) if result.ack => {
-                    immediately_next |= result.immediately_next;
-                    self.queue_status.lock().unwrap().tasks.remove(&id);
-                    cursor.remove_current();
+            let new = BackgroundJob { id: job.id, job: Some(Job::Placement(result)) };
+            match self.ctx.bg_jobs.replace_schedule_job(job, new).await {
+                Ok(()) => {
+                    self.attempts.lock().unwrap().remove(&job.id);
+                    progress = true;
                 }
-                Ok(result) => {
-                    Self::record_retry(task);
-                    task.defer_retry(retry_at, result.delay);
-                    self.queue_status.lock().unwrap().finish_attempt(id, task);
-                    cursor.move_next();
-                }
-                Err(_) => {
-                    Self::record_retry(task);
-                    task.defer_retry(retry_at, None);
-                    self.queue_status.lock().unwrap().finish_attempt(id, task);
-                    cursor.move_next();
+                Err(error) => {
+                    self.defer(job.id, error.to_string(), true);
+                    write_error = Some(error);
                 }
             }
         }
-        // A queue containing only deferred tasks must return to the timed poll.
-        immediately_next && tasks.iter().any(|(_, task)| task.fire_at <= timestamp_millis())
-    }
-
-    fn record_exec(task: &mut ReconcileTask) -> HistogramTimer {
-        match task.task.as_ref().unwrap() {
-            Task::ReallocateReplica(_) => {
-                metrics::RECONCILE_HANDLE_TASK_TOTAL.reallocate_replica.inc();
-                metrics::RECONCILE_HANDLE_TASK_DURATION_SECONDS.reallocate_replica.start_timer()
-            }
-            Task::MigrateShard(_) => {
-                metrics::RECONCILE_HANDLE_TASK_TOTAL.migrate_shard.inc();
-                metrics::RECONCILE_HANDLE_TASK_DURATION_SECONDS.migrate_shard.start_timer()
-            }
-            Task::TransferGroupLeader(_) => {
-                metrics::RECONCILE_HANDLE_TASK_TOTAL.transfer_leader.inc();
-                metrics::RECONCILE_HANDLE_TASK_DURATION_SECONDS.transfer_leader.start_timer()
-            }
-            Task::ShedLeader(_) => {
-                metrics::RECONCILE_HANDLE_TASK_TOTAL.shed_group_leaders.inc();
-                metrics::RECONCILE_HANDLE_TASK_DURATION_SECONDS.shed_group_leaders.start_timer()
-            }
-            Task::ShedRoot(_) => {
-                metrics::RECONCILE_HANDLE_TASK_TOTAL.shed_root_leader.inc();
-                metrics::RECONCILE_HANDLE_TASK_DURATION_SECONDS.shed_root_leader.start_timer()
-            }
-            Task::SplitShard(_) => {
-                metrics::RECONCILE_HANDLE_TASK_TOTAL.split_shard.inc();
-                metrics::RECONCILE_HANDLE_TASK_DURATION_SECONDS.split_shard.start_timer()
-            }
-            Task::MergeShard(_) => {
-                metrics::RECONCILE_HANDLE_TASK_TOTAL.merge_shard.inc();
-                metrics::RECONCILE_HANDLE_TASK_DURATION_SECONDS.merge_shard.start_timer()
-            }
+        if let Some(error) = write_error {
+            return Err(error);
         }
-    }
 
-    fn record_retry(task: &mut ReconcileTask) {
-        match task.task.as_ref().unwrap() {
-            Task::ReallocateReplica(_) => {
-                metrics::RECONCILE_RETRY_TASK_TOTAL.reallocate_replica.inc()
+        self.ctx.check_term(&schema, term).await?;
+        let _timer = metrics::RECONCILE_CHECK_DURATION_SECONDS.start_timer();
+        let options = schema.balance_config(self.ctx.cfg.balance.clone()).await?;
+        let view = self.ctx.cluster_view(&schema).await?;
+        let mut balance = BalanceSnapshot::new(&self.ctx.cfg);
+        let plan = self.ctx.plan(&view, &options, &mut balance);
+        *self.balance.lock().unwrap() = balance;
+        match plan {
+            Some(Plan::Placement(mut job)) => {
+                job.created_at = timestamp_millis();
+                self.ctx
+                    .bg_jobs
+                    .submit(BackgroundJob { id: 0, job: Some(Job::Placement(job)) }, false)
+                    .await?;
+                progress = true;
             }
-            Task::MigrateShard(_) => metrics::RECONCILE_RETRY_TASK_TOTAL.migrate_shard.inc(),
-            Task::TransferGroupLeader(_) => {
-                metrics::RECONCILE_RETRY_TASK_TOTAL.transfer_leader.inc()
+            Some(Plan::CreateGroup) => {
+                self.ctx.bg_jobs.submit_create_group_job().await?;
+                progress = true;
             }
-            Task::ShedLeader(_) => metrics::RECONCILE_RETRY_TASK_TOTAL.shed_group_leaders.inc(),
-            Task::ShedRoot(_) => metrics::RECONCILE_RETRY_TASK_TOTAL.shed_root_leader.inc(),
-            Task::SplitShard(_) => metrics::RECONCILE_RETRY_TASK_TOTAL.split_shard.inc(),
-            Task::MergeShard(_) => metrics::RECONCILE_RETRY_TASK_TOTAL.merge_shard.inc(),
+            Some(Plan::Drained(node)) => {
+                let mut drained = node.clone();
+                drained.status = NodeStatus::Drained as i32;
+                schema.replace_node(&node, &drained).await?;
+            }
+            None => {}
         }
-    }
-}
-
-#[derive(Debug, Default)]
-struct SchedResult {
-    /// Ack current task.
-    ack: bool,
-    /// immediately step next tick.
-    immediately_next: bool,
-    /// Delay task by duration.
-    delay: Option<Duration>,
-}
-
-impl SchedResult {
-    /// Ack but not step next immediately
-    fn ack() -> Self {
-        SchedResult { ack: true, ..Default::default() }
+        Ok(progress)
     }
 
-    /// Ack and immediately step next
-    fn next() -> Self {
-        SchedResult { ack: true, immediately_next: true, ..Default::default() }
-    }
-
-    /// Keep current task and retry after a delay.
-    fn retry_after(duration: Duration) -> Self {
-        SchedResult { ack: false, immediately_next: false, delay: Some(duration) }
-    }
-}
-
-/// Returns true when this split has already completed, false when it can run.
-fn precheck_split_shard(task: &SplitShardTask, group: Option<&GroupDesc>) -> Result<bool> {
-    let group = group.ok_or(Error::AbortScheduleTask("split group no longer exists"))?;
-    if task.new_shard_id.is_some_and(|id| group.shard(id).is_some()) {
-        return Ok(true);
-    }
-    if group.shard(task.shard_id).is_none() {
-        return Err(Error::AbortScheduleTask("split shard no longer belongs to the group"));
-    }
-    if task.group_epoch.is_some_and(|epoch| epoch != group.epoch) {
-        return Err(Error::AbortScheduleTask("split group metadata has changed"));
-    }
-    Ok(false)
-}
-
-impl ReconcileTask {
-    fn shards(&self) -> [Option<u64>; 2] {
-        match self.task.as_ref().unwrap() {
-            Task::MigrateShard(t) => [Some(t.shard), None],
-            Task::SplitShard(t) => [Some(t.shard_id), None],
-            Task::MergeShard(t) => [Some(t.left_shard_id), Some(t.right_shard_id)],
-            _ => [None, None],
+    fn defer(&self, id: u64, reason: String, error: bool) {
+        let mut attempts = self.attempts.lock().unwrap();
+        let status = attempts.entry(id).or_default();
+        status.running = false;
+        status.waiting = Some(reason);
+        if error {
+            let seconds = (1_u64 << status.retry_count.min(5)).min(30);
+            status.fire_at = timestamp_millis().saturating_add(seconds * 1000);
+            status.retry_count = status.retry_count.saturating_add(1);
+        } else {
+            status.fire_at = timestamp_millis().saturating_add(1000);
+            status.retry_count = 0;
         }
-    }
-
-    fn defer_retry(&mut self, now: u64, delay: Option<Duration>) {
-        let delay = match delay {
-            Some(delay) => {
-                self.retry_count = 0;
-                delay
-            }
-            None => {
-                let secs = (1u64 << self.retry_count.min(5)).min(30);
-                self.retry_count = self.retry_count.saturating_add(1);
-                Duration::from_secs(secs)
-            }
-        };
-        self.fire_at = now.saturating_add(delay.as_millis().min(u64::MAX as u128) as u64);
-    }
-}
-
-fn is_merge_candidate(
-    left: &ShardDesc,
-    right: &ShardDesc,
-    left_stats: &ShardStats,
-    right_stats: &ShardStats,
-    move_shard_size_limit: u64,
-    is_scheduled: bool,
-) -> bool {
-    if is_scheduled {
-        return false;
-    }
-    if check_merge_shards(left, right).is_err() {
-        return false;
-    }
-    left_stats.shard_size.saturating_add(right_stats.shard_size) <= move_shard_size_limit
-}
-
-fn check_merge_shards(left: &ShardDesc, right: &ShardDesc) -> Result<(), &'static str> {
-    if left.table_id != right.table_id {
-        return Err("different table");
-    }
-    if left.table_id < sekas_schema::FIRST_USER_TABLE_ID {
-        return Err("system table");
-    }
-    let (Some(left_range), Some(right_range)) = (&left.range, &right.range) else {
-        return Err("missing range");
-    };
-    if left_range.end != right_range.start {
-        return Err("not mergeable");
-    }
-    Ok(())
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum MigrateShardPrecheck {
-    Move,
-    Split(Option<u64>),
-    WaitStats,
-}
-
-fn precheck_migrate_shard_stats(cfg: &RootConfig, shard_size: Option<u64>) -> MigrateShardPrecheck {
-    if !cfg.enable_auto_shard_split {
-        return MigrateShardPrecheck::Move;
-    }
-    let Some(shard_size) = shard_size else {
-        return MigrateShardPrecheck::WaitStats;
-    };
-    if shard_size > cfg.move_shard_size_limit {
-        MigrateShardPrecheck::Split(None)
-    } else {
-        MigrateShardPrecheck::Move
     }
 }
 
 impl ScheduleContext {
     pub(crate) fn new(
         shared: Arc<RootShared>,
-        alloc: Arc<Allocator<SysAllocSource>>,
+        alloc: Arc<Allocator>,
         heartbeat_queue: Arc<HeartbeatQueue>,
         cluster_stats: Arc<ClusterStats>,
         bg_jobs: Arc<Jobs>,
         cfg: RootConfig,
     ) -> Self {
-        ScheduleContext { shared, alloc, heartbeat_queue, cluster_stats, bg_jobs, cfg }
+        Self { shared, alloc, heartbeat_queue, cluster_stats, bg_jobs, cfg }
     }
 
-    async fn merge_shard_candidates(&self) -> Result<Vec<(u64, u64, u64)>> {
-        const LIMIT: usize = 5;
-
-        let schema = self.shared.schema()?;
-        let mut candidates = Vec::with_capacity(LIMIT);
-        for group in schema.list_group().await? {
-            if group.id == ROOT_GROUP_ID {
-                continue;
-            }
-
-            let mut shards = group.shards.clone();
-            shards.sort_by(|a, b| {
-                a.table_id.cmp(&b.table_id).then_with(|| {
-                    sekas_schema::shard::start_key(a).cmp(&sekas_schema::shard::start_key(b))
-                })
-            });
-
-            for pair in shards.windows(2) {
-                let [left, right] = pair else { continue };
-                if !self.is_merge_candidate(left, right) {
-                    continue;
-                }
-                candidates.push((group.id, left.id, right.id));
-                if candidates.len() >= LIMIT {
-                    return Ok(candidates);
-                }
-            }
+    async fn check_term(&self, schema: &Schema, term: u64) -> Result<()> {
+        if schema.term().await? != term {
+            return Err(Error::NotRootLeader(RootDesc::default(), 0, None));
         }
-        Ok(candidates)
+        Ok(())
     }
 
-    fn is_merge_candidate(&self, left: &ShardDesc, right: &ShardDesc) -> bool {
-        let (Some(left_stats), Some(right_stats)) = (
-            self.cluster_stats.get_shard_stats(left.id),
-            self.cluster_stats.get_shard_stats(right.id),
-        ) else {
-            return false;
-        };
-        is_merge_candidate(
-            left,
-            right,
-            &left_stats,
-            &right_stats,
-            self.cfg.move_shard_size_limit,
-            self.cluster_stats.is_shard_scheduled(left.id)
-                || self.cluster_stats.is_shard_scheduled(right.id)
-                || self.cluster_stats.is_merging_shard(left.id, right.id),
-        )
-    }
-
-    async fn handle_task(
-        &self,
-        task: &mut ReconcileTask,
-        reason: &TaskReason,
-    ) -> Result<SchedResult> {
-        info!("handle reconcile task. task={task:?}");
-        match task.task.as_mut().unwrap() {
-            Task::ReallocateReplica(reallocate_replica) => {
-                self.handle_reallocate_replica(reallocate_replica, reason).await
-            }
-            Task::MigrateShard(migrate_shard) => self.handle_migrate_shard(migrate_shard).await,
-            Task::TransferGroupLeader(transfer_leader) => {
-                self.handle_transfer_leader(transfer_leader).await
-            }
-            Task::ShedLeader(shed_leader) => self.handle_shed_leader(shed_leader).await,
-            Task::ShedRoot(shed_root) => self.handle_shed_root(shed_root).await,
-            Task::SplitShard(split_shard) => self.handle_split_shard(split_shard).await,
-            Task::MergeShard(merge_shard) => self.handle_merge_shard(merge_shard).await,
-        }
-    }
-
-    async fn handle_reallocate_replica(
-        &self,
-        task: &mut ReallocateReplicaTask,
-        reason: &TaskReason,
-    ) -> Result<SchedResult> {
-        let schema = self.shared.schema()?;
-        if task.placement {
-            let action = PlacementAction::Replica(ReallocateReplica {
-                group: task.group,
-                source_node: task.src_node,
-                source_replica: task.src_replica,
-                target_node: task.dest_node.clone().expect("placement target"),
-            });
-            let groups = self.placement_groups().await?;
-            if !self.validate_placement(&groups, &action).await? {
-                return Ok(SchedResult::ack());
-            }
-        }
-
-        let group = task.group;
-        let replica = task.src_replica;
-        let r = self.try_shed_leader_before_remove(group, replica).await;
-        match r {
-            Ok(_) => {}
-            Err(crate::Error::AbortScheduleTask(_)) => return Ok(SchedResult::next()),
-            Err(crate::Error::EpochNotMatch(new_group)) => {
-                warn!(
-                    "shed leader meet epoch not match, abort task and retry allocator. group={group}, replica={replica}, new_group={new_group:?}"
-                );
-                return Ok(SchedResult::ack());
-            }
-            Err(err) => {
-                warn!(
-                    "shed leader in source replica fail, retry in next tick: {err:?}. group={group}, replica={replica}",
-                );
-                metrics::RECONCILE_RETRY_TASK_TOTAL.reallocate_replica.inc();
-                return Err(err);
-            }
-        };
-
-        let group_desc = schema.get_group(group).await?;
-        if group_desc.is_none() {
-            warn!("group not found abort reallocate replica task. group={group}");
-            return Ok(SchedResult::ack());
-        }
-
-        let src_replica =
-            group_desc.as_ref().unwrap().replicas.iter().find(|r| r.id == task.src_replica);
-
-        if src_replica.is_none() {
-            warn!(
-                "source replica not found abort reallocate replica task. group={group}, replica={}",
-                task.src_replica
-            );
-            return Ok(SchedResult::ack());
-        }
-
-        info!(
-            "start move replica. group={group}, src_node={}, dest_node={}",
-            task.src_node,
-            task.dest_node.as_ref().unwrap().id
+    async fn cluster_view(&self, schema: &Schema) -> Result<ClusterView> {
+        let nodes = schema.list_node().await?;
+        let groups = schema.list_group().await?;
+        let states = schema.list_replica_state().await?;
+        let available =
+            nodes.iter().filter(|node| self.alloc.schedulable(node)).map(|node| node.id).collect();
+        let mut view = ClusterView::new(
+            nodes,
+            groups,
+            states,
+            available,
+            &self.cluster_stats,
+            Duration::from_secs(self.cfg.liveness_threshold_sec),
         );
-        let next_replica = schema.next_replica_id().await?;
-        let incoming = ReplicaDesc {
-            id: next_replica,
-            node_id: task.dest_node.as_ref().unwrap().id,
-            role: ReplicaRole::Voter as i32,
-        };
-        let outgoing = src_replica.unwrap().clone();
-        match self.try_move_replica(group, incoming.clone(), outgoing.clone()).await {
-            Ok(mut schedule_state) => {
-                if task.placement && schedule_state.incoming_replicas.is_empty() {
-                    // The RPC may finish before the group publishes its active
-                    // state. A subsequent heartbeat can confirm completion.
-                    schedule_state = ScheduleState {
-                        group_id: group,
-                        epoch: group_desc.unwrap().epoch,
-                        incoming_replicas: vec![incoming],
-                        outgoing_replicas: vec![outgoing],
-                        replica_repair: None,
-                    };
-                }
-                self.cluster_stats.handle_replica_move_update(
-                    schedule_state,
-                    next_replica,
-                    replica,
-                    reason,
-                );
-                Ok(SchedResult::ack())
-            }
-            Err(crate::Error::AlreadyExists(_)) | Err(crate::Error::EpochNotMatch(_)) => {
-                warn!(
-                    "move replica task aborted due to replica already changed. group={group}, src_node={}, dest_node={}",
-                    task.src_node,
-                    task.dest_node.as_ref().unwrap().id
-                );
-                Ok(SchedResult::ack())
-            }
-            Err(err) => {
-                warn!(
-                    "move replica meet error and retry later: {err:?}. group={group}, src_node={}, dest_node={}",
-                    task.src_node,
-                    task.dest_node.as_ref().unwrap().id
-                );
-                metrics::RECONCILE_RETRY_TASK_TOTAL.reallocate_replica.inc();
-                Err(err)
-            }
-        }
-    }
-
-    async fn handle_migrate_shard(&self, task: &mut MigrateShardTask) -> Result<SchedResult> {
-        if let Some(split_task) = &mut task.split_task {
-            let result = self.handle_split_shard(split_task).await?;
-            if result.ack {
-                self.cluster_stats.finish_move_shard(task.shard);
-            }
-            return Ok(result);
-        }
-        info!(
-            "start migrate shard. shard={}, src={}, dest={}",
-            task.shard, task.src_group, task.dest_group
-        );
-        let guard = task.guard();
-        let (planned_groups, precheck) = if guard == ShardMoveGuard::Unrestricted {
-            (
-                Vec::new(),
-                precheck_migrate_shard_stats(
-                    &self.cfg,
-                    self.cluster_stats.get_shard_stats(task.shard).map(|stats| stats.shard_size),
-                ),
-            )
-        } else {
-            let planned_groups = self.placement_groups().await?;
-            let action = ReallocateShard {
-                shard: task.shard,
-                source_group: task.src_group,
-                target_group: task.dest_group,
-            };
-            let placement = if guard == ShardMoveGuard::Placement {
-                let options =
-                    self.shared.schema()?.balance_config(self.cfg.balance.clone()).await?;
-                self.alloc.refresh_for_balance().await?;
-                self.alloc.validate_placement_shard(&planned_groups, &options, action)
-            } else {
-                self.alloc.validate_shard_balance_move(
-                    &planned_groups,
-                    &action,
-                    guard == ShardMoveGuard::ImproveSize,
-                )
-            };
-            let Some(placement) = placement else {
-                self.cluster_stats.finish_move_shard(task.shard);
-                return Ok(SchedResult::ack());
-            };
-            let precheck = match placement {
-                ShardSizePlacement::Move => MigrateShardPrecheck::Move,
-                ShardSizePlacement::Split(bytes) => MigrateShardPrecheck::Split(Some(bytes)),
-            };
-            (planned_groups, precheck)
-        };
-
-        match precheck {
-            MigrateShardPrecheck::Move => {}
-            MigrateShardPrecheck::Split(target_size) => {
-                info!(
-                    "split shard before migrating because it exceeds move size limit. shard={}, src={}, dest={}, limit={}",
-                    task.shard, task.src_group, task.dest_group, self.cfg.move_shard_size_limit
-                );
-                let split_task = task.split_task.insert(SplitShardTask {
-                    group_id: task.src_group,
-                    shard_id: task.shard,
-                    target_size,
-                    ..Default::default()
-                });
-                let result = self.handle_split_shard(split_task).await?;
-                if result.ack {
-                    self.cluster_stats.finish_move_shard(task.shard);
-                }
-                return Ok(result);
-            }
-            MigrateShardPrecheck::WaitStats => {
-                info!(
-                    "delay migrating shard until shard stats are collected. shard={}, src={}, dest={}",
-                    task.shard, task.src_group, task.dest_group
-                );
-                return Ok(SchedResult::retry_after(Duration::from_secs(1)));
-            }
-        }
-        let r = self.try_migrate_shard(task, &planned_groups).await;
-        match r {
-            Ok(_) => Ok(SchedResult::ack()),
-            Err(crate::Error::EpochNotMatch(_)) if guard != ShardMoveGuard::Unrestricted => {
-                self.cluster_stats.finish_move_shard(task.shard);
-                Ok(SchedResult::ack())
-            }
-            Err(crate::Error::AbortScheduleTask(reason)) => {
-                warn!(
-                    "abort migrate shard. shard={}, src={}, dest={}, reason={reason}",
-                    task.shard, task.src_group, task.dest_group
-                );
-                self.cluster_stats.finish_move_shard(task.shard);
-                Ok(SchedResult::ack())
-            }
-            Err(err) => {
-                warn!(
-                    "migrate shard fail, retry later: {err:?}. shard={}, src={}, dest={}",
-                    task.shard, task.src_group, task.dest_group
-                );
-                Err(err)
-            }
-        }
-    }
-
-    async fn handle_transfer_leader(
-        &self,
-        task: &mut TransferGroupLeaderTask,
-    ) -> Result<SchedResult> {
-        if task.placement {
-            let action = PlacementAction::Leader(TransferLeader {
-                group: task.group,
-                src_node: task.src_node,
-                src_replica: 0,
-                target_node: task.dest_node,
-                target_replica: task.target_replica,
-            });
-            let groups = self.placement_groups().await?;
-            if !self.validate_placement(&groups, &action).await? {
-                return Ok(SchedResult::ack());
-            }
-        }
-        match self.try_transfer_leader(task.group, task.target_replica).await {
-            Ok(_) => {}
-            Err(crate::Error::EpochNotMatch(new_group)) => {
-                warn!(
-                    "transfer target meet epoch not match, abort transfer task. group={}, dest={}, new_group={:?}",
-                    task.group, task.target_replica, new_group
-                );
-                return Ok(SchedResult::ack());
-            }
-            Err(err) => {
-                error!(
-                    "transfer group leader: {err:?}. group={}, dest={}",
-                    task.group, task.target_replica
-                );
-                return Err(err);
-            }
-        }
-        self.heartbeat_queue
-            .try_schedule(
-                vec![
-                    HeartbeatTask { node_id: task.dest_node },
-                    HeartbeatTask { node_id: task.src_node },
-                ],
-                Instant::now(),
-            )
-            .await;
-        Ok(SchedResult::next())
-    }
-
-    async fn placement_groups(&self) -> Result<Vec<GroupDesc>> {
-        let mut groups = self.shared.schema()?.list_group().await?;
-        groups.retain(|group| group.id != ROOT_GROUP_ID);
-        groups.sort_unstable_by_key(|group| group.id);
-        Ok(groups)
-    }
-
-    async fn validate_placement(
-        &self,
-        groups: &[GroupDesc],
-        action: &PlacementAction,
-    ) -> Result<bool> {
-        let options = self.shared.schema()?.balance_config(self.cfg.balance.clone()).await?;
-        self.alloc.refresh_for_balance().await?;
-        Ok(self.alloc.validate_placement(groups, &options, action))
-    }
-
-    async fn handle_shed_leader(&self, shed: &mut ShedLeaderTask) -> Result<SchedResult> {
-        let node = shed.node_id;
-        loop {
-            let schema = self.shared.schema()?;
-
-            if let Some(desc) = schema.get_node(node).await? {
-                if desc.status != NodeStatus::Draining as i32 {
-                    warn!("shed leader task cancelled. node={node}");
-                    break;
-                }
-            }
-
-            let leader_replicas = schema
-                .list_replica_state()
-                .await?
-                .into_iter()
-                .filter(|r| r.node_id == node && r.role == RaftRole::Leader as i32)
-                .collect::<Vec<_>>();
-
-            // exit when all leader move-out
-            // also change node status to Drained
-            if leader_replicas.is_empty() {
-                if let Some(mut desc) = schema.get_node(node).await? {
-                    if desc.status == NodeStatus::Draining as i32 {
-                        desc.status = NodeStatus::Drained as i32;
-                        schema.update_node(desc).await?; // TODO: cas
-                    }
-                }
-                break;
-            }
-
-            for replica in &leader_replicas {
-                let group_id = replica.group_id;
-                if let Some(group) = schema.get_group(group_id).await? {
-                    let mut target_replica = None;
-                    for r in &group.replicas {
-                        if r.id == replica.replica_id {
-                            continue;
-                        }
-                        let target_node = schema.get_node(r.node_id).await?;
-                        if target_node.is_none() {
-                            continue;
-                        }
-                        if target_node.as_ref().unwrap().status != NodeStatus::Active as i32 {
-                            continue;
-                        }
-                        target_replica = Some(r.to_owned())
-                    }
-                    if let Some(target_replica) = target_replica {
-                        self.try_transfer_leader(group_id, target_replica.id).await?;
-                    } else {
-                        warn!(
-                            "shed leader from node fail due to no suitable target replica. node={node}, group={group_id}, src_replica={}",
-                            replica.replica_id
+        (view.creating, view.unpublished) = self.bg_jobs.creating_groups();
+        for job in self.bg_jobs.placement_jobs() {
+            let action = placement(&job).action.as_ref().unwrap();
+            view.busy.extend(action.groups().into_iter().flatten());
+            match action {
+                Action::MoveShard(action) => {
+                    if let Ok(index) = view
+                        .groups
+                        .binary_search_by_key(&action.desc.dest_group_id, |group| group.id)
+                    {
+                        view.copying_nodes.extend(
+                            view.groups[index].replicas.iter().map(|replica| replica.node_id),
                         );
-                        metrics::RECONCILE_RETRY_TASK_TOTAL.shed_group_leaders.inc();
+                    }
+                }
+                Action::MoveReplica(action) => {
+                    view.copying_nodes.insert(action.target_node);
+                }
+                _ => {}
+            }
+        }
+        Ok(view)
+    }
+
+    fn plan(
+        &self,
+        view: &ClusterView,
+        options: &crate::BalanceConfig,
+        balance: &mut BalanceSnapshot,
+    ) -> Option<Plan> {
+        if let Some(drain) = drain_action(view) {
+            return Some(drain);
+        }
+        let (create_group, decision) = self.group_count_plan(view);
+        balance.record(Policy::GroupCount, decision);
+        let (capacity, placement) = plan_round(view, &self.cfg, options, &self.cluster_stats);
+        for (dimension, decision, thresholds) in placement.decisions {
+            balance.record_with_thresholds(Policy::Placement(dimension), decision, thresholds);
+        }
+        if let Some(capacity) = capacity
+            && placement.choice.as_ref().is_none_or(|choice| capacity.priority > choice.priority)
+        {
+            let reason = "Reduce group capacity pressure";
+            let policy = match &capacity.action {
+                CapacityAction::CreateGroup => Policy::GroupCount,
+                CapacityAction::Place(..) => Policy::Placement(crate::BalanceDimension::ShardSize),
+            };
+            balance.record(policy, BalanceDecision::ActionNeeded(reason.into()));
+            return match capacity.action {
+                CapacityAction::CreateGroup => Some(Plan::CreateGroup),
+                CapacityAction::Place(action) => Some(Plan::placement(
+                    planned_action(view, PlacementAction::Shard(action))?,
+                    TaskReason::new(reason),
+                )),
+            };
+        }
+        if let Some(choice) = placement.choice {
+            return Some(Plan::placement(
+                planned_action(view, choice.action)?,
+                TaskReason::for_balance(choice.dimension, choice.reason),
+            ));
+        }
+        if create_group {
+            return Some(Plan::CreateGroup);
+        }
+        self.shard_maintenance(view)
+    }
+
+    fn group_count_plan(&self, view: &ClusterView) -> (bool, BalanceDecision) {
+        if !self.cfg.enable_group_balance {
+            return (false, BalanceDecision::Disabled);
+        }
+        let mut nodes = 0_usize;
+        let mut cpus = 0.;
+        for node in &view.nodes {
+            if node.status() != NodeStatus::Decommissioned {
+                nodes += 1;
+                cpus += node.capacity.as_ref().map_or(0., |capacity| capacity.cpu_nums);
+            }
+        }
+        let min_nodes = self.cfg.replicas_per_group;
+        let groups = view.published_groups().count();
+        if nodes < min_nodes {
+            return (
+                false,
+                BalanceDecision::NoAction(format!(
+                    "too few nodes. nodes={nodes}, min_nodes={min_nodes}, groups={groups}"
+                )),
+            );
+        }
+        let desired_groups = (cpus as usize).max(nodes);
+        let inputs = format!(
+            "nodes={nodes}, min_nodes={min_nodes}, cpus={cpus}, groups={groups}, desired_groups={desired_groups}"
+        );
+        let add = desired_groups.saturating_sub(groups + view.creating);
+        if add == 0 {
+            let decision = if groups < desired_groups {
+                BalanceDecision::Deferred("waiting for groups being created".into())
+            } else {
+                BalanceDecision::NoAction(inputs)
+            };
+            return (false, decision);
+        }
+        if view.available.len() < min_nodes {
+            return (
+                false,
+                BalanceDecision::Deferred("not enough schedulable nodes to create a group".into()),
+            );
+        }
+        (true, BalanceDecision::ActionNeeded(format!("create {add} groups\n{inputs}")))
+    }
+
+    fn shard_maintenance(&self, view: &ClusterView) -> Option<Plan> {
+        let split = self.cfg.enable_auto_shard_split && self.cfg.enable_proactive_shard_split;
+        let limit = self.cfg.move_shard_size_limit;
+        for group in view.groups.iter().filter(|group| {
+            group.id != ROOT_GROUP_ID
+                && view.group_available(group.id)
+                && view.migration_idle(group.id)
+        }) {
+            if split {
+                for shard in &group.shards {
+                    if shard.table_id >= sekas_schema::FIRST_USER_TABLE_ID
+                        && view
+                            .samples
+                            .shard(group.id, shard.id)
+                            .bytes
+                            .is_some_and(|bytes| bytes > limit)
+                        && !view.split_cooldowns.contains(&shard.id)
+                    {
+                        let action = Action::SplitShard(SplitShard {
+                            group: group.id,
+                            epoch: group.epoch,
+                            shard: shard.clone(),
+                            ..Default::default()
+                        });
+                        return Some(Plan::placement(
+                            action,
+                            TaskReason::new(format!(
+                                "Shard exceeds the automatic split threshold of {limit} B"
+                            )),
+                        ));
+                    }
+                }
+            }
+            if self.cfg.enable_auto_shard_merge {
+                let mut shards: Vec<_> = group
+                    .shards
+                    .iter()
+                    .filter(|shard| shard.table_id >= sekas_schema::FIRST_USER_TABLE_ID)
+                    .collect();
+                shards.sort_unstable_by_key(|shard| {
+                    (shard.table_id, sekas_schema::shard::start_key(shard))
+                });
+                for adjacent in shards.windows(2) {
+                    let [left, right] = adjacent else { unreachable!() };
+                    if left.table_id == right.table_id
+                        && left
+                            .range
+                            .as_ref()
+                            .zip(right.range.as_ref())
+                            .is_some_and(|(l, r)| l.end == r.start)
+                        && view
+                            .samples
+                            .shard(group.id, left.id)
+                            .bytes
+                            .zip(view.samples.shard(group.id, right.id).bytes)
+                            .is_some_and(|(l, r)| l.saturating_add(r) <= limit / 2)
+                    {
+                        let action = Action::MergeShards(MergeShards {
+                            group: group.id,
+                            left: (*left).clone(),
+                            right: (*right).clone(),
+                            version: view.version(group.id)?,
+                        });
+                        return Some(Plan::placement(
+                            action,
+                            TaskReason::new("Adjacent undersized shards"),
+                        ));
                     }
                 }
             }
         }
-
-        Ok(SchedResult::next())
-    }
-
-    async fn handle_shed_root(&self, task: &mut ShedRootLeaderTask) -> Result<SchedResult> {
-        let node = task.node_id;
-        let schema = self.shared.schema()?;
-        let root_group = schema.get_group(ROOT_GROUP_ID).await?.unwrap();
-        let mut target = None;
-        for r in &root_group.replicas {
-            if r.node_id == node {
-                continue;
-            }
-            let target_node = schema.get_node(r.node_id).await?;
-            if target_node.is_none() {
-                continue;
-            }
-            if target_node.as_ref().unwrap().status != NodeStatus::Active as i32 {
-                continue;
-            }
-            target = Some(r.to_owned())
-        }
-        if let Some(r) = target {
-            self.try_transfer_leader(root_group.id, r.id).await?
-        }
-        Ok(SchedResult::ack())
-    }
-
-    /// Handle the spliting shard shards and update the sched stats.
-    async fn handle_split_shard(&self, task: &mut SplitShardTask) -> Result<SchedResult> {
-        self.cluster_stats.handle_split_shard(task.shard_id);
-        let result = self.handle_split_shard_inner(task).await?;
-        if result.ack {
-            self.cluster_stats.finish_split_shard(task.shard_id);
-        }
-        Ok(result)
-    }
-
-    /// Validate and execute a split against one group metadata version.
-    async fn handle_split_shard_inner(&self, task: &mut SplitShardTask) -> Result<SchedResult> {
-        let schema = self.shared.schema()?;
-        let group = schema.get_group(task.group_id).await?;
-        match precheck_split_shard(task, group.as_ref()) {
-            Ok(true) => return Ok(SchedResult::next()),
-            Ok(false) => {}
-            Err(Error::AbortScheduleTask(reason)) => {
-                warn!(
-                    "abort split shard task. group={}, shard={}, reason={reason}",
-                    task.group_id, task.shard_id
-                );
-                return Ok(SchedResult::next());
-            }
-            Err(err) => return Err(err),
-        }
-        let group = group.unwrap();
-        task.group_epoch = Some(group.epoch);
-        let old_shard_id = task.shard_id;
-        let new_shard_id = match task.new_shard_id {
-            Some(id) => id,
-            None => {
-                let id = schema.next_shard_id().await?;
-                task.new_shard_id = Some(id);
-                id
-            }
-        };
-        let split_policy = self.split_policy_for_moving(&group, old_shard_id, task.target_size);
-
-        match self.try_split_shard(&group, old_shard_id, new_shard_id, split_policy).await {
-            Ok(true) => Ok(SchedResult::next()),
-            Ok(false) => {
-                self.defer_unsplittable_shard(old_shard_id);
-                info!(
-                    "skip split shard without a split key. group={}, shard={}",
-                    task.group_id, old_shard_id
-                );
-                Ok(SchedResult::ack())
-            }
-            Err(crate::Error::EpochNotMatch(desc)) => {
-                if matches!(precheck_split_shard(task, Some(&desc)), Ok(true)) {
-                    return Ok(SchedResult::next());
-                }
-                warn!(
-                    "split shard meet epoch not match, abort split shard task. group={}, shard={}, new_shard={}",
-                    task.group_id, old_shard_id, new_shard_id
-                );
-                Ok(SchedResult::next())
-            }
-            Err(crate::Error::InvalidArgument(msg))
-                if msg.contains("shard estimated split keys is empty") =>
-            {
-                self.defer_unsplittable_shard(old_shard_id);
-                info!(
-                    "skip split shard without estimated keys. group={}, shard={}",
-                    task.group_id, old_shard_id
-                );
-                Ok(SchedResult::ack())
-            }
-            Err(err) => {
-                error!(
-                    "split shard: {err:?}. group={}, shard={}, new_shard={}",
-                    task.group_id, old_shard_id, new_shard_id
-                );
-                Err(err)
-            }
-        }
-    }
-
-    fn defer_unsplittable_shard(&self, shard: u64) {
-        if self.cfg.enable_shard_size_balance || !self.cfg.enable_proactive_shard_split {
-            self.cluster_stats.defer_shard_split(
-                shard,
-                Duration::from_secs(self.cfg.liveness_threshold_sec.max(1)),
-            );
-        }
-    }
-
-    fn split_policy_for_moving(
-        &self,
-        group: &GroupDesc,
-        shard_id: u64,
-        target_size: Option<u64>,
-    ) -> Option<(Vec<u8>, u64)> {
-        let target_size = target_size.or_else(|| {
-            let stats = self.cluster_stats.get_shard_stats(shard_id)?;
-            (stats.shard_size > self.cfg.move_shard_size_limit)
-                .then_some(self.cfg.move_shard_size_limit)
-        })?;
-        let shard = group.shard(shard_id)?;
-        let range = shard.range.as_ref()?;
-        Some((range.start.clone(), target_size))
-    }
-
-    async fn handle_merge_shard(&self, task: &mut MergeShardTask) -> Result<SchedResult> {
-        let result = self.handle_merge_shard_inner(task).await?;
-        if result.ack {
-            self.cluster_stats.finish_merge_shard(task.left_shard_id, task.right_shard_id);
-        }
-        Ok(result)
-    }
-
-    async fn handle_merge_shard_inner(&self, task: &mut MergeShardTask) -> Result<SchedResult> {
-        let schema = self.shared.schema()?;
-        let Some(group) = schema.get_group(task.group_id).await? else {
-            warn!("merge shard but group {} is not exists", task.group_id);
-            return Ok(SchedResult::next());
-        };
-        let Some(left) = group.shard(task.left_shard_id) else {
-            warn!(
-                "abort merge shard task because left shard is missing. group={}, left={}, right={}",
-                task.group_id, task.left_shard_id, task.right_shard_id
-            );
-            return Ok(SchedResult::next());
-        };
-        let Some(right) = group.shard(task.right_shard_id) else {
-            warn!(
-                "abort merge shard task because right shard is missing. group={}, left={}, right={}",
-                task.group_id, task.left_shard_id, task.right_shard_id
-            );
-            return Ok(SchedResult::next());
-        };
-        if let Err(reason) = check_merge_shards(left, right) {
-            warn!(
-                "abort merge shard task because shards are not mergeable. group={}, left={}, right={}, reason={reason}",
-                task.group_id, task.left_shard_id, task.right_shard_id
-            );
-            return Ok(SchedResult::next());
-        }
-
-        match self.try_merge_shard(task.group_id, task.left_shard_id, task.right_shard_id).await {
-            Ok(()) => Ok(SchedResult::next()),
-            Err(crate::Error::EpochNotMatch(_)) => {
-                warn!(
-                    "merge shard meet epoch not match, abort merge shard task. group={}, left={}, right={}",
-                    task.group_id, task.left_shard_id, task.right_shard_id
-                );
-                Ok(SchedResult::next())
-            }
-            Err(crate::Error::InvalidData(msg)) if msg.contains("not mergeable") => {
-                warn!(
-                    "abort merge shard task because shards are not mergeable. group={}, left={}, right={}, reason={msg}",
-                    task.group_id, task.left_shard_id, task.right_shard_id
-                );
-                Ok(SchedResult::next())
-            }
-            Err(err) => {
-                warn!(
-                    "merge shard fail, retry later: {err:?}. group={}, left={}, right={}",
-                    task.group_id, task.left_shard_id, task.right_shard_id
-                );
-                Err(err)
-            }
-        }
+        None
     }
 }
 
-impl ScheduleContext {
-    async fn get_group_leader(&self, group_id: u64) -> Result<Option<GroupDesc>> {
-        let schema = self.shared.schema()?;
-        let group = schema.get_group(group_id).await?;
-        Ok(group)
-    }
-
-    async fn try_shed_leader_before_remove(
-        &self,
-        group_id: u64,
-        remove_replica: u64,
-    ) -> Result<()> {
-        let schema = self.shared.schema()?;
-
-        let replica_state = schema
-            .get_replica_state(group_id, remove_replica)
-            .await?
-            .ok_or(crate::Error::AbortScheduleTask("shed leader replica has be destroyed"))?;
-
-        if replica_state.role != RaftRole::Leader as i32 {
-            return Ok(());
-        }
-
-        let group = self
-            .get_group_leader(group_id)
-            .await?
-            .ok_or(crate::Error::AbortScheduleTask("shed leader group has be destroyed"))?;
-        if let Some(target_replica) = group.replicas.iter().find(|e| e.id != remove_replica) {
-            // TODO: find least-leader node.
-            info!(
-                "attempt remove leader replica, so transfer leader to {} in node {}. group={}, replica={}",
-                target_replica.id, target_replica.node_id, group.id, remove_replica
-            );
-            self.try_transfer_leader(group_id, target_replica.id).await?;
-        }
-        Ok(())
-    }
-
-    async fn try_move_replica(
-        &self,
-        group: u64,
-        incoming_replica: ReplicaDesc,
-        outgoing_replica: ReplicaDesc,
-    ) -> Result<ScheduleState> {
-        let mut group_client = self.shared.transport_manager.lazy_group_client(group);
-        let current_state =
-            group_client.move_replicas(vec![incoming_replica], vec![outgoing_replica]).await?;
-        Ok(current_state)
-    }
-
-    async fn try_transfer_leader(&self, group: u64, target_replica: u64) -> Result<()> {
-        let mut group_client = self.shared.transport_manager.lazy_group_client(group);
-        group_client.transfer_leader(target_replica).await?;
-        Ok(())
-    }
-
-    async fn try_migrate_shard(
-        &self,
-        task: &MigrateShardTask,
-        planned_groups: &[GroupDesc],
-    ) -> Result<()> {
-        let MigrateShardTask { src_group, dest_group: target_group, shard, .. } = *task;
-        let guarded = task.guard() != ShardMoveGuard::Unrestricted;
-        let (source, mut group_client) = if guarded {
-            let target = planned_groups
-                .iter()
-                .find(|group| group.id == target_group)
-                .ok_or(Error::AbortScheduleTask("migrate target group no longer exists"))?;
-            (
-                planned_groups.iter().find(|group| group.id == src_group).cloned(),
-                self.group_client_at(target),
-            )
-        } else {
-            (
-                self.get_group_leader(src_group).await?,
-                self.shared.transport_manager.lazy_group_client(target_group),
-            )
-        };
-        let src_group =
-            source.ok_or(Error::AbortScheduleTask("migrate source group no longer exists"))?;
-        let shard_desc = src_group
-            .shards
+fn drain_action(view: &ClusterView) -> Option<Plan> {
+    for node in view
+        .nodes
+        .iter()
+        .filter(|node| matches!(node.status(), NodeStatus::Draining | NodeStatus::Drained))
+    {
+        let mut has_leader = false;
+        let mut observed_all = true;
+        for group in view
+            .groups
             .iter()
-            .find(|s| s.id == shard)
-            .ok_or(crate::Error::AbortScheduleTask("migrate shard has be moved out"))?;
-
-        group_client.accept_shard(src_group.id, src_group.epoch, shard_desc).await?;
-        if guarded {
-            self.cluster_stats.mark_shard_move_submitted(shard);
-        }
-
-        let mut hearbeat_nodes = Vec::new();
-        let src_node = self.find_leader_node(target_group).ok().flatten();
-        if let Some(node_id) = src_node {
-            hearbeat_nodes.push(HeartbeatTask { node_id })
-        }
-        let target_node = self.find_leader_node(src_group.id).ok().flatten();
-        if let Some(node_id) = target_node {
-            hearbeat_nodes.push(HeartbeatTask { node_id })
-        }
-        self.heartbeat_queue.try_schedule(hearbeat_nodes, Instant::now()).await;
-
-        info!(
-            "migrate shard submitted, shard: {shard}, from: {}, to: {target_group}, {:?}->{:?}",
-            src_group.id, src_node, target_node,
-        );
-        // TODO: handle src_group epoch not match?
-        Ok(())
-    }
-
-    /// Split shard request.
-    async fn try_split_shard(
-        &self,
-        group: &GroupDesc,
-        old_shard_id: u64,
-        new_shard_id: u64,
-        split_policy: Option<(Vec<u8>, u64)>,
-    ) -> Result<bool> {
-        let mut group_client = self.group_client_at(group);
-        let split_key = if let Some((split_start_key, split_target_size)) = split_policy {
-            let Some(split_key) = group_client
-                .get_split_key(old_shard_id, Some(split_start_key), Some(split_target_size))
-                .await?
-            else {
-                return Ok(false);
+            .filter(|group| group.replicas.iter().any(|replica| replica.node_id == node.id))
+        {
+            let Some(leader) = view.samples.leader(group.id) else {
+                observed_all = false;
+                continue;
             };
-            Some(split_key)
-        } else {
-            None
-        };
-        group_client.split_shard(old_shard_id, new_shard_id, split_key).await?;
-        Ok(true)
-    }
-
-    fn group_client_at(&self, group: &GroupDesc) -> sekas_client::GroupClient {
-        let group_state = sekas_client::RouterGroupState {
-            id: group.id,
-            epoch: group.epoch,
-            replicas: group.replicas.iter().map(|replica| (replica.id, replica.clone())).collect(),
-            leader_state: None,
-        };
-        let client =
-            self.shared.transport_manager.build_client(sekas_client::ClientOptions::default());
-        sekas_client::GroupClient::new(group_state, client)
-    }
-
-    async fn try_merge_shard(
-        &self,
-        group_id: u64,
-        left_shard_id: u64,
-        right_shard_id: u64,
-    ) -> Result<()> {
-        let mut group_client = self.shared.transport_manager.lazy_group_client(group_id);
-        group_client.merge_shard(left_shard_id, right_shard_id).await?;
-        Ok(())
-    }
-
-    fn find_leader_node(&self, group: u64) -> Result<Option<u64>> {
-        let group_router = self.shared.transport_manager.find_group(group)?;
-        if group_router.leader_state.is_none() {
-            return Ok(None);
+            if leader.node_id != node.id {
+                continue;
+            }
+            has_leader = true;
+            if !view.group_available(group.id) {
+                continue;
+            }
+            if let Some(target) = group
+                .replicas
+                .iter()
+                .filter(|replica| {
+                    replica.role() == ReplicaRole::Voter
+                        && replica.node_id != node.id
+                        && view.available.contains(&replica.node_id)
+                })
+                .min_by_key(|replica| {
+                    (
+                        view.samples
+                            .leaders
+                            .values()
+                            .filter(|state| state.node_id == replica.node_id)
+                            .count(),
+                        replica.id,
+                    )
+                })
+            {
+                return Some(Plan::placement(
+                    Action::TransferLeader(TransferLeader {
+                        group: group.id,
+                        source: leader.replica_id,
+                        target: target.id,
+                        draining_node: Some(node.id),
+                        version: GroupVersion { epoch: group.epoch, term: leader.term },
+                    }),
+                    TaskReason::new("Node drain requested"),
+                ));
+            }
         }
-        let (leader_repl, _) = group_router.leader_state.unwrap();
-        Ok(group_router.replicas.iter().find(|(_, r)| r.id == leader_repl).map(|(_, r)| r.node_id))
+        if node.status() == NodeStatus::Draining && !has_leader && observed_all {
+            return Some(Plan::Drained(node.clone()));
+        }
     }
+    None
 }
 
-#[cfg(test)]
-mod tests {
-    use sekas_api::server::v1::{RangePartition, ShardDesc, ShardStats};
-
-    use super::{
-        MigrateShardPrecheck, check_merge_shards, is_merge_candidate, precheck_migrate_shard_stats,
-    };
-    use crate::RootConfig;
-
-    #[test]
-    fn split_precheck_rejects_obsolete_tasks_and_recognizes_completion() {
-        let mut task = super::SplitShardTask { group_id: 3, shard_id: 1028, ..Default::default() };
-        let mut group = super::GroupDesc {
-            id: 3,
-            epoch: 8,
-            shards: vec![ShardDesc::whole(1028, 1024)],
+fn planned_action(view: &ClusterView, action: PlacementAction) -> Option<Action> {
+    Some(match action {
+        PlacementAction::Leader(action) => Action::TransferLeader(TransferLeader {
+            group: action.group,
+            source: action.src_replica,
+            target: action.target_replica,
+            draining_node: None,
+            version: view.version(action.group)?,
+        }),
+        PlacementAction::Replica(action) => Action::MoveReplica(MoveReplica {
+            group: action.group,
+            outgoing: action.source_replica,
+            target_node: action.target_node,
             ..Default::default()
-        };
-        assert!(!super::precheck_split_shard(&task, Some(&group)).unwrap());
-        assert!(matches!(
-            super::precheck_split_shard(&task, None),
-            Err(crate::Error::AbortScheduleTask(_))
-        ));
-        group.shards.clear();
-        assert!(matches!(
-            super::precheck_split_shard(&task, Some(&group)),
-            Err(crate::Error::AbortScheduleTask(_))
-        ));
-        group.shards.push(ShardDesc::whole(1028, 1024));
-        task.group_epoch = Some(group.epoch);
-        task.new_shard_id = Some(1056);
-        group.epoch += 1;
-        assert!(matches!(
-            super::precheck_split_shard(&task, Some(&group)),
-            Err(crate::Error::AbortScheduleTask(_))
-        ));
-        // A lost response must be treated as success, even if the parent has
-        // since moved out and the epoch has advanced.
-        group.shards = vec![ShardDesc::whole(1056, 1024)];
-        assert!(super::precheck_split_shard(&task, Some(&group)).unwrap());
-    }
-
-    #[test]
-    fn task_backoff_is_capped_and_explicit_delays_are_preserved() {
-        let mut task = super::ReconcileTask::default();
-        for seconds in [1, 2, 4, 8, 16, 30, 30] {
-            task.defer_retry(1000, None);
-            assert_eq!(task.fire_at, 1000 + seconds * 1000);
+        }),
+        PlacementAction::Shard(action) => {
+            let source = view.group(action.source_group)?;
+            let target = view.group(action.target_group)?;
+            let shard = source.shard(action.shard)?.clone();
+            if let Some(target_bytes) = action.split_bytes {
+                Action::SplitShard(SplitShard {
+                    group: source.id,
+                    epoch: source.epoch,
+                    shard,
+                    target_bytes: Some(target_bytes),
+                    ..Default::default()
+                })
+            } else {
+                Action::MoveShard(MoveShard {
+                    desc: MoveShardDesc {
+                        shard_desc: Some(shard),
+                        src_group_id: source.id,
+                        src_group_epoch: source.epoch,
+                        dest_group_id: target.id,
+                        dest_group_epoch: target.epoch,
+                    },
+                    target_term: view.samples.leader(target.id)?.term,
+                })
+            }
         }
-        task.defer_retry(1000, Some(super::Duration::from_secs(30)));
-        assert_eq!(task.fire_at, 31000);
-        task.defer_retry(1000, None);
-        assert_eq!(task.fire_at, 2000);
-        task.retry_count = u32::MAX;
-        task.defer_retry(u64::MAX - 100, None);
-        assert_eq!(task.fire_at, u64::MAX);
-        assert_eq!(task.retry_count, u32::MAX);
-    }
+    })
+}
 
-    #[sekas_macro::test]
-    async fn scheduler_defers_errors_and_does_not_spin_on_delayed_tasks() {
-        let dir = crate::testutil::TempDir::new("scheduler-backoff").unwrap();
-        let cfg = crate::Config { root_dir: dir.path().to_owned(), ..Default::default() };
-        let engines = crate::engine::Engines::open(&cfg.root_dir, &cfg.db).unwrap();
-        let transport = crate::transport::TransportManager::new(vec![], engines.state()).await;
-        let root = super::Root::new(transport, &crate::serverpb::v1::NodeIdent::default(), cfg);
-        let scheduler = &root.scheduler;
-        scheduler.sched_split_shard_task(3, 1028).await;
-        assert_eq!(scheduler.scheduler_status(super::timestamp_millis()).ready, 1);
-        // This root has no leadership/schema, so the real handler fails.
-        let before_retry = super::timestamp_millis();
-        assert!(!scheduler.advance_tasks().await);
-        {
-            let mut tasks = scheduler.tasks.lock().await;
-            let (id, task) = tasks.front_mut().unwrap();
-            assert_eq!(task.retry_count, 1);
-            assert!(task.fire_at >= before_retry + 1000);
-            task.fire_at = super::timestamp_millis() + 60000;
-            scheduler.queue_status.lock().unwrap().finish_attempt(*id, task);
-        }
-        assert_eq!(scheduler.scheduler_status(super::timestamp_millis()).waiting, 1);
-        tokio::time::timeout(super::Duration::from_millis(100), async {
-            while scheduler.advance_tasks().await {}
-        })
-        .await
-        .unwrap();
-        {
-            let mut tasks = scheduler.tasks.lock().await;
-            let (id, task) = tasks.front_mut().unwrap();
-            assert_eq!(task.retry_count, 1);
-            task.fire_at = 0;
-            scheduler.queue_status.lock().unwrap().finish_attempt(*id, task);
-        }
-        let before_retry = super::timestamp_millis();
-        assert!(!scheduler.advance_tasks().await);
-        let tasks = scheduler.tasks.lock().await;
-        let (_, task) = tasks.front().unwrap();
-        assert_eq!(task.retry_count, 2);
-        assert!(task.fire_at >= before_retry + 2000);
-        let status = &scheduler.task_statuses()[0];
-        assert_eq!(status.kind, "split_shard");
-        assert_eq!(status.target, "group 3, shard 1028");
-        assert!(status.reason.policy.is_none());
-        assert!(status.reason.detail.starts_with("Shard exceeds the automatic split threshold"));
-        assert_eq!(status.retry_count, task.retry_count);
-        assert_eq!(status.fire_at, task.fire_at);
-    }
-
-    #[test]
-    fn migrate_shard_precheck_uses_stats_and_size_limit() {
-        let cfg = RootConfig { move_shard_size_limit: 1024, ..Default::default() };
-
-        assert_eq!(precheck_migrate_shard_stats(&cfg, None), MigrateShardPrecheck::WaitStats);
-        assert_eq!(
-            precheck_migrate_shard_stats(&cfg, Some(1025)),
-            MigrateShardPrecheck::Split(None)
-        );
-        assert_eq!(precheck_migrate_shard_stats(&cfg, Some(1024)), MigrateShardPrecheck::Move);
-
-        let cfg = RootConfig { enable_auto_shard_split: false, ..cfg };
-        assert_eq!(precheck_migrate_shard_stats(&cfg, None), MigrateShardPrecheck::Move);
-    }
-
-    #[sekas_macro::test]
-    async fn scheduler_excludes_overlapping_shard_tasks() {
-        let dir = crate::testutil::TempDir::new("scheduler-shard-exclusion").unwrap();
-        let cfg = crate::Config { root_dir: dir.path().to_owned(), ..Default::default() };
-        let engines = crate::engine::Engines::open(&cfg.root_dir, &cfg.db).unwrap();
-        let transport = crate::transport::TransportManager::new(vec![], engines.state()).await;
-        let root = super::Root::new(transport, &crate::serverpb::v1::NodeIdent::default(), cfg);
-        let scheduler = &root.scheduler;
-        let moving = super::ReallocateShard { shard: 1028, source_group: 3, target_group: 4 };
-        let enqueue = |action| {
-            scheduler.setup_task(
-                super::balance_task(
-                    super::PlacementAction::Shard(action),
-                    super::ShardMoveGuard::Unrestricted,
-                ),
-                super::TaskReason::new("Move a shard"),
-            )
-        };
-        futures::join!(
-            enqueue(moving.clone()),
-            scheduler.sched_split_shard_task(3, 1028),
-            scheduler.sched_merge_shard_task(3, 1028, 1029),
-        );
-        assert_eq!(scheduler.pending_tasks().await, 1);
-        assert!(scheduler.ctx.cluster_stats.is_shard_scheduled(1028));
-        // A rejected merge must not leave its other shard locked.
-        assert!(!scheduler.ctx.cluster_stats.is_shard_scheduled(1029));
-        scheduler.sched_merge_shard_task(3, 1029, 1030).await;
-        scheduler.sched_split_shard_task(3, 1030).await;
-        assert_eq!(scheduler.pending_tasks().await, 2);
-        // Queue ownership still excludes duplicates if a heartbeat has
-        // already cleared the move marker.
-        scheduler.ctx.cluster_stats.finish_move_shard(1028);
-        enqueue(moving).await;
-        assert_eq!(scheduler.pending_tasks().await, 2);
-    }
-
-    #[test]
-    fn merge_candidate_requires_adjacency_size_and_no_schedule_lock() {
-        let table_id = sekas_schema::FIRST_USER_TABLE_ID;
-        let left = ShardDesc::with_range(1, table_id, b"a".to_vec(), b"m".to_vec());
-        let right = ShardDesc::with_range(2, table_id, b"m".to_vec(), b"z".to_vec());
-        let left_stats =
-            ShardStats { shard_id: 1, table_id, shard_size: 400, traffic: None, range: None };
-        let right_stats =
-            ShardStats { shard_id: 2, table_id, shard_size: 600, traffic: None, range: None };
-
-        assert!(is_merge_candidate(&left, &right, &left_stats, &right_stats, 1000, false));
-        assert!(!is_merge_candidate(&left, &right, &left_stats, &right_stats, 999, false));
-        assert!(!is_merge_candidate(&left, &right, &left_stats, &right_stats, 1000, true));
-
-        let mut non_adjacent = right.clone();
-        non_adjacent.range = Some(RangePartition { start: b"n".to_vec(), end: b"z".to_vec() });
-        assert!(!is_merge_candidate(&left, &non_adjacent, &left_stats, &right_stats, 1000, false));
-
-        let other_table = ShardDesc::with_range(3, table_id + 1, b"m".to_vec(), b"z".to_vec());
-        assert!(!is_merge_candidate(&left, &other_table, &left_stats, &right_stats, 1000, false));
-
-        let system_left = ShardDesc::with_range(4, 2, b"a".to_vec(), b"m".to_vec());
-        let system_right = ShardDesc::with_range(5, 2, b"m".to_vec(), b"z".to_vec());
-        let system_left_stats =
-            ShardStats { shard_id: 4, table_id: 2, shard_size: 400, traffic: None, range: None };
-        let system_right_stats =
-            ShardStats { shard_id: 5, table_id: 2, shard_size: 600, traffic: None, range: None };
-        assert!(!is_merge_candidate(
-            &system_left,
-            &system_right,
-            &system_left_stats,
-            &system_right_stats,
-            1000,
-            false
-        ));
-    }
-
-    #[test]
-    fn merge_precheck_rejects_cross_table_and_non_user_shards() {
-        let table_id = sekas_schema::FIRST_USER_TABLE_ID;
-        let left = ShardDesc::with_range(1, table_id, b"a".to_vec(), b"m".to_vec());
-        let right = ShardDesc::with_range(2, table_id, b"m".to_vec(), b"z".to_vec());
-        assert!(check_merge_shards(&left, &right).is_ok());
-
-        let other_table = ShardDesc::with_range(3, table_id + 1, b"m".to_vec(), b"z".to_vec());
-        assert_eq!(check_merge_shards(&left, &other_table), Err("different table"));
-
-        let system_left = ShardDesc::with_range(4, 2, b"a".to_vec(), b"m".to_vec());
-        let system_right = ShardDesc::with_range(5, 2, b"m".to_vec(), b"z".to_vec());
-        assert_eq!(check_merge_shards(&system_left, &system_right), Err("system table"));
-
-        let non_adjacent = ShardDesc::with_range(6, table_id, b"n".to_vec(), b"z".to_vec());
-        assert_eq!(check_merge_shards(&left, &non_adjacent), Err("not mergeable"));
+fn placement(job: &BackgroundJob) -> &PlacementJob {
+    match &job.job {
+        Some(Job::Placement(task)) => task,
+        _ => unreachable!("expected a placement job"),
     }
 }

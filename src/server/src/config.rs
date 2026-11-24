@@ -290,6 +290,9 @@ pub struct RootConfig {
     ///
     /// Default: true
     pub enable_group_balance: bool,
+    /// Logical bytes per user group above which placement prioritizes capacity
+    /// relief.
+    pub group_size_limit: u64,
     /// Enable balance replicas.
     ///
     /// Default: true
@@ -601,14 +604,6 @@ impl Default for RaftConfig {
 }
 
 impl RootConfig {
-    pub(crate) fn has_resource_or_traffic_balancing(&self) -> bool {
-        self.enable_read_balance
-            || self.enable_write_balance
-            || self.enable_cpu_balance
-            || self.enable_memory_balance
-            || self.enable_disk_balance
-    }
-
     pub fn heartbeat_interval(&self) -> Duration {
         Duration::from_secs(self.liveness_threshold_sec - self.heartbeat_timeout_sec)
     }
@@ -619,6 +614,7 @@ impl Default for RootConfig {
         Self {
             replicas_per_group: REPLICA_PER_GROUP,
             enable_group_balance: true,
+            group_size_limit: 100 * 1024 * 1024 * 1024,
             enable_replica_balance: true,
             enable_shard_balance: true,
             enable_shard_size_balance: true,

@@ -527,8 +527,83 @@ impl Schema {
     pub async fn append_job(&self, desc: BackgroundJob) -> Result<BackgroundJob> {
         let mut desc = desc.to_owned();
         desc.id = self.next_id(META_JOB_ID_KEY).await?;
-        self.put_job(desc.to_owned()).await?;
-        Ok(desc)
+        let key = desc.id.to_le_bytes();
+        match self.compare_put(table::JOB_ID, &key, None, desc.encode_to_vec()).await {
+            Ok(true) => Ok(desc),
+            Ok(false) => Err(Error::AlreadyExists(format!("job {}", desc.id))),
+            Err(error) => match self.get_job(desc.id).await {
+                Ok(Some(persisted)) if persisted == desc => Ok(desc),
+                _ => Err(error),
+            },
+        }
+    }
+
+    /// Save a prepared step or terminal result, conditional on the exact prior
+    /// job.
+    pub(super) async fn replace_job(
+        &self,
+        old: &BackgroundJob,
+        new: &BackgroundJob,
+    ) -> Result<bool> {
+        self.compare_put(
+            table::JOB_ID,
+            &old.id.to_le_bytes(),
+            Some(old.encode_to_vec()),
+            new.encode_to_vec(),
+        )
+        .await
+    }
+
+    pub(super) async fn replace_node(&self, old: &NodeDesc, new: &NodeDesc) -> Result<bool> {
+        self.compare_put(
+            table::NODE_ID,
+            &old.id.to_le_bytes(),
+            Some(old.encode_to_vec()),
+            new.encode_to_vec(),
+        )
+        .await
+    }
+
+    async fn compare_put(
+        &self,
+        table_id: u64,
+        key: &[u8],
+        expected: Option<Vec<u8>>,
+        value: Vec<u8>,
+    ) -> Result<bool> {
+        let condition = match expected {
+            Some(value) => WriteCondition {
+                r#type: WriteConditionType::ExpectValue as i32,
+                value,
+                ..Default::default()
+            },
+            None => WriteCondition {
+                r#type: WriteConditionType::ExpectNotExists as i32,
+                ..Default::default()
+            },
+        };
+        let result = self
+            .store
+            .batch_write(ShardWriteRequest {
+                shard_id: table::shard_id(table_id),
+                puts: vec![PutRequest {
+                    key: key.to_vec(),
+                    value,
+                    conditions: vec![condition],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            })
+            .await;
+        match result {
+            Ok(()) => Ok(true),
+            Err(Error::CasFailed(..)) => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
+
+    pub(super) async fn term(&self) -> Result<u64> {
+        self.store.term().await
     }
 
     pub async fn remove_job(&self, job: &BackgroundJob) -> Result<()> {
@@ -547,6 +622,16 @@ impl Schema {
         Ok(true)
     }
 
+    pub(super) async fn get_job(&self, id: u64) -> Result<Option<BackgroundJob>> {
+        self.get(table::JOB_ID, &id.to_le_bytes())
+            .await?
+            .map(|bytes| {
+                BackgroundJob::decode(bytes.as_slice())
+                    .map_err(|_| Error::InvalidData(format!("background job {id}")))
+            })
+            .transpose()
+    }
+
     pub async fn list_job(&self) -> Result<Vec<BackgroundJob>> {
         let values = self.list(table::JOB_ID).await?;
         let mut jobs = Vec::with_capacity(values.len());
@@ -556,6 +641,33 @@ impl Schema {
             jobs.push(job.to_owned());
         }
         Ok(jobs)
+    }
+
+    /// Scheduling jobs finish in place. Trim old terminal rows in one batch.
+    pub(super) async fn prune_schedule_history(&self) -> Result<()> {
+        const KEEP: usize = 256;
+        let mut finished: Vec<_> = self
+            .list_job()
+            .await?
+            .into_iter()
+            .filter(|job| !job.is_active())
+            .map(|job| job.id)
+            .collect();
+        if finished.len() <= KEEP {
+            return Ok(());
+        }
+        finished.sort_unstable();
+        let deletes = finished[..finished.len() - KEEP]
+            .iter()
+            .map(|id| DeleteRequest { key: id.to_le_bytes().to_vec(), ..Default::default() })
+            .collect();
+        self.store
+            .batch_write(ShardWriteRequest {
+                shard_id: table::shard_id(table::JOB_ID),
+                deletes,
+                ..Default::default()
+            })
+            .await
     }
 
     pub async fn list_history_job(&self) -> Result<Vec<BackgroundJob>> {
@@ -781,15 +893,28 @@ impl Schema {
 
     async fn next_id(&self, id_type: &str) -> Result<u64> {
         let _mutex = ID_GEN_LOCKS.get(id_type).expect("id gen lock not found").lock().await;
-        let id = self
-            .get_meta(id_type.as_bytes())
-            .await?
-            .ok_or_else(|| Error::InvalidData(format!("{} id", id_type)))?;
-        let id = u64::from_le_bytes(
-            id.try_into().map_err(|_| Error::InvalidData(format!("{} id", id_type)))?,
-        );
-        self.put_meta(id_type.as_bytes(), (id + 1).to_le_bytes().to_vec()).await?;
-        Ok(id)
+        let key = id_type.as_bytes();
+        loop {
+            let previous = self
+                .get_meta(key)
+                .await?
+                .ok_or_else(|| Error::InvalidData(format!("missing {id_type} counter")))?;
+            let id = u64::from_le_bytes(
+                previous
+                    .as_slice()
+                    .try_into()
+                    .map_err(|_| Error::InvalidData(format!("invalid {id_type} counter")))?,
+            );
+            let next = id
+                .checked_add(1)
+                .ok_or_else(|| Error::InvalidData(format!("exhausted {id_type} counter")))?;
+            if self
+                .compare_put(table::META_ID, key, Some(previous), next.to_le_bytes().to_vec())
+                .await?
+            {
+                return Ok(id);
+            }
+        }
     }
 }
 

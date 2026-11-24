@@ -44,7 +44,6 @@ use sekas_schema::shard::{SHARD_MAX, SHARD_MIN};
 use tokio::time::Instant;
 use tokio_util::time::delay_queue;
 
-use self::allocator::SysAllocSource;
 use self::bg_job::Jobs;
 pub use self::collector::RootCollector;
 use self::diagnosis::Metadata;
@@ -63,7 +62,7 @@ use crate::{Config, Error, Result, RootConfig};
 pub struct Root {
     cfg: RootConfig,
     shared: Arc<RootShared>,
-    alloc: Arc<allocator::Allocator<SysAllocSource>>,
+    alloc: Arc<allocator::Allocator>,
     liveness: Arc<liveness::Liveness>,
     scheduler: Arc<ReconcileScheduler>,
     heartbeat_queue: Arc<HeartbeatQueue>,
@@ -122,14 +121,18 @@ impl RootCore {
 
 impl Root {
     pub(crate) async fn poll_with_stats(&self, stats: Vec<GroupStats>) -> Result<()> {
-        self.shared.schema()?;
+        let schema = self.shared.schema()?;
         for group in stats {
-            self.cluster_stats.handle_group_stats(&group);
-            if group.sample.is_some() {
-                self.cluster_stats.handle_show_group_stats(&group, 0);
+            if let Some(sample) = group.sample.as_ref()
+                && let Some(desc) = schema.get_group(group.group_id).await?
+                && let Some(replica) =
+                    desc.replicas.iter().find(|replica| replica.id == sample.replica_id)
+            {
+                self.cluster_stats.handle_show_group_stats(&group, replica.node_id);
             }
         }
         self.scheduler.poll_and_schedule().await;
+        self.scheduler.wake();
         Ok(())
     }
 
@@ -151,9 +154,12 @@ impl Root {
         });
         let liveness =
             Arc::new(liveness::Liveness::new(Duration::from_secs(cfg.root.liveness_threshold_sec)));
-        let info = Arc::new(SysAllocSource::new(shared.clone(), liveness.to_owned()));
-        let alloc =
-            Arc::new(allocator::Allocator::new(info, cluster_stats.clone(), cfg.root.to_owned()));
+        let alloc = Arc::new(allocator::Allocator::new(
+            shared.clone(),
+            liveness.clone(),
+            cluster_stats.clone(),
+            cfg.root.replicas_per_group,
+        ));
         let heartbeat_queue = Arc::new(HeartbeatQueue::default());
         let jobs =
             Arc::new(Jobs::new(shared.to_owned(), alloc.to_owned(), heartbeat_queue.to_owned()));
@@ -238,7 +244,7 @@ impl Root {
                     )
                     .await
                 {
-                    Ok(()) | Err(Error::NotLeader(..)) => {
+                    Ok(()) | Err(Error::NotLeader(..) | Error::NotRootLeader(..)) => {
                         // Step follower
                         continue;
                     }
@@ -269,14 +275,27 @@ impl Root {
     }
 
     async fn run_background_jobs(&self) -> ! {
+        let mut prune_at = Instant::now();
         loop {
-            if self.schema().is_ok() {
+            if let Ok(schema) = self.schema() {
                 if let Err(err) = self.jobs.advance_jobs().await {
                     warn!("run background job: {err:?}");
                     sekas_runtime::time::sleep(Duration::from_secs(3)).await;
                     continue;
                 }
-                self.jobs.wait_more_jobs().await;
+                if Instant::now() >= prune_at {
+                    prune_at = Instant::now() + Duration::from_secs(30);
+                    if let Err(error) = schema.prune_schedule_history().await {
+                        warn!("prune scheduling history: {error:?}");
+                    }
+                }
+                if self.jobs.pending_jobs() == 0 {
+                    let until_prune = prune_at.saturating_duration_since(Instant::now());
+                    let _ =
+                        sekas_runtime::time::timeout(until_prune, self.jobs.wait_more_jobs()).await;
+                } else {
+                    sekas_runtime::time::sleep(Duration::from_millis(250)).await;
+                }
             } else {
                 sekas_runtime::time::sleep(Duration::from_secs(1)).await;
             };
@@ -292,6 +311,7 @@ impl Root {
     ) -> Result<()> {
         let store = Arc::new(RootStore::new(root_replica.to_owned()));
         let mut schema = Schema::new(store.clone());
+        let term = schema.term().await?;
 
         // Only when the program is initialized is it checked for bootstrap, after which
         // the leadership change does not need to check for whether bootstrap or
@@ -314,6 +334,8 @@ impl Root {
             max_txn_id: Arc::new(AtomicU64::new(max_txn_id)),
         };
         root_core.bump_txn_id().await?;
+        let nodes = schema.list_node().await?;
+        self.jobs.on_step_leader(&schema).await?;
 
         let cloned_root_core = root_core.clone();
         let txn_bumper_handle = sekas_runtime::spawn(async move {
@@ -336,7 +358,6 @@ impl Root {
 
         self.cluster_stats.reset();
         self.heartbeat_queue.enable(true).await;
-        self.jobs.on_step_leader().await?;
 
         let node_id = self.shared.node_ident.node_id;
         info!(
@@ -347,7 +368,6 @@ impl Root {
 
         // try schedule a full cluster heartbeat when current node become new root
         // leader.
-        let nodes = schema.list_node().await?;
         self.heartbeat_queue
             .try_schedule(
                 nodes.iter().map(|n| HeartbeatTask { node_id: n.id }).collect::<Vec<_>>(),
@@ -355,10 +375,10 @@ impl Root {
             )
             .await;
 
-        while let Ok(Some(_)) = root_replica.to_owned().on_leader("root", true).await {
+        while matches!(root_replica.on_leader("root", true).await, Ok(Some(current)) if current == term)
+        {
             let next_interval = self.scheduler.poll_and_schedule().await;
-            sekas_runtime::time::sleep(next_interval).await;
-            self.scheduler.wait_one_heartbeat_tick().await;
+            self.scheduler.wait(next_interval).await;
         }
         info!("node {node_id} current root node drop leader");
         self.watcher_hub().notify_error(Error::NotRootLeader(RootDesc::default(), 0, None)).await;
@@ -393,8 +413,11 @@ impl Root {
         if !matches!(current_status, NodeStatus::Active) {
             return Err(crate::Error::InvalidArgument("node already cordoned".into()));
         }
+        let old = node_desc.clone();
         node_desc.status = NodeStatus::Cordoned as i32;
-        schema.update_node(node_desc).await?; // TODO: cas
+        if !schema.replace_node(&old, &node_desc).await? {
+            return Err(Error::InvalidArgument("node changed during cordon".into()));
+        }
         Ok(())
     }
 
@@ -408,26 +431,24 @@ impl Root {
         let current_status = NodeStatus::try_from(node_desc.status).unwrap();
         if !matches!(
             current_status,
-            NodeStatus::Cordoned | NodeStatus::Drained | NodeStatus::Decommissioned
+            NodeStatus::Cordoned
+                | NodeStatus::Draining
+                | NodeStatus::Drained
+                | NodeStatus::Decommissioned
         ) {
             return Err(crate::Error::InvalidArgument("node status unsupport uncordon".into()));
         }
 
+        let old = node_desc.clone();
         node_desc.status = NodeStatus::Active as i32;
-        schema.update_node(node_desc).await?; // TODO: cas
+        if !schema.replace_node(&old, &node_desc).await? {
+            return Err(Error::InvalidArgument("node changed during uncordon".into()));
+        }
         Ok(())
     }
 
     pub async fn begin_drain(&self, node_id: u64) -> Result<()> {
         let schema = self.schema()?;
-
-        if self.current_node_id() == node_id {
-            info!("try to drain root leader and move root leadership out first");
-            self.scheduler.sched_root_leader(node_id).await;
-            return Err(crate::Error::InvalidArgument(
-                "node is root leader, try again later".into(),
-            ));
-        }
 
         let mut node_desc = schema
             .get_node(node_id)
@@ -441,10 +462,11 @@ impl Root {
             ));
         }
 
+        let old = node_desc.clone();
         node_desc.status = NodeStatus::Draining as i32;
-        schema.update_node(node_desc).await?; // TODO: cas
-
-        self.scheduler.sched_leader(node_id).await;
+        if !schema.replace_node(&old, &node_desc).await? {
+            return Err(Error::InvalidArgument("node changed during drain".into()));
+        }
 
         Ok(())
     }
@@ -476,8 +498,14 @@ impl Root {
         let schema = self.schema()?;
         let ongoing_jobs = schema.list_job().await?;
         let history_jobs = schema.list_history_job().await?;
-        let ongoing = ongoing_jobs.iter().map(BackgroundJob::to_json).collect::<Vec<_>>();
-        let history = history_jobs.iter().map(BackgroundJob::to_json).collect::<Vec<_>>();
+        let (ongoing_placement, completed_placement): (Vec<_>, Vec<_>) =
+            ongoing_jobs.iter().partition(|job| job.is_active());
+        let ongoing = ongoing_placement.into_iter().map(BackgroundJob::to_json).collect::<Vec<_>>();
+        let history = history_jobs
+            .iter()
+            .chain(completed_placement)
+            .map(BackgroundJob::to_json)
+            .collect::<Vec<_>>();
         Ok(json!({"ongoing": ongoing, "history": history}).to_string())
     }
 
@@ -494,8 +522,8 @@ impl Root {
         let dbs = schema.list_database().await?;
         let tables = schema.list_table().await?;
 
-        let balanced = !self.scheduler.need_reconcile().await?;
-        let scheduler_tasks = self.scheduler.pending_tasks().await;
+        let balanced = !self.scheduler.need_reconcile();
+        let scheduler_tasks = self.scheduler.pending_tasks();
         let ongoing_jobs = self.jobs.pending_jobs();
         let groups_ready = groups.iter().all(|group| {
             group.replicas.len() == self.cfg.replicas_per_group
@@ -784,6 +812,7 @@ impl Root {
         self.heartbeat_queue
             .try_schedule(vec![HeartbeatTask { node_id: node.id }], Instant::now())
             .await;
+        self.scheduler.wake();
         info!("new node join cluster. node={}, addr={}", node.id, node.addr);
         Ok((cluster_id, node, root))
     }
@@ -823,7 +852,7 @@ impl Root {
             schema.update_group_replica(group_desc.to_owned(), replica_state.to_owned()).await?;
 
             if let Some(sched_state) = u.schedule_state {
-                cluster_stats.handle_schedule_update(&[sched_state], None);
+                cluster_stats.handle_schedule_update(&[sched_state]);
             }
 
             if let Some(desc) = group_desc {
@@ -849,13 +878,21 @@ impl Root {
             }
         }
 
-        let mut states = schema.list_group_state().await?; // TODO: fix poor performance.
-        states.retain(|s| changed_group_states.contains(&s.group_id));
-        for state in states {
-            update_events.push(UpdateEvent { event: Some(update_event::Event::GroupState(state)) })
+        if !changed_group_states.is_empty() {
+            let states = schema.list_group_state().await?;
+            update_events.extend(
+                states
+                    .into_iter()
+                    .filter(|state| changed_group_states.contains(&state.group_id))
+                    .map(|state| UpdateEvent {
+                        event: Some(update_event::Event::GroupState(state)),
+                    }),
+            );
         }
-
-        self.watcher_hub().notify_updates(update_events).await;
+        if !update_events.is_empty() {
+            self.watcher_hub().notify_updates(update_events).await;
+            self.scheduler.wake();
+        }
 
         Ok(())
     }
@@ -969,19 +1006,8 @@ pub async fn fetch_root_replica(replica_table: &ReplicaRouteTable) -> Arc<Replic
 }
 
 #[derive(Debug)]
-pub enum QueueTask {
-    Heartbeat(HeartbeatTask),
-    Sentinel(Sentinel),
-}
-
-#[derive(Debug)]
 pub struct HeartbeatTask {
-    pub node_id: u64,
-}
-
-#[derive(Debug)]
-pub struct Sentinel {
-    sender: futures::channel::oneshot::Sender<()>,
+    node_id: u64,
 }
 
 #[derive(Default)]
@@ -992,7 +1018,7 @@ pub struct HeartbeatQueue {
 #[derive(Default)]
 struct HeartbeatQueueCore {
     enable: bool,
-    delay: delay_queue::DelayQueue<QueueTask>,
+    delay: delay_queue::DelayQueue<HeartbeatTask>,
     node_scheduled: HashMap<u64, (delay_queue::Key, Instant)>,
 }
 
@@ -1015,7 +1041,7 @@ impl HeartbeatQueue {
                     trace!("update next heartbeat. node={node}, when={when:?}");
                 }
             } else {
-                let key = core.delay.insert_at(QueueTask::Heartbeat(task), when);
+                let key = core.delay.insert_at(task, when);
                 core.node_scheduled.insert(node, (key, when));
                 trace!("schedule next heartbeat. node={node}, when={when:?}");
             }
@@ -1023,19 +1049,6 @@ impl HeartbeatQueue {
                 sekas_runtime::yield_now().await;
             }
         }
-    }
-
-    pub async fn wait_one_heartbeat_tick(&self) {
-        let (sender, receiver) = futures::channel::oneshot::channel::<()>();
-        let sentinel = Sentinel { sender };
-        {
-            let mut core = self.core.lock().await;
-            if !core.enable {
-                return;
-            }
-            core.delay.insert(QueueTask::Sentinel(sentinel), Duration::from_millis(0));
-        }
-        let _ = receiver.await;
     }
 
     async fn try_poll(&self) -> Vec<HeartbeatTask> {
@@ -1052,19 +1065,10 @@ impl HeartbeatQueue {
         })
         .await;
         let tasks = tasks.into_iter().map(|e| e.into_inner()).collect::<Vec<_>>();
-        let mut heartbeats = Vec::new();
-        for task in tasks {
-            match task {
-                QueueTask::Heartbeat(task) => {
-                    core.node_scheduled.remove(&task.node_id);
-                    heartbeats.push(task);
-                }
-                QueueTask::Sentinel(sential) => {
-                    let _ = sential.sender.send(());
-                }
-            }
+        for task in &tasks {
+            core.node_scheduled.remove(&task.node_id);
         }
-        heartbeats
+        tasks
     }
 
     async fn enable(&self, enable: bool) {

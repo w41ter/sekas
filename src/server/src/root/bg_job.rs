@@ -41,7 +41,7 @@ pub struct Jobs {
 impl Jobs {
     pub fn new(
         root_shared: Arc<RootShared>,
-        alloc: Arc<Allocator<SysAllocSource>>,
+        alloc: Arc<Allocator>,
         heartbeat_queue: Arc<HeartbeatQueue>,
     ) -> Self {
         Self {
@@ -73,16 +73,81 @@ impl Jobs {
         self.core.pending_jobs()
     }
 
-    pub async fn advance_jobs(&self) -> Result<()> {
-        let jobs = self.core.need_handle_jobs();
-        for job in &jobs {
-            self.handle_job(job).await?;
+    /// A snapshot of active placement work recovered from the Root job table.
+    pub(super) fn placement_jobs(&self) -> Vec<BackgroundJob> {
+        self.core
+            .mem_jobs
+            .lock()
+            .unwrap()
+            .jobs
+            .iter()
+            .filter(|job| matches!(job.job.as_ref(), Some(Job::Placement(_))))
+            .cloned()
+            .collect()
+    }
+
+    pub(super) fn creating_groups(&self) -> (usize, HashSet<u64>) {
+        let jobs = self.core.mem_jobs.lock().unwrap();
+        let mut expected = 0;
+        let mut ids = HashSet::new();
+        for job in &jobs.jobs {
+            if let Some(Job::CreateOneGroup(job)) = &job.job {
+                if !matches!(
+                    job.status(),
+                    CreateOneGroupStatus::Rollbacking | CreateOneGroupStatus::Abort
+                ) {
+                    expected += 1;
+                }
+                if let Some(group) = &job.group_desc {
+                    ids.insert(group.id);
+                }
+            }
+        }
+        (expected, ids)
+    }
+
+    pub(super) async fn replace_schedule_job(
+        &self,
+        old: &BackgroundJob,
+        new: BackgroundJob,
+    ) -> Result<()> {
+        let schema = self.core.root_shared.schema()?;
+        if !schema.replace_job(old, &new).await? {
+            return Err(crate::Error::InvalidData(format!("schedule job {} changed", old.id)));
+        }
+        let mut jobs = self.core.mem_jobs.lock().unwrap();
+        jobs.jobs.retain(|job| job.id != new.id);
+        if new.is_active() {
+            jobs.jobs.push(new);
         }
         Ok(())
     }
 
-    pub async fn on_step_leader(&self) -> Result<()> {
-        self.core.recovery().await?;
+    /// Reconcile a write whose result was lost before admitting new placement.
+    pub(super) async fn recover_placement(&self) -> Result<()> {
+        let schema = self.core.root_shared.schema()?;
+        let jobs = schema.list_job().await?;
+        let mut cached = self.core.mem_jobs.lock().unwrap();
+        cached.jobs.retain(|job| !matches!(job.job, Some(Job::Placement(_))));
+        cached.jobs.extend(
+            jobs.into_iter()
+                .filter(|job| matches!(job.job, Some(Job::Placement(_))) && job.is_active()),
+        );
+        Ok(())
+    }
+
+    pub async fn advance_jobs(&self) -> Result<()> {
+        let jobs = self.core.need_handle_jobs();
+        for job in &jobs {
+            if let Err(error) = self.handle_job(job).await {
+                warn!("Root job {}: {error}", job.id);
+            }
+        }
+        Ok(())
+    }
+
+    pub async fn on_step_leader(&self, schema: &Schema) -> Result<()> {
+        self.core.recovery(schema).await?;
         self.core.enable.store(true, atomic::Ordering::Relaxed);
         Ok(())
     }
@@ -107,6 +172,7 @@ impl Jobs {
             background_job::Job::PurgeDatabase(purge_database) => {
                 self.handle_purge_database(job, purge_database).await
             }
+            Job::Placement(_) => unreachable!("placement has its own execution loop"),
         };
         info!("background job: {job:?}, handle result: {r:?}");
         r
@@ -195,7 +261,7 @@ impl Jobs {
                 })),
                 ..Default::default()
             },
-            true,
+            false,
         )
         .await
     }
@@ -263,7 +329,11 @@ impl Jobs {
         }
 
         while let Some(shard) = create_table.wait_create.pop() {
-            let groups = self.core.alloc.place_group_for_shard(1, required_replicas).await?;
+            let groups = self
+                .core
+                .alloc
+                .place_group_for_shard(1, required_replicas, &self.creating_groups().1)
+                .await?;
             if groups.is_empty() {
                 return Err(crate::Error::ResourceExhausted(format!(
                     "no group with {required_replicas} replicas"
@@ -377,65 +447,39 @@ impl Jobs {
         job: &BackgroundJob,
         create_group: &CreateOneGroupJob,
     ) -> Result<()> {
-        let mut create_group = create_group.to_owned();
-        loop {
-            let status = CreateOneGroupStatus::try_from(create_group.status).unwrap();
-            let _timer = Self::record_create_group_step(&status);
-            match status {
-                CreateOneGroupStatus::Init => {
-                    self.handle_init_create_group_replicas(job.id, &mut create_group).await?
-                }
-                CreateOneGroupStatus::Creating => {
-                    self.handle_wait_create_group_replicas(job.id, &mut create_group).await?
-                }
-                CreateOneGroupStatus::Rollbacking => {
-                    self.handle_rollback_group_replicas(job.id, &mut create_group).await?
-                }
-
-                CreateOneGroupStatus::Finish | CreateOneGroupStatus::Abort => {
-                    return self.handle_finish_create_group(job, create_group).await;
-                }
+        let mut create_group = create_group.clone();
+        let status = create_group.status();
+        let _timer = Self::record_create_group_step(&status);
+        match status {
+            CreateOneGroupStatus::Init => {
+                self.handle_init_create_group_replicas(job, &mut create_group).await
+            }
+            CreateOneGroupStatus::Creating => {
+                self.handle_wait_create_group_replicas(job, &mut create_group).await
+            }
+            CreateOneGroupStatus::Rollbacking => {
+                self.handle_rollback_group_replicas(job, &mut create_group).await
+            }
+            CreateOneGroupStatus::Finish | CreateOneGroupStatus::Abort => {
+                unreachable!("finished group job is not active")
             }
         }
     }
 
-    async fn check_is_already_meet_requirement(
-        &self,
-        job_id: u64,
-        create_group: &mut CreateOneGroupJob,
-        schema: Arc<Schema>,
-    ) -> Result<bool> {
-        if create_group.group_desc.is_none() {
-            return Ok(false);
-        }
-        let replicas =
-            schema.group_replica_states(create_group.group_desc.as_ref().unwrap().id).await?;
-        if replicas.len() < create_group.request_replica_cnt as usize {
-            return Ok(false);
-        }
-        warn!(
-            "cluster group count already meet requirement, so abort group creation. group={}",
-            create_group.group_desc.as_ref().unwrap().id,
-        );
-        create_group.status = CreateOneGroupStatus::Rollbacking as i32;
-        self.save_create_group(job_id, create_group).await?;
-        Ok(true)
-    }
-
     async fn handle_init_create_group_replicas(
         &self,
-        job_id: u64,
+        job: &BackgroundJob,
         create_group: &mut CreateOneGroupJob,
     ) -> Result<()> {
         let schema = self.core.root_shared.schema()?;
-        if self.check_is_already_meet_requirement(job_id, create_group, schema.to_owned()).await? {
-            return Ok(());
-        }
         let nodes = self
             .core
             .alloc
             .allocate_group_replica(vec![], create_group.request_replica_cnt as usize)
             .await?;
+        if nodes.len() != create_group.request_replica_cnt as usize {
+            return Ok(());
+        }
         let group_id = schema.next_group_id().await?;
         let mut replicas = Vec::new();
         for n in &nodes {
@@ -453,124 +497,109 @@ impl Jobs {
             shards: vec![],
             replicas,
         };
+        create_group.wait_cleanup = group_desc.replicas.clone();
         create_group.group_desc = Some(group_desc);
         create_group.wait_create = nodes;
         create_group.status = CreateOneGroupStatus::Creating as i32;
-        self.save_create_group(job_id, create_group).await
+        self.save_create_group(job, create_group).await
     }
 
     async fn handle_wait_create_group_replicas(
         &self,
-        job_id: u64,
+        job: &BackgroundJob,
         create_group: &mut CreateOneGroupJob,
     ) -> Result<()> {
         let schema = self.core.root_shared.schema()?;
-        if self.check_is_already_meet_requirement(job_id, create_group, schema).await? {
-            return Ok(());
-        }
-        let mut wait_create = create_group.wait_create.to_owned();
-        let group_desc = create_group.group_desc.as_ref().unwrap().to_owned();
-        let mut undo = Vec::new();
-        loop {
-            let n = wait_create.pop();
-            if n.is_none() {
-                break;
-            }
-            let n = n.unwrap();
-            let replica = group_desc.replicas.iter().find(|r| r.node_id == n.id).unwrap();
-            if let Err(err) =
-                self.try_create_replica(&n.addr, &replica.id, group_desc.to_owned()).await
-            {
-                let retried = create_group.create_retry;
-                if retried < 20 {
-                    warn!(
-                        "create replica for new group error, retry in next: {err:?}. node={}, replica={}, group={}, retried={}",
-                        n.id, replica.id, group_desc.id, retried
-                    );
+        let group_desc = create_group.group_desc.as_ref().expect("creating group has a descriptor");
+        if let Some(node) = create_group.wait_create.last() {
+            let replica =
+                group_desc.replicas.iter().find(|replica| replica.node_id == node.id).unwrap();
+            let create = self.try_create_replica(&node.addr, &replica.id, group_desc.clone());
+            match sekas_runtime::time::timeout(Duration::from_secs(2), create).await {
+                Ok(Ok(())) => {
+                    create_group.create_retry = 0;
+                    create_group.wait_create.pop();
+                }
+                failure => {
+                    warn!("create group {} on node {}: {failure:?}", group_desc.id, node.id);
                     metrics::RECONCILE_RETRY_TASK_TOTAL.create_group.inc();
                     create_group.create_retry += 1;
-                } else {
-                    warn!(
-                        "create replica for new group error, start rollback: {err:?}. node={}, replica={}, group={}",
-                        n.id, replica.id, group_desc.id
-                    );
-                    create_group.status = CreateOneGroupStatus::Rollbacking as i32;
-                };
-                self.save_create_group(job_id, create_group).await?;
-                continue;
+                    if create_group.create_retry >= 20 {
+                        create_group.status = CreateOneGroupStatus::Rollbacking as i32;
+                    }
+                }
             }
-            undo.push(replica.to_owned());
-            create_group.wait_create.clone_from(&wait_create);
-            create_group.wait_cleanup.clone_from(&undo);
-            self.save_create_group(job_id, create_group).await?;
+            return self.save_create_group(job, create_group).await;
         }
-        create_group.status = CreateOneGroupStatus::Finish as i32;
-        self.save_create_group(job_id, create_group).await?;
+
+        let ready = schema.get_group(group_desc.id).await?.is_some_and(|group| {
+            group.replicas.len() == group_desc.replicas.len()
+                && group_desc.replicas.iter().all(|replica| group.replicas.contains(replica))
+        }) && schema
+            .group_replica_states(group_desc.id)
+            .await?
+            .iter()
+            .any(|state| state.role() == RaftRole::Leader);
+        if ready {
+            create_group.status = CreateOneGroupStatus::Finish as i32;
+            return self.save_create_group(job, create_group).await;
+        }
+        self.core
+            .heartbeat_queue
+            .try_schedule(
+                group_desc
+                    .replicas
+                    .iter()
+                    .map(|replica| HeartbeatTask { node_id: replica.node_id })
+                    .collect(),
+                Instant::now(),
+            )
+            .await;
         Ok(())
     }
 
     async fn handle_rollback_group_replicas(
         &self,
-        job_id: u64,
+        job: &BackgroundJob,
         create_group: &mut CreateOneGroupJob,
     ) -> Result<()> {
-        let mut wait_clean = create_group.wait_cleanup.to_owned();
-        loop {
-            let r = wait_clean.pop();
-            if r.is_none() {
-                break;
-            }
-            let group = create_group.group_desc.as_ref().unwrap().id;
-            let r = r.unwrap();
-            if let Err(err) = self.try_remove_replica(group, r.id).await {
-                error!(
-                    "rollback temp replica of new group fail and retry later: {err:?}. replica={}",
-                    r.id
-                );
-                create_group.wait_cleanup.clone_from(&wait_clean);
-                self.save_create_group(job_id, create_group).await?;
-                return Err(err);
-            }
+        let group = create_group.group_desc.as_ref().unwrap().id;
+        let schema = self.core.root_shared.schema()?;
+        if let Some(replica) = create_group.wait_cleanup.last() {
+            let node = schema.get_node(replica.node_id).await?.ok_or_else(|| {
+                crate::Error::InvalidData(format!("missing node {}", replica.node_id))
+            })?;
+            let client = self.core.root_shared.transport_manager.get_node_client(node.addr)?;
+            let removed =
+                client.remove_replica(replica.id, GroupDesc { id: group, ..Default::default() });
+            sekas_runtime::time::timeout(Duration::from_secs(2), removed).await.map_err(
+                |_| crate::Error::DeadlineExceeded("replica retirement timed out".into()),
+            )??;
+            schema.remove_replica_state(group, replica.id).await?;
+            create_group.wait_cleanup.pop();
+        } else {
+            schema.delete_group(group).await?;
+            create_group.status = CreateOneGroupStatus::Abort as i32;
         }
-        create_group.status = CreateOneGroupStatus::Abort as i32;
-        self.save_create_group(job_id, create_group).await
+        self.save_create_group(job, create_group).await
     }
 
-    async fn save_create_group(&self, job_id: u64, create_group: &CreateOneGroupJob) -> Result<()> {
-        self.core
-            .update(BackgroundJob {
-                id: job_id,
-                job: Some(background_job::Job::CreateOneGroup(create_group.to_owned())),
-            })
-            .await?;
-        Ok(())
-    }
-
-    async fn handle_finish_create_group(
+    async fn save_create_group(
         &self,
-        job: &BackgroundJob,
-        create_group: CreateOneGroupJob,
+        old: &BackgroundJob,
+        create_group: &CreateOneGroupJob,
     ) -> Result<()> {
-        if matches!(
-            CreateOneGroupStatus::try_from(create_group.status).unwrap(),
-            CreateOneGroupStatus::Finish
-        ) {
-            self.core
-                .heartbeat_queue
-                .try_schedule(
-                    create_group
-                        .invoked_nodes
-                        .iter()
-                        .cloned()
-                        .map(|node_id| HeartbeatTask { node_id })
-                        .collect(),
-                    Instant::now(),
-                )
-                .await;
+        let new =
+            BackgroundJob { id: old.id, job: Some(Job::CreateOneGroup(create_group.clone())) };
+        if let Err(error) = self.replace_schedule_job(old, new).await {
+            let persisted = self.core.root_shared.schema()?.get_job(old.id).await?;
+            let mut jobs = self.core.mem_jobs.lock().unwrap();
+            if jobs.jobs.iter().any(|job| *job == *old) {
+                jobs.jobs.retain(|job| job.id != old.id);
+                jobs.jobs.extend(persisted.into_iter().filter(BackgroundJob::is_active));
+            }
+            return Err(error);
         }
-        let mut job = job.to_owned();
-        job.job = Some(background_job::Job::CreateOneGroup(create_group));
-        self.core.finish(job).await?;
         Ok(())
     }
 
@@ -664,26 +693,6 @@ impl Jobs {
         Ok(())
     }
 
-    async fn try_remove_replica(&self, group: u64, replica: u64) -> Result<()> {
-        let schema = self.core.root_shared.schema()?;
-        let rs = schema
-            .get_replica_state(group, replica)
-            .await?
-            .ok_or(crate::Error::AbortScheduleTask("source replica already has be destroyed"))?;
-
-        let target_node = schema
-            .get_node(rs.node_id.to_owned())
-            .await?
-            .ok_or(crate::Error::AbortScheduleTask("source node not exist"))?;
-        let client =
-            self.core.root_shared.transport_manager.get_node_client(target_node.addr.to_owned())?;
-        client
-            .remove_replica(replica.to_owned(), GroupDesc { id: group, ..Default::default() })
-            .await?;
-        schema.remove_replica_state(group, replica).await?;
-        Ok(())
-    }
-
     async fn try_remove_shard(&self, group: Option<u64>, shard: u64) -> Result<()> {
         let group = if let Some(group) = group {
             group
@@ -714,7 +723,7 @@ struct JobCore {
     root_shared: Arc<RootShared>,
     mem_jobs: Arc<Mutex<MemJobs>>,
     res_locks: Arc<Mutex<HashSet<Vec<u8>>>>,
-    alloc: Arc<Allocator<SysAllocSource>>,
+    alloc: Arc<Allocator>,
     heartbeat_queue: Arc<HeartbeatQueue>,
     enable: atomic::AtomicBool,
 }
@@ -723,7 +732,7 @@ struct JobCore {
 struct MemJobs {
     jobs: Vec<BackgroundJob>,
     removed_wakers: Vec<Waker>,
-    added_wakers: Vec<Waker>,
+    added_waker: Option<Waker>,
 }
 
 impl JobCore {
@@ -734,9 +743,9 @@ impl JobCore {
         Ok(())
     }
 
-    pub async fn recovery(&self) -> Result<()> {
-        let schema = self.root_shared.schema()?;
-        let jobs = schema.list_job().await?;
+    pub async fn recovery(&self, schema: &Schema) -> Result<()> {
+        let jobs: Vec<_> =
+            schema.list_job().await?.into_iter().filter(BackgroundJob::is_active).collect();
         {
             let mut mem_jobs = self.mem_jobs.lock().unwrap();
             mem_jobs.jobs.clear();
@@ -745,8 +754,7 @@ impl JobCore {
                 waker.wake();
             }
             mem_jobs.jobs.extend_from_slice(&jobs);
-            let wakers = std::mem::take(&mut mem_jobs.added_wakers);
-            for waker in wakers {
+            if let Some(waker) = mem_jobs.added_waker.take() {
                 waker.wake();
             }
         }
@@ -769,8 +777,7 @@ impl JobCore {
             for waker in wakers {
                 waker.wake();
             }
-            let wakers = std::mem::take(&mut mem_jobs.added_wakers);
-            for waker in wakers {
+            if let Some(waker) = mem_jobs.added_waker.take() {
                 waker.wake();
             }
         }
@@ -793,8 +800,7 @@ impl JobCore {
         {
             let mut mem_jobs = self.mem_jobs.lock().unwrap();
             mem_jobs.jobs.push(job.to_owned());
-            let wakers = std::mem::take(&mut mem_jobs.added_wakers);
-            for waker in wakers {
+            if let Some(waker) = mem_jobs.added_waker.take() {
                 waker.wake();
             }
         }
@@ -833,8 +839,8 @@ impl JobCore {
     pub async fn wait_more_jobs(&self) {
         poll_fn(|ctx| {
             let mut mem_jobs = self.mem_jobs.lock().unwrap();
-            if mem_jobs.jobs.is_empty() {
-                mem_jobs.added_wakers.push(ctx.waker().clone());
+            if !mem_jobs.jobs.iter().any(is_background_job) {
+                mem_jobs.added_waker = Some(ctx.waker().clone());
                 Poll::Pending
             } else {
                 Poll::Ready(())
@@ -881,6 +887,7 @@ impl JobCore {
                 }
             }
             background_job::Job::PurgeTable(_) | background_job::Job::PurgeDatabase(_) => Ok(()),
+            Job::Placement(_) => unreachable!("placement has no background job waiter"),
         }
     }
 
@@ -891,11 +898,11 @@ impl JobCore {
 
     pub fn need_handle_jobs(&self) -> Vec<BackgroundJob> {
         let jobs = self.mem_jobs.lock().unwrap();
-        jobs.jobs.to_owned()
+        jobs.jobs.iter().filter(|job| is_background_job(job)).cloned().collect()
     }
 
     fn pending_jobs(&self) -> usize {
-        self.mem_jobs.lock().unwrap().jobs.len()
+        self.mem_jobs.lock().unwrap().jobs.iter().filter(|job| is_background_job(job)).count()
     }
 
     fn try_lock_res(&self, res_key: Vec<u8>) -> bool {
@@ -921,6 +928,12 @@ fn res_key(job: &BackgroundJob) -> Option<Vec<u8>> {
             key.extend_from_slice(job.table_name.as_bytes());
             Some(key)
         }
-        background_job::Job::CreateOneGroup(_) | background_job::Job::PurgeDatabase(_) => None,
+        background_job::Job::CreateOneGroup(_)
+        | background_job::Job::PurgeDatabase(_)
+        | Job::Placement(_) => None,
     }
+}
+
+fn is_background_job(job: &BackgroundJob) -> bool {
+    !matches!(job.job, Some(Job::Placement(_)))
 }

@@ -96,16 +96,18 @@ impl RaftGroup {
         self.send(Request::Message(msg))
     }
 
-    pub fn transfer_leader(&self, transferee: u64) -> Result<()> {
+    pub async fn transfer_leader(&self, transferee: u64, term: u64) -> Result<()> {
         RAFTGROUP_TRANSFER_LEADER_TOTAL.inc();
-        self.send(Request::Transfer { transferee })
+        let (sender, receiver) = oneshot::channel();
+        self.send(Request::Transfer { transferee, term, sender })?;
+        receiver.await?
     }
 
-    pub async fn change_config(&self, change: ChangeReplicas) -> Result<()> {
+    pub async fn change_config(&self, change: ChangeReplicas, term: u64) -> Result<()> {
         RAFTGROUP_CONFIG_CHANGE_TOTAL.inc();
         let (sender, receiver) = oneshot::channel();
 
-        let request = Request::ChangeConfig { change, sender };
+        let request = Request::ChangeConfig { change, term, sender };
         self.send(request)?;
 
         receiver.await?

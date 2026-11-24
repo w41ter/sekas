@@ -17,7 +17,6 @@ mod cas;
 mod cmd_get;
 mod cmd_ingest;
 mod cmd_local_txn;
-mod cmd_move_replicas;
 mod cmd_scan;
 mod cmd_shard;
 mod cmd_txn;
@@ -29,7 +28,6 @@ use sekas_api::server::v1::{ShardWriteRequest, WriteResponse, WriteResult};
 pub(crate) use self::cmd_get::get;
 pub(crate) use self::cmd_ingest::ingest_value_set;
 pub(crate) use self::cmd_local_txn::local_txn_write;
-pub(crate) use self::cmd_move_replicas::move_replicas;
 pub(crate) use self::cmd_scan::{merge_scan_response, scan};
 pub(crate) use self::cmd_shard::{
     accept_shard, add_shard, delete_shard, get_split_key, merge_shard, split_shard,

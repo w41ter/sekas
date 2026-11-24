@@ -14,6 +14,7 @@
 mod actions;
 mod event_source;
 mod provider;
+mod replacement;
 mod scheduler;
 mod setup;
 mod task;
@@ -22,6 +23,7 @@ mod tasks;
 use sekas_api::server::v1::ScheduleState;
 
 pub(crate) use self::provider::MoveReplicasProvider;
+pub(crate) use self::replacement::{ReplacementStep, replacement_step, validate_move_replicas};
 pub(crate) use self::setup::setup_scheduler;
 
 pub trait ScheduleStateObserver: Send + Sync {

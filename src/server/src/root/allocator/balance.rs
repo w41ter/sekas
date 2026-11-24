@@ -39,7 +39,7 @@ impl Axis {
         let mut values: Vec<_> = loads.iter().collect();
         values.sort_unstable_by_key(|&(&id, _)| id);
         let mean =
-            values.into_iter().map(|(_, &value)| value).sum::<f64>() / expected.max(1) as f64;
+            values.into_iter().map(|(_, &value)| value).sum::<f64>() / loads.len().max(1) as f64;
         let tolerance = min_tolerance.max(mean * relative_tolerance);
         let max = loads.values().copied().fold(0., f64::max);
         Self {
@@ -52,10 +52,28 @@ impl Axis {
     }
 
     pub fn may_donate(&self, id: u64) -> bool {
-        self.ready
+        self.drives_placement()
             && self.loads.get(&id).is_some_and(|&load| {
                 load > self.thresholds.high || self.deadline.is_some_and(|limit| load > limit)
             })
+    }
+
+    pub fn drives_placement(&self) -> bool {
+        self.deadline.is_some() || !self.is_count()
+    }
+
+    pub fn score(&self, effect: &Effect) -> Option<(f64, f64, bool)> {
+        let score = effect.score()?;
+        (!self.is_count() || score.0 > EPSILON).then_some(score)
+    }
+
+    fn is_count(&self) -> bool {
+        matches!(
+            self.kind,
+            BalanceDimension::LeaderCount
+                | BalanceDimension::ReplicaCount
+                | BalanceDimension::ShardCount
+        )
     }
 
     pub fn report(&self, result: &str) -> BalanceDecision {
@@ -74,12 +92,14 @@ impl Axis {
     }
 
     pub fn effect(&self, change: &Change) -> Option<Effect> {
-        let mut effect = Effect { preserves_balance: true, ..Default::default() };
+        let mut effect =
+            Effect { known: !change.unknown, preserves_balance: true, ..Default::default() };
         if change.unknown && self.deadline.is_some() {
             return None;
         }
         for delta in &change.deltas {
             let Some(&before) = self.loads.get(&delta.id) else {
+                effect.known = false;
                 if self.deadline.is_some() && (delta.steady > 0. || delta.incoming > 0.) {
                     return None;
                 }
@@ -101,7 +121,6 @@ impl Axis {
             effect.donates |= delta.steady < 0. && before > self.thresholds.high + EPSILON;
             effect.receives_below_low |= delta.steady > 0. && before <= self.thresholds.low;
         }
-        effect.known = change.deltas.is_empty() && !change.unknown || self.ready && !change.unknown;
         Some(effect)
     }
 }

@@ -16,7 +16,7 @@
 use std::sync::{Arc, Mutex};
 use std::task::{Poll, Waker};
 
-pub use tokio::sync::OnceCell;
+pub use tokio::sync::{Mutex as AsyncMutex, Notify, OnceCell};
 
 #[derive(Default)]
 pub struct WaitGroup {

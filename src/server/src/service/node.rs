@@ -108,6 +108,7 @@ fn handle_group_request(
         let group_scan_req = GroupRequest {
             group_id: request.group_id,
             epoch: request.epoch,
+            expected_term: None,
             request: Some(GroupRequestUnion {
                 request: Some(ShardRequest::Scan(scan_req)),
             }),
@@ -374,9 +375,6 @@ impl Server {
                 Request::CollectGroupDetail(req) => {
                     Response::CollectGroupDetail(self.node.collect_group_detail(&req).await)
                 }
-                Request::CollectMovingShardState(req) => Response::CollectMovingShardState(
-                    self.node.collect_moving_shard_state(&req).await,
-                ),
                 Request::CollectScheduleState(req) => {
                     Response::CollectScheduleState(self.node.collect_schedule_state(&req).await)
                 }

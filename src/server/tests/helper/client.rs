@@ -281,36 +281,28 @@ impl ClusterClient {
         panic!("group {group_id} is not contains shard {shard_id}");
     }
 
-    pub async fn collect_moving_shard_state(
+    pub async fn moving_shard_phase(
         &self,
         group_id: u64,
-        node_id: u64,
-    ) -> Result<CollectMovingShardStateResponse> {
-        let node_addr = self.nodes.get(&node_id).unwrap();
-        let client = NodeClient::connect(node_addr.to_string()).await?;
-        let resp = client
-            .root_heartbeat(HeartbeatRequest {
-                timestamp: 0,
-                piggybacks: vec![PiggybackRequest {
-                    info: Some(piggyback_request::Info::CollectMovingShardState(
-                        CollectMovingShardStateRequest { group: group_id },
-                    )),
-                }],
-            })
-            .await?;
-        for resp in &resp.piggybacks {
-            match resp.info.as_ref().unwrap() {
-                piggyback_response::Info::SyncRoot(_)
-                | piggyback_response::Info::SyncGroupGcVersion(_)
-                | piggyback_response::Info::CollectStats(_)
-                | piggyback_response::Info::CollectScheduleState(_)
-                | piggyback_response::Info::CollectGroupDetail(_) => {}
-                piggyback_response::Info::CollectMovingShardState(resp) => {
-                    return Ok(resp.clone());
-                }
+    ) -> Result<Option<group_shard_migration::Phase>> {
+        let state = self.group(group_id).inspect_group().await?;
+        Ok(state.shard_migration.map(|migration| migration.phase()))
+    }
+
+    pub async fn wait_moving_shard_state(
+        &self,
+        group_id: u64,
+        expect: &[Option<group_shard_migration::Phase>],
+    ) {
+        for _ in 0..1000 {
+            if let Ok(phase) = self.moving_shard_phase(group_id).await
+                && expect.contains(&phase)
+            {
+                return;
             }
+            tokio::time::sleep(Duration::from_millis(10)).await;
         }
-        panic!("collect_move_shard_state have't received response");
+        panic!("group {group_id} did not enter expected moving shard state");
     }
 
     pub async fn collect_replica_state(
@@ -336,8 +328,7 @@ impl ClusterClient {
                 piggyback_response::Info::SyncRoot(_)
                 | piggyback_response::Info::SyncGroupGcVersion(_)
                 | piggyback_response::Info::CollectStats(_)
-                | piggyback_response::Info::CollectScheduleState(_)
-                | piggyback_response::Info::CollectMovingShardState(_) => {}
+                | piggyback_response::Info::CollectScheduleState(_) => {}
                 piggyback_response::Info::CollectGroupDetail(resp) => {
                     for state in &resp.replica_states {
                         if state.group_id == group_id {

@@ -100,6 +100,10 @@ impl TestContext {
         self.root_cfg.enable_replica_balance = false;
     }
 
+    pub fn enable_replica_balance(&mut self) {
+        self.root_cfg.enable_replica_balance = true;
+    }
+
     pub fn disable_leader_balance(&mut self) {
         self.root_cfg.enable_leader_balance = false;
     }
@@ -133,6 +137,10 @@ impl TestContext {
 
     pub fn disable_proactive_shard_split(&mut self) {
         self.root_cfg.enable_proactive_shard_split = false;
+    }
+
+    pub fn disable_auto_shard_merge(&mut self) {
+        self.root_cfg.enable_auto_shard_merge = false;
     }
 
     pub fn set_move_shard_size_limit(&mut self, limit: u64) {

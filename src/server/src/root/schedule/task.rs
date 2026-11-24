@@ -13,151 +13,25 @@
 // limitations under the License.
 
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct ReconcileTask {
-    #[prost(uint64, tag = "128")]
-    pub created_at: u64,
-    #[prost(uint64, tag = "129")]
-    pub fire_at: u64,
-    #[prost(uint32, tag = "130")]
-    pub retry_count: u32,
-    #[prost(oneof = "reconcile_task::Task", tags = "1, 2, 3, 4, 5, 6, 7")]
-    pub task: ::core::option::Option<reconcile_task::Task>,
-}
-
-impl ReconcileTask {
-    pub(super) fn is_placement(&self) -> bool {
-        match &self.task {
-            Some(reconcile_task::Task::ReallocateReplica(task)) => task.placement,
-            Some(reconcile_task::Task::TransferGroupLeader(task)) => task.placement,
-            Some(reconcile_task::Task::MigrateShard(task)) => {
-                task.guard() == ShardMoveGuard::Placement
-            }
-            _ => false,
-        }
-    }
-}
-
-/// Nested message and enum types in `ReconcileTask`.
-pub mod reconcile_task {
-    #[derive(Clone, PartialEq, ::prost::Oneof)]
-    pub enum Task {
-        #[prost(message, tag = "1")]
-        ReallocateReplica(super::ReallocateReplicaTask),
-        #[prost(message, tag = "2")]
-        MigrateShard(super::MigrateShardTask),
-        #[prost(message, tag = "3")]
-        TransferGroupLeader(super::TransferGroupLeaderTask),
-        #[prost(message, tag = "4")]
-        ShedLeader(super::ShedLeaderTask),
-        #[prost(message, tag = "5")]
-        ShedRoot(super::ShedRootLeaderTask),
-        #[prost(message, tag = "6")]
-        SplitShard(super::SplitShardTask),
-        #[prost(message, tag = "7")]
-        MergeShard(super::MergeShardTask),
-    }
-}
-
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct ReallocateReplicaTask {
-    #[prost(uint64, tag = "1")]
-    pub group: u64,
-    #[prost(uint64, tag = "2")]
-    pub src_node: u64,
-    #[prost(uint64, tag = "3")]
-    pub src_replica: u64,
-    #[prost(message, optional, tag = "4")]
-    pub dest_node: ::core::option::Option<::sekas_api::server::v1::NodeDesc>,
-    #[prost(message, optional, tag = "5")]
-    pub dest_replica: ::core::option::Option<::sekas_api::server::v1::ReplicaDesc>,
-    #[prost(bool, tag = "6")]
-    pub placement: bool,
-}
-
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct MigrateShardTask {
-    #[prost(uint64, tag = "1")]
-    pub shard: u64,
-    #[prost(uint64, tag = "2")]
-    pub src_group: u64,
-    #[prost(uint64, tag = "3")]
-    pub dest_group: u64,
-    #[prost(message, optional, tag = "4")]
-    pub split_task: Option<SplitShardTask>,
-    #[prost(enumeration = "ShardMoveGuard", tag = "5")]
-    pub guard: i32,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, ::prost::Enumeration)]
-pub enum ShardMoveGuard {
-    Unrestricted = 0,
-    PreserveSize = 1,
-    ImproveSize = 2,
-    Placement = 3,
-}
-
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct TransferGroupLeaderTask {
-    #[prost(uint64, tag = "1")]
-    pub group: u64,
-    #[prost(uint64, tag = "2")]
-    pub target_replica: u64,
-    #[prost(uint64, tag = "3")]
-    pub src_node: u64,
-    #[prost(uint64, tag = "4")]
-    pub dest_node: u64,
-    #[prost(bool, tag = "5")]
-    pub placement: bool,
-}
-
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct ShedLeaderTask {
-    #[prost(uint64, tag = "1")]
-    pub node_id: u64,
-}
-
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct ShedRootLeaderTask {
-    #[prost(uint64, tag = "1")]
-    pub node_id: u64,
-}
-
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct SplitShardTask {
-    #[prost(uint64, tag = "1")]
-    pub shard_id: u64,
-    #[prost(uint64, tag = "2")]
-    pub group_id: u64,
-    /// Allocate once so retries can recognize a completed split.
-    #[prost(uint64, optional, tag = "3")]
-    pub new_shard_id: Option<u64>,
-    /// Bind execution to the metadata used to validate the task.
-    #[prost(uint64, optional, tag = "4")]
-    pub group_epoch: Option<u64>,
-    /// Estimated size of the piece to create for a byte-balance move.
-    #[prost(uint64, optional, tag = "5")]
-    pub target_size: Option<u64>,
-}
-
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct MergeShardTask {
-    #[prost(uint64, tag = "1")]
-    pub group_id: u64,
-    #[prost(uint64, tag = "2")]
-    pub left_shard_id: u64,
-    #[prost(uint64, tag = "3")]
-    pub right_shard_id: u64,
-}
-
-#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct BackgroundJob {
     #[prost(uint64, tag = "1")]
     pub id: u64,
-    #[prost(oneof = "background_job::Job", tags = "2, 3, 4, 5")]
+    #[prost(oneof = "background_job::Job", tags = "2, 3, 4, 5, 6")]
     pub job: ::core::option::Option<background_job::Job>,
 }
 
 impl BackgroundJob {
+    pub fn is_active(&self) -> bool {
+        use background_job::Job;
+        match self.job.as_ref() {
+            Some(Job::Placement(task)) => task.outcome.is_none(),
+            Some(Job::CreateOneGroup(task)) => {
+                !matches!(task.status(), CreateOneGroupStatus::Finish | CreateOneGroupStatus::Abort)
+            }
+            _ => true,
+        }
+    }
+
     pub fn to_json(&self) -> serde_json::Value {
         use background_job::Job;
         use serde_json::json;
@@ -205,6 +79,15 @@ impl BackgroundJob {
                     "database": p.database_id,
                 })
             }
+            Job::Placement(p) => json!({
+                "id": self.id,
+                "type": "placement",
+                "action": format!("{:?}", p.action),
+                "reason": p.reason,
+                "status": p.outcome.as_ref().map_or_else(|| "Active".into(), |outcome| format!("{:?}", outcome.kind())),
+                "outcome": p.outcome.as_ref().map(|outcome| &outcome.detail),
+                "finished_at": p.outcome.as_ref().map(|outcome| outcome.finished_at),
+            }),
         }
     }
 }
@@ -221,6 +104,8 @@ pub mod background_job {
         PurgeTable(super::PurgeTableJob),
         #[prost(message, tag = "5")]
         PurgeDatabase(super::PurgeDatabaseJob),
+        #[prost(message, tag = "6")]
+        Placement(super::super::PlacementJob),
     }
 }
 
@@ -258,8 +143,6 @@ pub struct CreateOneGroupJob {
     pub status: i32,
     #[prost(uint64, tag = "6")]
     pub create_retry: u64,
-    #[prost(uint64, repeated, tag = "7")]
-    pub invoked_nodes: ::prost::alloc::vec::Vec<u64>,
     #[prost(string, tag = "8")]
     pub created_time: ::prost::alloc::string::String,
 }

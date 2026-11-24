@@ -1,7 +1,8 @@
 # Design
 
 See [Raft and replica design](replica.md) for request evaluation, replication, and recovery,
-and [transaction design](txn.md) for MVCC, commit paths, and intent resolution.
+[transaction design](txn.md) for MVCC, commit paths, and intent resolution, and the
+[Root scheduler design proposal](root-scheduler.md) for placement and task recovery.
 
 ## What is Sekas?
 

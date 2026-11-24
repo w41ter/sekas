@@ -31,6 +31,13 @@ impl RootStore {
         Self { replica }
     }
 
+    pub(super) async fn term(&self) -> Result<u64> {
+        self.replica
+            .on_leader("root scheduling", true)
+            .await?
+            .ok_or_else(|| Error::NotRootLeader(RootDesc::default(), 0, None))
+    }
+
     pub async fn batch_write(&self, batch: ShardWriteRequest) -> Result<()> {
         self.submit_request(Request::Write(batch)).await?;
         Ok(())
@@ -131,6 +138,7 @@ impl RootStore {
         let request = GroupRequest {
             group_id: ROOT_GROUP_ID,
             epoch: self.replica.epoch(),
+            expected_term: None,
             request: Some(GroupRequestUnion { request: Some(req) }),
         };
 

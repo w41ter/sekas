@@ -278,7 +278,33 @@ impl Node {
         let replica = match self.replica_route_table.find(group_id) {
             Some(replica) if replica.replica_info().replica_id == replica_id => replica,
             _ => {
-                warn!("group {group_id} remove replica {replica_id}: replica not existed");
+                match self.state_engine.replica_state(replica_id)? {
+                    None => {
+                        self.state_engine
+                            .save_replica_state(group_id, replica_id, ReplicaLocalState::Tombstone)
+                            .await?
+                    }
+                    Some(meta) if meta.group_id != group_id => {
+                        return Err(Error::InvalidArgument(
+                            "replica belongs to another group".into(),
+                        ));
+                    }
+                    Some(meta)
+                        if matches!(
+                            meta.state(),
+                            ReplicaLocalState::Terminated | ReplicaLocalState::Tombstone
+                        ) => {}
+                    Some(_) => {
+                        self.state_engine
+                            .save_replica_state(group_id, replica_id, ReplicaLocalState::Terminated)
+                            .await?;
+                        self.task_group.add_task(self::job::setup_destory_replica(
+                            group_id,
+                            replica_id,
+                            self.engines.clone(),
+                        ));
+                    }
+                }
                 return Ok(());
             }
         };
@@ -545,8 +571,12 @@ impl Node {
         }
 
         debug_assert!(request.request.is_some());
-        let group_request =
-            GroupRequest { group_id: request.group_id, epoch: 0, request: request.request };
+        let group_request = GroupRequest {
+            group_id: request.group_id,
+            epoch: 0,
+            request: request.request,
+            expected_term: None,
+        };
 
         let exec_ctx = ExecCtx::forward(request.shard_id);
         let resp = match execute(&replica, &exec_ctx, &group_request).await {
@@ -683,36 +713,6 @@ impl Node {
         }
 
         CollectGroupDetailResponse { replica_states: states, group_descs: descriptors }
-    }
-
-    pub async fn collect_moving_shard_state(
-        &self,
-        req: &CollectMovingShardStateRequest,
-    ) -> CollectMovingShardStateResponse {
-        use collect_moving_shard_state_response::State;
-
-        let mut resp = CollectMovingShardStateResponse { state: State::None as i32, desc: None };
-
-        let group_id = req.group;
-        if let Some(replica) = self.replica_route_table.find(group_id) {
-            if !replica.replica_info().is_terminated() {
-                if let Some(ms) = replica.move_shard_state() {
-                    let mut state = match MoveShardStep::try_from(ms.step).ok() {
-                        Some(MoveShardStep::Prepare) => State::Prepare,
-                        Some(MoveShardStep::Moved) => State::Moved,
-                        Some(MoveShardStep::Moving) => State::Moving,
-                        _ => State::None,
-                    };
-                    if ms.move_shard.is_none() {
-                        state = State::None;
-                    }
-                    resp.state = state as i32;
-                    resp.desc = ms.move_shard;
-                }
-            }
-        }
-
-        resp
     }
 
     pub async fn collect_schedule_state(

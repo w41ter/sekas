@@ -56,6 +56,7 @@ pub async fn execute(
 ) -> Result<GroupResponse> {
     let mut exec_ctx = exec_ctx.clone();
     exec_ctx.epoch = request.epoch;
+    exec_ctx.expected_term = request.expected_term;
     exec_ctx.group_id = replica.replica_info().group_id;
     exec_ctx.replica_id = replica.replica_info().replica_id;
 
@@ -87,14 +88,14 @@ pub async fn execute(
                 return Ok(resp);
             }
             Err(Error::ServiceIsBusy(_)) | Err(Error::GroupNotReady(_)) => {
-                trace!("execute request whith service busy or group not ready");
+                trace!("execute request with service busy or group not ready");
                 // sleep and retry.
                 NODE_RETRY_TOTAL.inc();
                 sekas_runtime::time::sleep(Duration::from_micros(200)).await;
             }
             Err(Error::EpochNotMatch(desc)) => {
-                trace!("execute request whith epoch not match, target desc: {desc:?}");
-                if is_executable(&desc, request) {
+                trace!("execute request with epoch not match, target desc: {desc:?}");
+                if exec_ctx.expected_term.is_none() && is_executable(&desc, request) {
                     debug_assert_ne!(desc.epoch, exec_ctx.epoch);
                     exec_ctx.epoch = desc.epoch;
                     freshed_descriptor = Some(desc);
@@ -126,74 +127,72 @@ pub async fn execute(
 }
 
 // TODO(walter) move retryable logic to sekas client.
-/// For non-meta change request, we might execute this request even the epoch is
-/// not matched, by comparing the request shard range.
+/// Check whether the request can be retried against a newer descriptor.
 fn is_executable(descriptor: &GroupDesc, request: &Request) -> bool {
-    if !super::is_change_meta_request(request) {
-        return match request {
-            Request::Get(req) => is_target_shard_exists(descriptor, req.shard_id, &req.user_key),
-            Request::Scan(req) => is_scan_retryable(descriptor, req),
-            Request::Write(req) => {
-                for delete in &req.deletes {
-                    if !is_target_shard_exists(descriptor, req.shard_id, &delete.key) {
-                        return false;
-                    }
+    match request {
+        Request::Get(req) => is_target_shard_exists(descriptor, req.shard_id, &req.user_key),
+        Request::Scan(req) => is_scan_retryable(descriptor, req),
+        Request::Write(req) => {
+            for delete in &req.deletes {
+                if !is_target_shard_exists(descriptor, req.shard_id, &delete.key) {
+                    return false;
                 }
-                for put in &req.puts {
-                    if !is_target_shard_exists(descriptor, req.shard_id, &put.key) {
-                        return false;
-                    }
-                }
-                true
             }
-            Request::WriteIntent(req) => req.writes.iter().all(|write| {
-                write
-                    .puts
+            for put in &req.puts {
+                if !is_target_shard_exists(descriptor, req.shard_id, &put.key) {
+                    return false;
+                }
+            }
+            true
+        }
+        Request::WriteIntent(req) => req.writes.iter().all(|write| {
+            write
+                .puts
+                .iter()
+                .all(|put| is_target_shard_exists(descriptor, write.shard_id, &put.key))
+                && write
+                    .deletes
                     .iter()
-                    .all(|put| is_target_shard_exists(descriptor, write.shard_id, &put.key))
-                    && write.deletes.iter().all(|delete| {
-                        is_target_shard_exists(descriptor, write.shard_id, &delete.key)
-                    })
-            }),
-            Request::LocalTxnWrite(req) => req.writes.iter().all(|write| {
-                write
-                    .puts
+                    .all(|delete| is_target_shard_exists(descriptor, write.shard_id, &delete.key))
+        }),
+        Request::LocalTxnWrite(req) => req.writes.iter().all(|write| {
+            write
+                .puts
+                .iter()
+                .all(|put| is_target_shard_exists(descriptor, write.shard_id, &put.key))
+                && write
+                    .deletes
                     .iter()
-                    .all(|put| is_target_shard_exists(descriptor, write.shard_id, &put.key))
-                    && write.deletes.iter().all(|delete| {
-                        is_target_shard_exists(descriptor, write.shard_id, &delete.key)
-                    })
-            }),
-            Request::CommitIntent(req) => req
-                .shard_keys
-                .iter()
-                .all(|key| is_target_shard_exists(descriptor, key.shard_id, &key.user_key)),
-            Request::ClearIntent(req) => req
-                .shard_keys
-                .iter()
-                .all(|key| is_target_shard_exists(descriptor, key.shard_id, &key.user_key)),
-            Request::QueryIntent(req) => req
-                .shard_keys
-                .iter()
-                .all(|key| is_target_shard_exists(descriptor, key.shard_id, &key.user_key)),
-            Request::WatchKey(req) => is_target_shard_exists(descriptor, req.shard_id, &req.key),
-            Request::GetSplitKey(req) => is_target_shard_exists(
-                descriptor,
-                req.shard_id,
-                req.split_start_key.as_deref().unwrap_or_default(),
-            ),
-            Request::AcceptShard(_)
-            | Request::CreateShard(_)
-            | Request::DeleteShard(_)
-            | Request::ChangeReplicas(_)
-            | Request::Transfer(_)
-            | Request::MoveReplicas(_)
-            | Request::SplitShard(_)
-            | Request::MergeShard(_) => unreachable!(),
-        };
+                    .all(|delete| is_target_shard_exists(descriptor, write.shard_id, &delete.key))
+        }),
+        Request::CommitIntent(req) => req
+            .shard_keys
+            .iter()
+            .all(|key| is_target_shard_exists(descriptor, key.shard_id, &key.user_key)),
+        Request::ClearIntent(req) => req
+            .shard_keys
+            .iter()
+            .all(|key| is_target_shard_exists(descriptor, key.shard_id, &key.user_key)),
+        Request::QueryIntent(req) => req
+            .shard_keys
+            .iter()
+            .all(|key| is_target_shard_exists(descriptor, key.shard_id, &key.user_key)),
+        Request::WatchKey(req) => is_target_shard_exists(descriptor, req.shard_id, &req.key),
+        Request::GetSplitKey(req) => is_target_shard_exists(
+            descriptor,
+            req.shard_id,
+            req.split_start_key.as_deref().unwrap_or_default(),
+        ),
+        Request::InspectGroup(_) => true,
+        Request::AcceptShard(_)
+        | Request::CreateShard(_)
+        | Request::DeleteShard(_)
+        | Request::ChangeReplicas(_)
+        | Request::Transfer(_)
+        | Request::MoveReplicas(_)
+        | Request::SplitShard(_)
+        | Request::MergeShard(_) => false,
     }
-
-    false
 }
 
 fn is_target_shard_exists(desc: &GroupDesc, shard_id: u64, key: &[u8]) -> bool {

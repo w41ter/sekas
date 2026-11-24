@@ -45,8 +45,6 @@ make_static_metric! {
             reallocate_replica,
             migrate_shard,
             transfer_leader,
-            shed_group_leaders,
-            shed_root_leader,
             create_group,
             split_shard,
             merge_shard,
@@ -58,9 +56,6 @@ make_static_metric! {
             reallocate_replica,
             migrate_shard,
             transfer_leader,
-            create_table_shards,
-            shed_group_leaders,
-            shed_root_leader,
             split_shard,
             merge_shard,
         }
@@ -70,17 +65,6 @@ make_static_metric! {
             init,
             create,
             rollback,
-            finish,
-        }
-    }
-    pub struct ReconcileScheduleReallocateReplicaStepDuration: Histogram {
-        "type" => {
-            create_dest_replica,
-            add_dest_learner,
-            replica_dest_voter,
-            shed_src_leader,
-            remove_src_membership,
-            remove_src_replica,
             finish,
         }
     }
@@ -154,17 +138,6 @@ lazy_static! {
     pub static ref RECONCILE_CREATE_GROUP_STEP_DURATION_SECONDS: ReconcileScheduleCreateGroupStepDuration =
         ReconcileScheduleCreateGroupStepDuration::from(
             &RECONCILE_CREATE_GROUP_STEP_DURATION_SECONDS_VEC
-        );
-    pub static ref RECONCILE_REALLOCATE_REPLICA_STEP_DURATION_SECONDS_VEC: HistogramVec =
-        register_histogram_vec!(
-            "root_reconcile_scheduler_reallocate_replica_step_duration_seconds",
-            "the step reallocate replica handle duration of root reconcile scheduler",
-            &["type"]
-        )
-        .unwrap();
-    pub static ref RECONCILE_REALLOCATE_REPLICA_STEP_DURATION_SECONDS: ReconcileScheduleReallocateReplicaStepDuration =
-        ReconcileScheduleReallocateReplicaStepDuration::from(
-            &RECONCILE_REALLOCATE_REPLICA_STEP_DURATION_SECONDS_VEC
         );
     pub static ref RECONCILE_CREATE_TABLE_STEP_DURATION_SECONDS_VEC: HistogramVec =
         register_histogram_vec!(

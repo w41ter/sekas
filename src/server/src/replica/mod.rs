@@ -55,7 +55,7 @@ use crate::raftgroup::{
 };
 use crate::replica::eval::remote::RemoteLatchGuard;
 use crate::replica::eval::{DeferSignalLatchGuard, WriteEvalResult};
-use crate::schedule::MoveReplicasProvider;
+use crate::schedule::{MoveReplicasProvider, validate_move_replicas};
 use crate::serverpb::v1::*;
 use crate::{Error, RaftConfig, ReplicaConfig, Result};
 
@@ -103,6 +103,8 @@ pub struct ExecCtx {
     pub forward_shard_id: Option<u64>,
     /// The epoch of `GroupDesc` carried in this request.
     pub epoch: u64,
+    /// Admission term of a fixed control-plane step, when requested by Root.
+    pub expected_term: Option<u64>,
 
     /// The current term of leader.
     pub current_term: u64,
@@ -236,8 +238,10 @@ impl Replica {
             return Err(Error::GroupNotFound(self.info.group_id));
         }
 
-        let _acl_guard =
-            self.take_acl_guard(request).in_trace(span_name::REPLICA_TAKE_ACL_GUARD).await;
+        let _acl_guard = self
+            .take_timed_acl_guard(is_change_meta_request(request))
+            .in_trace(span_name::REPLICA_TAKE_ACL_GUARD)
+            .await;
         {
             let _span = local_span(span_name::REPLICA_CHECK_REQUEST_EARLY);
             self.check_request_early(exec_ctx, request)?;
@@ -245,8 +249,7 @@ impl Replica {
         self.evaluate_command(exec_ctx, request).in_trace(span_name::REPLICA_EVALUATE_COMMAND).await
     }
 
-    /// Execute group request. instead of be blocked, it will returns
-    /// `Error::ServiceIsBusy` if it could not success to take acl guard.
+    /// Execute a group request without waiting for the metadata lock.
     pub(crate) async fn try_execute(
         &self,
         mut exec_ctx: ExecCtx,
@@ -256,8 +259,9 @@ impl Replica {
             return Err(Error::GroupNotFound(self.info.group_id));
         }
 
-        let _acl_guard =
-            self.try_take_acl_guard(request).ok_or(Error::ServiceIsBusy(BusyReason::AclGuard))?;
+        let _acl_guard = self
+            .try_take_acl_guard(is_change_meta_request(request))
+            .ok_or(Error::ServiceIsBusy(BusyReason::AclGuard))?;
         self.check_request_early(&mut exec_ctx, request)?;
         self.evaluate_command(&exec_ctx, request).await
     }
@@ -437,25 +441,25 @@ impl Replica {
                 replica_id: self.info.replica_id,
                 term,
                 elapsed_nanos,
-                shard_migration_in_progress: Some(state.has_shard_moving()),
+                shard_migration: reported_migration(&state),
             }),
         })
     }
 }
 
-impl Replica {
-    #[inline]
-    async fn take_acl_guard(&self, request: &Request) -> MetaAclGuard<'_> {
-        // `Request::MoveReplicas` is very special, it doesn't modify the metadata
-        // directly, instead, it does some config changes asynchronously, so
-        // there's no need for a write lock here.
-        if is_change_meta_request(request) && !matches!(request, Request::MoveReplicas(_)) {
-            self.take_write_acl_guard().await
-        } else {
-            self.take_read_acl_guard().await
-        }
-    }
+fn reported_migration(state: &LeaseState) -> Option<GroupShardMigration> {
+    use group_shard_migration::Phase;
+    let migration = state.move_shard_state.as_ref()?;
+    let phase = match MoveShardStep::try_from(migration.step).ok()? {
+        MoveShardStep::Prepare => Phase::Prepare,
+        MoveShardStep::Moving => Phase::Moving,
+        MoveShardStep::Moved => Phase::Moved,
+        MoveShardStep::Finished | MoveShardStep::Aborted => return None,
+    };
+    Some(GroupShardMigration { desc: migration.move_shard.clone(), phase: phase as i32 })
+}
 
+impl Replica {
     #[inline]
     async fn take_write_acl_guard(&self) -> MetaAclGuard<'_> {
         self.take_timed_acl_guard(true).await
@@ -480,9 +484,7 @@ impl Replica {
     }
 
     #[inline]
-    fn try_take_acl_guard<'a>(&'a self, request: &'a Request) -> Option<MetaAclGuard<'a>> {
-        let exclusive =
-            is_change_meta_request(request) && !matches!(request, Request::MoveReplicas(_));
+    fn try_take_acl_guard(&self, exclusive: bool) -> Option<MetaAclGuard<'_>> {
         let guard = if exclusive {
             MetaAclLockGuard::Write(self.meta_acl.try_write().ok()?)
         } else {
@@ -497,6 +499,23 @@ impl Replica {
 
     /// Delegates the eval method for the given `Request`.
     async fn evaluate_command(&self, exec_ctx: &ExecCtx, request: &Request) -> Result<Response> {
+        if matches!(request, Request::InspectGroup(_)) {
+            self.check_lease().await?;
+            let state = self.lease_state.lock().unwrap();
+            if !state.is_ready_for_serving() || state.replica_state.term != exec_ctx.current_term {
+                return Err(Error::NotLeader(
+                    self.info.group_id,
+                    state.replica_state.term,
+                    state.leader_descriptor(),
+                ));
+            }
+            return Ok(Response::InspectGroup(InspectGroupResponse {
+                group: Some(state.descriptor.clone()),
+                leader_id: self.info.replica_id,
+                term: exec_ctx.current_term,
+                shard_migration: reported_migration(&state),
+            }));
+        }
         // Acquire row latches one by one. The implementation guarantees that there will
         // be no deadlock, so waiting while holding `read/write_acl_guard` will
         // not affect other requests.
@@ -637,27 +656,41 @@ impl Replica {
             },
             Request::ChangeReplicas(req) => {
                 if let Some(change) = &req.change_replicas {
-                    self.raft_group.change_config(change.clone()).await?;
+                    self.raft_group.change_config(change.clone(), exec_ctx.current_term).await?;
                 }
                 let resp = ChangeReplicasResponse {};
                 (None, Response::ChangeReplicas(resp), vec![], None)
             }
-            Request::MoveReplicas(req) => {
-                eval::move_replicas(exec_ctx, self.move_replicas_provider.as_ref(), req).await?;
-                let resp = MoveReplicasResponse { schedule_state: Some(self.schedule_state()) };
-                (None, Response::MoveReplicas(resp), vec![], None)
-            }
             Request::AcceptShard(req) => {
-                let eval_result = eval::accept_shard(self.info.group_id, exec_ctx.epoch, req).await;
+                let descriptor = self.descriptor();
+                let shard = req.shard_desc.as_ref().ok_or_else(|| {
+                    Error::InvalidArgument("accept shard has no description".into())
+                })?;
+                let migration = req.move_shard_desc(self.info.group_id, exec_ctx.epoch);
+                let eval_result = match descriptor.shard(shard.id) {
+                    Some(existing) if existing == shard => None,
+                    Some(_) => {
+                        return Err(Error::InvalidArgument(
+                            "shard already exists with a different range".into(),
+                        ));
+                    }
+                    None if exec_ctx.move_shard_desc.as_ref() == Some(&migration) => None,
+                    None => Some(eval::accept_shard(migration)),
+                };
                 let resp = AcceptShardResponse {};
-                (Some(eval_result), Response::AcceptShard(resp), vec![], None)
+                (eval_result, Response::AcceptShard(resp), vec![], None)
             }
             Request::Transfer(req) => {
                 info!(
                     "transfer leadership to {}. replica={}, group={}",
                     req.transferee, self.info.replica_id, self.info.group_id
                 );
-                self.raft_group.transfer_leader(req.transferee)?;
+                if !self.descriptor().replicas.iter().any(|replica| {
+                    replica.id == req.transferee && replica.role == ReplicaRole::Voter as i32
+                }) {
+                    return Err(Error::InvalidArgument("transfer target is not a voter".into()));
+                }
+                self.raft_group.transfer_leader(req.transferee, exec_ctx.current_term).await?;
                 (None, Response::Transfer(TransferResponse {}), vec![], None)
             }
             Request::SplitShard(req) => {
@@ -671,6 +704,11 @@ impl Replica {
             Request::MergeShard(req) => {
                 let eval_result = eval::merge_shard(&self.group_engine, req)?;
                 (Some(eval_result), Response::MergeShard(MergeShardResponse {}), vec![], None)
+            }
+            Request::InspectGroup(_) => unreachable!("inspection is handled before evaluation"),
+            Request::MoveReplicas(req) => {
+                self.move_replicas_provider.assign(exec_ctx.epoch, exec_ctx.current_term, req)?;
+                return Ok(Response::MoveReplicas(MoveReplicasResponse {}));
             }
         };
         drop(evaluation);
@@ -751,7 +789,17 @@ impl Replica {
             // unapplied WALs, so the freshness of metadata cannot be
             // guaranteed.
             Err(Error::GroupNotReady(group_id))
-        } else if lease_state.has_shard_moving() && changes_group_epoch(req) {
+        } else if matches!(req, Request::InspectGroup(_)) {
+            Ok(())
+        } else if exec_ctx.expected_term.is_some_and(|term| term != exec_ctx.current_term)
+            || (exec_ctx.expected_term.is_some() && exec_ctx.epoch != lease_state.descriptor.epoch)
+        {
+            Err(Error::EpochNotMatch(lease_state.descriptor.clone()))
+        } else if lease_state.has_shard_moving()
+            && (changes_group_epoch(req) || matches!(req, Request::MoveReplicas(_)))
+            && !matches!(req, Request::AcceptShard(request)
+                if lease_state.is_same_shard_moving(&request.move_shard_desc(group_id, exec_ctx.epoch)))
+        {
             Err(Error::ServiceIsBusy(BusyReason::Moving))
         } else if matches!(req, Request::AcceptShard(_)) && lease_state.has_joint_config() {
             Err(Error::ServiceIsBusy(BusyReason::PendingConfigChange))
@@ -777,6 +825,9 @@ impl Replica {
                 Epoch(exec_ctx.epoch),
                 Epoch(lease_state.descriptor.epoch)
             );
+            if let Request::MoveReplicas(req) = req {
+                validate_move_replicas(&lease_state.descriptor.replicas, req)?;
+            }
             let moving_digest =
                 lease_state.move_shard_state.as_ref().and_then(|m| m.move_shard.clone());
             exec_ctx.move_shard_desc = moving_digest;
@@ -869,7 +920,6 @@ fn is_change_meta_request(request: &Request) -> bool {
         | Request::CreateShard(_)
         | Request::DeleteShard(_)
         | Request::AcceptShard(_)
-        | Request::MoveReplicas(_)
         | Request::Transfer(_)
         | Request::SplitShard(_)
         | Request::MergeShard(_) => true,
@@ -882,6 +932,8 @@ fn is_change_meta_request(request: &Request) -> bool {
         | Request::ClearIntent(_)
         | Request::QueryIntent(_)
         | Request::GetSplitKey(_)
+        | Request::InspectGroup(_)
+        | Request::MoveReplicas(_)
         | Request::WatchKey(_) => false,
     }
 }

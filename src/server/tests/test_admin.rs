@@ -95,8 +95,7 @@ async fn admin_show_scheduling() {
     assert_eq!(shards[0], "shard_count");
     assert_eq!(shards[1], "no_action");
     let decision = shards[9].as_str().unwrap();
-    assert!(decision.contains("user_groups=1"), "{decision}");
-    assert!(decision.contains("tolerance=0.50"), "{decision}");
+    assert!(decision.contains("no eligible move"), "{decision}");
     assert_eq!(shards[4].as_f64(), Some(0.));
     assert_eq!(shards[5].as_f64(), Some(0.));
     assert_eq!(shards[6].as_f64(), Some(0.5));
@@ -427,13 +426,20 @@ async fn admin_unsplittable_shard_does_not_leave_a_retry_task() {
     let before = attempts();
     // Above the split threshold, but a single user key has no split point.
     db.put(table.id, b"key".to_vec(), vec![b'v'; 8 * 1024]).await.unwrap();
-    // Seed the known fixture size independently of RocksDB's approximate
-    // sampling, then drive one poll without waiting for a heartbeat.
+    // Seed a current leader report independently of RocksDB's size estimate.
     let group = cluster.find_router_group_state_by_key(table.id, b"key").await.unwrap();
     let shard = cluster.get_shard_desc(table.id, b"key").await.unwrap();
+    let (replica_id, term) = group.leader_state.unwrap();
     let stats = vec![sekas_api::server::v1::GroupStats {
         group_id: group.id,
         shard_count: 1,
+        sample: Some(GroupStatsSample {
+            group_epoch: group.epoch,
+            replica_id,
+            term,
+            elapsed_nanos: u64::MAX,
+            shard_migration: None,
+        }),
         shard_stats: vec![sekas_api::server::v1::ShardStats {
             shard_id: shard.id,
             table_id: table.id,
@@ -443,19 +449,17 @@ async fn admin_unsplittable_shard_does_not_leave_a_retry_task() {
         }],
         ..Default::default()
     }];
-    tokio::time::timeout(
-        Duration::from_secs(2),
-        sekas_server::testutil::drive_scheduling(&server, stats),
-    )
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            sekas_server::testutil::drive_scheduling(&server, stats.clone()).await.unwrap();
+            if attempts() > before && show(&client, "show scheduler_tasks").await.rows.is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
     .await
-    .expect("one scheduler poll must finish promptly")
-    .unwrap();
-    assert!(attempts() > before);
-    let body = client.handle_statement("show scheduler_tasks;").await.unwrap();
-    let ExecuteResult::Data(tasks) = serde_json::from_slice(&body).unwrap() else {
-        panic!("show scheduler_tasks must return a table");
-    };
-    assert!(tasks.rows.is_empty(), "an empty split result must complete the task");
+    .expect("an empty split result must complete the durable task");
     db.put(table.id, b"key".to_vec(), b"updated".to_vec()).await.unwrap();
     assert_eq!(db.get(table.id, b"key".to_vec()).await.unwrap(), Some(b"updated".to_vec()));
 }
@@ -465,21 +469,30 @@ async fn admin_size_balance_splits_lazily_and_moves_a_piece() {
     let mut ctx = TestContext::new(fn_name!());
     let migration_barrier = std::sync::Arc::new(sekas_server::TestingBarrier::new());
     ctx.mut_replica_testing_knobs().after_moving_shard_setup = Some(migration_barrier.clone());
-    ctx.set_num_cpus(3);
-    ctx.set_replicas_per_group(1);
+    ctx.set_num_cpus(1);
+    ctx.set_replicas_per_group(3);
     ctx.enable_group_balance();
     ctx.enable_shard_size_balance(0);
     ctx.disable_proactive_shard_split();
+    ctx.disable_auto_shard_merge();
     ctx.set_move_shard_size_limit(512);
     ctx.set_schedule_interval_sec(60);
     ctx.set_heartbeat_interval_sec(1);
     let addr = ctx.next_listen_address();
     let server = ctx.spawn_server_with_handle(0, &addr, true, vec![]).await.unwrap();
-    let cluster = ClusterClient::new([(0, addr.clone())].into_iter().collect()).await;
+    let addr1 = ctx.next_listen_address();
+    let server1 = ctx.spawn_server_with_handle(1, &addr1, false, vec![addr.clone()]).await.unwrap();
+    let addr2 = ctx.next_listen_address();
+    let server2 = ctx.spawn_server_with_handle(2, &addr2, false, vec![addr.clone()]).await.unwrap();
+    let cluster =
+        ClusterClient::new([(0, addr.clone()), (1, addr1.clone()), (2, addr2.clone())].into())
+            .await;
+    cluster.assert_root_group_has_promoted().await;
     let client = cluster.app_client().await;
-    let metadata = || current_metadata(vec![addr.clone()]);
+    let metadata = || current_metadata(vec![addr.clone(), addr1.clone(), addr2.clone()]);
     let await_groups = async {
         loop {
+            sekas_server::testutil::drive_scheduling(&server, vec![]).await.unwrap();
             if client.handle_statement("show balancer;").await.is_ok() {
                 let current = metadata().await;
                 if current.groups.len() == 3 && current.groups_ready && current.ongoing_jobs == 0 {
@@ -493,9 +506,9 @@ async fn admin_size_balance_splits_lazily_and_moves_a_piece() {
 
     let db = client.create_database("db".into()).await.unwrap();
     let left = db.create_table("source".into()).await.unwrap();
-    cluster.assert_table_ready_with_voters(left.id, 1).await;
+    cluster.assert_table_ready_with_voters(left.id, 3).await;
     let right = db.create_table("destination".into()).await.unwrap();
-    cluster.assert_table_ready_with_voters(right.id, 1).await;
+    cluster.assert_table_ready_with_voters(right.id, 3).await;
     let value = vec![b'v'; 512];
     for i in 0..16 {
         db.put(left.id, format!("key-{i:02}").into_bytes(), value.clone()).await.unwrap();
@@ -526,7 +539,7 @@ async fn admin_size_balance_splits_lazily_and_moves_a_piece() {
                 replica_id: replica.id,
                 term: replica.term,
                 elapsed_nanos: elapsed,
-                shard_migration_in_progress: Some(false),
+                shard_migration: None,
             }),
             shard_stats: group
                 .shards
@@ -545,7 +558,8 @@ async fn admin_size_balance_splits_lazily_and_moves_a_piece() {
     };
 
     let poll = |stats| sekas_server::testutil::drive_scheduling(&server, stats);
-    poll(vec![sample(source, u64::MAX - 2, &[2048]), sample(destination, u64::MAX - 2, &[2048])])
+    let mut sample_at = u64::MAX - 10_000;
+    poll(vec![sample(source, sample_at, &[2048]), sample(destination, sample_at, &[2048])])
         .await
         .unwrap();
     let status = show(&client, "show balancer;").await;
@@ -556,11 +570,13 @@ async fn admin_size_balance_splits_lazily_and_moves_a_piece() {
         1
     );
 
-    poll(vec![sample(source, u64::MAX - 1, &[2048]), sample(destination, u64::MAX - 1, &[0])])
-        .await
-        .unwrap();
-    let after_split = tokio::time::timeout(Duration::from_secs(10), async {
+    let split = tokio::time::timeout(Duration::from_secs(10), async {
         loop {
+            // Repeated reports must advance the clock to stay fresh during repair.
+            sample_at += 1;
+            poll(vec![sample(source, sample_at, &[2048]), sample(destination, sample_at, &[0])])
+                .await
+                .unwrap();
             let current = metadata().await;
             if current.groups.iter().any(|group| group.id == source.id && group.shards.len() == 2) {
                 break current;
@@ -568,8 +584,16 @@ async fn admin_size_balance_splits_lazily_and_moves_a_piece() {
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
     })
-    .await
-    .expect("the oversized shard should split when a move can improve byte balance");
+    .await;
+    let after_split = match split {
+        Ok(metadata) => metadata,
+        Err(_) => {
+            let jobs = server.root.job_state().await;
+            let balancer = show(&client, "show balancer;").await;
+            let tasks = show(&client, "show scheduler_tasks;").await;
+            panic!("the oversized shard must split; {jobs:?} {balancer:?} {tasks:?}");
+        }
+    };
     let source_after_split = after_split.groups.iter().find(|group| group.id == source.id).unwrap();
     let piece = cluster.get_shard_desc(left.id, b"key-00").await.unwrap();
     let piece_sizes: Vec<_> = source_after_split
@@ -578,25 +602,82 @@ async fn admin_size_balance_splits_lazily_and_moves_a_piece() {
         .map(|shard| if shard.id == piece.id { 500 } else { 1548 })
         .collect();
     let observed = migration_barrier.arm();
-    poll(vec![
-        sample(source_after_split, u64::MAX, &piece_sizes),
-        sample(destination, u64::MAX, &[0]),
-    ])
-    .await
-    .unwrap();
-    let reached =
-        tokio::time::timeout(Duration::from_secs(5), migration_barrier.wait_reached(observed))
-            .await;
-    let tasks = client.handle_statement("show scheduler_tasks;").await;
-    migration_barrier.release();
-    reached.expect("migration must reach the pulling step");
-    let ExecuteResult::Data(tasks) = serde_json::from_slice(&tasks.unwrap()).unwrap() else {
-        panic!("show scheduler_tasks must return a table");
-    };
+    let reached = tokio::time::timeout(Duration::from_secs(8), async {
+        loop {
+            sample_at += 1;
+            poll(vec![
+                sample(source_after_split, sample_at, &piece_sizes),
+                sample(destination, sample_at, &[0]),
+            ])
+            .await
+            .unwrap();
+            if tokio::time::timeout(
+                Duration::from_millis(100),
+                migration_barrier.wait_reached(observed),
+            )
+            .await
+            .is_ok()
+            {
+                break;
+            }
+        }
+    })
+    .await;
+    if reached.is_err() {
+        migration_barrier.release();
+        let jobs = server.root.job_state().await;
+        let balancer = show(&client, "show balancer;").await;
+        let tasks = show(&client, "show scheduler_tasks;").await;
+        panic!("migration must reach the pulling step; {jobs:?} {balancer:?} {tasks:?}");
+    }
+    let tasks = show(&client, "show scheduler_tasks;").await;
     let values = &tasks.rows.iter().find(|row| row.values[0] == "migrate_shard").unwrap().values;
-    assert_eq!(values[2], "awaiting_confirmation");
+    assert!(matches!(values[2].as_str(), Some("waiting" | "running" | "ready")));
     assert_eq!(values[6], "shard_size");
-    assert_eq!(values[7], "Moving 500 B reduces the size imbalance between groups");
+    assert!(values[7].as_str().unwrap().contains("reduces load imbalance"));
+    let mut root = cluster.group(0);
+    let old_root = root.inspect_group().await.unwrap();
+    let root_epoch = old_root.group.as_ref().unwrap().epoch;
+    let target = old_root
+        .group
+        .unwrap()
+        .replicas
+        .into_iter()
+        .find(|replica| replica.role() == ReplicaRole::Voter && replica.id != old_root.leader_id)
+        .unwrap();
+    root.transfer_leader(target.id).await.unwrap();
+    let new_root = if target.node_id == 1 { &server1.root } else { &server2.root };
+    let recovered = tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            if let Ok(body) = new_root.handle_statement("show scheduler_tasks;").await
+                && let Ok(ExecuteResult::Data(tasks)) = serde_json::from_slice(&body)
+                && tasks.rows.iter().any(|row| row.values[1] == values[1])
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    if recovered.is_err() {
+        migration_barrier.release();
+        let jobs = new_root.job_state().await;
+        let tasks = new_root
+            .handle_statement("show scheduler_tasks;")
+            .await
+            .map(|json| String::from_utf8_lossy(&json).into_owned());
+        panic!("new Root must recover job {:?}; {jobs:?} {tasks:?}", values[1]);
+    }
+    let mut root = cluster.group(0);
+    let current = root.inspect_group().await.unwrap();
+    assert_eq!(current.leader_id, target.id);
+    assert!(current.term > old_root.term);
+    let late = GroupRequest::transfer_leader(0, root_epoch, old_root.leader_id);
+    assert!(matches!(
+        root.execute_scheduled(late.clone(), old_root.term).await,
+        Err(sekas_client::Error::EpochNotMatch(group)) if group.epoch == root_epoch
+    ));
+    migration_barrier.release();
     tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             if cluster.group_contains_shard(destination.id, piece.id)
@@ -609,7 +690,72 @@ async fn admin_size_balance_splits_lazily_and_moves_a_piece() {
     })
     .await
     .expect("the selected piece should finish migrating");
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let state: serde_json::Value =
+                serde_json::from_str(&new_root.job_state().await.unwrap()).unwrap();
+            if state["history"].as_array().unwrap().iter().any(|job| {
+                job["outcome"] == "Shard ownership has changed"
+                    && values[1].as_str().unwrap().starts_with(&format!("job {} ", job["id"]))
+            }) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .expect("new Root should mark the same job as completed after ownership changes");
     assert_eq!(db.get(left.id, b"key-00".to_vec()).await.unwrap(), Some(value));
+    // The payload and epoch are valid. Changing only the term admits the command.
+    root.execute_scheduled(late, current.term).await.unwrap();
+}
+
+#[sekas_macro::test]
+async fn admin_replica_balance_uses_raft_membership_to_finish() {
+    let mut ctx = TestContext::new(fn_name!());
+    ctx.set_schedule_interval_sec(1);
+    ctx.set_heartbeat_interval_sec(1);
+    ctx.enable_replica_balance();
+    let addr = ctx.next_listen_address();
+    let server = ctx.spawn_server_with_handle(0, &addr, true, vec![]).await.unwrap();
+    let mut nodes = std::collections::HashMap::from([(0, addr.clone())]);
+    for node in 1..4 {
+        nodes.insert(node, ctx.add_server(vec![addr.clone()], node).await);
+    }
+    let cluster = ClusterClient::new(nodes).await;
+    cluster.assert_root_group_has_promoted().await;
+    let app = cluster.app_client().await;
+    app.handle_statement(r#"config "balancer.priority" "replica_count";"#).await.unwrap();
+    app.handle_statement(r#"config "balancer.deadline.replica_count" "2";"#).await.unwrap();
+    for id in 100..103 {
+        let replicas: Vec<_> = (0..3)
+            .map(|node_id| ReplicaDesc {
+                id: 10 * id + node_id,
+                node_id,
+                role: ReplicaRole::Voter as i32,
+            })
+            .collect();
+        let group = GroupDesc { id, replicas, ..Default::default() };
+        for replica in &group.replicas {
+            cluster.create_replica(replica.node_id, replica.id, group.clone()).await;
+        }
+        cluster.assert_group_leader(id).await;
+    }
+    tokio::time::timeout(Duration::from_secs(25), async {
+        loop {
+            let state: serde_json::Value =
+                serde_json::from_str(&server.root.job_state().await.unwrap()).unwrap();
+            if state["history"].as_array().unwrap().iter().any(|job| {
+                job["outcome"] == "Replica membership has changed"
+                    && job["action"].as_str().is_some_and(|action| action.contains("MoveReplica"))
+            }) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .expect("Root should finish a replica move through the committed learner and voter roles");
 }
 
 #[sekas_macro::test]

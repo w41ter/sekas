@@ -93,6 +93,7 @@ impl Root {
             )));
         }
         let schema = self.schema()?;
+        schema.term().await?;
 
         let now = timestamp_millis();
         let data = match property {
@@ -113,11 +114,8 @@ impl Root {
                             BalanceDecision::Disabled => ("disabled", "-"),
                             BalanceDecision::Deferred(reason) => ("deferred", reason.as_ref()),
                             BalanceDecision::NoAction(detail) => ("no_action", detail.as_str()),
-                            BalanceDecision::ActionNeeded { detail, .. } => {
+                            BalanceDecision::ActionNeeded(detail) => {
                                 ("action_needed", detail.as_str())
-                            }
-                            BalanceDecision::Unsupported(detail) => {
-                                ("unsupported", detail.as_str())
                             }
                             BalanceDecision::Error(detail) => ("error", detail.as_str()),
                         };
@@ -251,22 +249,8 @@ impl Root {
                         format!("g{} {replicas}", repair.group),
                         repair.age_s,
                         "running",
-                        repair.reason.as_ref(),
+                        None,
                     ));
-                }
-                for migration in self.cluster_stats.shard_moves() {
-                    if let Some(submitted) = migration.submitted_at {
-                        rows.push(running(
-                            "migrate_shard",
-                            format!(
-                                "shard {} g{} -> g{}",
-                                migration.shard, migration.source, migration.destination
-                            ),
-                            submitted.elapsed().as_secs(),
-                            "awaiting_confirmation",
-                            migration.reason.as_ref(),
-                        ));
-                    }
                 }
                 show_columns(
                     [

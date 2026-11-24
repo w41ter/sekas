@@ -21,7 +21,6 @@
 #![allow(clippy::manual_saturating_arithmetic)]
 #![allow(clippy::result_large_err)]
 #![allow(clippy::unnecessary_sort_by)]
-#![feature(linked_list_cursors)]
 
 mod bootstrap;
 mod config;

@@ -105,9 +105,6 @@ pub enum Error {
         Option<ReplicaDesc>,
     ),
 
-    #[error("abort schedule task, {0}")]
-    AbortScheduleTask(&'static str),
-
     #[error("the txn is conflict with others")]
     TxnConflict,
 
@@ -187,7 +184,6 @@ impl From<Error> for vaelo::Status {
             Error::GroupNotReady(_) => panic!("GroupNotReady only used inside node"),
 
             err @ (Error::Canceled
-            | Error::AbortScheduleTask(_)
             | Error::ClusterNotMatch
             | Error::InvalidData(_)
             | Error::Io(_)
@@ -248,7 +244,6 @@ impl From<Error> for sekas_api::server::v1::Error {
             Error::PartialForward(_) => panic!("PartialForward only used inside node"),
             Error::ServiceIsBusy(_) => panic!("ServiceIsBusy only used inside node"),
             Error::GroupNotReady(_) => panic!("GroupNotReady only used inside node"),
-            Error::AbortScheduleTask(_) => panic!("AbortScheduleTask only used inside node"),
             Error::AlreadyExists(msg) => v1::Error::status(Code::AlreadyExists.as_i32(), msg),
 
             err @ (Error::ResourceExhausted(_)

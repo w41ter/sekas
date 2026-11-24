@@ -22,6 +22,7 @@ impl GroupRequest {
         GroupRequest {
             group_id,
             epoch,
+            expected_term: None,
             request: Some(GroupRequestUnion {
                 request: Some(group_request_union::Request::Transfer(TransferRequest {
                     transferee,
@@ -35,6 +36,7 @@ impl GroupRequest {
         GroupRequest {
             group_id,
             epoch,
+            expected_term: None,
             request: Some(GroupRequestUnion {
                 request: Some(group_request_union::Request::CreateShard(CreateShardRequest {
                     shard: Some(shard_desc),
@@ -48,6 +50,7 @@ impl GroupRequest {
         GroupRequest {
             group_id,
             epoch,
+            expected_term: None,
             request: Some(GroupRequestUnion {
                 request: Some(group_request_union::Request::DeleteShard(DeleteShardRequest {
                     shard_id,
@@ -71,6 +74,7 @@ impl GroupRequest {
         GroupRequest {
             group_id,
             epoch,
+            expected_term: None,
             request: Some(GroupRequestUnion {
                 request: Some(group_request_union::Request::ChangeReplicas(change_replicas)),
             }),
@@ -92,6 +96,7 @@ impl GroupRequest {
         GroupRequest {
             group_id,
             epoch,
+            expected_term: None,
             request: Some(GroupRequestUnion {
                 request: Some(group_request_union::Request::ChangeReplicas(change_replicas)),
             }),
@@ -113,6 +118,7 @@ impl GroupRequest {
         GroupRequest {
             group_id,
             epoch,
+            expected_term: None,
             request: Some(GroupRequestUnion {
                 request: Some(group_request_union::Request::ChangeReplicas(change_replicas)),
             }),
@@ -130,6 +136,7 @@ impl GroupRequest {
         GroupRequest {
             group_id,
             epoch,
+            expected_term: None,
             request: Some(GroupRequestUnion {
                 request: Some(group_request_union::Request::AcceptShard(AcceptShardRequest {
                     src_group_id,
@@ -151,6 +158,7 @@ impl GroupRequest {
         GroupRequest {
             group_id,
             epoch,
+            expected_term: None,
             request: Some(GroupRequestUnion {
                 request: Some(group_request_union::Request::SplitShard(SplitShardRequest {
                     old_shard_id,
@@ -171,6 +179,7 @@ impl GroupRequest {
         GroupRequest {
             group_id,
             epoch,
+            expected_term: None,
             request: Some(GroupRequestUnion {
                 request: Some(group_request_union::Request::GetSplitKey(GetSplitKeyRequest {
                     shard_id,
@@ -186,6 +195,7 @@ impl GroupRequest {
         GroupRequest {
             group_id,
             epoch,
+            expected_term: None,
             request: Some(GroupRequestUnion {
                 request: Some(group_request_union::Request::MergeShard(MergeShardRequest {
                     left_shard_id,

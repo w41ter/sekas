@@ -36,6 +36,8 @@ message GroupRequest {
     uint64 group_id = 1;
     uint64 epoch = 2;
     GroupRequestUnion request = 3;
+    // Control-plane commands may bind admission to a particular leader term.
+    optional uint64 expected_term = 4;
 }
 
 message GroupResponse {
@@ -89,6 +91,9 @@ message GroupRequestUnion {
 
         // Get a split key without changing group metadata.
         GetSplitKeyRequest get_split_key = 28;
+
+        // Read committed topology and migration state from the current leader.
+        InspectGroupRequest inspect_group = 29;
     }
 }
 
@@ -114,6 +119,7 @@ message GroupResponseUnion {
         SplitShardResponse split_shard = 25;
         MergeShardResponse merge_shard = 26;
         GetSplitKeyResponse get_split_key = 28;
+        InspectGroupResponse inspect_group = 29;
     }
 }
 
@@ -381,7 +387,6 @@ message PiggybackRequest {
         CollectStatsRequest collect_stats = 2;
         CollectGroupDetailRequest collect_group_detail = 3;
         CollectScheduleStateRequest collect_schedule_state = 4;
-        CollectMovingShardStateRequest collect_moving_shard_state = 5;
         SyncGroupGcVersionRequest sync_group_gc_version = 6;
     }
 }
@@ -392,7 +397,6 @@ message PiggybackResponse {
         CollectStatsResponse collect_stats = 2;
         CollectGroupDetailResponse collect_group_detail = 3;
         CollectScheduleStateResponse collect_schedule_state = 4;
-        CollectMovingShardStateResponse collect_moving_shard_state = 5;
         SyncGroupGcVersionResponse sync_group_gc_version = 6;
     }
 }
@@ -474,8 +478,27 @@ message GroupStatsSample {
     uint64 replica_id = 2;
     uint64 term = 3;
     uint64 elapsed_nanos = 4;
-    // True while the serving replica has an active shard migration.
-    optional bool shard_migration_in_progress = 5;
+    // Absent when the reporting leader has no active shard migration.
+    GroupShardMigration shard_migration = 5;
+}
+
+message GroupShardMigration {
+    enum Phase {
+        PREPARE = 0;
+        MOVING = 1;
+        MOVED = 2;
+    }
+    MoveShardDesc desc = 1;
+    Phase phase = 2;
+}
+
+message InspectGroupRequest {}
+
+message InspectGroupResponse {
+    GroupDesc group = 1;
+    uint64 leader_id = 2;
+    uint64 term = 3;
+    GroupShardMigration shard_migration = 4;
 }
 
 message GroupStats {
@@ -513,28 +536,25 @@ message CollectScheduleStateResponse {
     repeated ScheduleState schedule_states = 1;
 }
 
-message CollectMovingShardStateRequest { uint64 group = 1; }
-
-message CollectMovingShardStateResponse {
-    enum State {
-        NONE = 0;
-        PREPARE = 1;
-        MOVING = 2;
-        MOVED = 3;
-    }
-
-    State state = 1;
-    MoveShardDesc desc = 2;
-}
-
 message MoveReplicasRequest {
     repeated ReplicaDesc incoming_voters = 1;
     repeated ReplicaDesc outgoing_voters = 2;
+    // A fixed replacement from a durable Root job. Mutually exclusive with the
+    // voter lists. The Group scheduler advances at most one step per submission.
+    ReplicaReplacement replacement = 3;
+    bool replacement_target_active = 4;
 }
 
-message MoveReplicasResponse {
-    ScheduleState schedule_state = 1;
+message ReplicaReplacement {
+    uint64 incoming_id = 1;
+    uint64 outgoing_id = 2;
+    uint64 target_node = 3;
+    uint64 add_epoch = 4;
 }
+
+// Acknowledges submission to the local Group scheduler. Read Group membership
+// to observe the outcome.
+message MoveReplicasResponse {}
 
 message MoveShardRequest {
     oneof request {

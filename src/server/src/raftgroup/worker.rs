@@ -69,10 +69,13 @@ pub enum Request {
     },
     ChangeConfig {
         change: ChangeReplicas,
+        term: u64,
         sender: oneshot::Sender<Result<()>>,
     },
     Transfer {
         transferee: u64,
+        term: u64,
+        sender: oneshot::Sender<Result<()>>,
     },
     Message(RaftMessage),
     Unreachable {
@@ -502,12 +505,18 @@ where
                 self.handle_proposal(ctx, eval_result, start, term, sender)
             }
             Request::Read { policy, sender } => self.handle_read(policy, sender),
-            Request::ChangeConfig { change, sender } => self.handle_conf_change(change, sender),
+            Request::ChangeConfig { change, term, sender } => {
+                self.handle_conf_change(change, term, sender)
+            }
             Request::CreateSnapshotFinished => {
                 self.raft_node.mut_store().is_creating_snapshot.set(false);
             }
-            Request::Transfer { transferee: target_id } => {
-                self.raft_node.transfer_leader(target_id);
+            Request::Transfer { transferee, term, sender } => {
+                let result = self.raft_node.check_proposal_early(Some(term), false);
+                if result.is_ok() {
+                    self.raft_node.transfer_leader(transferee);
+                }
+                let _ = sender.send(result);
             }
             Request::Message(msg) => {
                 self.handle_msg(ctx, msg)?;
@@ -593,10 +602,15 @@ where
         RAFTGROUP_WORKER_REQUEST_IN_QUEUE_DURATION_SECONDS.observe(elapsed_seconds(start));
     }
 
-    fn handle_conf_change(&mut self, change: ChangeReplicas, sender: oneshot::Sender<Result<()>>) {
+    fn handle_conf_change(
+        &mut self,
+        change: ChangeReplicas,
+        term: u64,
+        sender: oneshot::Sender<Result<()>>,
+    ) {
         info!("group {} replica {} handle conf change {change:?}", self.group_id, self.desc.id);
         let cc = super::encode_to_conf_change(change);
-        self.raft_node.propose_conf_change(vec![], cc, sender);
+        self.raft_node.propose_conf_change(vec![], cc, term, sender);
     }
 
     fn handle_read(&mut self, policy: ReadPolicy, sender: oneshot::Sender<Result<()>>) {

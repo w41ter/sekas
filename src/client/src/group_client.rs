@@ -389,12 +389,41 @@ impl GroupClient {
 }
 
 impl GroupClient {
+    /// Read the current leader's committed topology without pinning the epoch.
+    pub async fn inspect_group(&mut self) -> Result<InspectGroupResponse> {
+        match self.request(&Request::InspectGroup(InspectGroupRequest {})).await? {
+            Response::InspectGroup(state) => Ok(state),
+            _ => Err(Error::Internal("expected group inspection".into())),
+        }
+    }
+
+    /// Route a scheduling step while keeping its original admission versions.
+    pub async fn execute_scheduled(
+        &mut self,
+        mut request: GroupRequest,
+        term: u64,
+    ) -> Result<Response> {
+        request.expected_term = Some(term);
+        let op = |ctx: InvokeContext, client: NodeClient| {
+            let request = request.clone();
+            async move {
+                client
+                    .unary_group_request(RpcTimeout::new(ctx.timeout, request))
+                    .await
+                    .and_then(Self::group_response)
+            }
+        };
+        let opt = InvokeOpt { accurate_epoch: true, ..Default::default() };
+        self.invoke_with_opt(op, opt).await
+    }
+
     pub async fn request(&mut self, request: &Request) -> Result<Response> {
         let op = |ctx: InvokeContext, client: NodeClient| {
             let build_start = Instant::now();
             let req = GroupRequest {
                 group_id: ctx.group_id,
                 epoch: ctx.epoch,
+                expected_term: None,
                 request: Some(GroupRequestUnion { request: Some(request.clone()) }),
             };
             GROUP_CLIENT_RPC_BUILD_DURATION_SECONDS.observe(build_start.elapsed().as_secs_f64());
@@ -430,6 +459,7 @@ impl GroupClient {
         let req = GroupRequest {
             group_id: self.group_id,
             epoch: self.epoch,
+            expected_term: None,
             request: Some(GroupRequestUnion { request: Some(request.clone()) }),
         };
         client.detach_unary_group_request(RpcTimeout::new(self.timeout.take(), req));
@@ -452,6 +482,7 @@ impl GroupClient {
             let req = GroupRequest {
                 group_id: ctx.group_id,
                 epoch: ctx.epoch,
+                expected_term: None,
                 request: Some(GroupRequestUnion {
                     request: Some(Request::WatchKey(watch_key_req)),
                 }),
@@ -564,23 +595,22 @@ impl GroupClient {
         self.invoke(op).await
     }
 
+    /// Submit a replica move to the local scheduler and observe membership
+    /// separately.
     pub async fn move_replicas(
         &mut self,
         incoming_voters: Vec<ReplicaDesc>,
         outgoing_voters: Vec<ReplicaDesc>,
-    ) -> Result<ScheduleState> {
-        let req = Request::MoveReplicas(MoveReplicasRequest { incoming_voters, outgoing_voters });
-        let resp = match self.request(&req).await? {
-            Response::MoveReplicas(resp) => resp,
-            _ => {
-                return Err(Error::Internal(
-                    "invalid response type, `MoveReplicas` is required".into(),
-                ));
-            }
-        };
-        resp.schedule_state.ok_or_else(|| {
-            Error::Internal("invalid response type, `schedule_state` is required".into())
-        })
+    ) -> Result<()> {
+        let req = Request::MoveReplicas(MoveReplicasRequest {
+            incoming_voters,
+            outgoing_voters,
+            ..Default::default()
+        });
+        match self.request(&req).await? {
+            Response::MoveReplicas(_) => Ok(()),
+            _ => Err(Error::Internal("expected replica move submission response".into())),
+        }
     }
 
     pub async fn add_learner(&mut self, replica: u64, node: u64) -> Result<()> {

@@ -12,11 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use super::ReconcileTask;
-use super::reconcile_task::Task;
+use super::ExecutionStatus;
+use super::action::{Action, PlacementJob};
 use crate::root::allocator::{BalanceDecision, BalanceThresholds};
 use crate::{BalanceDimension, Error, RootConfig};
 
@@ -101,15 +100,6 @@ impl BalanceSnapshot {
         self.thresholds[policy.index()] = thresholds;
     }
 
-    pub(super) fn reuse_thresholds(&mut self, previous: &Self) {
-        for policy in Policy::ALL {
-            let index = policy.index();
-            if !matches!(self.reports[index], BalanceDecision::Disabled) {
-                self.thresholds[index] = self.thresholds[index].or(previous.thresholds[index]);
-            }
-        }
-    }
-
     pub(super) fn record_refresh_error(&mut self, err: &Error) {
         let decision = BalanceDecision::Error(format!("refresh cluster metadata: {err}"));
         for policy in Policy::ALL {
@@ -118,20 +108,6 @@ impl BalanceSnapshot {
             }
         }
     }
-
-    pub(super) fn defer(&mut self, reason: &'static str) {
-        for report in &mut self.reports {
-            if matches!(report, BalanceDecision::Unknown) {
-                *report = BalanceDecision::Deferred(reason.into());
-            }
-        }
-    }
-}
-
-#[derive(Default)]
-pub(super) struct QueueStatus {
-    next_id: u64,
-    pub(super) tasks: BTreeMap<u64, TaskStatus>,
 }
 
 #[derive(Default)]
@@ -152,14 +128,8 @@ impl TaskReason {
         Self { policy: None, detail: detail.into() }
     }
 
-    pub(super) fn for_balance(dimension: BalanceDimension, decision: &BalanceDecision) -> Self {
-        Self {
-            policy: Some(Policy::Placement(dimension)),
-            detail: decision
-                .action_reason()
-                .expect("a selected balance action has a reason")
-                .into(),
-        }
+    pub(super) fn for_balance(dimension: BalanceDimension, reason: String) -> Self {
+        Self { policy: Some(Policy::Placement(dimension)), detail: reason.into() }
     }
 }
 
@@ -203,73 +173,10 @@ impl TaskStatus {
     }
 }
 
-impl QueueStatus {
-    pub(super) fn insert(&mut self, task: &ReconcileTask, reason: TaskReason) -> u64 {
-        let (kind, target) = match task.task.as_ref().unwrap() {
-            Task::ReallocateReplica(t) => {
-                let dest = t
-                    .dest_node
-                    .as_ref()
-                    .map_or_else(|| "?".to_owned(), |node| format!("n{}", node.id));
-                (
-                    "reallocate_replica",
-                    format!(
-                        "group {}, replica {}: n{} -> {dest}",
-                        t.group, t.src_replica, t.src_node
-                    ),
-                )
-            }
-            Task::MigrateShard(t) => (
-                "migrate_shard",
-                format!("shard {}: g{} -> g{}", t.shard, t.src_group, t.dest_group),
-            ),
-            Task::TransferGroupLeader(t) => (
-                "transfer_leader",
-                format!("group {}: n{} -> n{}", t.group, t.src_node, t.dest_node),
-            ),
-            Task::ShedLeader(t) => ("shed_group_leaders", format!("node {}", t.node_id)),
-            Task::ShedRoot(t) => ("shed_root_leader", format!("node {}", t.node_id)),
-            Task::SplitShard(t) => {
-                ("split_shard", format!("group {}, shard {}", t.group_id, t.shard_id))
-            }
-            Task::MergeShard(t) => (
-                "merge_shard",
-                format!("group {}, shards {} + {}", t.group_id, t.left_shard_id, t.right_shard_id),
-            ),
-        };
-        let id = self.next_id;
-        self.next_id += 1;
-        self.tasks.insert(
-            id,
-            TaskStatus {
-                kind,
-                target,
-                reason,
-                created_at: task.created_at,
-                fire_at: task.fire_at,
-                retry_count: task.retry_count,
-                running: false,
-            },
-        );
-        id
-    }
-
-    pub(super) fn start_attempt(&mut self, id: u64) -> TaskReason {
-        let status = self.tasks.get_mut(&id).unwrap();
-        status.running = true;
-        status.reason.clone()
-    }
-
-    pub(super) fn finish_attempt(&mut self, id: u64, task: &ReconcileTask) {
-        let status = self.tasks.get_mut(&id).unwrap();
-        status.running = false;
-        status.fire_at = task.fire_at;
-        status.retry_count = task.retry_count;
-    }
-
-    pub(super) fn summary(&self, now: u64) -> SchedulerSummary {
-        let mut summary = SchedulerSummary::default();
-        for task in self.tasks.values() {
+impl SchedulerSummary {
+    pub(super) fn from_tasks(tasks: &[TaskStatus], now: u64) -> Self {
+        let mut summary = Self::default();
+        for task in tasks {
             match task.state(now) {
                 TaskState::Ready => summary.ready += 1,
                 TaskState::Running => summary.running += 1,
@@ -280,40 +187,33 @@ impl QueueStatus {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use std::time::Duration;
-
-    use super::*;
-    use crate::root::schedule::ShedLeaderTask;
-
-    #[test]
-    fn queue_status_tracks_running_and_delayed_attempts() {
-        let mut status = QueueStatus::default();
-        let mut task = ReconcileTask {
-            created_at: 1000,
-            task: Some(Task::ShedLeader(ShedLeaderTask { node_id: 42 })),
-            ..Default::default()
+impl TaskStatus {
+    pub(super) fn new(
+        id: u64,
+        task: &PlacementJob,
+        action: &Action,
+        status: Option<&ExecutionStatus>,
+    ) -> Self {
+        let (kind, target) = action.target();
+        let policy = task.policy.as_deref().and_then(|policy| {
+            if policy == Policy::GroupCount.name() {
+                Some(Policy::GroupCount)
+            } else {
+                BalanceDimension::parse(policy).map(Policy::Placement)
+            }
+        });
+        let detail = match status.and_then(|status| status.waiting.as_deref()) {
+            Some(waiting) => format!("{}. {waiting}", task.reason).into(),
+            None => task.reason.as_str().into(),
         };
-        let id = status.insert(&task, TaskReason::new("Node drain requested"));
-        assert_eq!(status.summary(1000).ready, 1);
-        status.start_attempt(id);
-        assert_eq!(status.summary(1000).running, 1);
-
-        task.defer_retry(1100, None);
-        status.finish_attempt(id, &task);
-        assert_eq!(status.tasks[&id].retry_count, 1);
-        assert!(status.tasks[&id].reason.policy.is_none());
-        assert_eq!(&*status.tasks[&id].reason.detail, "Node drain requested");
-        assert_eq!(status.summary(2099).waiting, 1);
-        assert_eq!(status.summary(2100).ready, 1);
-
-        status.start_attempt(id);
-        task.defer_retry(2100, Some(Duration::from_secs(1)));
-        status.finish_attempt(id, &task);
-        assert_eq!(status.tasks[&id].retry_count, 0);
-        assert_eq!(status.summary(2100).waiting, 1);
-        status.tasks.remove(&id);
-        assert_eq!(status.summary(2100).waiting, 0);
+        Self {
+            kind,
+            target: format!("job {id} {target}"),
+            reason: TaskReason { policy, detail },
+            created_at: task.created_at,
+            fire_at: status.map_or(0, |status| status.fire_at),
+            retry_count: status.map_or(0, |status| status.retry_count),
+            running: status.is_some_and(|status| status.running),
+        }
     }
 }

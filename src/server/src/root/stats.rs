@@ -14,13 +14,12 @@
 
 use std::collections::{HashMap, HashSet, hash_map};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
-use rand::RngExt;
 use sekas_api::server::v1::*;
 use tokio::time::Instant;
 
 use super::liveness::Liveness;
-use super::schedule::TaskReason;
 
 mod show;
 
@@ -33,7 +32,6 @@ struct GroupDelta {
     incoming: Vec<ReplicaDesc>,
     outgoing: Vec<ReplicaDesc>,
     repair: Option<ReplicaRepair>,
-    reason: Option<TaskReason>,
 }
 
 impl GroupDelta {
@@ -44,13 +42,6 @@ impl GroupDelta {
     fn has_activity(&self) -> bool {
         self.pending() || self.repair.is_some()
     }
-
-    fn replica_move(&self) -> Option<(u64, u64)> {
-        match (&self.incoming[..], &self.outgoing[..], &self.repair) {
-            ([incoming], [outgoing], None) => Some((incoming.id, outgoing.id)),
-            _ => None,
-        }
-    }
 }
 
 pub(super) struct ReplicaChangeStatus {
@@ -58,15 +49,6 @@ pub(super) struct ReplicaChangeStatus {
     pub change: ReplicaRepair,
     pub repair: bool,
     pub age_s: u64,
-    pub reason: Option<TaskReason>,
-}
-
-pub(super) struct ShardMoveStatus {
-    pub shard: u64,
-    pub source: u64,
-    pub destination: u64,
-    pub submitted_at: Option<Instant>,
-    pub reason: Option<TaskReason>,
 }
 
 pub(super) struct ReplicaIssue {
@@ -90,8 +72,6 @@ pub struct NodeDelta {
 #[derive(Default, Clone)]
 pub struct ClusterStats {
     sched_stats: Arc<Mutex<SchedStats>>,
-    job_stats: Arc<Mutex<JobStats>>,
-    table_set_stats: Arc<Mutex<TableSetStats>>,
     show_stats: Arc<Mutex<show::ShowStats>>,
     node_resources: Arc<Mutex<HashMap<u64, NodeResourceSample>>>,
     replica_progress: Arc<Mutex<HashMap<(u64, u64, u64), ReplicaProgress>>>,
@@ -167,7 +147,7 @@ fn replica_change_waits_for_a_heartbeat_requested_after_submission() {
         ..Default::default()
     };
     let completed = ScheduleState { group_id: 1, epoch: 42, ..Default::default() };
-    stats.handle_schedule_update(&[moving], None);
+    stats.handle_schedule_update(&[moving]);
     stats.handle_heartbeat_schedule_update(std::slice::from_ref(&completed), started);
     assert!(stats.has_pending_replica_changes());
     stats.handle_heartbeat_schedule_update(
@@ -181,36 +161,18 @@ fn replica_change_waits_for_a_heartbeat_requested_after_submission() {
 struct SchedStats {
     raw_group_delta: HashMap<u64 /* group */, GroupDelta>,
     node_view: HashMap<u64 /* node */, NodeDelta>,
-    split_shards: HashSet<u64>,
-    moving_shards: HashMap<u64, ShardMove>,
-    merge_shards: HashSet<(u64, u64)>,
     split_retry_at: HashMap<u64, Instant>,
 }
 
-struct ShardMove {
-    source: u64,
-    destination: u64,
-    submitted_at: Option<Instant>,
-    reason: Option<TaskReason>,
-}
-
-#[derive(Default)]
-struct JobStats {
-    node_delta: HashMap<u64 /* node_id */, NodeDelta>,
-}
-
-#[derive(Default)]
-pub struct TableSetStats {
-    tables: HashMap<u64, TableStats>,
-}
-
-#[derive(Default)]
-pub struct TableStats {
-    shards: HashMap<u64, ShardStats>,
-    shard_indexes: HashMap<u64, /* group */ u64>,
-}
-
 impl ClusterStats {
+    pub(super) fn reported_migration(
+        &self,
+        group: u64,
+        max_age: Duration,
+    ) -> Option<MoveShardDesc> {
+        self.show_stats.lock().unwrap().reported_migration(group, max_age)
+    }
+
     pub(super) fn handle_node_resources(&self, node: u64, resources: Option<NodeResourceUsage>) {
         self.node_resources.lock().unwrap().entry(node).or_default().update(resources);
     }
@@ -340,50 +302,8 @@ impl ClusterStats {
         self.replica_progress.lock().unwrap().retain(|replica, _| replicas.contains(replica));
     }
 
-    pub fn handle_group_stats(&self, group_stats: &GroupStats) {
-        {
-            let mut sched_stats = self.sched_stats.lock().expect("poisoned");
-            for shard in &group_stats.shard_stats {
-                if sched_stats.moving_shards.get(&shard.shard_id).is_some_and(|migration| {
-                    migration.destination == group_stats.group_id
-                        && migration.submitted_at.is_none()
-                }) {
-                    sched_stats.moving_shards.remove(&shard.shard_id);
-                }
-            }
-        }
-        {
-            let mut table_set = self.table_set_stats.lock().expect("poisoned");
-            for shard in &group_stats.shard_stats {
-                let shard_id = shard.shard_id;
-                let table_stats = table_set.tables.entry(shard.table_id).or_default();
-                table_stats.shards.insert(shard_id, shard.clone());
-                table_stats.shard_indexes.insert(shard_id, group_stats.group_id);
-            }
-        }
-    }
-
     pub(super) fn handle_show_group_stats(&self, group_stats: &GroupStats, node_id: u64) -> bool {
         self.show_stats.lock().unwrap().update(group_stats, node_id)
-    }
-
-    pub(super) fn confirm_shard_moves(&self, stats: &GroupStats, requested_at: Instant) {
-        let migration_in_progress =
-            stats.sample.and_then(|sample| sample.shard_migration_in_progress);
-        if migration_in_progress == Some(true) {
-            return;
-        }
-        self.sched_stats.lock().unwrap().moving_shards.retain(|shard, migration| {
-            if migration.destination != stats.group_id
-                || migration.submitted_at.is_none_or(|submitted| requested_at <= submitted)
-            {
-                return true;
-            }
-            // A report requested after submission can observe completion or
-            // rollback. Older nodes can still confirm ownership at the destination.
-            migration_in_progress.is_none()
-                && !stats.shard_stats.iter().any(|s| s.shard_id == *shard)
-        });
     }
 
     pub(super) fn show_snapshot(
@@ -402,20 +322,10 @@ impl ClusterStats {
         self.show_stats.lock().unwrap().display_snapshot(groups, max_age)
     }
 
-    pub fn handle_schedule_update(
-        &self,
-        state_updates: &[ScheduleState],
-        job_updates: Option<HashMap<u64 /* node */, NodeDelta>>,
-    ) {
-        if !state_updates.is_empty() {
-            let mut inner = self.sched_stats.lock().unwrap();
-            if inner.replace_state(state_updates, None) {
-                inner.rebuild_view();
-            }
-        }
-        if let Some(job_updates) = job_updates.as_ref() {
-            let mut inner = self.job_stats.lock().unwrap();
-            inner.node_delta.clone_from(job_updates);
+    pub fn handle_schedule_update(&self, updates: &[ScheduleState]) {
+        let mut stats = self.sched_stats.lock().unwrap();
+        if stats.replace_state(updates, None) {
+            stats.rebuild_view();
         }
     }
 
@@ -430,37 +340,6 @@ impl ClusterStats {
         }
     }
 
-    pub(super) fn handle_replica_move_update(
-        &self,
-        state: ScheduleState,
-        incoming: u64,
-        outgoing: u64,
-        reason: &TaskReason,
-    ) {
-        let group = state.group_id;
-        let mut inner = self.sched_stats.lock().unwrap();
-        if inner.replace_state(&[state], None) {
-            inner.rebuild_view();
-        }
-        if let Some(delta) = inner.raw_group_delta.get_mut(&group)
-            && delta.replica_move() == Some((incoming, outgoing))
-        {
-            delta.reason = Some(reason.clone());
-        }
-    }
-
-    /// Add the spliting shard to sched stats.
-    pub fn handle_split_shard(&self, shard_id: u64) {
-        let mut sched_stats = self.sched_stats.lock().expect("poisoned");
-        sched_stats.split_shards.insert(shard_id);
-    }
-
-    /// Finish the splited shard from sched stats.
-    pub fn finish_split_shard(&self, shard_id: u64) {
-        let mut sched_stats = self.sched_stats.lock().expect("poisoned");
-        sched_stats.split_shards.remove(&shard_id);
-    }
-
     pub(super) fn defer_shard_split(&self, shard_id: u64, delay: std::time::Duration) {
         let now = Instant::now();
         let mut stats = self.sched_stats.lock().unwrap();
@@ -468,107 +347,27 @@ impl ClusterStats {
         stats.split_retry_at.insert(shard_id, now + delay);
     }
 
-    pub(super) fn is_shard_split_cooling_down(&self, shard_id: u64) -> bool {
-        self.sched_stats
-            .lock()
-            .unwrap()
-            .split_retry_at
-            .get(&shard_id)
-            .is_some_and(|retry_at| *retry_at > Instant::now())
-    }
-
-    pub(super) fn handle_move_shard(
-        &self,
-        shard_id: u64,
-        source_group_id: u64,
-        dest_group_id: u64,
-        reason: Option<TaskReason>,
-    ) {
-        let mut sched_stats = self.sched_stats.lock().expect("poisoned");
-        sched_stats.moving_shards.insert(
-            shard_id,
-            ShardMove {
-                source: source_group_id,
-                destination: dest_group_id,
-                submitted_at: None,
-                reason,
-            },
-        );
-    }
-
-    pub(super) fn mark_shard_move_submitted(&self, shard_id: u64) {
-        if let Some(migration) = self.sched_stats.lock().unwrap().moving_shards.get_mut(&shard_id) {
-            migration.submitted_at = Some(Instant::now());
-        }
-    }
-
-    pub(super) fn has_pending_shard_moves(&self) -> bool {
-        !self.sched_stats.lock().unwrap().moving_shards.is_empty()
-    }
-
-    pub(super) fn is_replica_change_pending(&self, group: u64) -> bool {
-        self.sched_stats
-            .lock()
-            .unwrap()
+    /// Capture the Group membership work and split cooldowns for one placement
+    /// pass.
+    pub(super) fn placement_blockers(&self) -> (HashSet<u64>, HashSet<u64>) {
+        let stats = self.sched_stats.lock().unwrap();
+        let now = Instant::now();
+        let changing_membership = stats
             .raw_group_delta
-            .get(&group)
-            .is_some_and(GroupDelta::pending)
+            .iter()
+            .filter_map(|(&group, delta)| delta.has_activity().then_some(group))
+            .collect();
+        let split_cooldowns = stats
+            .split_retry_at
+            .iter()
+            .filter_map(|(&shard, &until)| (until > now).then_some(shard))
+            .collect();
+        (changing_membership, split_cooldowns)
     }
 
+    #[cfg(test)]
     pub(super) fn has_pending_replica_changes(&self) -> bool {
         self.sched_stats.lock().unwrap().raw_group_delta.values().any(GroupDelta::pending)
-    }
-
-    pub(super) fn shard_moves(&self) -> Vec<ShardMoveStatus> {
-        let mut moves: Vec<_> = self
-            .sched_stats
-            .lock()
-            .unwrap()
-            .moving_shards
-            .iter()
-            .map(|(&shard, state)| ShardMoveStatus {
-                shard,
-                source: state.source,
-                destination: state.destination,
-                submitted_at: state.submitted_at,
-                reason: state.reason.clone(),
-            })
-            .collect();
-        moves.sort_unstable_by_key(|state| state.shard);
-        moves
-    }
-
-    pub(super) fn shard_migration_wait(&self, active_groups: &[u64]) -> Option<String> {
-        let moves = self.shard_moves();
-        if !moves.is_empty() {
-            let details = moves
-                .iter()
-                .map(|migration| {
-                    let target = format!(
-                        "Shard {} g{} -> g{}",
-                        migration.shard, migration.source, migration.destination
-                    );
-                    if let Some(submitted) = migration.submitted_at {
-                        format!(
-                            "{target} submitted {}s ago. Waiting for g{} to confirm completion.",
-                            submitted.elapsed().as_secs(),
-                            migration.destination
-                        )
-                    } else {
-                        format!("{target} is queued.")
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join("\n");
-            return Some(format!("{details}\nSee SHOW SCHEDULER_TASKS for the move."));
-        }
-        if active_groups.is_empty() {
-            return None;
-        }
-        let groups = active_groups.iter().map(|id| format!("g{id}")).collect::<Vec<_>>().join(", ");
-        Some(format!(
-            "Active shard migration reported by {groups}. Waiting for the next idle report."
-        ))
     }
 
     pub(super) fn replica_changes(&self) -> Vec<ReplicaChangeStatus> {
@@ -587,41 +386,10 @@ impl ClusterStats {
                 }),
                 repair: delta.repair.is_some(),
                 age_s: delta.started_at.elapsed().as_secs(),
-                reason: delta.reason.clone(),
             })
             .collect();
         changes.sort_unstable_by_key(|state| state.group);
         changes
-    }
-
-    pub fn finish_move_shard(&self, shard_id: u64) {
-        let mut sched_stats = self.sched_stats.lock().expect("poisoned");
-        sched_stats.moving_shards.remove(&shard_id);
-    }
-
-    pub fn handle_merge_shard(&self, left_shard_id: u64, right_shard_id: u64) {
-        let mut sched_stats = self.sched_stats.lock().expect("poisoned");
-        sched_stats.merge_shards.insert((left_shard_id, right_shard_id));
-    }
-
-    pub fn finish_merge_shard(&self, left_shard_id: u64, right_shard_id: u64) {
-        let mut sched_stats = self.sched_stats.lock().expect("poisoned");
-        sched_stats.merge_shards.remove(&(left_shard_id, right_shard_id));
-    }
-
-    pub fn is_merging_shard(&self, left_shard_id: u64, right_shard_id: u64) -> bool {
-        let sched_stats = self.sched_stats.lock().expect("poisoned");
-        sched_stats.merge_shards.contains(&(left_shard_id, right_shard_id))
-    }
-
-    pub fn is_shard_scheduled(&self, shard_id: u64) -> bool {
-        let sched_stats = self.sched_stats.lock().expect("poisoned");
-        sched_stats.split_shards.contains(&shard_id)
-            || sched_stats.moving_shards.contains_key(&shard_id)
-            || sched_stats
-                .merge_shards
-                .iter()
-                .any(|(left, right)| *left == shard_id || *right == shard_id)
     }
 
     pub fn get_node_delta(&self, node: u64) -> NodeDelta {
@@ -632,69 +400,7 @@ impl ClusterStats {
         } {
             rs.replica_count += sched_node_delta.replica_count;
         }
-        if let Some(job_node_delta) = {
-            let inner = self.job_stats.lock().unwrap();
-            inner.node_delta.get(&node).map(ToOwned::to_owned)
-        } {
-            rs.replica_count += job_node_delta.replica_count;
-        }
         rs
-    }
-
-    /// Get the large shards, return the group_id and shard_id.
-    pub fn get_large_shards(&self, limit: usize, split_threshold: u64) -> Vec<(u64, u64)> {
-        if limit == 0 {
-            return Vec::new();
-        }
-        let scheduled_shards = {
-            let sched_stats = self.sched_stats.lock().expect("poisoned");
-            let mut excluded = sched_stats.scheduled_shards();
-            let now = Instant::now();
-            excluded.extend(
-                sched_stats
-                    .split_retry_at
-                    .iter()
-                    .filter_map(|(&shard, &retry_at)| (retry_at > now).then_some(shard)),
-            );
-            excluded
-        };
-        let table_set = self.table_set_stats.lock().expect("poisoned");
-        let mut target_shards = Vec::with_capacity(limit);
-        let mut seen = 0;
-        let mut rng = rand::rng();
-        for table_stats in table_set.tables.values() {
-            for shard_stats in table_stats.shards.values() {
-                if shard_stats.shard_size <= split_threshold
-                    || scheduled_shards.contains(&shard_stats.shard_id)
-                {
-                    continue;
-                }
-                if let Some(&group_id) = table_stats.shard_indexes.get(&shard_stats.shard_id) {
-                    if group_id == sekas_schema::ROOT_GROUP_ID {
-                        // Don't split the root groups, such as txn shard.
-                        continue;
-                    }
-                    seen += 1;
-                    if target_shards.len() < limit {
-                        target_shards.push((group_id, shard_stats.shard_id));
-                    } else {
-                        // Reservoir sampling gives every eligible shard a
-                        // chance without storing the entire candidate set.
-                        let index = rng.random_range(0..seen);
-                        if index < limit {
-                            target_shards[index] = (group_id, shard_stats.shard_id);
-                        }
-                    }
-                }
-            }
-        }
-        target_shards
-    }
-
-    /// Get the stats of a shard.
-    pub fn get_shard_stats(&self, shard_id: u64) -> Option<ShardStats> {
-        let table_set = self.table_set_stats.lock().expect("poisoned");
-        table_set.tables.values().filter_map(|v| v.shards.get(&shard_id)).next().cloned()
     }
 
     pub fn reset(&self) {
@@ -702,18 +408,7 @@ impl ClusterStats {
             let mut inner = self.sched_stats.lock().unwrap();
             inner.raw_group_delta.clear();
             inner.node_view.clear();
-            inner.split_shards.clear();
-            inner.moving_shards.clear();
-            inner.merge_shards.clear();
             inner.split_retry_at.clear();
-        }
-        {
-            let mut inner = self.job_stats.lock().unwrap();
-            inner.node_delta.clear();
-        }
-        {
-            let mut inner = self.table_set_stats.lock().expect("poisoned");
-            inner.tables.clear();
         }
         self.show_stats.lock().unwrap().clear();
         self.node_resources.lock().unwrap().clear();
@@ -723,16 +418,6 @@ impl ClusterStats {
 }
 
 impl SchedStats {
-    fn scheduled_shards(&self) -> HashSet<u64> {
-        let mut shards = self.split_shards.clone();
-        shards.extend(self.moving_shards.keys().copied());
-        for (left, right) in &self.merge_shards {
-            shards.insert(*left);
-            shards.insert(*right);
-        }
-        shards
-    }
-
     fn replace_state(&mut self, updates: &[ScheduleState], requested_at: Option<Instant>) -> bool {
         let mut updated = false;
         let updated_at = requested_at.unwrap_or_else(Instant::now);
@@ -744,7 +429,6 @@ impl SchedStats {
                 incoming: state.incoming_replicas.to_owned(),
                 outgoing: state.outgoing_replicas.to_owned(),
                 repair: state.replica_repair.clone(),
-                reason: None,
             };
             match self.raw_group_delta.entry(state.group_id) {
                 hash_map::Entry::Occupied(mut ent) => {
@@ -766,11 +450,7 @@ impl SchedStats {
                         } else {
                             updated_at
                         };
-                        let mut next = replacement(started_at);
-                        if delta.reason.is_some() && delta.replica_move() == next.replica_move() {
-                            next.reason = delta.reason.take();
-                        }
-                        *delta = next;
+                        *delta = replacement(started_at);
                         updated = true;
                     }
                 }
@@ -810,85 +490,6 @@ impl SchedStats {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::BalanceDimension;
-    use crate::root::schedule::Policy;
-
-    #[test]
-    fn replica_move_keeps_its_reason_only_for_the_same_change() {
-        let stats = ClusterStats::default();
-        let mut moving = ScheduleState {
-            group_id: 1,
-            epoch: 42,
-            incoming_replicas: vec![ReplicaDesc { id: 1, node_id: 2, ..Default::default() }],
-            outgoing_replicas: vec![ReplicaDesc { id: 2, node_id: 3, ..Default::default() }],
-            ..Default::default()
-        };
-        let reason = TaskReason {
-            policy: Some(Policy::Placement(BalanceDimension::ReplicaCount)),
-            detail: "Source node is above the upper threshold".into(),
-        };
-        stats.handle_schedule_update(std::slice::from_ref(&moving), None);
-        assert!(stats.replica_changes()[0].reason.is_none());
-        stats.handle_replica_move_update(moving.clone(), 1, 2, &reason);
-
-        moving.epoch += 1;
-        stats.handle_heartbeat_schedule_update(
-            std::slice::from_ref(&moving),
-            Instant::now() + std::time::Duration::from_secs(1),
-        );
-        let changes = stats.replica_changes();
-        let displayed = changes[0].reason.as_ref().unwrap();
-        assert_eq!(displayed.policy.unwrap().name(), "replica_count");
-        assert_eq!(displayed.detail, reason.detail);
-
-        moving.epoch += 1;
-        moving.incoming_replicas[0].id = 3;
-        stats.handle_schedule_update(&[moving], None);
-        assert!(stats.replica_changes()[0].reason.is_none());
-    }
-
-    #[test]
-    fn guarded_migration_waits_for_a_destination_sample_requested_after_submission() {
-        let stats = ClusterStats::default();
-        let reason = TaskReason {
-            policy: Some(Policy::Placement(BalanceDimension::ShardSize)),
-            detail: "Reduces the size imbalance between groups".into(),
-        };
-        stats.handle_move_shard(1, 1, 2, Some(reason.clone()));
-        let queued = stats.shard_migration_wait(&[]).unwrap();
-        assert!(queued.contains("Shard 1 g1 -> g2 is queued"), "{queued}");
-        let submitted = Instant::now();
-        stats.mark_shard_move_submitted(1);
-        let waiting = stats.shard_migration_wait(&[]).unwrap();
-        assert!(waiting.contains("Waiting for g2 to confirm completion"), "{waiting}");
-        let moves = stats.shard_moves();
-        assert_eq!(moves[0].source, 1);
-        let displayed = moves[0].reason.as_ref().unwrap();
-        assert_eq!(displayed.policy.unwrap().name(), "shard_size");
-        assert_eq!(displayed.detail, reason.detail);
-        let mut sample = GroupStats {
-            group_id: 2,
-            sample: Some(GroupStatsSample {
-                shard_migration_in_progress: Some(false),
-                ..Default::default()
-            }),
-            ..Default::default()
-        };
-        stats.confirm_shard_moves(&sample, submitted);
-        assert!(stats.has_pending_shard_moves());
-
-        let later = Instant::now() + std::time::Duration::from_secs(1);
-        sample.sample.as_mut().unwrap().shard_migration_in_progress = Some(true);
-        stats.confirm_shard_moves(&sample, later);
-        assert!(stats.has_pending_shard_moves());
-
-        sample.sample.as_mut().unwrap().shard_migration_in_progress = Some(false);
-        // An accepted migration may roll back without ever reporting the shard at the
-        // destination.
-        stats.confirm_shard_moves(&sample, later);
-        assert!(!stats.has_pending_shard_moves());
-        assert!(stats.shard_migration_wait(&[]).is_none());
-    }
 
     #[test]
     fn removal_only_replica_repair_is_visible_until_it_settles() {
@@ -897,10 +498,10 @@ mod tests {
         let outgoing = ReplicaDesc { id: 8, node_id: 3, ..Default::default() };
         let idle = ScheduleState { group_id: 2, epoch: 3, ..Default::default() };
         let repair = ReplicaRepair { incoming_replicas: vec![], outgoing_replicas: vec![outgoing] };
-        stats.handle_schedule_update(
-            &[ScheduleState { replica_repair: Some(repair.clone()), ..idle.clone() }],
-            None,
-        );
+        stats.handle_schedule_update(&[ScheduleState {
+            replica_repair: Some(repair.clone()),
+            ..idle.clone()
+        }]);
         stats.handle_heartbeat_schedule_update(std::slice::from_ref(&idle), earlier_heartbeat);
         let changes = stats.replica_changes();
         assert_eq!(changes.len(), 1);

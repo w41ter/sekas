@@ -15,6 +15,18 @@
 use super::server::v1::*;
 use crate::Epoch;
 
+impl AcceptShardRequest {
+    pub fn move_shard_desc(&self, dest_group_id: u64, dest_group_epoch: u64) -> MoveShardDesc {
+        MoveShardDesc {
+            shard_desc: self.shard_desc.clone(),
+            src_group_id: self.src_group_id,
+            src_group_epoch: self.src_group_epoch,
+            dest_group_id,
+            dest_group_epoch,
+        }
+    }
+}
+
 impl MoveShardDesc {
     #[inline]
     pub fn get_shard_desc(&self) -> &ShardDesc {

@@ -134,13 +134,17 @@ impl Replica {
         // FIXME(walter) The write acl guard is need here, but if there exists txn
         // conflicts, the blocking time might be very long?
         let _guard = self.take_write_acl_guard().await;
+        let term = self
+            .on_leader("move shard state", true)
+            .await?
+            .ok_or_else(|| Error::GroupNotReady(self.info.group_id))?;
         if !self.check_move_shard_state_update_early(desc, event)? {
             return Ok(());
         }
 
         let eval_result =
             EvalResult { op: Some(SyncOp::move_shard(event, desc.clone())), ..Default::default() };
-        self.raft_group.propose(eval_result, None)?.wait_result().await?;
+        self.raft_group.propose(eval_result, Some(term))?.wait_result().await?;
 
         Ok(())
     }
@@ -195,12 +199,15 @@ impl Replica {
         let epoch = desc.src_group_epoch;
         if lease_state.has_joint_config() {
             Err(Error::ServiceIsBusy(BusyReason::PendingConfigChange))
-        } else if epoch < lease_state.descriptor.epoch {
+        } else if epoch != lease_state.descriptor.epoch {
             // This moving needs to be rollback.
             Err(Error::EpochNotMatch(lease_state.descriptor.clone()))
         } else if lease_state.move_shard_state.is_none() {
-            debug_assert_eq!(epoch, lease_state.descriptor.epoch);
-            Ok(true)
+            if lease_state.descriptor.shard(desc.get_shard_id()) == desc.shard_desc.as_ref() {
+                Ok(true)
+            } else {
+                Err(Error::EpochNotMatch(lease_state.descriptor.clone()))
+            }
         } else if !lease_state.is_same_shard_moving(desc) {
             // This moving needs to be rollback too, because the epoch will be bumped
             // once the former moving finished.
@@ -298,7 +305,13 @@ mod tests {
         let info = ReplicaInfo::new(&replica, 1, ReplicaLocalState::Normal);
         let (sender, _) = futures::channel::mpsc::unbounded();
         let mut state = LeaseState::new(
-            GroupDesc { id: 1, epoch: 8, replicas: vec![replica], ..Default::default() },
+            GroupDesc {
+                id: 1,
+                epoch: 8,
+                replicas: vec![replica],
+                shards: vec![ShardDesc::whole(1, 1024)],
+                ..Default::default()
+            },
             None,
             sender,
         );

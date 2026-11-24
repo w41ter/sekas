@@ -16,7 +16,6 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use futures::channel::oneshot;
 use sekas_api::server::v1::*;
 use sekas_client::Router;
 
@@ -102,9 +101,8 @@ struct MoveReplicasProviderInner {
 
 pub struct MoveReplicas {
     pub epoch: u64,
-    pub incoming_replicas: Vec<ReplicaDesc>,
-    pub outgoing_replicas: Vec<ReplicaDesc>,
-    pub sender: oneshot::Sender<Result<()>>,
+    pub term: u64,
+    pub request: MoveReplicasRequest,
 }
 
 impl GroupDescProvider {
@@ -205,28 +203,21 @@ impl MoveReplicasProvider {
         MoveReplicasProvider::default()
     }
 
-    pub fn assign(
-        &self,
-        epoch: u64,
-        incoming_replicas: Vec<ReplicaDesc>,
-        outgoing_replicas: Vec<ReplicaDesc>,
-    ) -> oneshot::Receiver<Result<()>> {
-        let (sender, receiver) = oneshot::channel();
+    /// Queue one request for the local scheduler. This acknowledges submission.
+    pub fn assign(&self, epoch: u64, term: u64, request: &MoveReplicasRequest) -> Result<()> {
         let mut inner = self.inner.lock().unwrap();
         if inner.duty.is_some() {
-            sender
-                .send(Err(Error::AlreadyExists("MoveReplicas task".to_owned())))
-                .unwrap_or_default();
-        } else {
-            inner.duty = Some(MoveReplicas { epoch, incoming_replicas, outgoing_replicas, sender });
-            inner.core.fire();
+            return Err(Error::AlreadyExists("MoveReplicas task".to_owned()));
         }
-
-        receiver
+        inner.duty = Some(MoveReplicas { epoch, term, request: request.clone() });
+        inner.core.fire();
+        Ok(())
     }
 
-    pub fn take(&self) -> Option<MoveReplicas> {
+    pub fn take_and_watch(&self, task_id: u64) -> Option<MoveReplicas> {
         let mut inner = self.inner.lock().unwrap();
+        // Arm the next notification before the current request starts work.
+        inner.core.watch(task_id);
         inner.duty.take()
     }
 }

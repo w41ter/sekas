@@ -14,8 +14,12 @@
 // limitations under the License.
 mod helper;
 
+use std::time::Duration;
+
 use helper::context::TestContext;
 use log::info;
+use sekas_api::server::v1::group_request_union::Request;
+use sekas_api::server::v1::group_response_union::Response;
 use sekas_api::server::v1::*;
 use sekas_rock::fn_name;
 
@@ -197,6 +201,133 @@ async fn group_move_replica() {
 
     c.assert_group_not_contains_member(group_id, follower_id).await;
     c.assert_group_contains_member(group_id, 123123).await;
+}
+
+#[sekas_macro::test]
+async fn group_scheduled_replacement_reserves_membership_and_recovers() {
+    let mut ctx = TestContext::new(fn_name!());
+    ctx.disable_all_node_scheduler();
+    ctx.set_heartbeat_interval_sec(1);
+    let cluster = ClusterClient::new(ctx.bootstrap_servers(4).await).await;
+    cluster.assert_root_group_has_promoted().await;
+    let group_id = 10;
+    create_group(&cluster, group_id, vec![0, 1, 2]).await;
+    cluster.assert_group_leader(group_id).await;
+
+    let mut group = cluster.group(group_id);
+    let state = group.inspect_group().await.unwrap();
+    let desc = state.group.unwrap();
+    let outgoing = *desc.replicas.iter().find(|replica| replica.id != state.leader_id).unwrap();
+    let intent = ReplicaReplacement {
+        incoming_id: 123123,
+        outgoing_id: outgoing.id,
+        target_node: 3,
+        add_epoch: desc.epoch,
+    };
+    advance_replacement(&mut group, intent, true).await.unwrap();
+    let state = tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            let state = group.inspect_group().await.unwrap();
+            if state.group.as_ref().unwrap().replicas.iter().any(|replica| {
+                replica.id == intent.incoming_id && replica.role() == ReplicaRole::Learner
+            }) {
+                break state;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("learner admission observed in Group membership");
+    let added = state.group.unwrap();
+
+    // The scheduler may accept a submission while the active replacement owns
+    // the membership lock. The conflicting move must leave the outgoing voter in
+    // place.
+    let submitted = group
+        .execute_scheduled(
+            GroupRequest {
+                group_id,
+                epoch: added.epoch,
+                request: Some(GroupRequestUnion {
+                    request: Some(Request::MoveReplicas(MoveReplicasRequest {
+                        outgoing_voters: vec![outgoing],
+                        ..Default::default()
+                    })),
+                }),
+                expected_term: None,
+            },
+            state.term,
+        )
+        .await
+        .unwrap();
+    assert!(matches!(submitted, Response::MoveReplicas(_)));
+
+    let old_leader = added.replicas.iter().find(|replica| replica.id == state.leader_id).unwrap();
+    ctx.stop_server(old_leader.node_id).await;
+    tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            group = cluster.group(group_id);
+            group.set_timeout(Duration::from_secs(1));
+            if let Ok(current) = group.inspect_group().await
+                && current.term > state.term
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("Group election after learner admission");
+
+    // A fresh Group scheduler must recover the same learner from Raft and
+    // remove it when Root says the target is no longer eligible.
+    tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            let desc = group.inspect_group().await.unwrap().group.unwrap();
+            if !desc.replicas.iter().any(|replica| replica.id == intent.incoming_id) {
+                assert!(desc.epoch > intent.add_epoch);
+                break;
+            }
+            match advance_replacement(&mut group, intent, false).await {
+                Ok(())
+                | Err(sekas_client::Error::EpochNotMatch(_))
+                | Err(sekas_client::Error::AlreadyExists(_)) => {}
+                Err(err) => panic!("submit replacement cleanup: {err}"),
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("replacement cleanup after the election");
+
+    let desc = group.inspect_group().await.unwrap().group.unwrap();
+    assert!(!desc.replicas.iter().any(|replica| replica.id == intent.incoming_id));
+    assert!(desc.replicas.contains(&outgoing));
+}
+
+async fn advance_replacement(
+    group: &mut sekas_client::GroupClient,
+    intent: ReplicaReplacement,
+    target_active: bool,
+) -> Result<(), sekas_client::Error> {
+    let state = group.inspect_group().await?;
+    let desc = state.group.unwrap();
+    let request = GroupRequest {
+        group_id: desc.id,
+        epoch: desc.epoch,
+        request: Some(GroupRequestUnion {
+            request: Some(Request::MoveReplicas(MoveReplicasRequest {
+                replacement: Some(intent),
+                replacement_target_active: target_active,
+                ..Default::default()
+            })),
+        }),
+        expected_term: None,
+    };
+    let Response::MoveReplicas(_) = group.execute_scheduled(request, state.term).await? else {
+        panic!("expected replica replacement response");
+    };
+    Ok(())
 }
 
 #[sekas_macro::test]

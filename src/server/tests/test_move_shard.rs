@@ -16,7 +16,7 @@ mod helper;
 
 use std::time::Duration;
 
-use log::{debug, error, info, warn};
+use log::{error, info, warn};
 use sekas_api::server::v1::group_request_union::Request;
 use sekas_api::server::v1::group_response_union::Response;
 use sekas_api::server::v1::*;
@@ -35,38 +35,7 @@ fn init() {
 }
 
 async fn is_not_in_shard_moving(c: &ClusterClient, dest_group_id: u64) -> bool {
-    use collect_moving_shard_state_response::State;
-    if let Some(leader_node_id) = c.get_group_leader_node_id(dest_group_id).await {
-        debug!("group {dest_group_id} node {leader_node_id} collect moving shard state",);
-        if let Ok(resp) = c.collect_moving_shard_state(dest_group_id, leader_node_id).await {
-            debug!(
-                "group {dest_group_id} node {leader_node_id} collect moving shard state: {:?}",
-                resp.state
-            );
-            if resp.state == State::None as i32 {
-                // moving shard is finished or aborted.
-                return true;
-            }
-        }
-    }
-    false
-}
-
-async fn wait_moving_shard_state(
-    c: &ClusterClient,
-    group_id: u64,
-    expect: &[collect_moving_shard_state_response::State],
-) {
-    for _ in 0..1000 {
-        if let Some(node_id) = c.get_group_leader_node_id(group_id).await
-            && let Ok(resp) = c.collect_moving_shard_state(group_id, node_id).await
-            && expect.iter().any(|state| resp.state == *state as i32)
-        {
-            return;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    panic!("group {group_id} did not enter expected moving shard state");
+    matches!(c.moving_shard_phase(dest_group_id).await, Ok(None))
 }
 
 async fn move_shard(
@@ -375,6 +344,7 @@ async fn move_shard_freezes_source_and_destination_epoch() {
     let mut ctx = TestContext::new(fn_name!());
     ctx.set_replicas_per_group(1);
     ctx.disable_all_node_scheduler();
+    ctx.disable_auto_shard_merge();
     ctx.mut_replica_testing_knobs().after_moving_shard_setup = Some(barrier.clone());
     let addr = ctx.next_listen_address();
     let ready = ctx.spawn_server_with_handle(0, &addr, true, vec![]);
@@ -433,10 +403,24 @@ async fn move_shard_freezes_source_and_destination_epoch() {
         for request in requests {
             let result =
                 sekas_server::testutil::try_group_request(&server, group, epoch, &request).await;
-            assert!(
-                matches!(&result, Err(sekas_server::Error::ServiceIsBusy(reason)) if reason.to_string() == "in shard migrating"),
-                "group {group}: {request:?} returned {result:?}"
-            );
+            if group == destination && matches!(request, Request::AcceptShard(_)) {
+                assert!(result.is_ok(), "replaying the accepted move: {result:?}");
+                assert_eq!(
+                    c.group(destination)
+                        .inspect_group()
+                        .await
+                        .unwrap()
+                        .shard_migration
+                        .unwrap()
+                        .phase(),
+                    group_shard_migration::Phase::Moving
+                );
+            } else {
+                assert!(
+                    matches!(&result, Err(sekas_server::Error::ServiceIsBusy(reason)) if reason.to_string() == "in shard migrating"),
+                    "group {group}: {request:?} returned {result:?}"
+                );
+            }
             assert_eq!(server.node.replica_table().find(group).unwrap().epoch(), epoch);
         }
         // Read-only metadata sampling must still work on another shard.
@@ -458,14 +442,8 @@ async fn move_shard_freezes_source_and_destination_epoch() {
         .await
         .unwrap();
     tokio::time::timeout(Duration::from_secs(5), async {
-        wait_moving_shard_state(&c, source, &[collect_moving_shard_state_response::State::None])
-            .await;
-        wait_moving_shard_state(
-            &c,
-            destination,
-            &[collect_moving_shard_state_response::State::None],
-        )
-        .await;
+        c.wait_moving_shard_state(source, &[None]).await;
+        c.wait_moving_shard_state(destination, &[None]).await;
     })
     .await
     .unwrap();
@@ -542,7 +520,7 @@ async fn move_shard_round_trip_uses_delete_range_for_large_shard() {
 
 #[sekas_macro::test]
 async fn move_shard_with_leader_transfer_while_pulling() {
-    use collect_moving_shard_state_response::State;
+    use group_shard_migration::Phase;
 
     let mut ctx = TestContext::new(fn_name!());
     ctx.disable_all_node_scheduler();
@@ -553,7 +531,7 @@ async fn move_shard_with_leader_transfer_while_pulling() {
     let shard_id = shard_desc.id;
 
     accept_shard(&c, &shard_desc, group_id_2, group_id_1).await;
-    wait_moving_shard_state(&c, group_id_2, &[State::Moving, State::Moved]).await;
+    c.wait_moving_shard_state(group_id_2, &[Some(Phase::Moving), Some(Phase::Moved)]).await;
 
     for _ in 0..8 {
         if is_not_in_shard_moving(&c, group_id_2).await {
@@ -568,30 +546,47 @@ async fn move_shard_with_leader_transfer_while_pulling() {
 }
 
 #[sekas_macro::test]
-async fn move_shard_recovers_when_source_leader_stops_during_move_out() {
-    use collect_moving_shard_state_response::State;
-
+async fn move_shard_recovers_when_source_leader_stops_during_pull() {
     let mut ctx = TestContext::new(fn_name!());
     ctx.disable_all_node_scheduler();
+    let barrier = std::sync::Arc::new(sekas_server::TestingBarrier::new());
+    ctx.mut_replica_testing_knobs().after_moving_shard_setup = Some(barrier.clone());
     let nodes = ctx.bootstrap_servers(3).await;
     let node_ids = nodes.keys().cloned().collect::<Vec<_>>();
     let c = ClusterClient::new(nodes).await;
     let (group_id_1, group_id_2, shard_desc) = create_two_groups(&c, node_ids, 2048).await;
     let shard_id = shard_desc.id;
 
+    let mut source = c.group(group_id_1);
+    let state = source.inspect_group().await.unwrap();
+    let replicas = state.group.unwrap().replicas;
+    let leader = replicas.iter().find(|replica| replica.id == state.leader_id).unwrap();
+    let failing = if leader.node_id == 0 {
+        let next = replicas.iter().find(|replica| replica.node_id != 0).unwrap();
+        source.transfer_leader(next.id).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while source.inspect_group().await.unwrap().leader_id != next.id {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        next
+    } else {
+        leader
+    };
+    let paused = barrier.arm();
     accept_shard(&c, &shard_desc, group_id_2, group_id_1).await;
-    wait_moving_shard_state(&c, group_id_2, &[State::Moving, State::Moved]).await;
-
-    if let Some(mut src_leader_node_id) = c.get_group_leader_node_id(group_id_1).await {
-        if src_leader_node_id == 0 {
-            c.transfer_group_leader_randomly(group_id_1).await.unwrap();
-            ctx.wait_election_timeout().await;
-            src_leader_node_id = c.get_group_leader_node_id(group_id_1).await.unwrap_or_default();
+    tokio::time::timeout(Duration::from_secs(5), barrier.wait_reached(paused)).await.unwrap();
+    ctx.stop_server(failing.node_id).await;
+    barrier.release();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while !source.inspect_group().await.is_ok_and(|state| state.leader_id != failing.id) {
+            tokio::time::sleep(Duration::from_millis(10)).await;
         }
-        assert_ne!(src_leader_node_id, 0, "avoid stopping the root node in this test");
-        ctx.stop_server(src_leader_node_id).await;
-        ctx.wait_election_timeout().await;
-    }
+    })
+    .await
+    .unwrap();
 
     move_shard(&c, &shard_desc, group_id_2, group_id_1).await;
     validate(&c, group_id_2, shard_id, 0..2048).await;
@@ -599,7 +594,7 @@ async fn move_shard_recovers_when_source_leader_stops_during_move_out() {
 
 #[sekas_macro::test]
 async fn move_shard_forwarded_write_wins_over_later_pull_same_key() {
-    use collect_moving_shard_state_response::State;
+    use group_shard_migration::Phase;
 
     let mut ctx = TestContext::new(fn_name!());
     ctx.disable_all_node_scheduler();
@@ -613,7 +608,7 @@ async fn move_shard_forwarded_write_wins_over_later_pull_same_key() {
     let forwarded_value = b"forwarded-value".to_vec();
 
     accept_shard(&c, &shard_desc, group_id_2, group_id_1).await;
-    wait_moving_shard_state(&c, group_id_1, &[State::Prepare, State::Moving]).await;
+    c.wait_moving_shard_state(group_id_1, &[Some(Phase::Prepare), Some(Phase::Moving)]).await;
 
     // The write is issued to the source group while the shard is moving, so it
     // must be forwarded to the target group. If the background pull later sees
@@ -639,7 +634,7 @@ async fn move_shard_forwarded_write_wins_over_later_pull_same_key() {
 
 #[sekas_macro::test]
 async fn move_shard_scan_limit_has_more_while_forwarding() {
-    use collect_moving_shard_state_response::State;
+    use group_shard_migration::Phase;
 
     let mut ctx = TestContext::new(fn_name!());
     ctx.disable_all_node_scheduler();
@@ -668,7 +663,7 @@ async fn move_shard_scan_limit_has_more_while_forwarding() {
         dest_group_epoch,
     };
     c.group(group_id_1).acquire_shard(&desc).await.unwrap();
-    wait_moving_shard_state(&c, group_id_1, &[State::Prepare, State::Moving]).await;
+    c.wait_moving_shard_state(group_id_1, &[Some(Phase::Prepare), Some(Phase::Moving)]).await;
 
     put_with_retry(&c, group_id_1, shard_id, b"key-999".to_vec(), b"forwarded".to_vec()).await;
 

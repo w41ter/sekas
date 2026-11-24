@@ -97,11 +97,6 @@ impl TransportManager {
     }
 
     #[inline]
-    pub(crate) fn find_group(&self, group_id: u64) -> Result<RouterGroupState> {
-        Ok(self.router.find_group(group_id)?)
-    }
-
-    #[inline]
     pub(crate) fn build_move_shard_client(
         &self,
         group_id: u64,

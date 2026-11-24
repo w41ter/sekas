@@ -30,6 +30,12 @@ pub struct MoveShardClient {
 }
 
 impl MoveShardClient {
+    /// Read the applied source state before finishing migration at the
+    /// destination.
+    pub async fn inspect_group(&self) -> Result<sekas_api::server::v1::InspectGroupResponse> {
+        self.group_client().inspect_group().await
+    }
+
     pub fn new(group_id: u64, client: SekasClient) -> Self {
         MoveShardClient { group_id, client, shard_chunk_size: 64 * 1024 }
     }

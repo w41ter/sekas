@@ -14,7 +14,7 @@
 
 use std::time::{Duration, Instant};
 
-use anyhow::{Result, anyhow, bail, ensure};
+use anyhow::{Context, Result, anyhow, bail, ensure};
 use log::warn;
 use sekas_api::server::v1::*;
 use sekas_client::GroupClient;
@@ -190,21 +190,28 @@ impl LabContext {
         let mut last_err = None;
         for _ in 0..400 {
             let mut client = self.group(group_id);
+            let state = client.inspect_group().await?;
+            let group = state.group.context("missing Group membership")?;
+            if incoming
+                .iter()
+                .any(|target| group.replicas.iter().any(|replica| replica.id == target.id))
+                || outgoing.iter().any(|source| !group.replicas.contains(source))
+            {
+                return Ok(());
+            }
             match client.move_replicas(incoming.clone(), outgoing.clone()).await {
-                Ok(_) => return Ok(()),
-                Err(sekas_client::Error::AlreadyExists(message))
-                    if message == "config change" || message == "MoveReplicas task" =>
-                {
+                Ok(()) | Err(sekas_client::Error::EpochNotMatch(_)) => {}
+                Err(sekas_client::Error::AlreadyExists(message)) => {
                     last_err = Some(message);
-                    tokio::time::sleep(Duration::from_millis(50)).await;
                 }
                 Err(err) => return Err(err.into()),
             }
+            tokio::time::sleep(Duration::from_millis(50)).await;
         }
 
         bail!(
-            "group {group_id} move replicas is still busy: {}",
-            last_err.unwrap_or_else(|| "unknown".to_owned())
+            "group {group_id} replica move has not started: {}",
+            last_err.unwrap_or_else(|| "membership has not changed".to_owned())
         );
     }
 

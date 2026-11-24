@@ -148,9 +148,10 @@ where
         &mut self,
         context: Vec<u8>,
         cc: impl ConfChangeI,
+        term: u64,
         sender: oneshot::Sender<Result<()>>,
     ) {
-        if let Err(err) = self.check_proposal_early(None, true) {
+        if let Err(err) = self.check_proposal_early(Some(term), true) {
             sender.send(Err(err)).unwrap_or_default();
             return;
         }

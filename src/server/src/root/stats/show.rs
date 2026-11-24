@@ -17,7 +17,8 @@ use std::time::{Duration, Instant};
 
 use sekas_api::Epoch;
 use sekas_api::server::v1::{
-    GroupDesc, GroupStats, GroupStatsSample, ShardDesc, ShardStats, ShardTraffic,
+    GroupDesc, GroupStats, GroupStatsSample, MoveShardDesc, RaftRole, ReplicaState, ShardDesc,
+    ShardStats, ShardTraffic,
 };
 
 #[derive(Default)]
@@ -34,7 +35,7 @@ struct DisplayedShard {
 }
 
 struct GroupSample {
-    metadata: Option<GroupStatsSample>,
+    metadata: GroupStatsSample,
     node_id: u64,
     received_at: Instant,
     shards: HashMap<u64, ShardSample>,
@@ -80,17 +81,27 @@ pub(in crate::root) struct ShowSnapshot {
     displayed_groups: HashMap<u64, ShowMetrics>,
     migration_states: HashMap<u64, bool>,
     migration_report_issues: HashMap<u64, String>,
-    pub migration_in_progress: bool,
-    pub has_current_migration_status: bool,
-    leaders: HashMap<u64, (u64, u64)>,
+    pub(in crate::root) leaders: HashMap<u64, ReplicaState>,
 }
 
 impl ShowStats {
+    pub(super) fn reported_migration(
+        &self,
+        group: u64,
+        max_age: Duration,
+    ) -> Option<MoveShardDesc> {
+        let report = self.groups.get(&group)?;
+        if report.received_at.elapsed() > max_age {
+            return None;
+        }
+        report.metadata.shard_migration.as_ref()?.desc.clone()
+    }
+
     pub(super) fn update(&mut self, stats: &GroupStats, node_id: u64) -> bool {
+        let Some(new) = stats.sample.as_ref() else { return false };
         let previous = self.groups.get(&stats.group_id);
         let mut interval = None;
-        if let (Some(old), Some(new)) = (previous.and_then(|s| s.metadata.as_ref()), &stats.sample)
-        {
+        if let Some(old) = previous.map(|sample| &sample.metadata) {
             if new.term < old.term || new.group_epoch < old.group_epoch {
                 return false;
             }
@@ -125,7 +136,7 @@ impl ShowStats {
                 (stats.shard_id, ShardSample { stats: stats.clone(), rates })
             })
             .collect();
-        let epoch = stats.sample.map_or(0, |sample| sample.group_epoch);
+        let epoch = new.group_epoch;
         for (&id, sample) in &shards {
             let mut metrics = sample.metrics();
             if let Some(last) = self.displayed_shards.get(&id)
@@ -148,7 +159,7 @@ impl ShowStats {
         }
         self.groups.insert(
             stats.group_id,
-            GroupSample { metadata: stats.sample, node_id, received_at: Instant::now(), shards },
+            GroupSample { metadata: new.clone(), node_id, received_at: Instant::now(), shards },
         );
         true
     }
@@ -171,12 +182,11 @@ impl ShowStats {
                 continue;
             }
             if !report.matches_reporter(group) {
-                let reason = if let Some(sample) = report.metadata
-                    && Epoch(sample.group_epoch).config_epoch() != Epoch(group.epoch).config_epoch()
-                {
+                let reported_config = Epoch(report.metadata.group_epoch).config_epoch();
+                let reason = if reported_config != Epoch(group.epoch).config_epoch() {
                     format!(
                         "reported configuration {}, current configuration {}",
-                        Epoch(sample.group_epoch).config_epoch(),
+                        reported_config,
                         Epoch(group.epoch).config_epoch()
                     )
                 } else {
@@ -185,25 +195,24 @@ impl ShowStats {
                 migration_report_issues.insert(group.id, reason);
                 continue;
             }
-            if let Some(active) =
-                report.metadata.and_then(|sample| sample.shard_migration_in_progress)
-            {
-                migration_states.insert(group.id, active);
-            } else {
-                migration_report_issues
-                    .insert(group.id, "leader report omitted migration status".to_owned());
-            }
-            if let Some(metadata) = report.metadata {
-                leaders.insert(group.id, (metadata.term, report.node_id));
-            }
+            migration_states.insert(group.id, report.metadata.shard_migration.is_some());
+            leaders.insert(
+                group.id,
+                ReplicaState {
+                    group_id: group.id,
+                    replica_id: report.metadata.replica_id,
+                    node_id: report.node_id,
+                    term: report.metadata.term,
+                    role: RaftRole::Leader as i32,
+                    ..Default::default()
+                },
+            );
             for shard in &group.shards {
                 if let Some(sample) = report.shards.get(&shard.id)
                     && sample.stats.table_id == shard.table_id
                     && match &sample.stats.range {
                         Some(range) => shard.range.as_ref() == Some(range),
-                        None => {
-                            report.metadata.is_none_or(|sample| sample.group_epoch == group.epoch)
-                        }
+                        None => report.metadata.group_epoch == group.epoch,
                     }
                 {
                     shards.insert((group.id, shard.id), sample.metrics());
@@ -213,8 +222,6 @@ impl ShowStats {
         ShowSnapshot {
             shards,
             displayed_groups: HashMap::new(),
-            migration_in_progress: migration_states.values().any(|&active| active),
-            has_current_migration_status: migration_states.len() == groups.len(),
             migration_states,
             migration_report_issues,
             leaders,
@@ -284,14 +291,12 @@ impl ShardSample {
 
 impl GroupSample {
     fn matches_reporter(&self, group: &GroupDesc) -> bool {
-        if let Some(sample) = &self.metadata {
-            // A split or merge changes only the shard epoch. Verify the
-            // reporting replica and its configuration separately from ranges.
-            return Epoch(sample.group_epoch).config_epoch() == Epoch(group.epoch).config_epoch()
-                && group.replicas.iter().any(|r| r.id == sample.replica_id);
-        }
-        // Older replicas still report approximate sizes.
-        group.replicas.iter().any(|r| r.node_id == self.node_id)
+        // The configuration epoch identifies the reporting replica. Shard ranges
+        // are checked individually so unchanged ranges can survive a split.
+        Epoch(self.metadata.group_epoch).config_epoch() == Epoch(group.epoch).config_epoch()
+            && group.replicas.iter().any(|replica| {
+                replica.id == self.metadata.replica_id && replica.node_id == self.node_id
+            })
     }
 }
 
@@ -364,32 +369,11 @@ impl ShowSnapshot {
         self.migration_report_issues.get(&group).map(String::as_str)
     }
 
-    pub(in crate::root) fn migration_report_wait(&self, groups: &[GroupDesc]) -> String {
-        let issues = groups
-            .iter()
-            .filter_map(|group| {
-                Some(format!("g{} {}", group.id, self.migration_report_issue(group.id)?))
-            })
-            .collect::<Vec<_>>()
-            .join(", ");
-        format!("Waiting for current shard migration status\n{issues}")
-    }
-
-    pub(in crate::root) fn active_migration_groups(&self) -> Vec<u64> {
-        let mut groups: Vec<_> = self
-            .migration_states
-            .iter()
-            .filter_map(|(&group, &active)| active.then_some(group))
-            .collect();
-        groups.sort_unstable();
-        groups
-    }
-
     pub(in crate::root) fn migration_idle(&self, group_id: u64) -> bool {
         self.migration_states.get(&group_id) == Some(&false)
     }
 
-    pub(in crate::root) fn leader(&self, group_id: u64) -> Option<(u64, u64)> {
+    pub(in crate::root) fn leader(&self, group_id: u64) -> Option<ReplicaState> {
         self.leaders.get(&group_id).copied()
     }
 
@@ -452,7 +436,7 @@ mod tests {
                 replica_id: id,
                 term,
                 elapsed_nanos: Duration::from_secs(sec).as_nanos() as u64,
-                shard_migration_in_progress: None,
+                shard_migration: None,
             }),
             shard_stats: vec![ShardStats {
                 shard_id: shard.id,
@@ -516,7 +500,7 @@ mod tests {
                 replica_id: 1,
                 term: 1,
                 elapsed_nanos: second * 1_000_000_000,
-                shard_migration_in_progress: Some(false),
+                shard_migration: None,
             }),
             shard_stats: group
                 .shards

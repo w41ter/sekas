@@ -414,7 +414,7 @@ async fn txn_write_intent_batch_deduplicates_same_key_latches() {
 
 #[sekas_macro::test]
 async fn txn_intent_batch_partially_forwards_moving_shard() {
-    use collect_moving_shard_state_response::State;
+    use group_shard_migration::Phase;
 
     let mut ctx = TestContext::new(fn_name!());
     ctx.disable_all_node_scheduler();
@@ -451,7 +451,7 @@ async fn txn_intent_batch_partially_forwards_moving_shard() {
         dest_group_epoch: dest_epoch,
     };
     c.group(src_group_id).acquire_shard(&desc).await.unwrap();
-    wait_moving_shard_state(&c, src_group_id, &[State::Prepare, State::Moving]).await;
+    c.wait_moving_shard_state(src_group_id, &[Some(Phase::Prepare), Some(Phase::Moving)]).await;
 
     let db = app.create_database("manual_txn_db".to_string()).await.unwrap();
     let txn = db.begin_txn();
@@ -561,23 +561,6 @@ async fn create_txn_test_group(
     for replica in replicas {
         c.create_replica(replica.node_id, replica.id, group_desc.clone()).await;
     }
-}
-
-async fn wait_moving_shard_state(
-    c: &ClusterClient,
-    group_id: u64,
-    expect: &[collect_moving_shard_state_response::State],
-) {
-    for _ in 0..1000 {
-        if let Some(node_id) = c.get_group_leader_node_id(group_id).await
-            && let Ok(resp) = c.collect_moving_shard_state(group_id, node_id).await
-            && expect.iter().any(|state| resp.state == *state as i32)
-        {
-            return;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    panic!("group {group_id} did not enter expected moving shard state");
 }
 
 async fn get_from_group(

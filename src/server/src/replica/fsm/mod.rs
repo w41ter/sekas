@@ -350,6 +350,8 @@ impl GroupStateMachine {
                 let desc = state.get_move_shard_desc();
                 if desc.dest_group_id == group_desc.id {
                     self.clear_shard_data(desc.get_shard_desc())?;
+                    group_desc.epoch = apply_shard_delta(group_desc.epoch);
+                    self.desc_updated = true;
                 }
 
                 state.step = MoveShardStep::Aborted as i32;
