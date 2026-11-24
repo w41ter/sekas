@@ -20,6 +20,7 @@ use sekas_api::server::v1::*;
 use tokio::time::Instant;
 
 use super::liveness::Liveness;
+use super::schedule::TaskReason;
 
 mod show;
 
@@ -32,6 +33,7 @@ struct GroupDelta {
     incoming: Vec<ReplicaDesc>,
     outgoing: Vec<ReplicaDesc>,
     repair: Option<ReplicaRepair>,
+    reason: Option<TaskReason>,
 }
 
 impl GroupDelta {
@@ -42,6 +44,13 @@ impl GroupDelta {
     fn has_activity(&self) -> bool {
         self.pending() || self.repair.is_some()
     }
+
+    fn replica_move(&self) -> Option<(u64, u64)> {
+        match (&self.incoming[..], &self.outgoing[..], &self.repair) {
+            ([incoming], [outgoing], None) => Some((incoming.id, outgoing.id)),
+            _ => None,
+        }
+    }
 }
 
 pub(super) struct ReplicaChangeStatus {
@@ -49,6 +58,7 @@ pub(super) struct ReplicaChangeStatus {
     pub change: ReplicaRepair,
     pub repair: bool,
     pub age_s: u64,
+    pub reason: Option<TaskReason>,
 }
 
 pub(super) struct ShardMoveStatus {
@@ -56,6 +66,7 @@ pub(super) struct ShardMoveStatus {
     pub source: u64,
     pub destination: u64,
     pub submitted_at: Option<Instant>,
+    pub reason: Option<TaskReason>,
 }
 
 pub(super) struct ReplicaIssue {
@@ -180,6 +191,7 @@ struct ShardMove {
     source: u64,
     destination: u64,
     submitted_at: Option<Instant>,
+    reason: Option<TaskReason>,
 }
 
 #[derive(Default)]
@@ -418,6 +430,25 @@ impl ClusterStats {
         }
     }
 
+    pub(super) fn handle_replica_move_update(
+        &self,
+        state: ScheduleState,
+        incoming: u64,
+        outgoing: u64,
+        reason: &TaskReason,
+    ) {
+        let group = state.group_id;
+        let mut inner = self.sched_stats.lock().unwrap();
+        if inner.replace_state(&[state], None) {
+            inner.rebuild_view();
+        }
+        if let Some(delta) = inner.raw_group_delta.get_mut(&group)
+            && delta.replica_move() == Some((incoming, outgoing))
+        {
+            delta.reason = Some(reason.clone());
+        }
+    }
+
     /// Add the spliting shard to sched stats.
     pub fn handle_split_shard(&self, shard_id: u64) {
         let mut sched_stats = self.sched_stats.lock().expect("poisoned");
@@ -446,11 +477,22 @@ impl ClusterStats {
             .is_some_and(|retry_at| *retry_at > Instant::now())
     }
 
-    pub fn handle_move_shard(&self, shard_id: u64, source_group_id: u64, dest_group_id: u64) {
+    pub(super) fn handle_move_shard(
+        &self,
+        shard_id: u64,
+        source_group_id: u64,
+        dest_group_id: u64,
+        reason: Option<TaskReason>,
+    ) {
         let mut sched_stats = self.sched_stats.lock().expect("poisoned");
         sched_stats.moving_shards.insert(
             shard_id,
-            ShardMove { source: source_group_id, destination: dest_group_id, submitted_at: None },
+            ShardMove {
+                source: source_group_id,
+                destination: dest_group_id,
+                submitted_at: None,
+                reason,
+            },
         );
     }
 
@@ -489,6 +531,7 @@ impl ClusterStats {
                 source: state.source,
                 destination: state.destination,
                 submitted_at: state.submitted_at,
+                reason: state.reason.clone(),
             })
             .collect();
         moves.sort_unstable_by_key(|state| state.shard);
@@ -544,6 +587,7 @@ impl ClusterStats {
                 }),
                 repair: delta.repair.is_some(),
                 age_s: delta.started_at.elapsed().as_secs(),
+                reason: delta.reason.clone(),
             })
             .collect();
         changes.sort_unstable_by_key(|state| state.group);
@@ -700,6 +744,7 @@ impl SchedStats {
                 incoming: state.incoming_replicas.to_owned(),
                 outgoing: state.outgoing_replicas.to_owned(),
                 repair: state.replica_repair.clone(),
+                reason: None,
             };
             match self.raw_group_delta.entry(state.group_id) {
                 hash_map::Entry::Occupied(mut ent) => {
@@ -721,7 +766,11 @@ impl SchedStats {
                         } else {
                             updated_at
                         };
-                        *delta = replacement(started_at);
+                        let mut next = replacement(started_at);
+                        if delta.reason.is_some() && delta.replica_move() == next.replica_move() {
+                            next.reason = delta.reason.take();
+                        }
+                        *delta = next;
                         updated = true;
                     }
                 }
@@ -761,18 +810,62 @@ impl SchedStats {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::BalanceDimension;
+    use crate::root::schedule::Policy;
+
+    #[test]
+    fn replica_move_keeps_its_reason_only_for_the_same_change() {
+        let stats = ClusterStats::default();
+        let mut moving = ScheduleState {
+            group_id: 1,
+            epoch: 42,
+            incoming_replicas: vec![ReplicaDesc { id: 1, node_id: 2, ..Default::default() }],
+            outgoing_replicas: vec![ReplicaDesc { id: 2, node_id: 3, ..Default::default() }],
+            ..Default::default()
+        };
+        let reason = TaskReason {
+            policy: Some(Policy::Placement(BalanceDimension::ReplicaCount)),
+            detail: "Source node is above the upper threshold".into(),
+        };
+        stats.handle_schedule_update(std::slice::from_ref(&moving), None);
+        assert!(stats.replica_changes()[0].reason.is_none());
+        stats.handle_replica_move_update(moving.clone(), 1, 2, &reason);
+
+        moving.epoch += 1;
+        stats.handle_heartbeat_schedule_update(
+            std::slice::from_ref(&moving),
+            Instant::now() + std::time::Duration::from_secs(1),
+        );
+        let changes = stats.replica_changes();
+        let displayed = changes[0].reason.as_ref().unwrap();
+        assert_eq!(displayed.policy.unwrap().name(), "replica_count");
+        assert_eq!(displayed.detail, reason.detail);
+
+        moving.epoch += 1;
+        moving.incoming_replicas[0].id = 3;
+        stats.handle_schedule_update(&[moving], None);
+        assert!(stats.replica_changes()[0].reason.is_none());
+    }
 
     #[test]
     fn guarded_migration_waits_for_a_destination_sample_requested_after_submission() {
         let stats = ClusterStats::default();
-        stats.handle_move_shard(1, 1, 2);
+        let reason = TaskReason {
+            policy: Some(Policy::Placement(BalanceDimension::ShardSize)),
+            detail: "Reduces the size imbalance between groups".into(),
+        };
+        stats.handle_move_shard(1, 1, 2, Some(reason.clone()));
         let queued = stats.shard_migration_wait(&[]).unwrap();
         assert!(queued.contains("Shard 1 g1 -> g2 is queued"), "{queued}");
         let submitted = Instant::now();
         stats.mark_shard_move_submitted(1);
         let waiting = stats.shard_migration_wait(&[]).unwrap();
         assert!(waiting.contains("Waiting for g2 to confirm completion"), "{waiting}");
-        assert_eq!(stats.shard_moves()[0].source, 1);
+        let moves = stats.shard_moves();
+        assert_eq!(moves[0].source, 1);
+        let displayed = moves[0].reason.as_ref().unwrap();
+        assert_eq!(displayed.policy.unwrap().name(), "shard_size");
+        assert_eq!(displayed.detail, reason.detail);
         let mut sample = GroupStats {
             group_id: 2,
             sample: Some(GroupStatsSample {

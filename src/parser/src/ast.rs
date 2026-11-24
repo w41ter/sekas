@@ -167,7 +167,7 @@ SHOW <property:ident> [FROM <name:ident>]
     - nodes            Node status and CPU, memory, and disk usage and capacity
     - balancer         Policy priority, deadline, and latest decision
     - scheduler        Root scheduler summary and background job count
-    - scheduler_tasks  Outstanding root reconcile tasks
+    - scheduler_tasks  Outstanding root reconcile tasks, with balance policy and reason
 
 Note:
     The ident accepts characters [a-zA-Z0-9_-].

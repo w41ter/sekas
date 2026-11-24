@@ -25,7 +25,7 @@ use serde_json::Value;
 
 use super::Root;
 use super::allocator::BalanceDecision;
-use super::schedule::Policy;
+use super::schedule::{Policy, TaskReason};
 use super::stats::{ShowMetrics, ShowSnapshot};
 use crate::{Error, Result};
 
@@ -113,7 +113,7 @@ impl Root {
                             BalanceDecision::Disabled => ("disabled", "-"),
                             BalanceDecision::Deferred(reason) => ("deferred", reason.as_ref()),
                             BalanceDecision::NoAction(detail) => ("no_action", detail.as_str()),
-                            BalanceDecision::ActionNeeded(detail) => {
+                            BalanceDecision::ActionNeeded { detail, .. } => {
                                 ("action_needed", detail.as_str())
                             }
                             BalanceDecision::Unsupported(detail) => {
@@ -182,6 +182,12 @@ impl Root {
                 show_columns(["ready", "running", "waiting", "background_jobs"], vec![row])
             }
             "scheduler_tasks" => {
+                let reason_columns = |reason: Option<&TaskReason>| -> [Value; 2] {
+                    let balancer =
+                        reason.and_then(|reason| reason.policy).map_or("-", Policy::name);
+                    let detail = reason.map_or("-", |reason| reason.detail.as_ref());
+                    [balancer.into(), detail.into()]
+                };
                 let mut rows: Vec<_> = self
                     .scheduler
                     .task_statuses()
@@ -194,6 +200,7 @@ impl Root {
                         } else {
                             "-".into()
                         };
+                        let [balancer, reason] = reason_columns(Some(&task.reason));
                         Row {
                             values: vec![
                                 task.kind.into(),
@@ -202,12 +209,19 @@ impl Root {
                                 age.into(),
                                 task.retry_count.into(),
                                 ready_in,
+                                balancer,
+                                reason,
                             ],
                         }
                     })
                     .collect();
-                let running =
-                    |kind: &'static str, target: String, age_s: u64, state: &'static str| Row {
+                let running = |kind: &'static str,
+                               target: String,
+                               age_s: u64,
+                               state: &'static str,
+                               reason: Option<&TaskReason>| {
+                    let [balancer, reason] = reason_columns(reason);
+                    Row {
                         values: vec![
                             kind.into(),
                             target.into(),
@@ -215,8 +229,11 @@ impl Root {
                             age_s.into(),
                             "-".into(),
                             "-".into(),
+                            balancer,
+                            reason,
                         ],
-                    };
+                    }
+                };
                 for repair in self.cluster_stats.replica_changes() {
                     let kind = if repair.repair { "replica_repair" } else { "replica_change" };
                     let peers = |sign, mut replicas: Vec<ReplicaDesc>| {
@@ -234,6 +251,7 @@ impl Root {
                         format!("g{} {replicas}", repair.group),
                         repair.age_s,
                         "running",
+                        repair.reason.as_ref(),
                     ));
                 }
                 for migration in self.cluster_stats.shard_moves() {
@@ -246,11 +264,21 @@ impl Root {
                             ),
                             submitted.elapsed().as_secs(),
                             "awaiting_confirmation",
+                            migration.reason.as_ref(),
                         ));
                     }
                 }
                 show_columns(
-                    ["task", "target", "state", "age_s", "error_retries", "ready_in_s"],
+                    [
+                        "task",
+                        "target",
+                        "state",
+                        "age_s",
+                        "error_retries",
+                        "ready_in_s",
+                        "balancer",
+                        "reason",
+                    ],
                     rows,
                 )
             }

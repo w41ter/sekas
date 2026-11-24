@@ -128,9 +128,18 @@ pub(super) enum BalanceDecision {
     Disabled,
     Deferred(Cow<'static, str>),
     NoAction(String),
-    ActionNeeded(String),
+    ActionNeeded { detail: String, reason: String },
     Unsupported(String),
     Error(String),
+}
+
+impl BalanceDecision {
+    pub(super) fn action_reason(&self) -> Option<&str> {
+        match self {
+            Self::ActionNeeded { reason, .. } => Some(reason),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -271,7 +280,12 @@ impl<T: AllocSource> Allocator<T> {
                 let add = desired_groups - current_groups;
                 (
                     GroupAction::Add(add),
-                    BalanceDecision::ActionNeeded(format!("create {add} groups\n{inputs}")),
+                    BalanceDecision::ActionNeeded {
+                        detail: format!("create {add} groups\n{inputs}"),
+                        reason: format!(
+                            "Group count is below the desired count of {desired_groups}"
+                        ),
+                    },
                 )
             }
             std::cmp::Ordering::Greater => {

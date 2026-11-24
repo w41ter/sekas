@@ -62,10 +62,16 @@ impl<T: AllocSource> LeaderCountPolicy<T> {
                 break;
             }
             if let Some(action) = self.try_transfer_leader(n, &candidates, &balance) {
-                let decision = BalanceDecision::ActionNeeded(format!(
-                    "transfer leader of group {}: n{} -> n{}",
-                    action.group, action.src_node, action.target_node
-                ));
+                let decision = BalanceDecision::ActionNeeded {
+                    detail: format!(
+                        "transfer leader of group {}: n{} -> n{}",
+                        action.group, action.src_node, action.target_node
+                    ),
+                    reason: format!(
+                        "Source node has {count} leaders, above the upper threshold of {}",
+                        thresholds.high
+                    ),
+                };
                 return (LeaderAction::Shed(action), decision, thresholds);
             }
         }

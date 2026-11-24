@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use super::ReconcileTask;
 use super::reconcile_task::Task;
@@ -141,9 +142,32 @@ pub struct SchedulerSummary {
 }
 
 #[derive(Clone)]
+pub struct TaskReason {
+    pub policy: Option<Policy>,
+    pub detail: Arc<str>,
+}
+
+impl TaskReason {
+    pub(super) fn new(detail: impl Into<Arc<str>>) -> Self {
+        Self { policy: None, detail: detail.into() }
+    }
+
+    pub(super) fn for_balance(dimension: BalanceDimension, decision: &BalanceDecision) -> Self {
+        Self {
+            policy: Some(Policy::Placement(dimension)),
+            detail: decision
+                .action_reason()
+                .expect("a selected balance action has a reason")
+                .into(),
+        }
+    }
+}
+
+#[derive(Clone)]
 pub struct TaskStatus {
     pub kind: &'static str,
     pub target: String,
+    pub reason: TaskReason,
     pub created_at: u64,
     pub fire_at: u64,
     pub retry_count: u32,
@@ -180,7 +204,7 @@ impl TaskStatus {
 }
 
 impl QueueStatus {
-    pub(super) fn insert(&mut self, task: &ReconcileTask) -> u64 {
+    pub(super) fn insert(&mut self, task: &ReconcileTask, reason: TaskReason) -> u64 {
         let (kind, target) = match task.task.as_ref().unwrap() {
             Task::ReallocateReplica(t) => {
                 let dest = t
@@ -220,6 +244,7 @@ impl QueueStatus {
             TaskStatus {
                 kind,
                 target,
+                reason,
                 created_at: task.created_at,
                 fire_at: task.fire_at,
                 retry_count: task.retry_count,
@@ -229,8 +254,10 @@ impl QueueStatus {
         id
     }
 
-    pub(super) fn start_attempt(&mut self, id: u64) {
-        self.tasks.get_mut(&id).unwrap().running = true;
+    pub(super) fn start_attempt(&mut self, id: u64) -> TaskReason {
+        let status = self.tasks.get_mut(&id).unwrap();
+        status.running = true;
+        status.reason.clone()
     }
 
     pub(super) fn finish_attempt(&mut self, id: u64, task: &ReconcileTask) {
@@ -268,7 +295,7 @@ mod tests {
             task: Some(Task::ShedLeader(ShedLeaderTask { node_id: 42 })),
             ..Default::default()
         };
-        let id = status.insert(&task);
+        let id = status.insert(&task, TaskReason::new("Node drain requested"));
         assert_eq!(status.summary(1000).ready, 1);
         status.start_attempt(id);
         assert_eq!(status.summary(1000).running, 1);
@@ -276,6 +303,8 @@ mod tests {
         task.defer_retry(1100, None);
         status.finish_attempt(id, &task);
         assert_eq!(status.tasks[&id].retry_count, 1);
+        assert!(status.tasks[&id].reason.policy.is_none());
+        assert_eq!(&*status.tasks[&id].reason.detail, "Node drain requested");
         assert_eq!(status.summary(2099).waiting, 1);
         assert_eq!(status.summary(2100).ready, 1);
 

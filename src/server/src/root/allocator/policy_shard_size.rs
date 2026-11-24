@@ -149,7 +149,17 @@ impl ShardSizeBalance {
                         action.shard, action.source_group, action.target_group
                     )
                 };
-                let decision = BalanceDecision::ActionNeeded(format!("{detail}\n{summary}"));
+                let reason = if direct {
+                    format!("Moving {bytes} B reduces the size imbalance between groups")
+                } else {
+                    format!(
+                        "Splitting and moving up to {bytes} B reduces the size imbalance between groups"
+                    )
+                };
+                let decision = BalanceDecision::ActionNeeded {
+                    detail: format!("{detail}\n{summary}"),
+                    reason,
+                };
                 (Some(action), decision)
             }
             None => {

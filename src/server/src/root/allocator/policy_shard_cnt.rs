@@ -74,10 +74,16 @@ impl<T: AllocSource> ShardCountPolicy<T> {
                 move_size_limit,
                 &permits,
             ) {
-                let decision = BalanceDecision::ActionNeeded(format!(
-                    "move shard {}: g{} -> g{}",
-                    action.shard, action.source_group, action.target_group
-                ));
+                let decision = BalanceDecision::ActionNeeded {
+                    detail: format!(
+                        "move shard {}: g{} -> g{}",
+                        action.shard, action.source_group, action.target_group
+                    ),
+                    reason: format!(
+                        "Source group has {count} shards, above the upper threshold of {}",
+                        thresholds.high
+                    ),
+                };
                 return (vec![ShardAction::Migrate(action)], decision, thresholds);
             }
         }
@@ -224,7 +230,7 @@ mod tests {
         });
         stats.handle_split_shard(2);
         assert_eq!(policy.preferred_remove_shard(&source, &stats, 1024, |_| true).unwrap().id, 3);
-        stats.handle_move_shard(3, 1, 2);
+        stats.handle_move_shard(3, 1, 2, None);
         assert_eq!(policy.preferred_remove_shard(&source, &stats, 1024, |_| true).unwrap().id, 1);
         stats.handle_merge_shard(1, 4);
         assert!(policy.preferred_remove_shard(&source, &stats, 1024, |_| true).is_none());

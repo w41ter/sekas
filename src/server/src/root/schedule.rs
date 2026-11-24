@@ -24,8 +24,8 @@ use sekas_api::server::v1::*;
 use sekas_rock::time::timestamp_millis;
 use tokio::sync::Mutex;
 
-pub(super) use self::status::Policy;
 use self::status::{BalanceSnapshot, QueueStatus};
+pub(super) use self::status::{Policy, TaskReason};
 use self::task::reconcile_task::Task;
 pub use self::task::*;
 use super::allocator::*;
@@ -42,13 +42,35 @@ pub struct ReconcileScheduler {
 
 enum BalanceActions {
     CreateGroups(usize),
-    Placement(Option<PlacementAction>),
-    Move {
-        replicas: Vec<ReplicaAction>,
-        leaders: Vec<LeaderAction>,
-        shards: Vec<ShardAction>,
-        shard_guard: ShardMoveGuard,
-    },
+    Reconcile(Vec<(Task, TaskReason)>),
+}
+
+fn balance_task(action: PlacementAction, shard_guard: ShardMoveGuard) -> Task {
+    let placement = shard_guard == ShardMoveGuard::Placement;
+    match action {
+        PlacementAction::Leader(action) => Task::TransferGroupLeader(TransferGroupLeaderTask {
+            group: action.group,
+            target_replica: action.target_replica,
+            src_node: action.src_node,
+            dest_node: action.target_node,
+            placement,
+        }),
+        PlacementAction::Replica(action) => Task::ReallocateReplica(ReallocateReplicaTask {
+            group: action.group,
+            src_node: action.source_node,
+            src_replica: action.source_replica,
+            dest_node: Some(action.target_node),
+            dest_replica: None,
+            placement,
+        }),
+        PlacementAction::Shard(action) => Task::MigrateShard(MigrateShardTask {
+            shard: action.shard,
+            src_group: action.source_group,
+            dest_group: action.target_group,
+            split_task: None,
+            guard: shard_guard as i32,
+        }),
+    }
 }
 
 pub struct ScheduleContext {
@@ -100,7 +122,12 @@ impl ReconcileScheduler {
         self.ctx.heartbeat_queue.wait_one_heartbeat_tick().await
     }
 
-    pub async fn setup_task(&self, task: ReconcileTask) {
+    async fn setup_task(&self, task: Task, reason: TaskReason) {
+        let task = ReconcileTask {
+            task: Some(task),
+            created_at: timestamp_millis(),
+            ..Default::default()
+        };
         let mut tasks = self.tasks.lock().await;
         if task.is_placement() && tasks.iter().any(|(_, pending)| pending.is_placement()) {
             return;
@@ -124,16 +151,19 @@ impl ReconcileScheduler {
             return;
         }
         match task.task.as_ref().unwrap() {
-            Task::MigrateShard(t) => {
-                self.ctx.cluster_stats.handle_move_shard(t.shard, t.src_group, t.dest_group)
-            }
+            Task::MigrateShard(t) => self.ctx.cluster_stats.handle_move_shard(
+                t.shard,
+                t.src_group,
+                t.dest_group,
+                Some(reason.clone()),
+            ),
             Task::SplitShard(t) => self.ctx.cluster_stats.handle_split_shard(t.shard_id),
             Task::MergeShard(t) => {
                 self.ctx.cluster_stats.handle_merge_shard(t.left_shard_id, t.right_shard_id)
             }
             _ => {}
         }
-        let id = self.queue_status.lock().unwrap().insert(&task);
+        let id = self.queue_status.lock().unwrap().insert(&task, reason);
         info!("setup new reconcile task. len={}, task={:?}", tasks.len() + 1, task);
         tasks.push_back((id, task));
     }
@@ -148,91 +178,32 @@ impl ReconcileScheduler {
 
     /// Schedule moving root leader task.
     pub async fn sched_root_leader(&self, node_id: u64) {
-        self.setup_task(ReconcileTask {
-            task: Some(reconcile_task::Task::ShedRoot(ShedRootLeaderTask { node_id })),
-            created_at: timestamp_millis(),
-            fire_at: 0,
-            retry_count: 0,
-        })
+        self.setup_task(
+            Task::ShedRoot(ShedRootLeaderTask { node_id }),
+            TaskReason::new("Move root leadership before draining the node"),
+        )
         .await;
     }
 
     /// Schedule moving leader task.
     pub async fn sched_leader(&self, node_id: u64) {
-        self.setup_task(ReconcileTask {
-            task: Some(reconcile_task::Task::ShedLeader(ShedLeaderTask { node_id })),
-            created_at: timestamp_millis(),
-            fire_at: 0,
-            retry_count: 0,
-        })
-        .await;
-    }
-
-    /// Schedule transfering leader task.
-    async fn sched_transfer_leader_task(&self, transfer_leader: TransferLeader, placement: bool) {
-        self.setup_task(ReconcileTask {
-            task: Some(reconcile_task::Task::TransferGroupLeader(TransferGroupLeaderTask {
-                group: transfer_leader.group,
-                target_replica: transfer_leader.target_replica,
-                src_node: transfer_leader.src_node,
-                dest_node: transfer_leader.target_node,
-                placement,
-            })),
-            created_at: timestamp_millis(),
-            fire_at: 0,
-            retry_count: 0,
-        })
-        .await;
-    }
-
-    /// Schedule migrate replica task.
-    async fn sched_migrate_replica_task(&self, action: ReallocateReplica, placement: bool) {
-        self.setup_task(ReconcileTask {
-            task: Some(reconcile_task::Task::ReallocateReplica(ReallocateReplicaTask {
-                group: action.group,
-                src_node: action.source_node,
-                src_replica: action.source_replica,
-                dest_node: Some(action.target_node),
-                dest_replica: None,
-                placement,
-            })),
-            created_at: timestamp_millis(),
-            fire_at: 0,
-            retry_count: 0,
-        })
-        .await;
-    }
-
-    /// Schedule migrate shard task.
-    pub async fn sched_migrate_shard_task(&self, action: ReallocateShard, guard: ShardMoveGuard) {
-        self.setup_task(ReconcileTask {
-            task: Some(reconcile_task::Task::MigrateShard(MigrateShardTask {
-                shard: action.shard,
-                src_group: action.source_group,
-                dest_group: action.target_group,
-                split_task: None,
-                guard: guard as i32,
-            })),
-            created_at: timestamp_millis(),
-            fire_at: 0,
-            retry_count: 0,
-        })
+        self.setup_task(
+            Task::ShedLeader(ShedLeaderTask { node_id }),
+            TaskReason::new("Node drain requested"),
+        )
         .await;
     }
 
     /// Schedule split shard task.
     pub async fn sched_split_shard_task(&self, group_id: u64, shard_id: u64) {
         debug!("sched split shard task, group_id {group_id}, shard_id {shard_id}");
-        self.setup_task(ReconcileTask {
-            task: Some(reconcile_task::Task::SplitShard(SplitShardTask {
-                group_id,
-                shard_id,
-                ..Default::default()
-            })),
-            created_at: timestamp_millis(),
-            fire_at: 0,
-            retry_count: 0,
-        })
+        self.setup_task(
+            Task::SplitShard(SplitShardTask { group_id, shard_id, ..Default::default() }),
+            TaskReason::new(format!(
+                "Shard exceeds the automatic split threshold of {} B",
+                self.ctx.cfg.move_shard_size_limit
+            )),
+        )
         .await;
     }
 
@@ -246,16 +217,13 @@ impl ReconcileScheduler {
         debug!(
             "sched merge shard task, group_id {group_id}, left {left_shard_id}, right {right_shard_id}"
         );
-        self.setup_task(ReconcileTask {
-            task: Some(reconcile_task::Task::MergeShard(MergeShardTask {
-                group_id,
-                left_shard_id,
-                right_shard_id,
-            })),
-            created_at: timestamp_millis(),
-            fire_at: 0,
-            retry_count: 0,
-        })
+        self.setup_task(
+            Task::MergeShard(MergeShardTask { group_id, left_shard_id, right_shard_id }),
+            TaskReason::new(format!(
+                "Adjacent shards fit within the automatic merge limit of {} B",
+                self.ctx.cfg.move_shard_size_limit
+            )),
+        )
         .await;
     }
 }
@@ -265,10 +233,7 @@ impl ReconcileScheduler {
         let mut balance = BalanceSnapshot::new(&self.ctx.cfg);
         let needed = match self.evaluate_balance(&mut balance).await? {
             BalanceActions::CreateGroups(_) => true,
-            BalanceActions::Placement(action) => action.is_some(),
-            BalanceActions::Move { replicas, leaders, shards, .. } => {
-                !replicas.is_empty() || !leaders.is_empty() || !shards.is_empty()
-            }
+            BalanceActions::Reconcile(tasks) => !tasks.is_empty(),
         };
         let waiting_for_load =
             balance.iter().any(|(_, decision)| matches!(decision, BalanceDecision::Deferred(_)));
@@ -292,29 +257,9 @@ impl ReconcileScheduler {
                 }
                 return Ok(true);
             }
-            BalanceActions::Placement(action) => match action {
-                Some(PlacementAction::Shard(action)) => {
-                    self.sched_migrate_shard_task(action, ShardMoveGuard::Placement).await;
-                }
-                Some(PlacementAction::Leader(action)) => {
-                    self.sched_transfer_leader_task(action, true).await;
-                }
-                Some(PlacementAction::Replica(action)) => {
-                    self.sched_migrate_replica_task(action, true).await;
-                }
-                None => {}
-            },
-            BalanceActions::Move { replicas, leaders, shards, shard_guard } => {
-                for ReplicaAction::Migrate(action) in replicas {
-                    self.sched_migrate_replica_task(action, false).await;
-                }
-                for action in leaders {
-                    if let LeaderAction::Shed(action) = action {
-                        self.sched_transfer_leader_task(action, false).await;
-                    }
-                }
-                for ShardAction::Migrate(action) in shards {
-                    self.sched_migrate_shard_task(action, shard_guard).await;
+            BalanceActions::Reconcile(tasks) => {
+                for (task, reason) in tasks {
+                    self.setup_task(task, reason).await;
                 }
             }
         }
@@ -364,6 +309,21 @@ impl ReconcileScheduler {
                 || !options.deadlines.is_empty()
             {
                 let plan = self.ctx.alloc.plan_placement(&options);
+                let tasks = plan
+                    .action
+                    .into_iter()
+                    .map(|(dimension, action)| {
+                        let (_, decision, _) = plan
+                            .decisions
+                            .iter()
+                            .find(|(kind, _, _)| *kind == dimension)
+                            .expect("a selected placement has a decision");
+                        (
+                            balance_task(action, ShardMoveGuard::Placement),
+                            TaskReason::for_balance(dimension, decision),
+                        )
+                    })
+                    .collect();
                 for (dimension, decision, thresholds) in plan.decisions {
                     let gauges = &metrics::RECONCILE_ALREADY_BALANCED_INFO;
                     let gauge = match dimension {
@@ -382,30 +342,54 @@ impl ReconcileScheduler {
                         thresholds,
                     );
                 }
-                return Ok(BalanceActions::Placement(plan.action));
+                return Ok(BalanceActions::Reconcile(tasks));
             }
         }
 
+        let mut tasks = Vec::new();
         let (replicas, decision, thresholds) = self.compute_replica_actions();
+        for ReplicaAction::Migrate(action) in replicas {
+            tasks.push((
+                balance_task(PlacementAction::Replica(action), ShardMoveGuard::Unrestricted),
+                TaskReason::for_balance(BalanceDimension::ReplicaCount, &decision),
+            ));
+        }
         balance.record_with_thresholds(
             Policy::Placement(BalanceDimension::ReplicaCount),
             decision,
             thresholds,
         );
         let (leaders, decision, thresholds) = self.compute_leader_actions();
+        for action in leaders {
+            if let LeaderAction::Shed(action) = action {
+                tasks.push((
+                    balance_task(PlacementAction::Leader(action), ShardMoveGuard::Unrestricted),
+                    TaskReason::for_balance(BalanceDimension::LeaderCount, &decision),
+                ));
+            }
+        }
         balance.record_with_thresholds(
             Policy::Placement(BalanceDimension::LeaderCount),
             decision,
             thresholds,
         );
         let shards = self.ctx.alloc.compute_shard_action();
-        let shard_guard = if matches!(shards.size, BalanceDecision::ActionNeeded(_)) {
-            ShardMoveGuard::ImproveSize
-        } else if self.ctx.cfg.enable_shard_size_balance {
-            ShardMoveGuard::PreserveSize
+        let (shard_policy, shard_decision, shard_guard) = if shards.size.action_reason().is_some() {
+            (BalanceDimension::ShardSize, &shards.size, ShardMoveGuard::ImproveSize)
         } else {
-            ShardMoveGuard::Unrestricted
+            let guard = if self.ctx.cfg.enable_shard_size_balance {
+                ShardMoveGuard::PreserveSize
+            } else {
+                ShardMoveGuard::Unrestricted
+            };
+            (BalanceDimension::ShardCount, &shards.count, guard)
         };
+        for ShardAction::Migrate(action) in shards.actions {
+            tasks.push((
+                balance_task(PlacementAction::Shard(action), shard_guard),
+                TaskReason::for_balance(shard_policy, shard_decision),
+            ));
+        }
         balance.record_with_thresholds(
             Policy::Placement(BalanceDimension::ShardSize),
             shards.size,
@@ -416,7 +400,7 @@ impl ReconcileScheduler {
             shards.count,
             shards.count_thresholds,
         );
-        Ok(BalanceActions::Move { replicas, leaders, shards: shards.actions, shard_guard })
+        Ok(BalanceActions::Reconcile(tasks))
     }
 
     fn shard_balance_move_pending(&self) -> bool {
@@ -457,9 +441,9 @@ impl ReconcileScheduler {
             }
 
             let id = *id;
-            self.queue_status.lock().unwrap().start_attempt(id);
+            let reason = self.queue_status.lock().unwrap().start_attempt(id);
             let _timer = Self::record_exec(task);
-            let sched_result = self.ctx.handle_task(task).await;
+            let sched_result = self.ctx.handle_task(task, &reason).await;
             let retry_at = timestamp_millis();
             match sched_result {
                 Ok(result) if result.ack => {
@@ -719,11 +703,15 @@ impl ScheduleContext {
         )
     }
 
-    async fn handle_task(&self, task: &mut ReconcileTask) -> Result<SchedResult> {
+    async fn handle_task(
+        &self,
+        task: &mut ReconcileTask,
+        reason: &TaskReason,
+    ) -> Result<SchedResult> {
         info!("handle reconcile task. task={task:?}");
         match task.task.as_mut().unwrap() {
             Task::ReallocateReplica(reallocate_replica) => {
-                self.handle_reallocate_replica(reallocate_replica).await
+                self.handle_reallocate_replica(reallocate_replica, reason).await
             }
             Task::MigrateShard(migrate_shard) => self.handle_migrate_shard(migrate_shard).await,
             Task::TransferGroupLeader(transfer_leader) => {
@@ -739,6 +727,7 @@ impl ScheduleContext {
     async fn handle_reallocate_replica(
         &self,
         task: &mut ReallocateReplicaTask,
+        reason: &TaskReason,
     ) -> Result<SchedResult> {
         let schema = self.shared.schema()?;
         if task.placement {
@@ -817,7 +806,12 @@ impl ScheduleContext {
                         replica_repair: None,
                     };
                 }
-                self.cluster_stats.handle_schedule_update(&[schedule_state], None);
+                self.cluster_stats.handle_replica_move_update(
+                    schedule_state,
+                    next_replica,
+                    replica,
+                    reason,
+                );
                 Ok(SchedResult::ack())
             }
             Err(crate::Error::AlreadyExists(_)) | Err(crate::Error::EpochNotMatch(_)) => {
@@ -1530,6 +1524,8 @@ mod tests {
         let status = &scheduler.task_statuses()[0];
         assert_eq!(status.kind, "split_shard");
         assert_eq!(status.target, "group 3, shard 1028");
+        assert!(status.reason.policy.is_none());
+        assert!(status.reason.detail.starts_with("Shard exceeds the automatic split threshold"));
         assert_eq!(status.retry_count, task.retry_count);
         assert_eq!(status.fire_at, task.fire_at);
     }
@@ -1558,8 +1554,17 @@ mod tests {
         let root = super::Root::new(transport, &crate::serverpb::v1::NodeIdent::default(), cfg);
         let scheduler = &root.scheduler;
         let moving = super::ReallocateShard { shard: 1028, source_group: 3, target_group: 4 };
+        let enqueue = |action| {
+            scheduler.setup_task(
+                super::balance_task(
+                    super::PlacementAction::Shard(action),
+                    super::ShardMoveGuard::Unrestricted,
+                ),
+                super::TaskReason::new("Move a shard"),
+            )
+        };
         futures::join!(
-            scheduler.sched_migrate_shard_task(moving.clone(), super::ShardMoveGuard::Unrestricted),
+            enqueue(moving.clone()),
             scheduler.sched_split_shard_task(3, 1028),
             scheduler.sched_merge_shard_task(3, 1028, 1029),
         );
@@ -1573,7 +1578,7 @@ mod tests {
         // Queue ownership still excludes duplicates if a heartbeat has
         // already cleared the move marker.
         scheduler.ctx.cluster_stats.finish_move_shard(1028);
-        scheduler.sched_migrate_shard_task(moving, super::ShardMoveGuard::Unrestricted).await;
+        enqueue(moving).await;
         assert_eq!(scheduler.pending_tasks().await, 2);
     }
 

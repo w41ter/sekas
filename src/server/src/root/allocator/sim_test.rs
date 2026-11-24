@@ -87,7 +87,7 @@ fn shard_size_can_change_counts_and_count_cannot_undo_the_byte_balance() {
     stats.handle_show_group_stats(&light_stats, 1);
 
     let plan = allocator.compute_shard_action();
-    assert!(matches!(plan.size, BalanceDecision::ActionNeeded(_)));
+    assert!(matches!(plan.size, BalanceDecision::ActionNeeded { .. }));
     assert!(
         matches!(plan.count, BalanceDecision::Deferred(ref reason) if reason == "shard size takes priority")
     );
@@ -129,7 +129,7 @@ fn shard_count_can_move_a_shard_that_preserves_byte_balance() {
     stats.handle_show_group_stats(&right_stats, 1);
     let plan = allocator.compute_shard_action();
     assert!(matches!(plan.size, BalanceDecision::NoAction(_)));
-    assert!(matches!(plan.count, BalanceDecision::ActionNeeded(_)));
+    assert!(matches!(plan.count, BalanceDecision::ActionNeeded { .. }));
     // Moving five bytes to group 2 would balance counts at the same total
     // penalty, but it would push group 1 out of the byte tolerance band.
     assert!(matches!(
@@ -148,7 +148,7 @@ fn shard_size_plans_a_split_for_an_oversized_shard_only_if_a_piece_can_help() {
     stats.handle_show_group_stats(&light_stats, 1);
     let plan = allocator.compute_shard_action();
     assert!(
-        matches!(plan.size, BalanceDecision::ActionNeeded(detail) if detail.contains("split shard 1"))
+        matches!(plan.size, BalanceDecision::ActionNeeded { detail, .. } if detail.contains("split shard 1"))
     );
     assert!(matches!(
         plan.actions.as_slice(),
@@ -166,7 +166,7 @@ fn shard_size_plans_a_split_for_an_oversized_shard_only_if_a_piece_can_help() {
     stats.handle_show_group_stats(&light_stats, 1);
     let plan = allocator.compute_shard_action();
     assert!(
-        matches!(plan.size, BalanceDecision::ActionNeeded(detail) if detail.contains("up to 15 bytes"))
+        matches!(plan.size, BalanceDecision::ActionNeeded { detail, .. } if detail.contains("up to 15 bytes"))
     );
 }
 
@@ -221,18 +221,18 @@ fn placement_uses_priority_and_checks_lower_priority_deadlines() {
     report_disk(1, 80);
     report_disk(2, 20);
 
-    let assert_shard = |options: &crate::BalanceConfig, id| {
+    let assert_shard = |options: &crate::BalanceConfig, dimension, id| {
         let plan = allocator.plan_placement(options);
         assert!(
-            matches!(plan.action, Some(PlacementAction::Shard(movement)) if movement.shard == id && movement.target_group == 2)
+            matches!(plan.action, Some((policy, PlacementAction::Shard(movement))) if policy == dimension && movement.shard == id && movement.target_group == 2)
         );
     };
     let mut options = crate::BalanceConfig::default();
-    assert_shard(&options, 2);
+    assert_shard(&options, BalanceDimension::ReadUnits, 2);
     options.set("priority", "write_units,read_units").unwrap();
-    assert_shard(&options, 1);
+    assert_shard(&options, BalanceDimension::WriteUnits, 1);
     options.set("deadline.read_units", "45").unwrap();
-    assert_shard(&options, 3);
+    assert_shard(&options, BalanceDimension::WriteUnits, 3);
     report_disk(2, 50);
     options.set("deadline.disk", "65").unwrap();
     let blocked = allocator.plan_placement(&options);
@@ -245,10 +245,11 @@ fn placement_uses_priority_and_checks_lower_priority_deadlines() {
     report_disk(1, 95);
     report_disk(2, 20);
     options.set("priority", "disk,write_units,read_units").unwrap();
-    assert_shard(&options, 3);
+    assert_shard(&options, BalanceDimension::Disk, 3);
     assert!(matches!(
         allocator.plan_placement(&options).decisions[0],
-        (BalanceDimension::Disk, BalanceDecision::ActionNeeded(_), _)
+        (BalanceDimension::Disk, BalanceDecision::ActionNeeded { ref reason, .. }, _)
+            if reason.contains("deadline")
     ));
 }
 
@@ -284,7 +285,8 @@ fn placement_needs_migration_status_only_for_groups_in_the_move() {
     }));
     stats.handle_show_group_stats(&light_stats, 1);
     let plan = allocator.plan_placement(&options);
-    let Some(PlacementAction::Shard(mut action)) = plan.action else {
+    let Some((BalanceDimension::ShardCount, PlacementAction::Shard(mut action))) = plan.action
+    else {
         panic!("placement must use the groups that have migration status");
     };
     assert_eq!((action.source_group, action.target_group), (1, 2));

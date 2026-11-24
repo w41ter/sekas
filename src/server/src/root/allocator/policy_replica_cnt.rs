@@ -78,10 +78,19 @@ impl<T: AllocSource> ReplicaCountPolicy<T> {
                 break;
             }
             if let Some(action) = self.rebalance_target(src_node, &candidates, &balance) {
-                let decision = BalanceDecision::ActionNeeded(format!(
-                    "move replica {} of group {}: n{} -> n{}",
-                    action.source_replica, action.group, action.source_node, action.target_node.id
-                ));
+                let decision = BalanceDecision::ActionNeeded {
+                    detail: format!(
+                        "move replica {} of group {}: n{} -> n{}",
+                        action.source_replica,
+                        action.group,
+                        action.source_node,
+                        action.target_node.id
+                    ),
+                    reason: format!(
+                        "Source node has {count} replicas, above the upper threshold of {}",
+                        thresholds.high
+                    ),
+                };
                 return (vec![ReplicaAction::Migrate(action)], decision, thresholds);
             }
         }

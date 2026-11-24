@@ -68,7 +68,7 @@ impl PlacementAction {
 }
 
 pub(in crate::root) struct PlacementPlan {
-    pub action: Option<PlacementAction>,
+    pub action: Option<(Dimension, PlacementAction)>,
     pub decisions: Vec<(Dimension, BalanceDecision, Option<BalanceThresholds>)>,
 }
 
@@ -466,7 +466,16 @@ impl<'a, T: AllocSource> Placement<'a, T> {
                                 )
                             },
                         );
-                        BalanceDecision::ActionNeeded(detail)
+                        let benefit = if choice.score.0 > 0. {
+                            "reduces load above the configured deadline"
+                        } else {
+                            "reduces load imbalance"
+                        };
+                        let reason = choice.split_bytes.map_or_else(
+                            || format!("This move {benefit}"),
+                            |bytes| format!("Splitting and moving up to {bytes} B {benefit}"),
+                        );
+                        BalanceDecision::ActionNeeded { detail, reason }
                     }
                     Some(choice) if index > choice.rank => BalanceDecision::Deferred(
                         "higher-priority placement takes precedence".into(),
@@ -490,7 +499,10 @@ impl<'a, T: AllocSource> Placement<'a, T> {
                 (axis.kind, decision, axis.thresholds())
             })
             .collect();
-        PlacementPlan { action: best.map(|choice| choice.action), decisions }
+        PlacementPlan {
+            action: best.map(|choice| (self.axes[choice.rank].kind, choice.action)),
+            decisions,
+        }
     }
 
     fn revalidate(&self, action: &PlacementAction) -> Option<RankedAction> {

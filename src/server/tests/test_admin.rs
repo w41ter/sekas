@@ -110,7 +110,10 @@ async fn admin_show_scheduling() {
     let ExecuteResult::Data(tasks) = serde_json::from_slice(&body).unwrap() else {
         panic!("show scheduler_tasks must return a table");
     };
-    assert_eq!(tasks.columns, ["task", "target", "state", "age_s", "error_retries", "ready_in_s"]);
+    assert_eq!(
+        tasks.columns,
+        ["task", "target", "state", "age_s", "error_retries", "ready_in_s", "balancer", "reason"]
+    );
     assert!(tasks.rows.is_empty());
 
     let body = client.handle_statement("show scheduler from root;").await.unwrap();
@@ -460,6 +463,8 @@ async fn admin_unsplittable_shard_does_not_leave_a_retry_task() {
 #[sekas_macro::test]
 async fn admin_size_balance_splits_lazily_and_moves_a_piece() {
     let mut ctx = TestContext::new(fn_name!());
+    let migration_barrier = std::sync::Arc::new(sekas_server::TestingBarrier::new());
+    ctx.mut_replica_testing_knobs().after_moving_shard_setup = Some(migration_barrier.clone());
     ctx.set_num_cpus(3);
     ctx.set_replicas_per_group(1);
     ctx.enable_group_balance();
@@ -572,12 +577,26 @@ async fn admin_size_balance_splits_lazily_and_moves_a_piece() {
         .iter()
         .map(|shard| if shard.id == piece.id { 500 } else { 1548 })
         .collect();
+    let observed = migration_barrier.arm();
     poll(vec![
         sample(source_after_split, u64::MAX, &piece_sizes),
         sample(destination, u64::MAX, &[0]),
     ])
     .await
     .unwrap();
+    let reached =
+        tokio::time::timeout(Duration::from_secs(5), migration_barrier.wait_reached(observed))
+            .await;
+    let tasks = client.handle_statement("show scheduler_tasks;").await;
+    migration_barrier.release();
+    reached.expect("migration must reach the pulling step");
+    let ExecuteResult::Data(tasks) = serde_json::from_slice(&tasks.unwrap()).unwrap() else {
+        panic!("show scheduler_tasks must return a table");
+    };
+    let values = &tasks.rows.iter().find(|row| row.values[0] == "migrate_shard").unwrap().values;
+    assert_eq!(values[2], "awaiting_confirmation");
+    assert_eq!(values[6], "shard_size");
+    assert_eq!(values[7], "Moving 500 B reduces the size imbalance between groups");
     tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             if cluster.group_contains_shard(destination.id, piece.id)
