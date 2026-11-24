@@ -1,5 +1,8 @@
 # Design
 
+See [Raft and replica design](replica.md) for request evaluation, replication, and recovery,
+and [transaction design](txn.md) for MVCC, commit paths, and intent resolution.
+
 ## What is Sekas?
 
 Sekas is a distributed key-value store, used as a cache, database, and storage engine.
@@ -50,7 +53,8 @@ Sekas provides two levels of data organization: database and table.
 
 Database is used to provide isolation between tenants; table is used to provide data isolation within tenants.
 
-A table is partitioned into **Shards** to support elastic scale up or down. Currently sekas supports both range and hash partitions. Shard splitting and merging will be introduced in subsequent releases.
+A table is partitioned into key-range **Shards** so the cluster can distribute and rebalance
+data. Sekas supports splitting and merging shards.
 
 Shards are managed by groups, and the replicas of group is also replicas of shards.
 
