@@ -194,6 +194,15 @@ where
     current().spawn(future)
 }
 
+/// Spawns a task that runs independently until it finishes or the runtime shuts
+/// down.
+pub fn spawn_detached<F>(future: F)
+where
+    F: Future<Output = ()> + Send + 'static,
+{
+    drop(current().handle.spawn(FutureWrapper::new(future)));
+}
+
 #[inline]
 pub fn spawn_blocking<F, R>(func: F) -> JoinHandle<R>
 where

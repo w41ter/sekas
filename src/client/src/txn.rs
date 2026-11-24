@@ -1071,6 +1071,7 @@ impl WriteBatchContext {
         if self.is_async_commit_eligible()
             && let Some(resp) = self.try_commit_async().await?
         {
+            self.detach_commit_intents();
             return Ok(resp);
         }
 
@@ -1160,9 +1161,7 @@ impl WriteBatchContext {
                 .commit_async_txn(self.start_version, self.commit_version)
                 .await?;
         }
-        let resp = self.take_response(self.commit_version);
-        self.detach_commit_intents();
-        Ok(Some(resp))
+        Ok(Some(self.take_response(self.commit_version)))
     }
 
     async fn abort_async_after_error(&mut self) -> Result<()> {
@@ -1571,14 +1570,22 @@ impl WriteBatchContext {
             .await
     }
 
-    fn detach_commit_intents(&self) {
+    fn detach_commit_intents(mut self) {
         record_latency!(&CLIENT_TXN_PHASE_DURATION_SECONDS.dispatch_commit_intents);
         // A successful commit must publish cleanup for every prepared intent;
         // `done` only tracks progress in the synchronous retry paths below.
         let groups = match self.intent_key_groups(None) {
             Ok(groups) => groups,
-            Err(err) => {
-                warn!("txn {} build detached intent cleanup: {err}", self.start_version);
+            Err(route_err) => {
+                // The source group can drop the shard before the router sees its new owner.
+                sekas_runtime::spawn_detached(async move {
+                    if let Err(err) = self.finish_commit_intents().await {
+                        warn!(
+                            "txn {} retry intent cleanup after routing failure ({route_err}): {err}",
+                            self.start_version
+                        );
+                    }
+                });
                 return;
             }
         };
