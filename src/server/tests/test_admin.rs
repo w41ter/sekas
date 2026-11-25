@@ -40,6 +40,7 @@ async fn admin_show_scheduling() {
     ctx.set_num_cpus(2);
     ctx.set_replicas_per_group(1);
     ctx.enable_group_balance();
+    ctx.enable_replica_balance();
     ctx.enable_shard_balance();
     ctx.set_schedule_interval_sec(1);
     let nodes = ctx.bootstrap_servers(1).await;
@@ -60,7 +61,12 @@ async fn admin_show_scheduling() {
             let ExecuteResult::Data(status) = serde_json::from_slice(&body).unwrap() else {
                 panic!("show balancer must return a table");
             };
-            if status.rows[0].values[1] == "no_action" && status.rows[3].values[1] == "no_action" {
+            if ["group_count", "shard_count"].into_iter().all(|policy| {
+                status
+                    .rows
+                    .iter()
+                    .any(|row| row.values[0] == policy && row.values[1] == "no_action")
+            }) {
                 break status;
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
@@ -90,10 +96,13 @@ async fn admin_show_scheduling() {
     assert_eq!(groups[2], 0);
     assert_eq!(groups[3], "unlimited");
     assert_eq!(groups[9], "nodes=1, min_nodes=1, cpus=2, groups=2, desired_groups=2");
-    assert!(balancer.rows[1..3].iter().all(|row| row.values[1] == "disabled"));
-    let shards = &balancer.rows[3].values;
+    let replicas = &balancer.rows[1].values;
+    assert_eq!(replicas[0], "replica_count");
+    assert_eq!(replicas[2], 1);
+    let shards = &balancer.rows[2].values;
     assert_eq!(shards[0], "shard_count");
     assert_eq!(shards[1], "no_action");
+    assert_eq!(shards[2], 2);
     let decision = shards[9].as_str().unwrap();
     assert!(decision.contains("no eligible move"), "{decision}");
     assert_eq!(shards[4].as_f64(), Some(0.));
@@ -102,8 +111,22 @@ async fn admin_show_scheduling() {
     assert_eq!(shards[7].as_f64(), Some(0.));
     assert_eq!(shards[8].as_f64(), Some(0.5));
     assert_eq!(balancer.rows[4].values[0], "shard_size");
-    assert_eq!(balancer.rows[4].values[1], "disabled");
-    assert!(balancer.rows[5..].iter().all(|row| row.values[1] == "disabled"));
+    assert!(
+        balancer.rows[3..].iter().all(|row| row.values[1] == "disabled" && row.values[2].is_null())
+    );
+
+    client
+        .handle_statement(r#"config "balancer.priority" "leader_count,shard_count";"#)
+        .await
+        .unwrap();
+    let balancer = show(&client, "show balancer;").await;
+    for (priority, policy) in
+        ["group_count", "shard_count", "replica_count"].into_iter().enumerate()
+    {
+        assert_eq!(balancer.rows[priority].values[0], policy);
+        assert_eq!(balancer.rows[priority].values[2], priority);
+    }
+    assert!(balancer.rows[3..].iter().all(|row| row.values[2].is_null()));
 
     let body = client.handle_statement("show scheduler_tasks;").await.unwrap();
     let ExecuteResult::Data(tasks) = serde_json::from_slice(&body).unwrap() else {
@@ -126,6 +149,7 @@ async fn admin_show_traffic() {
     ctx.set_heartbeat_interval_sec(1);
     ctx.set_schedule_interval_sec(1);
     let nodes = ctx.bootstrap_servers(1).await;
+    let node_id = *nodes.keys().next().unwrap();
     let cluster = ClusterClient::new(nodes).await;
     let client = cluster.app_client().await;
     let empty = client.create_database("empty".into()).await.unwrap();
@@ -136,24 +160,24 @@ async fn admin_show_traffic() {
     let shard = cluster.get_shard_desc(table.id, b"key").await.unwrap();
 
     let databases = show(&client, "show databases").await;
-    for metric in [
-        "bytes",
-        "num_shards",
-        "read_qps",
-        "write_qps",
-        "read_bytes_per_sec",
-        "write_bytes_per_sec",
-        "read_units_per_sec",
-        "write_units_per_sec",
-    ] {
+    assert_eq!(show_cell(&databases, empty.desc().id, "size"), "0");
+    for metric in ["read_bytes/s", "write_bytes/s"] {
+        assert_eq!(show_cell(&databases, empty.desc().id, metric), "0 B");
+    }
+    for metric in ["num_shards", "read_qps", "write_qps", "read_units/s", "write_units/s"] {
         assert_eq!(show_cell(&databases, empty.desc().id, metric).as_f64(), Some(0.));
     }
+
+    let bad_replicas = show(&client, "SHOW BAD_REPLICAS;").await;
+    assert_eq!(bad_replicas.columns, ["group_id", "replica_id", "node_id", "role", "reason"]);
+    assert!(bad_replicas.rows.is_empty());
 
     let shards_cmd = format!("show shards from {}", group.id);
     for (command, id) in [
         ("show tables from traffic", table.id),
         ("show databases", db.desc().id),
         ("show groups", group.id),
+        ("show nodes", node_id),
         (&shards_cmd, shard.id),
     ] {
         let result = tokio::time::timeout(Duration::from_secs(15), async {
@@ -175,19 +199,30 @@ async fn admin_show_traffic() {
         .await
         .unwrap_or_else(|_| panic!("{command} must report read and write traffic"));
         let (rows, read, write) = result;
-        let read_bytes = show_cell(&rows, id, "read_bytes_per_sec").as_f64().unwrap();
-        let write_bytes = show_cell(&rows, id, "write_bytes_per_sec").as_f64().unwrap();
-        assert!((read_bytes / read - 5.).abs() < 0.0001, "{command} read payload ratio");
-        assert!((write_bytes / write - 8.).abs() < 0.0001, "{command} write payload ratio");
+        for (column, bytes) in [("read_bytes/s", read * 5.), ("write_bytes/s", write * 8.)] {
+            let (amount, unit) =
+                show_cell(&rows, id, column).as_str().unwrap().split_once(' ').unwrap();
+            let (factor, precision) = match unit {
+                "B" => (1., 1.),
+                "KiB" => (1024., 0.01),
+                _ => panic!("unexpected unit {unit}"),
+            };
+            let amount: f64 = amount.parse().unwrap();
+            assert!((amount * factor - bytes).abs() <= 0.5 * precision * factor + 0.0001);
+        }
         if command.starts_with("show table") || command == "show databases" {
-            assert_eq!(show_cell(&rows, id, "read_units_per_sec").as_f64(), Some(read));
-            assert_eq!(show_cell(&rows, id, "write_units_per_sec").as_f64(), Some(write));
+            assert_eq!(show_cell(&rows, id, "read_units/s").as_f64(), Some(read));
+            assert_eq!(show_cell(&rows, id, "write_units/s").as_f64(), Some(write));
             assert_eq!(show_cell(&rows, id, "num_shards").as_u64(), Some(1));
-            assert!(show_cell(&rows, id, "bytes").is_u64());
+            assert!(show_cell(&rows, id, "size").is_string());
         } else {
-            assert!(!rows.columns.iter().any(|column| column.ends_with("_units_per_sec")));
+            assert!(!rows.columns.iter().any(|column| column.ends_with("_units/s")));
         }
     }
+    let groups = show(&client, "SHOW GROUPS;").await;
+    assert_eq!(show_cell(&groups, group.id, "leader_node_id"), node_id);
+    assert_eq!(show_cell(&groups, group.id, "status"), "NORMAL");
+    assert_eq!(show_cell(&groups, group.id, "status_detail"), "-");
 }
 
 #[sekas_macro::test]
@@ -238,7 +273,11 @@ async fn admin_configure_balancer() {
                     "cpu",
                     "mem",
                     "disk",
-                    "bad_replica_count"
+                    "bad_replica_count",
+                    "read_qps",
+                    "write_qps",
+                    "read_bytes/s",
+                    "write_bytes/s",
                 ]
             );
             let parse_usage = |usage: &str| -> Option<(f64, f64)> {
@@ -325,6 +364,7 @@ async fn admin_balances_read_units_by_moving_a_shard() {
 async fn admin_show_replica_progress() {
     let mut ctx = TestContext::new(fn_name!());
     ctx.set_replicas_per_group(3);
+    ctx.set_heartbeat_interval_sec(1);
     let nodes = ctx.bootstrap_servers(3).await;
     let cluster = ClusterClient::new(nodes).await;
     cluster.assert_root_group_has_promoted().await;
@@ -374,6 +414,25 @@ async fn admin_show_replica_progress() {
             assert!(row.values[3..].iter().all(serde_json::Value::is_u64));
         }
     }
+
+    let expected: [serde_json::Value; 5] =
+        [0.into(), offline_id.into(), 2.into(), "VOTER".into(), "node unreachable".into()];
+    tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            let bad_replicas = show(&client, "show bad_replicas").await;
+            if bad_replicas.rows.iter().any(|row| row.values == expected) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .expect("the offline replica must be listed");
+    let groups = show(&client, "show groups").await;
+    assert_eq!(show_cell(&groups, 0, "status"), "UNHEALTHY");
+    let nodes = show(&client, "show nodes").await;
+    assert!(show_cell(&nodes, 2, "bad_replica_count").as_u64().unwrap() >= 1);
+    assert!(show_cell(&nodes, 2, "read_qps").is_null());
 }
 
 async fn show(client: &SekasClient, statement: &str) -> ColumnResult {

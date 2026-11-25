@@ -12,10 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use futures::future::try_join_all;
+use futures::try_join;
 use log::warn;
 use sekas_api::server::v1::*;
 use sekas_parser::{ColumnResult, ConfigStatement, ExecuteResult, Row, ShowStatement};
@@ -26,7 +27,7 @@ use serde_json::Value;
 use super::Root;
 use super::allocator::BalanceDecision;
 use super::schedule::{Policy, TaskReason};
-use super::stats::{ShowMetrics, ShowSnapshot};
+use super::stats::{ClusterHealth, GroupHealth, ShowMetrics, ShowSnapshot, TrafficRates};
 use crate::{Error, Result};
 
 impl Root {
@@ -70,12 +71,14 @@ impl Root {
         Ok(ExecuteResult::Msg(format!("balancer.{key} updated")))
     }
 
-    async fn handle_show_stmt(&self, show_stmt: ShowStatement) -> Result<ExecuteResult> {
+    async fn handle_show_stmt(&self, mut show_stmt: ShowStatement) -> Result<ExecuteResult> {
+        show_stmt.property.make_ascii_lowercase();
         match show_stmt.property.as_str() {
             "databases" => self.handle_show_databases(show_stmt).await,
             "tables" => self.handle_show_tables(show_stmt).await,
             "groups" => self.handle_show_groups(show_stmt).await,
             "replicas" => self.handle_show_replicas(show_stmt).await,
+            "bad_replicas" => self.handle_show_bad_replicas(show_stmt).await,
             "shards" => self.handle_show_shards(show_stmt).await,
             "node" | "nodes" => self.handle_show_nodes(show_stmt).await,
             "balancer" | "scheduler" | "scheduler_tasks" => {
@@ -106,7 +109,7 @@ impl Root {
                     .map(|(index, kind)| (kind as usize, index + 1))
                     .collect();
                 let snapshot = self.scheduler.balance_status();
-                let rows = snapshot
+                let mut rows: Vec<_> = snapshot
                     .iter()
                     .map(|(policy, report)| {
                         let (status, decision) = match report {
@@ -135,7 +138,7 @@ impl Root {
                         };
                         let deadline = deadline.map_or_else(|| "unlimited".into(), display_load);
                         let thresholds = snapshot.thresholds(policy);
-                        Row {
+                        let row = Row {
                             values: vec![
                                 policy.name().into(),
                                 status.into(),
@@ -148,9 +151,11 @@ impl Root {
                                 thresholds.map(|values| display_load(values.tolerance)).into(),
                                 decision.into(),
                             ],
-                        }
+                        };
+                        (priority, row)
                     })
                     .collect();
+                rows.sort_by_key(|(priority, _)| priority.unwrap_or(usize::MAX));
                 show_columns(
                     [
                         "policy",
@@ -164,7 +169,7 @@ impl Root {
                         "tolerance",
                         "decision",
                     ],
-                    rows,
+                    rows.into_iter().map(|(_, row)| row).collect(),
                 )
             }
             "scheduler" => {
@@ -378,57 +383,91 @@ impl Root {
                 "FROM clause is not required by 'groups' property".to_owned(),
             ));
         }
-        let (groups, nodes) = tokio::try_join!(self.list_group(), self.list_node())?;
+        let (groups, nodes) = try_join!(self.list_group(), self.list_node())?;
         let stats = self.show_snapshot(&groups);
-        let max_age = Duration::from_secs(self.cfg.liveness_threshold_sec);
-        let mut replica_issues = HashMap::<u64, Vec<String>>::new();
-        for issue in self.cluster_stats.replica_issues(&groups, &nodes, &self.liveness, max_age) {
-            replica_issues
-                .entry(issue.group)
-                .or_default()
-                .push(format!("r{}@n{} {}", issue.replica, issue.node, issue.reason));
-        }
-        let group_to_row = |group: GroupDesc| -> Row {
+        let repairs: HashSet<_> = self
+            .cluster_stats
+            .replica_changes()
+            .into_iter()
+            .filter_map(|change| change.repair.then_some(change.group))
+            .collect();
+        let group_to_row = |health: GroupHealth<'_>| -> Row {
+            let group = health.group;
             let (shard_epoch, config_epoch) = (group.epoch >> 32, group.epoch & ((1 << 32) - 1));
-            let metrics = stats.group(&group);
-            let mut issues = replica_issues.remove(&group.id).unwrap_or_default();
-            let voters = group
-                .replicas
-                .iter()
-                .filter(|replica| replica.role == ReplicaRole::Voter as i32)
-                .count();
-            let missing = self.cfg.replicas_per_group.saturating_sub(voters);
+            let metrics = stats.group(group);
+            let missing = self.cfg.replicas_per_group.saturating_sub(health.voters);
+            let (status, detail) = group_status(&health, missing, repairs.contains(&group.id));
+            let mut issues = Vec::new();
             if missing > 0 {
-                issues.insert(0, format!("{missing} unfilled voter slots"));
+                issues.push(format!("{missing} unfilled voter slots"));
             }
+            issues.extend(health.issues.iter().map(|issue| {
+                format!("r{}@n{} {}", issue.replica.id, issue.replica.node_id, issue.reason)
+            }));
             let issues = if issues.is_empty() { "-".to_owned() } else { issues.join(", ") };
             let mut values = vec![
                 group.id.into(),
+                status.into(),
+                health.leader_node_id.map_or_else(|| "-".into(), Value::from),
                 shard_epoch.into(),
                 config_epoch.into(),
                 group.replicas.len().into(),
-                issues.into(),
                 metrics.num_shards.into(),
                 display_size(metrics.bytes).into(),
             ];
-            append_rates(&mut values, metrics);
+            append_rates(&mut values, metrics.rates);
+            values.extend([detail.into(), issues.into()]);
             Row { values }
         };
-        let rows = groups.into_iter().map(group_to_row).collect();
+        let rows = self.show_cluster_health(&groups, &nodes).groups.into_iter().map(group_to_row);
         Ok(ExecuteResult::Data(show_columns(
             [
                 "id",
+                "status",
+                "leader_node",
                 "shard_epoch",
                 "config_epoch",
                 "num_replicas",
-                "bad_replicas",
                 "num_shards",
                 "size",
                 "read_qps",
                 "write_qps",
                 "read_bytes/s",
                 "write_bytes/s",
+                "detail",
+                "issues",
             ],
+            rows.collect(),
+        )))
+    }
+
+    async fn handle_show_bad_replicas(&self, show_stmt: ShowStatement) -> Result<ExecuteResult> {
+        if show_stmt.from.is_some() {
+            return Ok(ExecuteResult::Msg(
+                "FROM clause is not supported by 'bad_replicas' property".to_owned(),
+            ));
+        }
+        let (groups, nodes) = try_join!(self.list_group(), self.list_node())?;
+        let health = self.show_cluster_health(&groups, &nodes);
+        let rows = health
+            .groups
+            .into_iter()
+            .flat_map(|health| {
+                health.issues.into_iter().map(move |issue| Row {
+                    values: vec![
+                        health.group.id.into(),
+                        issue.replica.id.into(),
+                        issue.replica.node_id.into(),
+                        ReplicaRole::try_from(issue.replica.role)
+                            .map_or("UNKNOWN", |role| role.as_str_name())
+                            .into(),
+                        issue.reason.into(),
+                    ],
+                })
+            })
+            .collect();
+        Ok(ExecuteResult::Data(show_columns(
+            ["group_id", "replica_id", "node_id", "role", "reason"],
             rows,
         )))
     }
@@ -533,7 +572,7 @@ impl Root {
                 end.into(),
                 display_size(metrics.bytes).into(),
             ];
-            append_rates(&mut values, metrics);
+            append_rates(&mut values, metrics.rates);
             Row { values }
         };
         let rows = group.shards.into_iter().map(shard_to_row).collect();
@@ -560,13 +599,22 @@ impl Root {
             ));
         }
 
-        let (groups, nodes) = tokio::try_join!(self.list_group(), self.list_node())?;
+        let (groups, nodes) = try_join!(self.list_group(), self.list_node())?;
 
         let resources = self.cluster_stats.display_node_resources();
-        let max_age = Duration::from_secs(self.cfg.liveness_threshold_sec);
+        let stats = self.show_snapshot(&groups);
+        let health = self.show_cluster_health(&groups, &nodes);
         let mut bad_counts = HashMap::<u64, usize>::new();
-        for issue in self.cluster_stats.replica_issues(&groups, &nodes, &self.liveness, max_age) {
-            *bad_counts.entry(issue.node).or_default() += 1;
+        let mut node_rates = HashMap::<u64, Option<TrafficRates>>::new();
+        for group in health.groups {
+            for issue in group.issues {
+                *bad_counts.entry(issue.replica.node_id).or_default() += 1;
+            }
+            if let Some(leader) = group.leader_node_id {
+                let total =
+                    node_rates.entry(leader).or_insert_with(|| Some(TrafficRates::default()));
+                *total = total.zip(stats.group(group.group).rates).map(|(a, b)| a.add(b));
+            }
         }
 
         let node_to_row = |node: NodeDesc| -> Row {
@@ -579,20 +627,23 @@ impl Root {
                     usage.cpu_used.map_or_else(|| "-".to_owned(), |used| format!("{used:.2}"));
                 format!("{used}/{}", cpu_total.as_deref().unwrap_or("-"))
             });
-            Row {
-                values: vec![
-                    node.id.into(),
-                    status.as_str_name().to_owned().into(),
-                    node.addr.into(),
-                    (capacity.cpu_nums as u32).into(),
-                    capacity.leader_count.into(),
-                    capacity.replica_count.into(),
-                    cpu.into(),
-                    display_storage_usage(usage.memory_used, usage.memory_capacity).into(),
-                    display_storage_usage(usage.disk_used, usage.disk_capacity).into(),
-                    bad_counts.get(&node.id).copied().unwrap_or(0).into(),
-                ],
-            }
+            let mut values = vec![
+                node.id.into(),
+                status.as_str_name().to_owned().into(),
+                node.addr.into(),
+                (capacity.cpu_nums as u32).into(),
+                capacity.leader_count.into(),
+                capacity.replica_count.into(),
+                bad_counts.get(&node.id).copied().unwrap_or(0).into(),
+                cpu.into(),
+                display_storage_usage(usage.memory_used, usage.memory_capacity).into(),
+                display_storage_usage(usage.disk_used, usage.disk_capacity).into(),
+            ];
+            let rates = node_rates.get(&node.id).copied().unwrap_or_else(|| {
+                health.reporting_nodes.contains(&node.id).then(TrafficRates::default)
+            });
+            append_rates(&mut values, rates);
+            Row { values }
         };
         let rows = nodes.into_iter().map(node_to_row).collect::<Vec<_>>();
         Ok(ExecuteResult::Data(show_columns(
@@ -601,12 +652,16 @@ impl Root {
                 "status",
                 "addr",
                 "cpu_nums",
-                "leader_count",
-                "replica_count",
+                "leader_cnt",
+                "replica_cnt",
+                "bad_replica_cnt",
                 "cpu",
                 "mem",
                 "disk",
-                "bad_replica_count",
+                "read_qps",
+                "write_qps",
+                "read_bytes/s",
+                "write_bytes/s",
             ],
             rows,
         )))
@@ -615,6 +670,35 @@ impl Root {
     fn show_snapshot(&self, groups: &[GroupDesc]) -> ShowSnapshot {
         let max_age = Duration::from_secs(self.cfg.liveness_threshold_sec);
         self.cluster_stats.show_snapshot(groups, max_age)
+    }
+
+    fn show_cluster_health<'a>(
+        &self,
+        groups: &'a [GroupDesc],
+        nodes: &[NodeDesc],
+    ) -> ClusterHealth<'a> {
+        let max_age = Duration::from_secs(self.cfg.liveness_threshold_sec);
+        self.cluster_stats.cluster_health(groups, nodes, &self.liveness, max_age)
+    }
+}
+
+fn group_status(
+    health: &GroupHealth<'_>,
+    missing_voters: usize,
+    repairing: bool,
+) -> (&'static str, &'static str) {
+    if !health.has_quorum {
+        ("BROKEN", "voter quorum unavailable")
+    } else if health.leader_node_id.is_none() {
+        ("UNHEALTHY", "no leader reported")
+    } else if repairing {
+        ("HEALING", "replica repair in progress")
+    } else if missing_voters > 0 {
+        ("UNHEALTHY", "unfilled voter slots")
+    } else if !health.issues.is_empty() {
+        ("UNHEALTHY", "see SHOW BAD_REPLICAS")
+    } else {
+        ("NORMAL", "-")
     }
 }
 
@@ -655,12 +739,12 @@ fn append_table_metrics(values: &mut Vec<Value>, metrics: ShowMetrics) {
     values.push(metrics.rates.and_then(|rates| rates.write_units_per_sec).into());
 }
 
-fn append_rates(values: &mut Vec<Value>, metrics: ShowMetrics) {
+fn append_rates(values: &mut Vec<Value>, rates: Option<TrafficRates>) {
     values.extend([
-        metrics.rates.map(|rates| rates.read_qps).into(),
-        metrics.rates.map(|rates| rates.write_qps).into(),
-        metrics.rates.map(|rates| display_balance_bytes(rates.read_bytes_per_sec)).into(),
-        metrics.rates.map(|rates| display_balance_bytes(rates.write_bytes_per_sec)).into(),
+        rates.map(|rates| rates.read_qps).into(),
+        rates.map(|rates| rates.write_qps).into(),
+        rates.map(|rates| display_balance_bytes(rates.read_bytes_per_sec)).into(),
+        rates.map(|rates| display_balance_bytes(rates.write_bytes_per_sec)).into(),
     ]);
 }
 

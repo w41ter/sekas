@@ -23,7 +23,7 @@ use super::liveness::Liveness;
 
 mod show;
 
-pub(super) use show::{ShowMetrics, ShowSnapshot};
+pub(super) use show::{ShowMetrics, ShowSnapshot, TrafficRates};
 
 struct GroupDelta {
     epoch: u64,
@@ -52,15 +52,26 @@ pub(super) struct ReplicaChangeStatus {
 }
 
 pub(super) struct ReplicaIssue {
-    pub group: u64,
-    pub replica: u64,
-    pub node: u64,
+    pub replica: ReplicaDesc,
     pub reason: &'static str,
+}
+
+pub(super) struct GroupHealth<'a> {
+    pub group: &'a GroupDesc,
+    pub leader_node_id: Option<u64>,
+    pub voters: usize,
+    pub has_quorum: bool,
+    pub issues: Vec<ReplicaIssue>,
+}
+
+pub(super) struct ClusterHealth<'a> {
+    pub groups: Vec<GroupHealth<'a>>,
+    pub reporting_nodes: HashSet<u64>,
 }
 
 struct NodeReplicaReport {
     received_at: Instant,
-    terms: HashMap<(u64, u64), u64>,
+    states: HashMap<(u64, u64), ReplicaState>,
 }
 
 #[derive(Clone, Default)]
@@ -223,22 +234,25 @@ impl ClusterStats {
             node,
             NodeReplicaReport {
                 received_at: Instant::now(),
-                terms: states
+                states: states
                     .iter()
-                    .map(|state| ((state.group_id, state.replica_id), state.term))
+                    .map(|state| ((state.group_id, state.replica_id), *state))
                     .collect(),
             },
         );
     }
 
-    pub(super) fn replica_issues(
+    pub(super) fn cluster_health<'a>(
         &self,
-        groups: &[GroupDesc],
+        groups: &'a [GroupDesc],
         nodes: &[NodeDesc],
         liveness: &Liveness,
-        max_age: std::time::Duration,
-    ) -> Vec<ReplicaIssue> {
-        let node_issues: HashMap<_, _> = nodes
+        max_age: Duration,
+    ) -> ClusterHealth<'a> {
+        let reports = self.replica_reports.lock().unwrap();
+        let now = Instant::now();
+        let mut reporting_nodes = HashSet::new();
+        let node_health: HashMap<_, _> = nodes
             .iter()
             .map(|node| {
                 let reason = if node.status == NodeStatus::Decommissioned as i32 {
@@ -248,44 +262,72 @@ impl ClusterStats {
                 } else {
                     None
                 };
-                (node.id, reason)
+                let report = reports.get(&node.id).filter(|report| {
+                    reason.is_none() && now.duration_since(report.received_at) <= max_age
+                });
+                if report.is_some() {
+                    reporting_nodes.insert(node.id);
+                }
+                (node.id, (reason, report))
             })
             .collect();
-        let reports = self.replica_reports.lock().unwrap();
-        let now = Instant::now();
-        let mut issues = Vec::new();
-        for group in groups {
-            for replica in &group.replicas {
-                let reason = match node_issues.get(&replica.node_id) {
-                    None => Some("node missing"),
-                    Some(Some(reason)) => Some(*reason),
-                    Some(None) => reports
+        let groups = groups
+            .iter()
+            .map(|group| {
+                let mut issues = Vec::new();
+                // A joint configuration needs a majority in both voter sets.
+                let mut voters = [0; 2];
+                let mut available = [0; 2];
+                let mut latest = None::<(u64, Option<u64>)>;
+                for &replica in &group.replicas {
+                    let (node_issue, report) = node_health
                         .get(&replica.node_id)
-                        .filter(|report| now.duration_since(report.received_at) <= max_age)
-                        .and_then(|report| match report.terms.get(&(group.id, replica.id)) {
+                        .copied()
+                        .unwrap_or((Some("node missing"), None));
+                    let state =
+                        report.and_then(|report| report.states.get(&(group.id, replica.id)));
+                    let unavailable = node_issue.or_else(|| {
+                        report?;
+                        match state {
                             None => Some("missing from latest heartbeat"),
-                            Some(0) => Some("Raft uninitialized"),
+                            Some(state) if state.term == 0 => Some("Raft uninitialized"),
                             Some(_) => None,
-                        }),
-                }
-                .or(match ReplicaRole::try_from(replica.role) {
-                    Ok(ReplicaRole::Voter) => None,
-                    Ok(ReplicaRole::Learner) => Some("learner"),
-                    Ok(ReplicaRole::IncomingVoter) => Some("incoming voter"),
-                    Ok(ReplicaRole::DemotingVoter) => Some("demoting voter"),
-                    Err(_) => Some("unknown replica role"),
-                });
-                if let Some(reason) = reason {
-                    issues.push(ReplicaIssue {
-                        group: group.id,
-                        replica: replica.id,
-                        node: replica.node_id,
-                        reason,
+                        }
                     });
+                    let (votes, role_issue) = match ReplicaRole::try_from(replica.role) {
+                        Ok(ReplicaRole::Voter) => ([true, true], None),
+                        Ok(ReplicaRole::Learner) => ([false, false], Some("learner")),
+                        Ok(ReplicaRole::IncomingVoter) => ([false, true], Some("incoming voter")),
+                        Ok(ReplicaRole::DemotingVoter) => ([true, false], Some("demoting voter")),
+                        Err(_) => ([false, false], Some("unknown replica role")),
+                    };
+                    for (index, votes) in votes.into_iter().enumerate() {
+                        voters[index] += usize::from(votes);
+                        available[index] += usize::from(votes && unavailable.is_none());
+                    }
+                    if let Some(reason) = unavailable.or(role_issue) {
+                        issues.push(ReplicaIssue { replica, reason });
+                    }
+                    if let Some(state) = state.filter(|state| state.term > 0) {
+                        let leader = (votes.contains(&true) && state.role() == RaftRole::Leader)
+                            .then_some(replica.node_id);
+                        if latest.is_none_or(|(term, node)| {
+                            state.term > term || (state.term == term && node.is_none())
+                        }) {
+                            latest = Some((state.term, leader));
+                        }
+                    }
                 }
-            }
-        }
-        issues
+                GroupHealth {
+                    group,
+                    leader_node_id: latest.and_then(|(_, leader)| leader),
+                    voters: voters[1],
+                    has_quorum: available.into_iter().zip(voters).all(|(up, total)| up > total / 2),
+                    issues,
+                }
+            })
+            .collect();
+        ClusterHealth { groups, reporting_nodes }
     }
 
     pub(super) fn retain_display_samples(&self, nodes: &[NodeDesc], groups: &[GroupDesc]) {
@@ -529,9 +571,25 @@ mod tests {
             4,
             &[ReplicaState { group_id: 7, replica_id: 4, term: 0, ..Default::default() }],
         );
-        let issues = stats.replica_issues(&[group], &nodes, &liveness, max_age);
+        let report = |replica_id, term, role: RaftRole| ReplicaState {
+            group_id: 7,
+            replica_id,
+            node_id: replica_id,
+            term,
+            role: role as i32,
+            ..Default::default()
+        };
+        stats.handle_replica_report(1, &[report(1, 2, RaftRole::Leader)]);
+        let health = stats.cluster_health(std::slice::from_ref(&group), &nodes, &liveness, max_age);
+        let health = &health.groups[0];
+        assert_eq!(health.leader_node_id, Some(1));
+        assert!(!health.has_quorum);
         assert_eq!(
-            issues.iter().map(|issue| (issue.node, issue.reason)).collect::<Vec<_>>(),
+            health
+                .issues
+                .iter()
+                .map(|issue| (issue.replica.node_id, issue.reason))
+                .collect::<Vec<_>>(),
             [
                 (2, "learner"),
                 (3, "missing from latest heartbeat"),
@@ -539,5 +597,23 @@ mod tests {
                 (5, "node missing"),
             ]
         );
+
+        stats.handle_replica_report(3, &[report(3, 3, RaftRole::Follower)]);
+        stats.handle_replica_report(4, &[report(4, 3, RaftRole::Follower)]);
+        let get_health =
+            || stats.cluster_health(std::slice::from_ref(&group), &nodes, &liveness, max_age);
+        let health = get_health();
+        assert_eq!(health.groups[0].leader_node_id, None);
+        assert!(health.groups[0].has_quorum);
+        stats.handle_replica_report(3, &[report(3, 3, RaftRole::Leader)]);
+        assert_eq!(get_health().groups[0].leader_node_id, Some(3));
+        stats.replica_reports.lock().unwrap().get_mut(&3).unwrap().received_at -= max_age * 2;
+        assert_eq!(get_health().groups[0].leader_node_id, None);
+
+        group.replicas[2].role = ReplicaRole::IncomingVoter as i32;
+        group.replicas[3].role = ReplicaRole::IncomingVoter as i32;
+        group.replicas[4].role = ReplicaRole::DemotingVoter as i32;
+        let health = stats.cluster_health(std::slice::from_ref(&group), &nodes, &liveness, max_age);
+        assert!(!health.groups[0].has_quorum);
     }
 }

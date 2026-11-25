@@ -161,13 +161,20 @@ SHOW <property:ident> [FROM <name:ident>]
     Show properties. supported properties:
     - databases
     - tables FROM <database>
-    - groups
+    - groups           Leader node, health, and traffic by group
     - replicas FROM <group-id>
+    - bad_replicas     Group, replica, node, role, and reason for each replica with an issue
     - shards FROM <group-id>
-    - nodes            Node status and CPU, memory, and disk usage and capacity
+    - nodes            Node status, resource usage and capacity, and traffic from group leaders
     - balancer         Policy priority, deadline, and latest decision
     - scheduler        Root scheduler summary and background job count
     - scheduler_tasks  Outstanding root reconcile tasks, with balance policy and reason
+
+Group health:
+    NORMAL       A leader is reported and all configured voter slots are filled and healthy.
+    UNHEALTHY    A leader report is missing, voter slots are unfilled, or replicas have issues.
+    HEALING      A leader is reported and replica repair is in progress with quorum available.
+    BROKEN       The available voters cannot form a Raft quorum.
 
 Note:
     The ident accepts characters [a-zA-Z0-9_-].

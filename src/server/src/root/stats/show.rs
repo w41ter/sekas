@@ -265,7 +265,7 @@ impl TrafficRates {
         })
     }
 
-    fn add(self, other: Self) -> Self {
+    pub(in crate::root) fn add(self, other: Self) -> Self {
         Self {
             read_qps: self.read_qps + other.read_qps,
             write_qps: self.write_qps + other.write_qps,
