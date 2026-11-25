@@ -301,14 +301,14 @@ impl Root {
             [
                 "id",
                 "name",
-                "bytes",
+                "size",
                 "read_qps",
                 "write_qps",
                 "num_shards",
-                "read_bytes_per_sec",
-                "write_bytes_per_sec",
-                "read_units_per_sec",
-                "write_units_per_sec",
+                "read_bytes/s",
+                "write_bytes/s",
+                "read_units/s",
+                "write_units/s",
             ],
             rows,
         )))
@@ -357,16 +357,16 @@ impl Root {
                 "name",
                 "type",
                 "replication",
-                "replicas_per_group",
+                "replicas/group",
                 "properties",
-                "bytes",
+                "size",
                 "read_qps",
                 "write_qps",
                 "num_shards",
-                "read_bytes_per_sec",
-                "write_bytes_per_sec",
-                "read_units_per_sec",
-                "write_units_per_sec",
+                "read_bytes/s",
+                "write_bytes/s",
+                "read_units/s",
+                "write_units/s",
             ],
             rows,
         )))
@@ -407,11 +407,11 @@ impl Root {
                 shard_epoch.into(),
                 config_epoch.into(),
                 group.replicas.len().into(),
+                issues.into(),
                 metrics.num_shards.into(),
                 display_size(metrics.bytes).into(),
             ];
             append_rates(&mut values, metrics);
-            values.push(issues.into());
             Row { values }
         };
         let rows = groups.into_iter().map(group_to_row).collect();
@@ -421,13 +421,13 @@ impl Root {
                 "shard_epoch",
                 "config_epoch",
                 "num_replicas",
+                "bad_replicas",
                 "num_shards",
                 "size",
                 "read_qps",
                 "write_qps",
-                "read_bytes_per_sec",
-                "write_bytes_per_sec",
-                "bad_replicas",
+                "read_bytes/s",
+                "write_bytes/s",
             ],
             rows,
         )))
@@ -525,7 +525,7 @@ impl Root {
                 None => (vec![], vec![]),
             };
             let (start, end) = (escape_bytes(&start), escape_bytes(&end));
-            let metrics = stats.shard(group_id, shard.id);
+            let metrics = stats.shard(shard.id);
             let mut values = vec![
                 shard.id.into(),
                 shard.table_id.into(),
@@ -546,8 +546,8 @@ impl Root {
                 "size",
                 "read_qps",
                 "write_qps",
-                "read_bytes_per_sec",
-                "write_bytes_per_sec",
+                "read_bytes/s",
+                "write_bytes/s",
             ],
             rows,
         )))
@@ -614,7 +614,7 @@ impl Root {
 
     fn show_snapshot(&self, groups: &[GroupDesc]) -> ShowSnapshot {
         let max_age = Duration::from_secs(self.cfg.liveness_threshold_sec);
-        self.cluster_stats.display_snapshot(groups, max_age)
+        self.cluster_stats.show_snapshot(groups, max_age)
     }
 }
 
@@ -645,12 +645,12 @@ fn display_balance_bytes(bytes: f64) -> String {
 }
 
 fn append_table_metrics(values: &mut Vec<Value>, metrics: ShowMetrics) {
-    values.push(metrics.bytes.into());
+    values.push(display_size(metrics.bytes).into());
     values.push(metrics.rates.map(|rates| rates.read_qps).into());
     values.push(metrics.rates.map(|rates| rates.write_qps).into());
     values.push(metrics.num_shards.into());
-    values.push(metrics.rates.map(|rates| rates.read_bytes_per_sec).into());
-    values.push(metrics.rates.map(|rates| rates.write_bytes_per_sec).into());
+    values.push(metrics.rates.map(|rates| display_balance_bytes(rates.read_bytes_per_sec)).into());
+    values.push(metrics.rates.map(|rates| display_balance_bytes(rates.write_bytes_per_sec)).into());
     values.push(metrics.rates.and_then(|rates| rates.read_units_per_sec).into());
     values.push(metrics.rates.and_then(|rates| rates.write_units_per_sec).into());
 }
@@ -659,8 +659,8 @@ fn append_rates(values: &mut Vec<Value>, metrics: ShowMetrics) {
     values.extend([
         metrics.rates.map(|rates| rates.read_qps).into(),
         metrics.rates.map(|rates| rates.write_qps).into(),
-        metrics.rates.map(|rates| rates.read_bytes_per_sec).into(),
-        metrics.rates.map(|rates| rates.write_bytes_per_sec).into(),
+        metrics.rates.map(|rates| display_balance_bytes(rates.read_bytes_per_sec)).into(),
+        metrics.rates.map(|rates| display_balance_bytes(rates.write_bytes_per_sec)).into(),
     ]);
 }
 

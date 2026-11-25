@@ -174,10 +174,7 @@ impl Locality {
                 if shard.range.is_some() {
                     ranges.entry(shard.table_id).or_default().push((group.id, shard));
                 }
-                if snapshot.leader(group.id).is_none() {
-                    continue;
-                }
-                let Some(rates) = snapshot.shard(group.id, shard.id).rates else { continue };
+                let Some(rates) = snapshot.shard(shard.id).rates else { continue };
                 if let Some((read, write)) = rates.read_units_per_sec.zip(rates.write_units_per_sec)
                 {
                     locality.hot.insert(
@@ -281,8 +278,7 @@ impl<'a> Placement<'a> {
                 if let Some(previous) = seen.insert(shard.id, group.id) {
                     overlapping_groups.extend([previous, group.id]);
                 }
-                known_size = known_size
-                    .saturating_add(snapshot.shard(group.id, shard.id).bytes.unwrap_or(0));
+                known_size = known_size.saturating_add(snapshot.shard(shard.id).bytes.unwrap_or(0));
             }
             let sample = snapshot.group(group);
             if let Some(size) = sample.bytes {
@@ -290,7 +286,7 @@ impl<'a> Placement<'a> {
             }
             for replica in &group.replicas {
                 let total = storage_sizes.entry(replica.node_id).or_default();
-                *total = total.saturating_add(known_size);
+                *total = total.saturating_add(sample.bytes.unwrap_or(known_size));
             }
 
             if let Some(leader) = view.samples.leader(group.id) {
@@ -352,9 +348,6 @@ impl<'a> Placement<'a> {
                     .groups
                     .iter()
                     .filter_map(|group| {
-                        if !self.traffic_is_current(group) {
-                            return None;
-                        }
                         let rates = self.view.samples.group(group).rates?;
                         let value = if kind == Dimension::ReadUnits {
                             rates.read_units_per_sec
@@ -483,8 +476,7 @@ impl<'a> Placement<'a> {
                 .iter()
                 .filter(|shard| shard.table_id >= sekas_schema::FIRST_USER_TABLE_ID)
             {
-                let Some(bytes) =
-                    self.view.samples.shard(source.id, shard.id).bytes.filter(|&size| size != 0)
+                let Some(bytes) = self.view.samples.shard(shard.id).bytes.filter(|&size| size != 0)
                 else {
                     continue;
                 };
@@ -716,7 +708,7 @@ impl<'a> Placement<'a> {
         for shard in
             source.shards.iter().filter(|shard| shard.table_id >= sekas_schema::FIRST_USER_TABLE_ID)
         {
-            let Some(bytes) = self.view.samples.shard(source.id, shard.id).bytes else {
+            let Some(bytes) = self.view.samples.shard(shard.id).bytes else {
                 continue;
             };
             let split_source_size =
@@ -762,10 +754,6 @@ impl<'a> Placement<'a> {
         Some(self.view.samples.leader(group)?.node_id)
     }
 
-    fn traffic_is_current(&self, group: &GroupDesc) -> bool {
-        group.shards.is_empty() || self.view.samples.leader(group.id).is_some()
-    }
-
     fn changes(&self, action: &PlacementAction) -> Changes {
         let mut changes: Changes = Default::default();
         match action {
@@ -773,14 +761,14 @@ impl<'a> Placement<'a> {
                 let split_bytes = movement.split_bytes;
                 let source = self.view.group(movement.source_group).unwrap();
                 let target = self.view.group(movement.target_group).unwrap();
-                let sample = self.view.samples.shard(source.id, movement.shard);
+                let sample = self.view.samples.shard(movement.shard);
                 let bytes = split_bytes.or(sample.bytes).map(|size| size as f64);
                 let scale = match (split_bytes, sample.bytes) {
                     // Recheck the new piece's own samples before migrating it.
                     (Some(piece), Some(whole)) => piece as f64 / whole as f64,
                     _ => 1.,
                 };
-                let rates = sample.rates.filter(|_| self.traffic_is_current(source));
+                let rates = sample.rates;
                 let read =
                     rates.and_then(|rates| rates.read_units_per_sec).map(|rate| rate * scale);
                 let write =
@@ -825,15 +813,9 @@ impl<'a> Placement<'a> {
                     Some(1.),
                 );
                 let group = self.view.group(transfer.group).unwrap();
-                let units = self
-                    .view
-                    .samples
-                    .group(group)
-                    .rates
-                    .filter(|_| self.traffic_is_current(group))
-                    .and_then(|rates| {
-                        rates.read_units_per_sec.zip(rates.write_units_per_sec).map(|(r, w)| r + w)
-                    });
+                let units = self.view.samples.group(group).rates.and_then(|rates| {
+                    rates.read_units_per_sec.zip(rates.write_units_per_sec).map(|(r, w)| r + w)
+                });
                 self.serving_change(
                     &mut changes,
                     Some(transfer.src_node),

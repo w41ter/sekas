@@ -255,7 +255,7 @@ impl Schema {
 
     pub async fn list_node(&self) -> Result<Vec<NodeDesc>> {
         let values = self.list(table::NODE_ID).await?;
-        let mut nodes = Vec::new();
+        let mut nodes = Vec::with_capacity(values.len());
         for val in values {
             nodes
                 .push(NodeDesc::decode(&*val).map_err(|_| Error::InvalidData("node desc".into()))?);
@@ -328,7 +328,7 @@ impl Schema {
 
     pub async fn list_group(&self) -> Result<Vec<GroupDesc>> {
         let values = self.list(table::GROUP_ID).await?;
-        let mut groups = Vec::new();
+        let mut groups = Vec::with_capacity(values.len());
         for val in values {
             groups.push(
                 GroupDesc::decode(&*val).map_err(|_| Error::InvalidData("group desc".into()))?,

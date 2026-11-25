@@ -538,7 +538,7 @@ impl ScheduleContext {
         if view.available.len() < min_nodes {
             return (
                 false,
-                BalanceDecision::Deferred("not enough schedulable nodes to create a group".into()),
+                BalanceDecision::Deferred("not enough scheduable nodes to create a group".into()),
             );
         }
         (true, BalanceDecision::ActionNeeded(format!("create {add} groups\n{inputs}")))
@@ -555,11 +555,7 @@ impl ScheduleContext {
             if split {
                 for shard in &group.shards {
                     if shard.table_id >= sekas_schema::FIRST_USER_TABLE_ID
-                        && view
-                            .samples
-                            .shard(group.id, shard.id)
-                            .bytes
-                            .is_some_and(|bytes| bytes > limit)
+                        && view.samples.shard(shard.id).bytes.is_some_and(|bytes| bytes > limit)
                         && !view.split_cooldowns.contains(&shard.id)
                     {
                         let action = Action::SplitShard(SplitShard {
@@ -596,9 +592,9 @@ impl ScheduleContext {
                             .is_some_and(|(l, r)| l.end == r.start)
                         && view
                             .samples
-                            .shard(group.id, left.id)
+                            .shard(left.id)
                             .bytes
-                            .zip(view.samples.shard(group.id, right.id).bytes)
+                            .zip(view.samples.shard(right.id).bytes)
                             .is_some_and(|(l, r)| l.saturating_add(r) <= limit / 2)
                     {
                         let action = Action::MergeShards(MergeShards {

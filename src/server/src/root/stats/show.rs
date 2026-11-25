@@ -17,19 +17,23 @@ use std::time::{Duration, Instant};
 
 use sekas_api::Epoch;
 use sekas_api::server::v1::{
-    GroupDesc, GroupStats, GroupStatsSample, MoveShardDesc, RaftRole, ReplicaState, ShardDesc,
-    ShardStats, ShardTraffic,
+    GroupDesc, GroupStats, GroupStatsSample, MoveShardDesc, RaftRole, ReplicaState, ShardTraffic,
 };
 
+/// Use the latest available size and traffic estimates for planning and SHOW.
+/// Keep older estimates through report expiry, leader changes, splits, and
+/// moves so estimates stay available between reports. Use the last complete
+/// group total for any metric that cannot be summed from its shards.
+/// Leader and migration state require a current report.
 #[derive(Default)]
 pub(super) struct ShowStats {
     groups: HashMap<u64, GroupSample>,
-    displayed_shards: HashMap<u64, DisplayedShard>,
-    displayed_groups: HashMap<u64, ShowMetrics>,
+    shard_metrics: HashMap<u64, ShardMetrics>,
+    group_metrics: HashMap<u64, ShowMetrics>,
 }
 
-struct DisplayedShard {
-    table_id: u64,
+struct ShardMetrics {
+    group_id: u64,
     epoch: u64,
     metrics: ShowMetrics,
 }
@@ -38,12 +42,7 @@ struct GroupSample {
     metadata: GroupStatsSample,
     node_id: u64,
     received_at: Instant,
-    shards: HashMap<u64, ShardSample>,
-}
-
-struct ShardSample {
-    stats: ShardStats,
-    rates: Option<TrafficRates>,
+    traffic: HashMap<u64, ShardTraffic>,
 }
 
 #[derive(Clone, Copy)]
@@ -77,8 +76,8 @@ pub(in crate::root) struct ShowMetrics {
 }
 
 pub(in crate::root) struct ShowSnapshot {
-    shards: HashMap<(u64, u64), ShowMetrics>,
-    displayed_groups: HashMap<u64, ShowMetrics>,
+    shards: HashMap<u64, ShowMetrics>,
+    group_metrics: HashMap<u64, ShowMetrics>,
     migration_states: HashMap<u64, bool>,
     migration_report_issues: HashMap<u64, String>,
     pub(in crate::root) leaders: HashMap<u64, ReplicaState>,
@@ -100,66 +99,47 @@ impl ShowStats {
     pub(super) fn update(&mut self, stats: &GroupStats, node_id: u64) -> bool {
         let Some(new) = stats.sample.as_ref() else { return false };
         let previous = self.groups.get(&stats.group_id);
-        let mut interval = None;
-        if let Some(old) = previous.map(|sample| &sample.metadata) {
-            if new.term < old.term || new.group_epoch < old.group_epoch {
-                return false;
-            }
-            if new.term == old.term && new.replica_id == old.replica_id {
-                let same_epoch = new.group_epoch == old.group_epoch;
-                if new.elapsed_nanos > old.elapsed_nanos {
-                    interval = Some((
-                        Duration::from_nanos(new.elapsed_nanos - old.elapsed_nanos),
-                        same_epoch,
-                    ));
-                } else if same_epoch {
-                    return false;
-                }
-            }
-        }
-
-        let shards: HashMap<_, _> = stats
-            .shard_stats
-            .iter()
-            .map(|stats| {
-                let rates = interval.and_then(|(interval, same_epoch)| {
-                    let past = previous?.shards.get(&stats.shard_id)?;
-                    let same_range = match (&past.stats.range, &stats.range) {
-                        (Some(old), Some(new)) => old == new,
-                        _ => same_epoch,
-                    };
-                    if past.stats.table_id != stats.table_id || !same_range {
-                        return None;
-                    }
-                    TrafficRates::between(past.stats.traffic?, stats.traffic?, interval)
-                });
-                (stats.shard_id, ShardSample { stats: stats.clone(), rates })
-            })
-            .collect();
+        let Ok(interval) = previous.map_or(Ok(None), |old| old.sample_interval(new)) else {
+            return false;
+        };
         let epoch = new.group_epoch;
-        for (&id, sample) in &shards {
-            let mut metrics = sample.metrics();
-            if let Some(last) = self.displayed_shards.get(&id)
-                && last.table_id == sample.stats.table_id
-            {
-                if last.epoch > epoch {
-                    continue;
-                }
-                metrics.fill_missing(last.metrics);
+        let mut traffic = HashMap::with_capacity(stats.shard_stats.len());
+        let mut total = ShowMetrics::default();
+        for shard in &stats.shard_stats {
+            let id = shard.shard_id;
+            let rates = interval.and_then(|interval| {
+                TrafficRates::between(*previous?.traffic.get(&id)?, shard.traffic?, interval)
+            });
+            if let Some(counters) = shard.traffic {
+                traffic.insert(id, counters);
             }
-            self.displayed_shards
-                .insert(id, DisplayedShard { table_id: sample.stats.table_id, epoch, metrics });
+
+            let mut metrics = ShowMetrics { num_shards: 1, bytes: Some(shard.shard_size), rates };
+            let cached = self.shard_metrics.entry(id).or_insert(ShardMetrics {
+                group_id: stats.group_id,
+                epoch,
+                metrics,
+            });
+            metrics.fill_missing(cached.metrics);
+            // Both groups can report the shard during a move. Prefer the newer epoch.
+            if epoch >= cached.epoch {
+                *cached = ShardMetrics { group_id: stats.group_id, epoch, metrics };
+            } else {
+                cached.metrics.fill_missing(metrics);
+            }
+            total.add(metrics);
         }
-        if shards.len() as u64 == stats.shard_count {
-            let mut metrics = ShowMetrics::default();
-            for sample in shards.values() {
-                metrics.add(sample.metrics());
+        if stats.shard_count == 0 {
+            self.group_metrics.remove(&stats.group_id);
+        } else if total.num_shards as u64 == stats.shard_count {
+            if let Some(&cached) = self.group_metrics.get(&stats.group_id) {
+                total.fill_missing(cached);
             }
-            self.remember_group(stats.group_id, &mut metrics);
+            self.group_metrics.insert(stats.group_id, total);
         }
         self.groups.insert(
             stats.group_id,
-            GroupSample { metadata: new.clone(), node_id, received_at: Instant::now(), shards },
+            GroupSample { metadata: new.clone(), node_id, received_at: Instant::now(), traffic },
         );
         true
     }
@@ -167,10 +147,20 @@ impl ShowStats {
     pub(super) fn snapshot(&self, groups: &[GroupDesc], max_age: Duration) -> ShowSnapshot {
         let now = Instant::now();
         let mut shards = HashMap::new();
+        let mut group_metrics = HashMap::new();
         let mut migration_states = HashMap::new();
         let mut migration_report_issues = HashMap::new();
         let mut leaders = HashMap::new();
         for group in groups {
+            for shard in &group.shards {
+                if let Some(sample) = self.shard_metrics.get(&shard.id) {
+                    shards.insert(shard.id, sample.metrics);
+                }
+            }
+            if let Some(&metrics) = self.group_metrics.get(&group.id) {
+                group_metrics.insert(group.id, metrics);
+            }
+
             let Some(report) = self.groups.get(&group.id) else {
                 migration_report_issues.insert(group.id, "no leader stats received".to_owned());
                 continue;
@@ -207,92 +197,52 @@ impl ShowStats {
                     ..Default::default()
                 },
             );
-            for shard in &group.shards {
-                if let Some(sample) = report.shards.get(&shard.id)
-                    && sample.stats.table_id == shard.table_id
-                    && match &sample.stats.range {
-                        Some(range) => shard.range.as_ref() == Some(range),
-                        None => report.metadata.group_epoch == group.epoch,
-                    }
-                {
-                    shards.insert((group.id, shard.id), sample.metrics());
-                }
-            }
         }
-        ShowSnapshot {
-            shards,
-            displayed_groups: HashMap::new(),
-            migration_states,
-            migration_report_issues,
-            leaders,
-        }
-    }
-
-    pub(super) fn display_snapshot(
-        &mut self,
-        groups: &[GroupDesc],
-        max_age: Duration,
-    ) -> ShowSnapshot {
-        let mut snapshot = self.snapshot(groups, max_age);
-        for group in groups {
-            for shard in &group.shards {
-                if let Some(last) = self.displayed_shards.get(&shard.id)
-                    && last.table_id == shard.table_id
-                {
-                    snapshot
-                        .shards
-                        .entry((group.id, shard.id))
-                        .or_insert_with(|| ShowMetrics::unavailable(1))
-                        .fill_missing(last.metrics);
-                }
-            }
-            let mut metrics = snapshot.group(group);
-            self.remember_group(group.id, &mut metrics);
-            snapshot.displayed_groups.insert(group.id, metrics);
-        }
-        snapshot
-    }
-
-    fn remember_group(&mut self, group: u64, metrics: &mut ShowMetrics) {
-        if metrics.num_shards == 0 {
-            self.displayed_groups.remove(&group);
-            return;
-        }
-        let cached =
-            self.displayed_groups.entry(group).or_insert_with(|| ShowMetrics::unavailable(0));
-        metrics.fill_missing(*cached);
-        *cached = *metrics;
+        ShowSnapshot { shards, group_metrics, migration_states, migration_report_issues, leaders }
     }
 
     pub(super) fn retain(&mut self, groups: &[GroupDesc]) {
-        let groups_alive: HashSet<_> = groups.iter().map(|group| group.id).collect();
-        let shards_alive: HashSet<_> = groups
-            .iter()
-            .flat_map(|group| group.shards.iter().map(|shard| (shard.id, shard.table_id)))
-            .collect();
-        self.groups.retain(|group, _| groups_alive.contains(group));
-        self.displayed_groups.retain(|group, _| groups_alive.contains(group));
-        self.displayed_shards
-            .retain(|&shard, sample| shards_alive.contains(&(shard, sample.table_id)));
+        let group_epochs: HashMap<_, _> =
+            groups.iter().map(|group| (group.id, group.epoch)).collect();
+        let shards_alive: HashSet<_> =
+            groups.iter().flat_map(|group| group.shards.iter().map(|shard| shard.id)).collect();
+        self.groups.retain(|group, _| group_epochs.contains_key(group));
+        self.group_metrics.retain(|group, _| group_epochs.contains_key(group));
+        self.shard_metrics.retain(|shard, sample| {
+            // A report can include a new shard before the catalog sees the split.
+            shards_alive.contains(shard)
+                || group_epochs.get(&sample.group_id).is_some_and(|epoch| *epoch < sample.epoch)
+        });
     }
 
     pub(super) fn clear(&mut self) {
         self.groups.clear();
-        self.displayed_shards.clear();
-        self.displayed_groups.clear();
-    }
-}
-
-impl ShardSample {
-    fn metrics(&self) -> ShowMetrics {
-        ShowMetrics { num_shards: 1, bytes: Some(self.stats.shard_size), rates: self.rates }
+        self.shard_metrics.clear();
+        self.group_metrics.clear();
     }
 }
 
 impl GroupSample {
+    /// Reject out-of-order reports. An accepted report can start a new
+    /// baseline.
+    fn sample_interval(&self, new: &GroupStatsSample) -> Result<Option<Duration>, ()> {
+        let old = &self.metadata;
+        if new.term < old.term || new.group_epoch < old.group_epoch {
+            return Err(());
+        }
+        if new.term != old.term || new.replica_id != old.replica_id {
+            return Ok(None);
+        }
+        if new.elapsed_nanos > old.elapsed_nanos {
+            return Ok(Some(Duration::from_nanos(new.elapsed_nanos - old.elapsed_nanos)));
+        }
+        if new.group_epoch == old.group_epoch {
+            return Err(());
+        }
+        Ok(None)
+    }
+
     fn matches_reporter(&self, group: &GroupDesc) -> bool {
-        // The configuration epoch identifies the reporting replica. Shard ranges
-        // are checked individually so unchanged ranges can survive a split.
         Epoch(self.metadata.group_epoch).config_epoch() == Epoch(group.epoch).config_epoch()
             && group.replicas.iter().any(|replica| {
                 replica.id == self.metadata.replica_id && replica.node_id == self.node_id
@@ -377,36 +327,31 @@ impl ShowSnapshot {
         self.leaders.get(&group_id).copied()
     }
 
-    pub(in crate::root) fn shard(&self, group_id: u64, shard_id: u64) -> ShowMetrics {
-        self.shards.get(&(group_id, shard_id)).copied().unwrap_or(ShowMetrics::unavailable(1))
+    pub(in crate::root) fn shard(&self, shard_id: u64) -> ShowMetrics {
+        self.shards.get(&shard_id).copied().unwrap_or(ShowMetrics::unavailable(1))
     }
 
     pub(in crate::root) fn group(&self, group: &GroupDesc) -> ShowMetrics {
-        if let Some(displayed) = self.displayed_groups.get(&group.id) {
-            return *displayed;
-        }
         let mut result = ShowMetrics::default();
         for shard in &group.shards {
-            result.add(self.shard(group.id, shard.id));
+            result.add(self.shard(shard.id));
+        }
+        if let Some(&cached) = self.group_metrics.get(&group.id) {
+            result.fill_missing(cached);
         }
         result
     }
 
     pub(in crate::root) fn tables(&self, groups: &[GroupDesc]) -> HashMap<u64, ShowMetrics> {
-        // During a move both descriptors can contain the same shard. Match the
-        // router's preference for the group with the newer descriptor epoch.
-        let mut owners = HashMap::<u64, (&GroupDesc, &ShardDesc)>::new();
+        // Both groups can list the same shard during a move.
+        let mut seen = HashSet::new();
+        let mut tables = HashMap::<u64, ShowMetrics>::new();
         for group in groups {
             for shard in &group.shards {
-                let entry = owners.entry(shard.id).or_insert((group, shard));
-                if group.epoch > entry.0.epoch {
-                    *entry = (group, shard);
+                if seen.insert(shard.id) {
+                    tables.entry(shard.table_id).or_default().add(self.shard(shard.id));
                 }
             }
-        }
-        let mut tables = HashMap::<u64, ShowMetrics>::new();
-        for (group, shard) in owners.into_values() {
-            tables.entry(shard.table_id).or_default().add(self.shard(group.id, shard.id));
         }
         tables
     }
@@ -414,7 +359,7 @@ impl ShowSnapshot {
 
 #[cfg(test)]
 mod tests {
-    use sekas_api::server::v1::ReplicaDesc;
+    use sekas_api::server::v1::{ReplicaDesc, ShardDesc, ShardStats};
 
     use super::*;
 
@@ -431,6 +376,7 @@ mod tests {
         let groups = [group(1, 1), group(2, 2)];
         let sample = |id, epoch, term, sec, reads| GroupStats {
             group_id: id,
+            shard_count: 1,
             sample: Some(GroupStatsSample {
                 group_epoch: epoch,
                 replica_id: id,
@@ -453,7 +399,7 @@ mod tests {
         let mut stats = ShowStats::default();
         stats.update(&sample(1, 1, 1, 1, 10), 1);
         assert_eq!(table(&stats).num_shards, 1);
-        assert_eq!(table(&stats).bytes, None);
+        assert_eq!(table(&stats).bytes, Some(1024));
 
         stats.update(&sample(2, 2, 1, 1, 10), 2);
         assert_eq!(table(&stats).bytes, Some(2048));
@@ -462,26 +408,27 @@ mod tests {
         let rates = table(&stats).rates.unwrap();
         assert_eq!(rates.read_qps, 0.5);
         assert_eq!(rates.read_bytes_per_sec, 10.);
+        stats.update(&sample(1, 1, 1, 4, 100), 1);
+        assert_eq!(table(&stats).bytes, Some(2048));
+        assert_eq!(table(&stats).rates.unwrap().read_qps, 0.5);
 
         stats.update(&sample(2, 2, 2, 4, 11), 2);
-        stats.update(&sample(2, 2, 1, 5, 100), 2);
-        assert!(table(&stats).rates.is_none());
-        let displayed = stats.display_snapshot(&groups, Duration::from_secs(5));
-        assert_eq!(displayed.tables(&groups)[&shard.table_id].rates.unwrap().read_qps, 0.5);
+        assert!(!stats.update(&sample(2, 2, 1, 5, 100), 2));
+        assert_eq!(table(&stats).rates.unwrap().read_qps, 0.5);
         stats.update(&sample(2, 2, 2, 6, 11), 2);
         assert_eq!(table(&stats).rates.unwrap().read_qps, 0.);
 
         stats.groups.get_mut(&2).unwrap().received_at -= Duration::from_secs(6);
-        assert_eq!(table(&stats).bytes, None);
-        assert!(table(&stats).rates.is_none());
-        let displayed = stats.display_snapshot(&groups, Duration::from_secs(5));
-        let metrics = displayed.tables(&groups)[&shard.table_id];
+        let snapshot = stats.snapshot(&groups, Duration::from_secs(5));
+        assert!(snapshot.leader(2).is_none());
+        assert!(!snapshot.migration_idle(2));
+        let metrics = snapshot.tables(&groups)[&shard.table_id];
         assert_eq!(metrics.bytes, Some(2048));
         assert_eq!(metrics.rates.unwrap().read_qps, 0.);
     }
 
     #[test]
-    fn unchanged_shards_keep_their_rate_baseline_across_a_split() {
+    fn shard_estimates_and_rate_baselines_survive_a_split() {
         let mut group = GroupDesc {
             id: 1,
             epoch: 1,
@@ -524,30 +471,38 @@ mod tests {
         stats.update(&sample(&group, 1, 10), 1);
         stats.update(&sample(&group, 2, 12), 1);
 
+        let before_split = group.clone();
         group.epoch = Epoch(group.epoch).apply_shard_delta().0;
         group.shards[1].range.as_mut().unwrap().end = b"t".to_vec();
         group.shards.push(ShardDesc::with_range(3, 2, b"t".to_vec(), vec![]));
         let before = stats.snapshot(std::slice::from_ref(&group), age);
         assert!(before.migration_idle(group.id));
-        assert_eq!(before.shard(group.id, 1).rates.unwrap().read_qps, 2.);
-        assert!(before.shard(group.id, 2).bytes.is_none());
-        assert!(before.group(&group).rates.is_none());
+        assert_eq!(before.shard(2).bytes, Some(1024));
+        assert_eq!(before.shard(2).rates.unwrap().read_qps, 2.);
+        assert!(before.shard(3).bytes.is_none());
+        let group_before = before.group(&group);
+        assert_eq!(group_before.num_shards, 3);
+        assert_eq!(group_before.bytes, Some(2048));
+        assert_eq!(group_before.rates.unwrap().read_qps, 4.);
 
-        stats.update(&sample(&group, 3, 18), 1);
+        let mut split = sample(&group, 3, 18);
+        split.shard_stats[1].shard_size = 512;
+        split.shard_stats[2].shard_size = 512;
+        stats.update(&split, 1);
+        stats.retain(&[before_split]);
         let after = stats.snapshot(std::slice::from_ref(&group), age);
-        assert_eq!(after.shard(group.id, 1).rates.unwrap().read_qps, 6.);
-        assert!(after.shard(group.id, 2).rates.is_none());
-        assert!(after.shard(group.id, 3).rates.is_none());
-        let displayed = stats.display_snapshot(std::slice::from_ref(&group), age).group(&group);
-        assert_eq!(displayed.num_shards, 3);
-        assert_eq!(displayed.bytes, Some(3072));
-        assert_eq!(displayed.rates.unwrap().read_qps, 4.);
+        assert_eq!(after.shard(1).rates.unwrap().read_qps, 6.);
+        assert_eq!(after.shard(2).bytes, Some(512));
+        assert_eq!(after.shard(2).rates.unwrap().read_qps, 6.);
+        assert_eq!(after.shard(3).bytes, Some(512));
+        assert!(after.shard(3).rates.is_none());
+        assert_eq!(after.group(&group).bytes, Some(2048));
+        assert_eq!(after.group(&group).rates.unwrap().read_qps, 4.);
 
         stats.update(&sample(&group, 4, 21), 1);
-        let displayed = stats.display_snapshot(std::slice::from_ref(&group), age).group(&group);
-        assert_eq!(displayed.rates.unwrap().read_qps, 9.);
-
         group.epoch = Epoch(group.epoch).apply_config_delta().0;
-        assert!(!stats.snapshot(std::slice::from_ref(&group), age).migration_idle(group.id));
+        let snapshot = stats.snapshot(std::slice::from_ref(&group), age);
+        assert!(!snapshot.migration_idle(group.id));
+        assert_eq!(snapshot.group(&group).rates.unwrap().read_qps, 9.);
     }
 }

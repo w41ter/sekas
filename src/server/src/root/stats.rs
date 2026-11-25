@@ -314,14 +314,6 @@ impl ClusterStats {
         self.show_stats.lock().unwrap().snapshot(groups, max_age)
     }
 
-    pub(super) fn display_snapshot(
-        &self,
-        groups: &[GroupDesc],
-        max_age: std::time::Duration,
-    ) -> ShowSnapshot {
-        self.show_stats.lock().unwrap().display_snapshot(groups, max_age)
-    }
-
     pub fn handle_schedule_update(&self, updates: &[ScheduleState]) {
         let mut stats = self.sched_stats.lock().unwrap();
         if stats.replace_state(updates, None) {
