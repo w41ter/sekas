@@ -86,8 +86,27 @@ impl BalanceSnapshot {
         self.reports[policy.index()] = decision;
     }
 
+    pub(super) fn defer_ready_placements(&mut self) {
+        for report in &mut self.reports {
+            if matches!(report, BalanceDecision::ActionNeeded(_)) {
+                *report = BalanceDecision::Deferred("placement concurrency limit reached".into());
+            }
+        }
+    }
+
     pub fn thresholds(&self, policy: Policy) -> Option<BalanceThresholds> {
         self.thresholds[policy.index()]
+    }
+
+    pub(super) fn retain_thresholds(&mut self, previous: &Self) {
+        for policy in Policy::ALL {
+            let index = policy.index();
+            if !matches!(self.reports[index], BalanceDecision::Disabled)
+                && self.thresholds[index].is_none()
+            {
+                self.thresholds[index] = previous.thresholds[index];
+            }
+        }
     }
 
     pub(super) fn record_with_thresholds(
@@ -170,6 +189,50 @@ impl TaskStatus {
         } else {
             TaskState::Ready
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn incomplete_balance_round_keeps_last_thresholds_and_reports_current_decision() {
+        let mut config = RootConfig { enable_node_request_balance: true, ..RootConfig::default() };
+        let policy = Policy::Placement(BalanceDimension::ReadUnits);
+        let mut previous = BalanceSnapshot::new(&config);
+        let known =
+            BalanceThresholds { avg: 100., low: 90., high: 110., max: 105., tolerance: 10. };
+        previous.record_with_thresholds(
+            policy,
+            BalanceDecision::NoAction(String::new()),
+            Some(known),
+        );
+
+        let mut current = BalanceSnapshot::new(&config);
+        current.record_with_thresholds(
+            policy,
+            BalanceDecision::Deferred("waiting for samples".into()),
+            None,
+        );
+        assert!(current.thresholds(policy).is_none());
+        current.retain_thresholds(&previous);
+        assert_eq!(current.thresholds(policy).unwrap().avg, 100.);
+        assert!(matches!(current.reports[policy.index()], BalanceDecision::Deferred(_)));
+
+        let updated = BalanceThresholds { avg: 120., ..known };
+        current.record_with_thresholds(
+            policy,
+            BalanceDecision::NoAction(String::new()),
+            Some(updated),
+        );
+        current.retain_thresholds(&previous);
+        assert_eq!(current.thresholds(policy).unwrap().avg, 120.);
+
+        config.enable_read_balance = false;
+        let mut disabled = BalanceSnapshot::new(&config);
+        disabled.retain_thresholds(&previous);
+        assert!(disabled.thresholds(policy).is_none());
     }
 }
 

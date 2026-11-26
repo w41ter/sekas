@@ -27,7 +27,10 @@ use serde_json::Value;
 use super::Root;
 use super::allocator::BalanceDecision;
 use super::schedule::{Policy, TaskReason};
-use super::stats::{ClusterHealth, GroupHealth, ShowMetrics, ShowSnapshot, TrafficRates};
+use super::stats::{
+    ClusterHealth, GroupHealth, RequestUnits, ShowMetrics, ShowSnapshot, TrafficRates,
+};
+use crate::constants::ROOT_GROUP_ID;
 use crate::{Error, Result};
 
 impl Root {
@@ -68,6 +71,7 @@ impl Root {
         let value = std::str::from_utf8(&config_stmt.value).map_err(invalid_utf8)?.trim();
         self.cfg.balance.clone().set(key, value)?;
         self.schema()?.set_balance_config(key, value).await?;
+        self.scheduler.wake();
         Ok(ExecuteResult::Msg(format!("balancer.{key} updated")))
     }
 
@@ -102,11 +106,14 @@ impl Root {
         let data = match property {
             "balancer" => {
                 let config = schema.balance_config(self.cfg.balance.clone()).await?;
+                let paired = self.cfg.enable_node_request_balance
+                    && self.cfg.enable_read_balance
+                    && self.cfg.enable_write_balance;
                 let priorities: HashMap<_, _> = config
-                    .dimensions()
+                    .dimensions(self.cfg.enable_node_request_balance)
                     .filter(|kind| kind.enabled(&self.cfg))
                     .enumerate()
-                    .map(|(index, kind)| (kind as usize, index + 1))
+                    .map(|(index, kind)| (kind as usize, (index + usize::from(!paired)).max(1)))
                     .collect();
                 let snapshot = self.scheduler.balance_status();
                 let mut rows: Vec<_> = snapshot
@@ -116,6 +123,7 @@ impl Root {
                             BalanceDecision::Unknown => ("unknown", "awaiting first check"),
                             BalanceDecision::Disabled => ("disabled", "-"),
                             BalanceDecision::Deferred(reason) => ("deferred", reason.as_ref()),
+                            BalanceDecision::Blocked(detail) => ("blocked", detail.as_str()),
                             BalanceDecision::NoAction(detail) => ("no_action", detail.as_str()),
                             BalanceDecision::ActionNeeded(detail) => {
                                 ("action_needed", detail.as_str())
@@ -600,20 +608,27 @@ impl Root {
         }
 
         let (groups, nodes) = try_join!(self.list_group(), self.list_node())?;
-
         let resources = self.cluster_stats.display_node_resources();
         let stats = self.show_snapshot(&groups);
         let health = self.show_cluster_health(&groups, &nodes);
         let mut bad_counts = HashMap::<u64, usize>::new();
         let mut node_rates = HashMap::<u64, Option<TrafficRates>>::new();
+        let mut node_request_units = HashMap::<u64, RequestUnits>::new();
+        let mut leader_counts = HashMap::<u64, u64>::new();
         for group in health.groups {
             for issue in group.issues {
                 *bad_counts.entry(issue.replica.node_id).or_default() += 1;
             }
             if let Some(leader) = group.leader_node_id {
+                *leader_counts.entry(leader).or_default() += 1;
                 let total =
                     node_rates.entry(leader).or_insert_with(|| Some(TrafficRates::default()));
-                *total = total.zip(stats.group(group.group).rates).map(|(a, b)| a.add(b));
+                let rates = stats.group(group.group).rates;
+                *total = total.zip(rates).map(|(a, b)| a.add(b));
+                if group.group.id != ROOT_GROUP_ID {
+                    let total = node_request_units.entry(leader).or_insert(RequestUnits::ZERO);
+                    *total = total.add(rates.map(TrafficRates::request_units).unwrap_or_default());
+                }
             }
         }
 
@@ -632,7 +647,7 @@ impl Root {
                 status.as_str_name().to_owned().into(),
                 node.addr.into(),
                 (capacity.cpu_nums as u32).into(),
-                capacity.leader_count.into(),
+                leader_counts.get(&node.id).copied().unwrap_or_default().into(),
                 capacity.replica_count.into(),
                 bad_counts.get(&node.id).copied().unwrap_or(0).into(),
                 cpu.into(),
@@ -643,6 +658,15 @@ impl Root {
                 health.reporting_nodes.contains(&node.id).then(TrafficRates::default)
             });
             append_rates(&mut values, rates);
+            let weight = self.cfg.balance.request_weight(node.id);
+            let request_units = node_request_units.get(&node.id).copied().unwrap_or_else(|| {
+                if health.reporting_nodes.contains(&node.id) {
+                    RequestUnits::ZERO
+                } else {
+                    RequestUnits::default()
+                }
+            });
+            values.extend([request_units.read.into(), request_units.write.into(), weight.into()]);
             Row { values }
         };
         let rows = nodes.into_iter().map(node_to_row).collect::<Vec<_>>();
@@ -662,6 +686,9 @@ impl Root {
                 "write_qps",
                 "read_bytes/s",
                 "write_bytes/s",
+                "read_units/s",
+                "write_units/s",
+                "request_weight",
             ],
             rows,
         )))

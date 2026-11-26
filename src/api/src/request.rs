@@ -185,6 +185,8 @@ impl GroupRequest {
                     shard_id,
                     split_start_key,
                     split_target_size,
+                    min_split_side_bytes: 0,
+                    max_movable_split_bytes: 0,
                 })),
             }),
         }

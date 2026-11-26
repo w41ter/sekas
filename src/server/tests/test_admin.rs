@@ -215,6 +215,11 @@ async fn admin_show_traffic() {
             assert_eq!(show_cell(&rows, id, "write_units/s").as_f64(), Some(write));
             assert_eq!(show_cell(&rows, id, "num_shards").as_u64(), Some(1));
             assert!(show_cell(&rows, id, "size").is_string());
+        } else if command == "show nodes" {
+            assert_eq!(show_cell(&rows, id, "request_weight").as_f64(), Some(1.));
+            for metric in ["read_units/s", "write_units/s"] {
+                assert!(show_cell(&rows, id, metric).as_f64().unwrap() > 0.);
+            }
         } else {
             assert!(!rows.columns.iter().any(|column| column.ends_with("_units/s")));
         }
@@ -239,6 +244,7 @@ async fn admin_configure_balancer() {
         r#"config "balancer.priority" "write_units,read_units";"#,
         r#"config "balancer.deadline.write_units" "25";"#,
         r#"config "balancer.deadline.shard_size" "8388608";"#,
+        r#"config "balancer.max_concurrent_tasks" "2";"#,
     ] {
         let response = client.handle_statement(command).await.unwrap();
         assert!(
@@ -247,6 +253,9 @@ async fn admin_configure_balancer() {
     }
     assert!(
         client.handle_statement(r#"config "balancer.deadline.write_units" "-1";"#).await.is_err()
+    );
+    assert!(
+        client.handle_statement(r#"config "balancer.max_concurrent_tasks" "0";"#).await.is_err()
     );
     let status = show(&client, "show balancer").await;
     let row =
@@ -278,6 +287,9 @@ async fn admin_configure_balancer() {
                     "write_qps",
                     "read_bytes/s",
                     "write_bytes/s",
+                    "read_units/s",
+                    "write_units/s",
+                    "request_weight",
                 ]
             );
             let parse_usage = |usage: &str| -> Option<(f64, f64)> {
@@ -521,6 +533,125 @@ async fn admin_unsplittable_shard_does_not_leave_a_retry_task() {
     .expect("an empty split result must complete the durable task");
     db.put(table.id, b"key".to_vec(), b"updated".to_vec()).await.unwrap();
     assert_eq!(db.get(table.id, b"key".to_vec()).await.unwrap(), Some(b"updated".to_vec()));
+}
+
+#[sekas_macro::test]
+async fn admin_node_request_balance_spreads_serving_leaders() {
+    let mut ctx = TestContext::new(fn_name!());
+    ctx.set_num_cpus(1);
+    ctx.set_heartbeat_interval_sec(1);
+    ctx.set_schedule_interval_sec(1);
+    ctx.enable_group_balance();
+    ctx.enable_node_request_balance();
+    let nodes = ctx.bootstrap_servers(3).await;
+    let cluster = ClusterClient::new(nodes.clone()).await;
+    cluster.assert_root_group_has_promoted().await;
+    let app = cluster.app_client().await;
+    let balance = show(&app, "show balancer").await;
+    for name in ["read_units", "write_units"] {
+        let row = balance.rows.iter().find(|row| row.values[0] == name).unwrap();
+        assert_eq!(row.values[2], 1);
+    }
+    let addresses: Vec<_> = nodes.into_values().collect();
+    tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            let metadata = current_metadata(addresses.clone()).await;
+            if metadata.groups.len() == 3 && metadata.groups_ready && metadata.ongoing_jobs == 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let db = app.create_database("requests".into()).await.unwrap();
+    for name in ["first", "second"] {
+        let table = db.create_table(name.into()).await.unwrap();
+        cluster.assert_table_ready_with_voters(table.id, 3).await;
+    }
+    let tables = [
+        db.open_table("first".into()).await.unwrap(),
+        db.open_table("second".into()).await.unwrap(),
+    ];
+    let metadata = current_metadata(addresses).await;
+    let groups = tables.each_ref().map(|table| {
+        metadata
+            .groups
+            .iter()
+            .find(|group| group.shards.iter().any(|shard| shard.table == table.id))
+            .unwrap()
+            .id
+    });
+    assert_ne!(groups[0], groups[1]);
+    for group in groups {
+        let mut client = cluster.group(group);
+        let current = client.inspect_group().await.unwrap();
+        let target = current
+            .group
+            .unwrap()
+            .replicas
+            .into_iter()
+            .find(|replica| replica.node_id == 0)
+            .unwrap();
+        if current.leader_id != target.id {
+            client.transfer_leader(target.id).await.unwrap();
+        }
+    }
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let mut both_on_zero = true;
+            for group in groups {
+                let inspected = cluster.group(group).inspect_group().await.unwrap();
+                both_on_zero &= inspected
+                    .group
+                    .unwrap()
+                    .replicas
+                    .iter()
+                    .any(|replica| replica.id == inspected.leader_id && replica.node_id == 0);
+            }
+            if both_on_zero {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .unwrap();
+
+    let workload = async {
+        loop {
+            for table in &tables {
+                db.get(table.id, b"key".to_vec()).await.unwrap();
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    };
+    let balanced = async {
+        tokio::time::timeout(Duration::from_secs(25), async {
+            loop {
+                let view = show(&app, "show groups").await;
+                let leaders =
+                    groups.map(|group| show_cell(&view, group, "leader_node").as_u64().unwrap());
+                let nodes = show(&app, "show nodes").await;
+                if leaders[0] != leaders[1]
+                    && leaders.iter().all(|&node| {
+                        show_cell(&nodes, node, "read_units/s")
+                            .as_f64()
+                            .is_some_and(|rate| rate > 0.)
+                    })
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        })
+        .await
+        .expect("node request placement should move a serving leader and observe fresh requests");
+    };
+    tokio::select! {
+        _ = workload => unreachable!(),
+        _ = balanced => {},
+    }
 }
 
 #[sekas_macro::test]

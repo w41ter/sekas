@@ -311,6 +311,8 @@ pub struct RootConfig {
     pub enable_cpu_balance: bool,
     pub enable_memory_balance: bool,
     pub enable_disk_balance: bool,
+    pub enable_node_request_balance: bool,
+    pub enable_hot_shard_split: bool,
     pub balance: BalanceConfig,
     /// Minimum allowed deviation from mean group size, in bytes. The policy
     /// uses the larger of this value and 10% of the mean.
@@ -339,6 +341,9 @@ pub struct RootConfig {
     ///
     /// Default: true
     pub enable_auto_shard_merge: bool,
+    /// Both ranges must stay below this write QPS for the entire quiet period.
+    pub shard_merge_write_qps: f64,
+    pub shard_merge_quiet_period_sec: u64,
     /// Set the interval to determine whether a node is still alive, in seconds.
     ///
     /// Default: 30s
@@ -373,6 +378,7 @@ pub enum BalanceDimension {
 }
 
 impl BalanceDimension {
+    pub(crate) const REQUESTS: [Self; 2] = [Self::ReadUnits, Self::WriteUnits];
     pub(crate) const ALL: [Self; 9] = [
         Self::ReadUnits,
         Self::WriteUnits,
@@ -420,11 +426,17 @@ impl BalanceDimension {
     pub(crate) fn is_resource(self) -> bool {
         matches!(self, Self::Cpu | Self::Memory | Self::Disk)
     }
+
+    pub(crate) fn request_index(self) -> Option<usize> {
+        Self::REQUESTS.iter().position(|&kind| kind == self)
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default)]
 pub struct BalanceConfig {
+    /// Maximum active placement jobs and concurrent Root placement steps.
+    pub max_concurrent_tasks: std::num::NonZeroUsize,
     /// Highest priority first. Omitted dimensions follow in the default order.
     pub priority: Vec<BalanceDimension>,
     /// Resource deadlines are percentages, while other deadlines use the
@@ -433,15 +445,30 @@ pub struct BalanceConfig {
     /// Per-shard traffic thresholds used to classify neighboring ranges.
     pub hot_read_units_per_sec: f64,
     pub hot_write_units_per_sec: f64,
+    /// Relative sustainable request throughput, keyed by catalog node ID.
+    pub node_request_weights: BTreeMap<String, f64>,
+    /// Nodes sharing a host or filesystem can name the same resource domain.
+    pub resource_domains: BTreeMap<String, ResourceDomains>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(default)]
+pub struct ResourceDomains {
+    pub cpu: Option<String>,
+    pub memory: Option<String>,
+    pub disk: Option<String>,
 }
 
 impl Default for BalanceConfig {
     fn default() -> Self {
         Self {
+            max_concurrent_tasks: std::num::NonZeroUsize::new(8).unwrap(),
             priority: BalanceDimension::ALL.to_vec(),
             deadlines: BTreeMap::new(),
             hot_read_units_per_sec: 1000.,
             hot_write_units_per_sec: 1000.,
+            node_request_weights: BTreeMap::new(),
+            resource_domains: BTreeMap::new(),
         }
     }
 }
@@ -454,18 +481,53 @@ impl BalanceConfig {
             .unwrap_or_else(|| dimension.is_resource().then_some(90.))
     }
 
-    pub(crate) fn dimensions(&self) -> impl Iterator<Item = BalanceDimension> {
+    pub(crate) fn dimensions(&self, node_requests: bool) -> impl Iterator<Item = BalanceDimension> {
+        use BalanceDimension::*;
+        const REQUEST_FIRST: [BalanceDimension; BalanceDimension::ALL.len()] = [
+            ReadUnits,
+            WriteUnits,
+            Cpu,
+            Memory,
+            Disk,
+            ShardSize,
+            LeaderCount,
+            ReplicaCount,
+            ShardCount,
+        ];
         let mut seen = [false; BalanceDimension::ALL.len()];
-        self.priority
+        let order = if node_requests { REQUEST_FIRST.as_slice() } else { &self.priority };
+        order
             .iter()
             .copied()
             .chain(BalanceDimension::ALL)
             .filter(move |kind| !std::mem::replace(&mut seen[*kind as usize], true))
     }
 
+    pub(crate) fn request_weight(&self, node: u64) -> f64 {
+        self.node_request_weights.get(&node.to_string()).copied().unwrap_or(1.)
+    }
+
+    pub(crate) fn validate_request_weights(&self) -> Result<(), crate::Error> {
+        for (node, &weight) in &self.node_request_weights {
+            if node.parse::<u64>().ok().is_none_or(|id| id.to_string() != *node)
+                || !weight.is_finite()
+                || weight <= 0.
+            {
+                return Err(crate::Error::InvalidArgument(format!(
+                    "invalid request weight for node {node}: {weight}"
+                )));
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) fn set(&mut self, key: &str, value: &str) -> Result<(), crate::Error> {
         let invalid =
             || crate::Error::InvalidArgument(format!("invalid balancer setting {key}={value}"));
+        if key == "max_concurrent_tasks" {
+            self.max_concurrent_tasks = value.parse().map_err(|_| invalid())?;
+            return Ok(());
+        }
         if key == "priority" {
             let mut priority = Vec::new();
             for name in value.split(',') {
@@ -604,6 +666,17 @@ impl Default for RaftConfig {
 }
 
 impl RootConfig {
+    pub(crate) fn min_split_side_bytes(&self) -> u64 {
+        (self.move_shard_size_limit / 64).max(1)
+    }
+
+    pub(crate) fn validate(&self) -> Result<(), crate::Error> {
+        if !self.shard_merge_write_qps.is_finite() || self.shard_merge_write_qps < 0. {
+            return Err(crate::Error::InvalidArgument("invalid shard_merge_write_qps".into()));
+        }
+        self.balance.validate_request_weights()
+    }
+
     pub fn heartbeat_interval(&self) -> Duration {
         Duration::from_secs(self.liveness_threshold_sec - self.heartbeat_timeout_sec)
     }
@@ -623,6 +696,8 @@ impl Default for RootConfig {
             enable_cpu_balance: true,
             enable_memory_balance: true,
             enable_disk_balance: true,
+            enable_node_request_balance: true,
+            enable_hot_shard_split: true,
             balance: BalanceConfig::default(),
             shard_size_balance_tolerance_bytes: 8 * 1024 * 1024,
             enable_leader_balance: true,
@@ -630,6 +705,8 @@ impl Default for RootConfig {
             enable_proactive_shard_split: true,
             move_shard_size_limit: 64 * 1024 * 1024,
             enable_auto_shard_merge: true,
+            shard_merge_write_qps: 10.,
+            shard_merge_quiet_period_sec: 180,
             liveness_threshold_sec: 30,
             heartbeat_timeout_sec: 4,
             schedule_interval_sec: 3,

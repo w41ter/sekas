@@ -126,6 +126,9 @@ pub struct SplitShard {
     pub target_bytes: Option<u64>,
     #[prost(message, optional, tag = "5")]
     pub prepared: Option<PreparedSplit>,
+    /// A hot shard split must leave at least one piece that can move.
+    #[prost(uint64, tag = "6")]
+    pub max_movable_split_bytes: u64,
 }
 
 #[derive(Clone, PartialEq, prost::Message)]

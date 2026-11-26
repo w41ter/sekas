@@ -124,19 +124,24 @@ impl HelpStatement {
     fn display_config_topic() -> String {
         r##"
 CONFIG "balancer.priority" "read_units,write_units,disk";
-    Set the highest-priority placement policies in order. Policies omitted from
-    the list retain their default relative order after the configured policies.
-    Default priority is read_units, write_units, cpu, memory, leader_count,
-    disk, shard_size, replica_count, shard_count.
+    Set the placement order when root.enable_node_request_balance is false.
+    With node request balancing enabled, node read_units and write_units
+    share the first priority, followed by CPU, memory, disk, Group traffic,
+    shard size, and counts.
 
 CONFIG "balancer.deadline.disk" "85";
     Set a hard deadline for a policy. Resource deadlines use percentages.
-    Shard size uses bytes, traffic uses request units per second, and count
+    Shard size uses bytes, read_units and write_units cap Group request units
+    per second, and count
     policies use counts. Use "unlimited" to clear a deadline.
     CPU, memory, and disk default to 90%. Other policies default to unlimited.
 
 SHOW balancer;
     Display each policy's priority, deadline, and latest decision.
+
+CONFIG "balancer.max_concurrent_tasks" "8";
+    Set the combined limit for active Root placement and group creation jobs.
+    The same limit bounds concurrent placement steps. The default is 8.
 "##
         .to_owned()
     }

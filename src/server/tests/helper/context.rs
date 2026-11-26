@@ -135,6 +135,12 @@ impl TestContext {
         self.root_cfg.enable_write_balance = true;
     }
 
+    pub fn enable_node_request_balance(&mut self) {
+        self.root_cfg.enable_node_request_balance = true;
+        self.root_cfg.enable_leader_balance = true;
+        self.enable_traffic_balance();
+    }
+
     pub fn disable_proactive_shard_split(&mut self) {
         self.root_cfg.enable_proactive_shard_split = false;
     }
@@ -174,6 +180,8 @@ impl TestContext {
         self.root_cfg.enable_cpu_balance = false;
         self.root_cfg.enable_memory_balance = false;
         self.root_cfg.enable_disk_balance = false;
+        self.root_cfg.enable_node_request_balance = false;
+        self.root_cfg.enable_hot_shard_split = false;
     }
 
     pub fn disable_all_node_scheduler(&mut self) {

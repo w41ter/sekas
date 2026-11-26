@@ -84,6 +84,7 @@ impl BackgroundJob {
                 "type": "placement",
                 "action": format!("{:?}", p.action),
                 "reason": p.reason,
+                "policy": p.policy,
                 "status": p.outcome.as_ref().map_or_else(|| "Active".into(), |outcome| format!("{:?}", outcome.kind())),
                 "outcome": p.outcome.as_ref().map(|outcome| &outcome.detail),
                 "finished_at": p.outcome.as_ref().map(|outcome| outcome.finished_at),

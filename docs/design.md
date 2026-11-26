@@ -44,6 +44,41 @@ Apart from the root, the storage part of the sekas server is called **Node**. No
 
 In addition, node is also responsible for providing group-level scheduling, including automatic maintaining num of replicas, automatic replace bad replicas, and replica moving between servers.
 
+## Automatic placement
+
+Root balances node reads and writes at the same priority, followed by CPU, memory, disk,
+Group traffic, shard size, and counts. Raft health, draining, and hard capacity limits take
+precedence. Lower-priority work preserves the higher-priority balance, and every copy must fit
+at its peak usage.
+
+The `read_units` and `write_units` policies each aggregate their operation across current user
+Group leaders and divide by each node's relative service capacity. Each move is scored against
+both node distributions. Group improvements break ties between comparable node gains, and
+ordinary Group traffic placement can proceed once both node distributions are within tolerance.
+`balancer.deadline.read_units` and `balancer.deadline.write_units` cap Group traffic.
+Weights default to one. Configure heterogeneous nodes by
+catalog node ID under `[root.balance.node_request_weights]`. A weight of two targets twice the
+request load of a weight-one node. All Root candidates use the same weights. Co-located nodes may
+name the same `cpu`, `memory`, or `disk` domain under `[root.balance.resource_domains]`. A shared
+resource is measured once and a copy within the same domain still consumes temporary capacity.
+
+Root first tries a leader transfer, then a complete shard move. If neither can improve request
+placement, Root can split a hot range using the storage engine's existing split estimator. Once
+the new descriptor and fresh shard rates are available, the next round may move a piece or narrow
+the hot range further. Failed split attempts back off. Automatic merge requires both adjacent
+ranges to fit the size limit and stay below `root.shard_merge_write_qps` for
+`root.shard_merge_quiet_period_sec`, which default to 10 write QPS and 180 seconds. Missing or
+interrupted observations and changes to the observed range restart the quiet window.
+
+These schedulers are enabled by default. `SHOW NODES` reports the latest available request
+estimates for the observed serving leaders, the weight, and leader counts. `SHOW BALANCER`
+retains the last complete measurements while showing the current decision and any wait for
+fresh data. The `root_reconcile_node_request_load_fresh` metric indicates whether the latest
+planning round had complete request measurements for each operation.
+When `root.enable_node_request_balance` is disabled, `balancer.priority` configures the legacy
+placement order. During a rolling upgrade, the new split size checks take effect on each Group
+leader when it runs the upgraded binary.
+
 ## Data organization
 
 ![data organization][data-organization]

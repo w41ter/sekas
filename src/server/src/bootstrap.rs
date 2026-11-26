@@ -43,6 +43,7 @@ pub(crate) async fn run_in_async(
     shutdown: Shutdown,
     ready: Option<tokio::sync::oneshot::Sender<Server>>,
 ) -> Result<()> {
+    config.root.validate()?;
     let engines = Engines::open(&config.root_dir, &config.db)?;
 
     let root_list = if config.init { vec![config.addr.clone()] } else { config.join_list.clone() };

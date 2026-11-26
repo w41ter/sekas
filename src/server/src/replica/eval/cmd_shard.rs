@@ -35,6 +35,19 @@ pub(crate) fn get_split_key(
         }
         _ => engine.estimate_split_key(req.shard_id)?,
     };
+    let split_key = match split_key {
+        Some(key)
+            if engine.valid_split_key(
+                req.shard_id,
+                &key,
+                req.min_split_side_bytes,
+                req.max_movable_split_bytes,
+            )? =>
+        {
+            Some(key)
+        }
+        _ => None,
+    };
     Ok(GetSplitKeyResponse { split_key })
 }
 

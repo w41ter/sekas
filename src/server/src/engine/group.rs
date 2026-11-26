@@ -608,6 +608,31 @@ impl GroupEngine {
         self.raw_db.get_approximate_size(&self.cf_for(&core.cf), &start, &end)
     }
 
+    pub(crate) fn valid_split_key(
+        &self,
+        shard_id: u64,
+        key: &[u8],
+        min_bytes: u64,
+        max_movable_bytes: u64,
+    ) -> Result<bool> {
+        let core = self.core.read().unwrap();
+        let shard = core.shard_descs.get(&shard_id).ok_or(Error::ShardNotFound(shard_id))?;
+        if key <= shard::start_key(shard).as_slice() || !shard::belong_to(shard, key) {
+            return Ok(false);
+        }
+        if min_bytes == 0 && max_movable_bytes == 0 {
+            return Ok(true);
+        }
+        let (start, end) = Self::shard_raw_range(shard)?;
+        let key = keys::raw(shard.table_id, key);
+        let cf = self.cf_for(&core.cf);
+        let smaller = self
+            .raw_db
+            .get_approximate_size(&cf, &start, &key)?
+            .min(self.raw_db.get_approximate_size(&cf, &key, &end)?);
+        Ok(smaller >= min_bytes && (max_movable_bytes == 0 || smaller <= max_movable_bytes))
+    }
+
     /// Estimate the split keys (in user key) of the target shard.
     pub fn estimate_split_key(&self, shard_id: u64) -> Result<Option<Vec<u8>>> {
         let core = self.core.read().unwrap();

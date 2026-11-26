@@ -23,7 +23,7 @@ use super::liveness::Liveness;
 
 mod show;
 
-pub(super) use show::{ShowMetrics, ShowSnapshot, TrafficRates};
+pub(super) use show::{RequestUnits, ShowMetrics, ShowSnapshot, TrafficRates};
 
 struct GroupDelta {
     epoch: u64,
@@ -176,6 +176,16 @@ struct SchedStats {
 }
 
 impl ClusterStats {
+    pub(super) fn new(cfg: &crate::RootConfig) -> Self {
+        Self {
+            show_stats: Arc::new(Mutex::new(show::ShowStats::with_merge_quiet_tracking(
+                cfg.shard_merge_write_qps,
+                std::time::Duration::from_secs(cfg.liveness_threshold_sec),
+            ))),
+            ..Self::default()
+        }
+    }
+
     pub(super) fn reported_migration(
         &self,
         group: u64,

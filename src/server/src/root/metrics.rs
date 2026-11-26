@@ -88,6 +88,18 @@ make_static_metric! {
 }
 
 lazy_static! {
+    pub static ref RECONCILE_REQUEST_LOAD: GaugeVec = register_gauge_vec!(
+        "root_reconcile_node_request_load",
+        "Capacity-normalized request units per second from the last complete placement sample",
+        &["operation", "stat"]
+    )
+    .unwrap();
+    pub static ref RECONCILE_REQUEST_LOAD_FRESH: IntGaugeVec = register_int_gauge_vec!(
+        "root_reconcile_node_request_load_fresh",
+        "Whether the latest placement snapshot had complete node request samples",
+        &["operation"]
+    )
+    .unwrap();
     pub static ref RECONCILE_CHECK_DURATION_SECONDS: Histogram = register_histogram!(
         "root_reconcile_scheduler_check_task_duration_seconds",
         "the duration of scheduler check and prepare tasks",
@@ -158,6 +170,18 @@ lazy_static! {
     .unwrap();
     pub static ref RECONCILE_RETRY_TASK_TOTAL: ReconcileScheduleHandleTaskTotal =
         ReconcileScheduleHandleTaskTotal::from(&RECONCILE_RETRY_TASK_TOTAL_VEC);
+}
+
+pub(super) fn record_request_load(
+    kind: crate::BalanceDimension,
+    load: Option<super::allocator::BalanceThresholds>,
+    fresh: bool,
+) {
+    let operation = kind.name();
+    for (stat, value) in [("mean", load.map(|load| load.avg)), ("max", load.map(|load| load.max))] {
+        RECONCILE_REQUEST_LOAD.with_label_values(&[operation, stat]).set(value.unwrap_or(f64::NAN));
+    }
+    RECONCILE_REQUEST_LOAD_FRESH.with_label_values(&[operation]).set(i64::from(fresh));
 }
 
 // hearbeat & report

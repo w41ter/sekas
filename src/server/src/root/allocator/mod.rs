@@ -28,7 +28,7 @@ mod sim_test;
 mod balance;
 mod placement;
 
-pub(super) use placement::{CapacityAction, PlacementAction, plan_round};
+pub(super) use placement::{CapacityAction, PlacementAction, PlacementPriority, plan_round};
 
 #[derive(Debug, Clone, Copy)]
 pub struct TransferLeader {
@@ -61,6 +61,7 @@ pub(super) enum BalanceDecision {
     Unknown,
     Disabled,
     Deferred(Cow<'static, str>),
+    Blocked(String),
     NoAction(String),
     ActionNeeded(String),
     Error(String),

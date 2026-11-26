@@ -13,7 +13,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-mod action;
+pub(super) mod action;
 mod execute;
 mod status;
 mod task;
@@ -26,10 +26,10 @@ use sekas_api::server::v1::*;
 use sekas_rock::time::timestamp_millis;
 use sekas_runtime::sync::{AsyncMutex, Notify};
 
-pub(super) use self::action::PlacementJob;
+pub(super) use self::action::{Action, PlacementJob};
 use self::action::{
-    Action, GroupVersion, LearnerAdmission, MergeShards, MoveReplica, MoveShard, Outcome,
-    OutcomeKind, PreparedSplit, SplitShard, TransferLeader,
+    GroupVersion, LearnerAdmission, MergeShards, MoveReplica, MoveShard, Outcome, OutcomeKind,
+    PreparedSplit, SplitShard, TransferLeader,
 };
 use self::background_job::Job;
 use self::status::{BalanceSnapshot, SchedulerSummary, TaskStatus};
@@ -38,13 +38,14 @@ pub use self::task::*;
 use super::allocator::*;
 use super::stats::ShowSnapshot;
 use super::*;
-use crate::Error;
+use crate::{BalanceDimension, Error};
 
 pub struct ReconcileScheduler {
     ctx: ScheduleContext,
     poll: AsyncMutex<bool>,
     balance: SyncMutex<BalanceSnapshot>,
     attempts: SyncMutex<HashMap<u64, ExecutionStatus>>,
+    leader_cooldowns: SyncMutex<HashMap<(u64, u64), Instant>>,
     wake: Notify,
 }
 
@@ -93,6 +94,8 @@ pub(super) struct ClusterView {
     pub(super) creating: usize,
     pub(super) unpublished: HashSet<u64>,
     pub(super) copying_nodes: HashSet<u64>,
+    pub(super) placements: Vec<Action>,
+    pub(super) leader_cooldowns: HashSet<(u64, u64)>,
 }
 
 impl ClusterView {
@@ -150,6 +153,8 @@ impl ClusterView {
             creating: 0,
             unpublished: HashSet::new(),
             copying_nodes: HashSet::new(),
+            placements: Vec::new(),
+            leader_cooldowns: HashSet::new(),
         }
     }
 
@@ -180,6 +185,25 @@ impl ClusterView {
             term: self.samples.leader(group)?.term,
         })
     }
+
+    pub(super) fn track_placement(&mut self, action: Action) {
+        self.busy.extend(action.groups().into_iter().flatten());
+        match &action {
+            Action::MoveShard(action) => {
+                if let Ok(index) =
+                    self.groups.binary_search_by_key(&action.desc.dest_group_id, |group| group.id)
+                {
+                    self.copying_nodes
+                        .extend(self.groups[index].replicas.iter().map(|replica| replica.node_id));
+                }
+            }
+            Action::MoveReplica(action) => {
+                self.copying_nodes.insert(action.target_node);
+            }
+            _ => {}
+        }
+        self.placements.push(action);
+    }
 }
 
 impl Plan {
@@ -201,6 +225,7 @@ impl ReconcileScheduler {
             balance: balance.into(),
             poll: Default::default(),
             attempts: Default::default(),
+            leader_cooldowns: Default::default(),
             wake: Notify::new(),
         }
     }
@@ -208,6 +233,7 @@ impl ReconcileScheduler {
     pub(super) fn reset_status(&self) {
         *self.balance.lock().unwrap() = BalanceSnapshot::new(&self.ctx.cfg);
         self.attempts.lock().unwrap().clear();
+        self.leader_cooldowns.lock().unwrap().clear();
     }
 
     pub(super) fn balance_status(&self) -> BalanceSnapshot {
@@ -240,6 +266,7 @@ impl ReconcileScheduler {
                 decision,
                 BalanceDecision::ActionNeeded(..)
                     | BalanceDecision::Deferred(_)
+                    | BalanceDecision::Blocked(_)
                     | BalanceDecision::Unknown
             )
         })
@@ -260,7 +287,9 @@ impl ReconcileScheduler {
             Ok(false) => {}
             Err(error) => {
                 *recover = true;
-                self.balance.lock().unwrap().record_refresh_error(&error);
+                let mut balance = self.balance.lock().unwrap();
+                balance.record_refresh_error(&error);
+                self.record_request_loads(&balance, [false; 2]);
                 warn!("advance Root scheduling: {error:?}");
                 return Duration::from_secs(self.ctx.cfg.schedule_interval_sec.max(1));
             }
@@ -286,6 +315,7 @@ impl ReconcileScheduler {
     async fn tick(&self) -> Result<bool> {
         let schema = self.ctx.shared.schema()?;
         let term = schema.term().await?;
+        let mut options = schema.balance_config(self.ctx.cfg.balance.clone()).await?;
         let _timer = metrics::RECONCILE_STEP_DURATION_SECONDS.start_timer();
         let jobs = self.ctx.bg_jobs.placement_jobs();
         metrics::RECONCILE_SCHEDULER_TASK_QUEUE_SIZE.set(jobs.len() as i64);
@@ -294,25 +324,27 @@ impl ReconcileScheduler {
             let mut attempts = self.attempts.lock().unwrap();
             let mut due = Vec::new();
             for job in &jobs {
-                let status = attempts.entry(job.id).or_default();
-                if status.fire_at <= now {
-                    status.running = true;
+                if attempts.entry(job.id).or_default().fire_at <= now {
                     due.push(job);
                 }
             }
             due
         };
-        let mut due = due.into_iter();
+        let had_due = !due.is_empty();
+        let mut due = due.into_iter().map(|job| {
+            self.attempts.lock().unwrap().entry(job.id).or_default().running = true;
+            self.ctx.step(job, &schema, term)
+        });
         let mut running = FuturesUnordered::new();
-        for job in due.by_ref().take(8) {
-            running.push(self.ctx.step(job, &schema, term));
+        for step in due.by_ref().take(options.max_concurrent_tasks.get()) {
+            running.push(step);
         }
 
         let mut write_error = None;
         let mut progress = false;
         while let Some((job, result)) = running.next().await {
-            if let Some(job) = due.next() {
-                running.push(self.ctx.step(job, &schema, term));
+            if let Some(step) = due.next() {
+                running.push(step);
             }
             let result = match result {
                 Ok(Step::Pending(reason)) => {
@@ -337,10 +369,30 @@ impl ReconcileScheduler {
                     change
                 }
             };
+            let transferred = match result.action.as_ref() {
+                Some(Action::TransferLeader(transfer))
+                    if transfer.draining_node.is_none()
+                        && result
+                            .outcome
+                            .as_ref()
+                            .is_some_and(|outcome| outcome.kind() == OutcomeKind::Succeeded) =>
+                {
+                    Some(*transfer)
+                }
+                _ => None,
+            };
             let new = BackgroundJob { id: job.id, job: Some(Job::Placement(result)) };
             match self.ctx.bg_jobs.replace_schedule_job(job, new).await {
                 Ok(()) => {
                     self.attempts.lock().unwrap().remove(&job.id);
+                    if self.ctx.cfg.enable_node_request_balance
+                        && let Some(transfer) = transferred
+                    {
+                        self.leader_cooldowns.lock().unwrap().insert(
+                            (transfer.group, transfer.source),
+                            Instant::now() + Duration::from_secs(30),
+                        );
+                    }
                     progress = true;
                 }
                 Err(error) => {
@@ -355,11 +407,32 @@ impl ReconcileScheduler {
 
         self.ctx.check_term(&schema, term).await?;
         let _timer = metrics::RECONCILE_CHECK_DURATION_SECONDS.start_timer();
-        let options = schema.balance_config(self.ctx.cfg.balance.clone()).await?;
-        let view = self.ctx.cluster_view(&schema).await?;
+        if had_due {
+            options = schema.balance_config(self.ctx.cfg.balance.clone()).await?;
+        }
+        let mut view = self.ctx.cluster_view(&schema).await?;
+        {
+            let mut cooldowns = self.leader_cooldowns.lock().unwrap();
+            let now = Instant::now();
+            cooldowns.retain(|_, deadline| *deadline > now);
+            view.leader_cooldowns.extend(cooldowns.keys().copied());
+        }
         let mut balance = BalanceSnapshot::new(&self.ctx.cfg);
-        let plan = self.ctx.plan(&view, &options, &mut balance);
-        *self.balance.lock().unwrap() = balance;
+        let mut plan = self.ctx.plan(&view, &options, &mut balance);
+        if view.placements.len().saturating_add(view.creating) >= options.max_concurrent_tasks.get()
+            && matches!(plan, Some(Plan::Placement(_) | Plan::CreateGroup))
+        {
+            plan = None;
+            balance.defer_ready_placements();
+        }
+        {
+            let fresh = BalanceDimension::REQUESTS
+                .map(|kind| balance.thresholds(Policy::Placement(kind)).is_some());
+            let mut previous = self.balance.lock().unwrap();
+            balance.retain_thresholds(&previous);
+            self.record_request_loads(&balance, fresh);
+            *previous = balance;
+        }
         match plan {
             Some(Plan::Placement(mut job)) => {
                 job.created_at = timestamp_millis();
@@ -395,6 +468,18 @@ impl ReconcileScheduler {
         } else {
             status.fire_at = timestamp_millis().saturating_add(1000);
             status.retry_count = 0;
+        }
+    }
+
+    fn record_request_loads(&self, balance: &BalanceSnapshot, fresh: [bool; 2]) {
+        if self.ctx.cfg.enable_node_request_balance {
+            for (kind, fresh) in BalanceDimension::REQUESTS.into_iter().zip(fresh) {
+                metrics::record_request_load(
+                    kind,
+                    balance.thresholds(Policy::Placement(kind)),
+                    fresh,
+                );
+            }
         }
     }
 }
@@ -433,25 +518,11 @@ impl ScheduleContext {
             Duration::from_secs(self.cfg.liveness_threshold_sec),
         );
         (view.creating, view.unpublished) = self.bg_jobs.creating_groups();
-        for job in self.bg_jobs.placement_jobs() {
-            let action = placement(&job).action.as_ref().unwrap();
-            view.busy.extend(action.groups().into_iter().flatten());
-            match action {
-                Action::MoveShard(action) => {
-                    if let Ok(index) = view
-                        .groups
-                        .binary_search_by_key(&action.desc.dest_group_id, |group| group.id)
-                    {
-                        view.copying_nodes.extend(
-                            view.groups[index].replicas.iter().map(|replica| replica.node_id),
-                        );
-                    }
-                }
-                Action::MoveReplica(action) => {
-                    view.copying_nodes.insert(action.target_node);
-                }
-                _ => {}
-            }
+        let mut jobs = self.bg_jobs.placement_jobs();
+        jobs.sort_unstable_by_key(|job| job.id);
+        for job in jobs {
+            let Some(Job::Placement(task)) = job.job else { unreachable!() };
+            view.track_placement(task.action.unwrap());
         }
         Ok(view)
     }
@@ -472,7 +543,20 @@ impl ScheduleContext {
             balance.record_with_thresholds(Policy::Placement(dimension), decision, thresholds);
         }
         if let Some(capacity) = capacity
-            && placement.choice.as_ref().is_none_or(|choice| capacity.priority > choice.priority)
+            && !(capacity.priority == PlacementPriority::PlanningWatermark
+                && placement.hot_split.is_some())
+            && placement.choice.as_ref().is_none_or(|choice| {
+                capacity.priority > choice.priority
+                    && !(self.cfg.enable_node_request_balance
+                        && capacity.priority == PlacementPriority::PlanningWatermark
+                        && (choice.node_request
+                            || matches!(
+                                choice.dimension,
+                                crate::BalanceDimension::Cpu
+                                    | crate::BalanceDimension::Memory
+                                    | crate::BalanceDimension::Disk
+                            )))
+            })
         {
             let reason = "Reduce group capacity pressure";
             let policy = match &capacity.action {
@@ -487,6 +571,23 @@ impl ScheduleContext {
                     TaskReason::new(reason),
                 )),
             };
+        }
+        if let Some(split) = placement.hot_split {
+            let group = view.group(split.group)?;
+            let shard = group.shard(split.shard)?.clone();
+            return Some(Plan::placement(
+                Action::SplitShard(SplitShard {
+                    group: group.id,
+                    epoch: group.epoch,
+                    shard,
+                    max_movable_split_bytes: split.move_budget,
+                    ..Default::default()
+                }),
+                TaskReason::for_balance(
+                    split.dimension,
+                    "Split a hot shard and remeasure its pieces".into(),
+                ),
+            ));
         }
         if let Some(choice) = placement.choice {
             return Some(Plan::placement(
@@ -574,6 +675,7 @@ impl ScheduleContext {
                 }
             }
             if self.cfg.enable_auto_shard_merge {
+                let quiet = Duration::from_secs(self.cfg.shard_merge_quiet_period_sec);
                 let mut shards: Vec<_> = group
                     .shards
                     .iter()
@@ -585,6 +687,10 @@ impl ScheduleContext {
                 for adjacent in shards.windows(2) {
                     let [left, right] = adjacent else { unreachable!() };
                     if left.table_id == right.table_id
+                        && view.samples.shard_is_quiet(group.id, left.id, quiet)
+                        && view.samples.shard_is_quiet(group.id, right.id, quiet)
+                        && !view.split_cooldowns.contains(&left.id)
+                        && !view.split_cooldowns.contains(&right.id)
                         && left
                             .range
                             .as_ref()
@@ -605,7 +711,7 @@ impl ScheduleContext {
                         });
                         return Some(Plan::placement(
                             action,
-                            TaskReason::new("Adjacent undersized shards"),
+                            TaskReason::new("Adjacent undersized shards have been quiet"),
                         ));
                     }
                 }

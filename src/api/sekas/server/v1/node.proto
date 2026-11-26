@@ -641,6 +641,9 @@ message GetSplitKeyRequest {
     optional bytes split_start_key = 2;
     // Estimate a split key whose approximate bytes after split_start_key reach this target.
     optional uint64 split_target_size = 3;
+    uint64 min_split_side_bytes = 4;
+    // At least one resulting side must fit this budget. Zero leaves it unrestricted.
+    uint64 max_movable_split_bytes = 5;
 }
 
 message GetSplitKeyResponse {

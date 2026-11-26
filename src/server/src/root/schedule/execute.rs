@@ -121,6 +121,32 @@ impl ScheduleContext {
         Ok(self.shared.transport_manager.lazy_group_client(group).inspect_group().await?)
     }
 
+    async fn request_sample_ready(&self, inspected: &InspectGroupResponse) -> Result<bool> {
+        if !self.cfg.enable_node_request_balance {
+            return Ok(true);
+        }
+        let group = descriptor(inspected)?;
+        let snapshot = self.cluster_stats.show_snapshot(
+            std::slice::from_ref(group),
+            Duration::from_secs(self.cfg.liveness_threshold_sec),
+        );
+        let units = snapshot.group_request_units(group);
+        if snapshot.leader(group.id).is_some_and(|leader| {
+            leader.replica_id == inspected.leader_id && leader.term == inspected.term
+        }) && BalanceDimension::REQUESTS
+            .into_iter()
+            .all(|kind| !kind.enabled(&self.cfg) || units.get(kind).is_some())
+        {
+            return Ok(true);
+        }
+        if let Some(leader) = group.replicas.iter().find(|r| r.id == inspected.leader_id) {
+            self.heartbeat_queue
+                .try_schedule(vec![HeartbeatTask { node_id: leader.node_id }], Instant::now())
+                .await;
+        }
+        Ok(false)
+    }
+
     async fn submit(
         &self,
         schema: &Schema,
@@ -186,7 +212,13 @@ impl ScheduleContext {
                     && source.shard_migration.as_ref().and_then(|migration| migration.desc.as_ref())
                         != Some(desc)
                 {
-                    done("Shard ownership has changed")
+                    if self.request_sample_ready(&source).await?
+                        && self.request_sample_ready(&target).await?
+                    {
+                        done("Shard ownership has changed")
+                    } else {
+                        Step::Pending("Waiting for request samples after shard migration")
+                    }
                 } else {
                     Step::Pending("Waiting for source to finish migration")
                 },
@@ -211,7 +243,13 @@ impl ScheduleContext {
     async fn transfer(&self, action: &TransferLeader, schema: &Schema, term: u64) -> Result<Step> {
         let state = self.inspect(action.group).await?;
         if state.leader_id == action.target {
-            return Ok(done("Target is the current leader"));
+            return Ok(
+                if action.draining_node.is_some() || self.request_sample_ready(&state).await? {
+                    done("Target is the current leader")
+                } else {
+                    Step::Pending("Waiting for request samples from the new leader")
+                },
+            );
         }
         let version = action.version;
         if state.leader_id != action.source || !version.matches(&state) {
@@ -254,6 +292,9 @@ impl ScheduleContext {
         let group = descriptor(&state)?;
         let shard = &action.shard;
         if split_applied(group, action) {
+            if action.max_movable_split_bytes != 0 && !self.request_sample_ready(&state).await? {
+                return Ok(Step::Pending("Waiting for request samples after a hot shard split"));
+            }
             return Ok(done("Split ranges applied"));
         }
         if group.epoch != action.epoch
@@ -267,13 +308,19 @@ impl ScheduleContext {
         }
         let Some(prepared) = &action.prepared else {
             let start = action.target_bytes.map(|_| sekas_schema::shard::start_key(shard).to_vec());
-            let req = GroupRequest::get_split_key(
+            let mut req = GroupRequest::get_split_key(
                 group.id,
                 action.epoch,
                 shard.id,
                 start,
                 action.target_bytes,
             );
+            if let Some(Request::GetSplitKey(request)) =
+                req.request.as_mut().and_then(|r| r.request.as_mut())
+            {
+                request.min_split_side_bytes = self.cfg.min_split_side_bytes();
+                request.max_movable_split_bytes = action.max_movable_split_bytes;
+            }
             let response = self.submit(schema, term, req, state.term, &state).await?;
             let Response::GetSplitKey(response) = response else {
                 return Err(Error::InvalidData("missing split key response".into()));

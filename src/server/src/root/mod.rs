@@ -143,7 +143,7 @@ impl Root {
     ) -> Self {
         let local_addr = cfg.addr.clone();
         let cfg_cpu_nums = cfg.cpu_nums;
-        let cluster_stats = Arc::new(ClusterStats::default());
+        let cluster_stats = Arc::new(ClusterStats::new(&cfg.root));
         let shared = Arc::new(RootShared {
             transport_manager,
             local_addr,
@@ -398,6 +398,9 @@ impl Root {
         }
 
         self::metrics::LEADER_STATE_INFO.set(0);
+        for kind in crate::BalanceDimension::REQUESTS {
+            self::metrics::record_request_load(kind, None, false);
+        }
 
         Ok(())
     }

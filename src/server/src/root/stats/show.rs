@@ -13,11 +13,13 @@
 // limitations under the License.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use sekas_api::Epoch;
 use sekas_api::server::v1::{
-    GroupDesc, GroupStats, GroupStatsSample, MoveShardDesc, RaftRole, ReplicaState, ShardTraffic,
+    GroupDesc, GroupStats, GroupStatsSample, MoveShardDesc, RaftRole, RangePartition, ReplicaState,
+    ShardTraffic,
 };
 
 /// Use the latest available size and traffic estimates for planning and SHOW.
@@ -30,19 +32,79 @@ pub(super) struct ShowStats {
     groups: HashMap<u64, GroupSample>,
     shard_metrics: HashMap<u64, ShardMetrics>,
     group_metrics: HashMap<u64, ShowMetrics>,
+    merge_quiet: Option<MergeQuiet>,
+}
+
+struct MergeQuiet {
+    write_qps: f64,
+    max_gap: Duration,
 }
 
 struct ShardMetrics {
     group_id: u64,
     epoch: u64,
     metrics: ShowMetrics,
+    request_sample: Option<ShardRequestSample>,
+}
+
+struct ShardRequestSample {
+    received_at: Instant,
+    range: Option<RangePartition>,
+    units: RequestUnits,
 }
 
 struct GroupSample {
     metadata: GroupStatsSample,
     node_id: u64,
     received_at: Instant,
-    traffic: HashMap<u64, ShardTraffic>,
+    traffic: HashMap<u64, ShardSample>,
+    request_rates: Arc<RequestRates>,
+}
+
+struct ShardSample {
+    traffic: ShardTraffic,
+    range: Option<RangePartition>,
+    quiet_since: Option<Instant>,
+}
+
+struct RequestRates {
+    shards: HashMap<u64, RequestUnits>,
+    total: RequestUnits,
+    shard_count: u64,
+    quiet_for: HashMap<u64, Duration>,
+}
+
+#[derive(Clone, Copy, Default)]
+pub(in crate::root) struct RequestUnits {
+    pub read: Option<f64>,
+    pub write: Option<f64>,
+}
+
+impl RequestUnits {
+    pub const ZERO: Self = Self { read: Some(0.), write: Some(0.) };
+
+    pub fn add(self, other: Self) -> Self {
+        Self {
+            read: self.read.zip(other.read).map(|(a, b)| a + b),
+            write: self.write.zip(other.write).map(|(a, b)| a + b),
+        }
+    }
+
+    pub fn total(self) -> Option<f64> {
+        Some(self.read? + self.write?)
+    }
+
+    pub fn with_fallback(self, fallback: Self) -> Self {
+        Self { read: self.read.or(fallback.read), write: self.write.or(fallback.write) }
+    }
+
+    pub fn get(self, kind: crate::BalanceDimension) -> Option<f64> {
+        match kind {
+            crate::BalanceDimension::ReadUnits => self.read,
+            crate::BalanceDimension::WriteUnits => self.write,
+            _ => unreachable!("expected a request dimension"),
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -81,9 +143,15 @@ pub(in crate::root) struct ShowSnapshot {
     migration_states: HashMap<u64, bool>,
     migration_report_issues: HashMap<u64, String>,
     pub(in crate::root) leaders: HashMap<u64, ReplicaState>,
+    request_rates: HashMap<u64, Arc<RequestRates>>,
+    recent_shard_requests: HashMap<u64, RequestUnits>,
 }
 
 impl ShowStats {
+    pub(super) fn with_merge_quiet_tracking(write_qps: f64, max_gap: Duration) -> Self {
+        Self { merge_quiet: Some(MergeQuiet { write_qps, max_gap }), ..Self::default() }
+    }
+
     pub(super) fn reported_migration(
         &self,
         group: u64,
@@ -103,15 +171,42 @@ impl ShowStats {
             return false;
         };
         let epoch = new.group_epoch;
+        let now = Instant::now();
         let mut traffic = HashMap::with_capacity(stats.shard_stats.len());
+        let mut request_rates = HashMap::new();
+        let mut request_total = RequestUnits::ZERO;
+        let mut quiet_shards = HashMap::new();
         let mut total = ShowMetrics::default();
         for shard in &stats.shard_stats {
             let id = shard.shard_id;
+            let old_shard = previous.and_then(|sample| sample.traffic.get(&id));
             let rates = interval.and_then(|interval| {
-                TrafficRates::between(*previous?.traffic.get(&id)?, shard.traffic?, interval)
+                TrafficRates::between(old_shard?.traffic, shard.traffic?, interval)
             });
+            if let Some(rates) = rates
+                && previous.is_some_and(|old| old.metadata.group_epoch == epoch)
+            {
+                let units = rates.request_units();
+                request_rates.insert(id, units);
+                request_total = request_total.add(units);
+            }
             if let Some(counters) = shard.traffic {
-                traffic.insert(id, counters);
+                let quiet_since = self.merge_quiet.as_ref().and_then(|rule| {
+                    let previous = previous?;
+                    let old_shard = old_shard?;
+                    (rates?.write_qps < rule.write_qps
+                        && now.duration_since(previous.received_at) <= rule.max_gap
+                        && shard.range.is_some()
+                        && old_shard.range == shard.range)
+                        .then(|| old_shard.quiet_since.unwrap_or(previous.received_at))
+                });
+                if let Some(since) = quiet_since {
+                    quiet_shards.insert(id, now.duration_since(since));
+                }
+                traffic.insert(
+                    id,
+                    ShardSample { traffic: counters, range: shard.range.clone(), quiet_since },
+                );
             }
 
             let mut metrics = ShowMetrics { num_shards: 1, bytes: Some(shard.shard_size), rates };
@@ -119,13 +214,23 @@ impl ShowStats {
                 group_id: stats.group_id,
                 epoch,
                 metrics,
+                request_sample: None,
             });
             metrics.fill_missing(cached.metrics);
             // Both groups can report the shard during a move. Prefer the newer epoch.
             if epoch >= cached.epoch {
-                *cached = ShardMetrics { group_id: stats.group_id, epoch, metrics };
+                cached.group_id = stats.group_id;
+                cached.epoch = epoch;
+                cached.metrics = metrics;
             } else {
                 cached.metrics.fill_missing(metrics);
+            }
+            if let Some(&units) = request_rates.get(&id) {
+                cached.request_sample = Some(ShardRequestSample {
+                    received_at: now,
+                    range: shard.range.clone(),
+                    units,
+                });
             }
             total.add(metrics);
         }
@@ -139,7 +244,20 @@ impl ShowStats {
         }
         self.groups.insert(
             stats.group_id,
-            GroupSample { metadata: new.clone(), node_id, received_at: Instant::now(), traffic },
+            GroupSample {
+                metadata: new.clone(),
+                node_id,
+                received_at: now,
+                traffic,
+                request_rates: Arc::new(RequestRates {
+                    total: (request_rates.len() as u64 == stats.shard_count)
+                        .then_some(request_total)
+                        .unwrap_or_default(),
+                    shards: request_rates,
+                    shard_count: stats.shard_count,
+                    quiet_for: quiet_shards,
+                }),
+            },
         );
         true
     }
@@ -151,10 +269,18 @@ impl ShowStats {
         let mut migration_states = HashMap::new();
         let mut migration_report_issues = HashMap::new();
         let mut leaders = HashMap::new();
+        let mut request_rates = HashMap::new();
+        let mut recent_shard_requests = HashMap::new();
         for group in groups {
             for shard in &group.shards {
                 if let Some(sample) = self.shard_metrics.get(&shard.id) {
                     shards.insert(shard.id, sample.metrics);
+                    if let Some(request) = &sample.request_sample
+                        && request.range == shard.range
+                        && now.duration_since(request.received_at) <= max_age
+                    {
+                        recent_shard_requests.insert(shard.id, request.units);
+                    }
                 }
             }
             if let Some(&metrics) = self.group_metrics.get(&group.id) {
@@ -186,6 +312,9 @@ impl ShowStats {
                 continue;
             }
             migration_states.insert(group.id, report.metadata.shard_migration.is_some());
+            if report.metadata.group_epoch == group.epoch {
+                request_rates.insert(group.id, report.request_rates.clone());
+            }
             leaders.insert(
                 group.id,
                 ReplicaState {
@@ -198,7 +327,15 @@ impl ShowStats {
                 },
             );
         }
-        ShowSnapshot { shards, group_metrics, migration_states, migration_report_issues, leaders }
+        ShowSnapshot {
+            shards,
+            group_metrics,
+            migration_states,
+            migration_report_issues,
+            leaders,
+            request_rates,
+            recent_shard_requests,
+        }
     }
 
     pub(super) fn retain(&mut self, groups: &[GroupDesc]) {
@@ -251,6 +388,10 @@ impl GroupSample {
 }
 
 impl TrafficRates {
+    pub(in crate::root) fn request_units(self) -> RequestUnits {
+        RequestUnits { read: self.read_units_per_sec, write: self.write_units_per_sec }
+    }
+
     fn between(old: ShardTraffic, new: ShardTraffic, interval: Duration) -> Option<Self> {
         let seconds = interval.as_secs_f64();
         let units_per_sec =
@@ -315,6 +456,34 @@ impl ShowMetrics {
 }
 
 impl ShowSnapshot {
+    pub(in crate::root) fn shard_request_units(&self, group: u64, shard: u64) -> RequestUnits {
+        self.leader(group)
+            .and_then(|_| self.request_rates.get(&group)?.shards.get(&shard))
+            .copied()
+            .unwrap_or_default()
+    }
+
+    pub(in crate::root) fn shard_is_quiet(&self, group: u64, shard: u64, period: Duration) -> bool {
+        self.leader(group).is_some()
+            && self
+                .request_rates
+                .get(&group)
+                .and_then(|rates| rates.quiet_for.get(&shard))
+                .is_some_and(|&observed| observed >= period)
+    }
+
+    pub(in crate::root) fn group_request_units(&self, group: &GroupDesc) -> RequestUnits {
+        self.leader(group.id)
+            .and_then(|_| self.request_rates.get(&group.id))
+            .filter(|samples| samples.shard_count == group.shards.len() as u64)
+            .map(|samples| samples.total)
+            .unwrap_or_default()
+    }
+
+    pub(in crate::root) fn recent_shard_requests(&self, shard: u64) -> RequestUnits {
+        self.recent_shard_requests.get(&shard).copied().unwrap_or_default()
+    }
+
     pub(in crate::root) fn migration_report_issue(&self, group: u64) -> Option<&str> {
         self.migration_report_issues.get(&group).map(String::as_str)
     }
@@ -362,6 +531,57 @@ mod tests {
     use sekas_api::server::v1::{ReplicaDesc, ShardDesc, ShardStats};
 
     use super::*;
+
+    #[test]
+    fn merge_requires_observed_quiet_ranges_without_gaps_or_writes() {
+        let mut shard = ShardDesc::with_range(1, 2, b"a".to_vec(), b"z".to_vec());
+        let group = |shard: &ShardDesc| GroupDesc {
+            id: 1,
+            epoch: 1,
+            shards: vec![shard.clone()],
+            replicas: vec![ReplicaDesc { id: 1, node_id: 1, ..Default::default() }],
+            ..Default::default()
+        };
+        let sample = |shard: &ShardDesc, term, seconds: u64, writes| GroupStats {
+            group_id: 1,
+            shard_count: 1,
+            sample: Some(GroupStatsSample {
+                group_epoch: 1,
+                replica_id: 1,
+                term,
+                elapsed_nanos: 1_000_000_000 * seconds,
+                ..Default::default()
+            }),
+            shard_stats: vec![ShardStats {
+                shard_id: shard.id,
+                table_id: shard.table_id,
+                range: shard.range.clone(),
+                traffic: Some(ShardTraffic { writes, ..Default::default() }),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let age = Duration::from_secs(30);
+        let quiet = Duration::from_secs(20);
+        let mut stats = ShowStats::with_merge_quiet_tracking(10., age);
+        stats.update(&sample(&shard, 1, 1, 0), 1);
+        stats.groups.get_mut(&1).unwrap().received_at -= quiet;
+        assert!(!stats.snapshot(&[group(&shard)], age).shard_is_quiet(1, 1, quiet));
+        stats.update(&sample(&shard, 1, 21, 5), 1);
+        assert!(stats.snapshot(&[group(&shard)], age).shard_is_quiet(1, 1, quiet));
+        stats.update(&sample(&shard, 1, 22, 15), 1);
+        assert!(!stats.snapshot(&[group(&shard)], age).shard_is_quiet(1, 1, Duration::ZERO));
+
+        stats.groups.get_mut(&1).unwrap().received_at -= age + Duration::from_secs(1);
+        stats.update(&sample(&shard, 1, 53, 15), 1);
+        assert!(!stats.snapshot(&[group(&shard)], age).shard_is_quiet(1, 1, Duration::ZERO));
+
+        stats.update(&sample(&shard, 2, 54, 15), 1);
+        assert!(!stats.snapshot(&[group(&shard)], age).shard_is_quiet(1, 1, Duration::ZERO));
+        shard.range.as_mut().unwrap().end = b"m".to_vec();
+        stats.update(&sample(&shard, 2, 55, 15), 1);
+        assert!(!stats.snapshot(&[group(&shard)], age).shard_is_quiet(1, 1, Duration::ZERO));
+    }
 
     #[test]
     fn samples_follow_shard_ownership_and_leader_term() {

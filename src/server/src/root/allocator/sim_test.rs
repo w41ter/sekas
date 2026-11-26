@@ -20,6 +20,9 @@ use sekas_api::server::v1::*;
 use super::placement::{PlacementChoice, PlacementPlan};
 use super::*;
 use crate::root::schedule::ClusterView;
+use crate::root::schedule::action::{
+    Action, GroupVersion, MoveShard, TransferLeader as TransferLeaderJob,
+};
 use crate::{BalanceConfig, BalanceDimension, RootConfig};
 
 struct Fixture {
@@ -43,6 +46,7 @@ impl Fixture {
             stats: ClusterStats::default(),
             config: RootConfig {
                 replicas_per_group: 1,
+                enable_node_request_balance: false,
                 enable_shard_size_balance: true,
                 shard_size_balance_tolerance_bytes: 0,
                 move_shard_size_limit: 64,
@@ -66,6 +70,59 @@ impl Fixture {
         plan_round(&self.view(), &self.config, options, &self.stats).1
     }
 
+    fn report_requests(&self, group: u64, leader: u64, term: u64, units: u64, baseline_only: bool) {
+        self.report_traffic(group, leader, term, (0, units), baseline_only);
+    }
+
+    fn report_traffic(
+        &self,
+        group: u64,
+        leader: u64,
+        term: u64,
+        (reads, writes): (u64, u64),
+        baseline_only: bool,
+    ) {
+        let group = self.groups.iter().find(|candidate| candidate.id == group).unwrap();
+        let replica = group.replicas.iter().find(|replica| replica.node_id == leader).unwrap();
+        let mut report = GroupStats {
+            group_id: group.id,
+            shard_count: group.shards.len() as u64,
+            sample: Some(GroupStatsSample {
+                replica_id: replica.id,
+                group_epoch: group.epoch,
+                term,
+                elapsed_nanos: 1_000_000_000,
+                ..Default::default()
+            }),
+            shard_stats: group
+                .shards
+                .iter()
+                .map(|shard| ShardStats {
+                    shard_id: shard.id,
+                    table_id: shard.table_id,
+                    shard_size: 32,
+                    range: shard.range.clone(),
+                    traffic: Some(ShardTraffic {
+                        read_units: Some(0),
+                        write_units: Some(0),
+                        ..Default::default()
+                    }),
+                })
+                .collect(),
+            ..Default::default()
+        };
+        self.stats.handle_show_group_stats(&report, leader);
+        if !baseline_only {
+            report.sample.as_mut().unwrap().elapsed_nanos += 1_000_000_000;
+            for shard in &mut report.shard_stats {
+                let traffic = shard.traffic.as_mut().unwrap();
+                traffic.read_units = Some(reads);
+                traffic.write_units = Some(writes);
+            }
+            self.stats.handle_show_group_stats(&report, leader);
+        }
+    }
+
     fn plan_capacity(
         &self,
         options: &BalanceConfig,
@@ -77,6 +134,335 @@ impl Fixture {
         view.copying_nodes = copying_nodes;
         plan_round(&view, &self.config, options, &self.stats).0.map(|choice| choice.action)
     }
+}
+
+fn request_fixture(node_count: u64, voters: &[&[u64]]) -> Fixture {
+    let mut fixture = Fixture::new();
+    fixture.config.enable_node_request_balance = true;
+    fixture.config.enable_shard_size_balance = false;
+    fixture.config.enable_shard_balance = false;
+    fixture.config.enable_replica_balance = false;
+    fixture.config.enable_cpu_balance = false;
+    fixture.config.enable_memory_balance = false;
+    fixture.config.enable_disk_balance = false;
+    fixture.config.replicas_per_group = voters[0].len();
+    fixture.nodes = (0..node_count).map(|id| NodeDesc { id, ..Default::default() }).collect();
+    for (index, voters) in voters.iter().enumerate() {
+        let id = index as u64 + 1;
+        let (mut group, _) = group_with_sizes(id, &[(id, 32)]);
+        group.replicas = voters
+            .iter()
+            .map(|&node_id| ReplicaDesc {
+                id: id * 10 + node_id,
+                node_id,
+                role: ReplicaRole::Voter as i32,
+            })
+            .collect();
+        fixture.groups.push(group);
+    }
+    fixture
+}
+
+#[test]
+fn requests_rebalance_the_observed_four_node_placement() {
+    let voters: &[&[u64]] =
+        &[&[0, 1, 2], &[1, 2, 3], &[1, 2, 3], &[1, 2, 3], &[0, 1, 3], &[0, 1, 3], &[0, 1, 3]];
+    let mut leaders = [1, 1, 3, 1, 1, 1, 1];
+    let writes = [700, 703, 776, 702, 689, 701, 1525];
+    let mut terms = [1; 7];
+    let mut fixture = request_fixture(4, voters);
+    fixture.config.enable_hot_shard_split = false;
+    for index in 0..leaders.len() {
+        fixture.report_requests(
+            index as u64 + 1,
+            leaders[index],
+            terms[index],
+            writes[index],
+            false,
+        );
+    }
+    let options = BalanceConfig::default();
+    let before = fixture.plan_placement(&options);
+    assert_eq!(before.requests[&2], Some(0.));
+    assert_eq!(before.requests[&1], Some(5020.));
+    let mut moves = 0;
+    for _ in 0..8 {
+        let plan = fixture.plan_placement(&options);
+        let Some(choice) = plan.choice else { break };
+        if !choice.node_request {
+            break;
+        }
+        let PlacementAction::Leader(transfer) = choice.action else {
+            panic!("expected a leader transfer")
+        };
+        let index = transfer.group as usize - 1;
+        assert!(voters[index].contains(&transfer.target_node));
+        leaders[index] = transfer.target_node;
+        terms[index] += 1;
+        fixture.report_requests(transfer.group, leaders[index], terms[index], writes[index], false);
+        moves += 1;
+    }
+    let after = fixture.plan_placement(&options);
+    assert!(after.choice.is_none_or(|choice| !choice.node_request));
+    assert_eq!(moves, 4);
+    assert_eq!(after.requests.values().copied().flatten().fold(0., f64::max), 1525.);
+    assert!(after.requests.values().all(|load| load.unwrap() > 1300.));
+}
+
+#[test]
+fn requests_use_capacity_weights_and_wait_for_a_new_term() {
+    let fixture = request_fixture(2, &[&[0, 1], &[0, 1]]);
+    fixture.report_requests(1, 0, 1, 60, false);
+    fixture.report_requests(2, 0, 1, 30, false);
+    let mut options = BalanceConfig::default();
+    options.node_request_weights.insert("1".into(), 2.);
+    let plan = fixture.plan_placement(&options);
+    assert!(matches!(plan.choice,
+        Some(PlacementChoice { action: PlacementAction::Leader(transfer), dimension: BalanceDimension::WriteUnits, node_request: true, .. })
+        if transfer.group == 1 && transfer.target_node == 1));
+    fixture.report_requests(1, 1, 2, 60, true);
+    let warming = fixture.plan_placement(&options);
+    assert_eq!(warming.requests[&1], None);
+    assert!(warming.choice.is_none());
+    let view = fixture.view();
+    let group = &fixture.groups[0];
+    assert_eq!(view.samples.leader(group.id).unwrap().node_id, 1);
+    assert_eq!(view.samples.group(group).rates.unwrap().request_units().write, Some(60.));
+    fixture.report_requests(1, 1, 2, 60, false);
+    let balanced = fixture.plan_placement(&options);
+    assert_eq!(balanced.requests[&0], Some(30.));
+    assert_eq!(balanced.requests[&1], Some(60.));
+    assert!(balanced.choice.is_none_or(|choice| !choice.node_request));
+}
+
+#[test]
+fn pending_transfer_projects_load_and_allows_independent_placement() {
+    let fixture = request_fixture(3, &[&[0, 1, 2], &[0, 1, 2], &[0, 1, 2]]);
+    for group in &fixture.groups {
+        fixture.report_requests(group.id, 0, 1, 60, false);
+    }
+    let options = BalanceConfig::default();
+    let action = Action::TransferLeader(TransferLeaderJob {
+        group: 1,
+        source: 10,
+        target: 11,
+        version: GroupVersion { epoch: fixture.groups[0].epoch, term: 1 },
+        ..Default::default()
+    });
+    let next = || {
+        let mut view = fixture.view();
+        view.track_placement(action.clone());
+        plan_round(&view, &fixture.config, &options, &fixture.stats).1
+    };
+    let assert_next_target = |plan: &PlacementPlan| {
+        assert!(matches!(
+            &plan.choice,
+            Some(PlacementChoice {
+                action: PlacementAction::Leader(transfer),
+                dimension: BalanceDimension::WriteUnits,
+                node_request: true,
+                ..
+            }) if transfer.group != 1 && transfer.target_node == 2
+        ));
+    };
+    let measured_max = |plan: &PlacementPlan| {
+        plan.decisions
+            .iter()
+            .find(|(dimension, ..)| *dimension == BalanceDimension::WriteUnits)
+            .and_then(|(_, _, thresholds)| thresholds.as_ref().map(|thresholds| thresholds.max))
+    };
+    let plan = next();
+    assert_next_target(&plan);
+    assert_eq!(measured_max(&plan), Some(180.));
+
+    fixture.report_requests(1, 1, 2, 60, true);
+    let warming = next();
+    assert_next_target(&warming);
+    assert_eq!(measured_max(&warming), None);
+
+    fixture.report_requests(1, 1, 2, 60, false);
+    let plan = next();
+    assert_next_target(&plan);
+    assert_eq!(measured_max(&plan), Some(120.));
+}
+
+#[test]
+fn missing_initial_samples_pause_request_placement() {
+    let fixture = request_fixture(3, &[&[0, 1, 2], &[0, 1, 2], &[0, 1, 2]]);
+    for group in [1, 2] {
+        fixture.report_requests(group, 0, 1, 60, false);
+    }
+    let options = BalanceConfig::default();
+    let initial = fixture.plan_placement(&options);
+    assert!(initial.choice.is_none());
+    assert!(initial.decisions.iter().any(|(dimension, decision, _)| {
+        *dimension == BalanceDimension::WriteUnits
+            && matches!(decision, BalanceDecision::Deferred(reason) if reason.contains("samples"))
+    }));
+    fixture.report_requests(3, 0, 1, 60, false);
+    assert!(fixture.plan_placement(&options).choice.is_some_and(|choice| choice.node_request));
+}
+
+#[test]
+fn pending_shard_move_counts_the_range_once_after_target_admission() {
+    let mut fixture = request_fixture(4, &[&[0], &[1], &[2], &[3]]);
+    fixture.config.enable_hot_shard_split = false;
+    for (index, group) in fixture.groups.iter_mut().enumerate() {
+        if index < 2 {
+            group.shards.push(ShardDesc::whole(10 + group.id, sekas_schema::FIRST_USER_TABLE_ID));
+        } else {
+            group.shards.clear();
+        }
+    }
+    for group in &fixture.groups {
+        fixture.report_requests(group.id, group.id - 1, 1, 50, false);
+    }
+    let source = &fixture.groups[0];
+    let shard = source.shards[1].clone();
+    let action = Action::MoveShard(MoveShard {
+        desc: MoveShardDesc {
+            src_group_id: 1,
+            src_group_epoch: source.epoch,
+            dest_group_id: 3,
+            dest_group_epoch: fixture.groups[2].epoch,
+            shard_desc: Some(shard.clone()),
+        },
+        target_term: 1,
+    });
+    let options = BalanceConfig::default();
+    let assert_next = |fixture: &Fixture| {
+        let mut view = fixture.view();
+        view.track_placement(action.clone());
+        let plan = plan_round(&view, &fixture.config, &options, &fixture.stats).1;
+        assert!(matches!(
+            plan.choice,
+            Some(PlacementChoice {
+                action: PlacementAction::Shard(movement),
+                node_request: true,
+                ..
+            }) if movement.source_group == 2 && movement.target_group == 4
+        ));
+    };
+    assert_next(&fixture);
+
+    fixture.groups[2].shards.push(shard);
+    fixture.groups[2].epoch = sekas_api::Epoch(fixture.groups[2].epoch).apply_shard_delta().0;
+    fixture.report_requests(3, 2, 2, 50, true);
+    assert_next(&fixture);
+}
+
+#[test]
+fn equal_node_totals_do_not_hide_separate_read_and_write_hotspots() {
+    let fixture = request_fixture(2, &[&[0, 1], &[0, 1], &[0, 1], &[0, 1]]);
+    for (group, node, traffic) in
+        [(1, 0, (60, 0)), (2, 0, (40, 0)), (3, 1, (0, 60)), (4, 1, (0, 40))]
+    {
+        fixture.report_traffic(group, node, 1, traffic, false);
+    }
+    let options = BalanceConfig::default();
+    let first = fixture.plan_placement(&options);
+    assert_eq!(first.requests[&0], Some(100.));
+    assert_eq!(first.requests[&1], Some(100.));
+    let first = first.choice.unwrap();
+    let PlacementAction::Leader(transfer) = first.action else {
+        panic!("expected leader transfer")
+    };
+    assert!(first.node_request);
+    let traffic = [(60, 0), (40, 0), (0, 60), (0, 40)][transfer.group as usize - 1];
+    fixture.report_traffic(transfer.group, transfer.target_node, 2, traffic, false);
+    let second = fixture.plan_placement(&options).choice.unwrap();
+    assert!(second.node_request);
+    assert_ne!(first.dimension, second.dimension);
+}
+
+#[test]
+fn node_read_placement_preserves_node_write_balance() {
+    let mut fixture = request_fixture(2, &[&[0, 1], &[0], &[1]]);
+    fixture.config.enable_hot_shard_split = false;
+    fixture.config.move_shard_size_limit = 0;
+    fixture.report_traffic(1, 0, 1, (60, 40), false);
+    fixture.report_traffic(2, 0, 1, (40, 0), false);
+    fixture.report_traffic(3, 1, 1, (0, 100), false);
+    let options = BalanceConfig::default();
+    assert!(fixture.plan_placement(&options).choice.is_none());
+    fixture.config.enable_write_balance = false;
+    assert!(matches!(
+        fixture.plan_placement(&options).choice,
+        Some(PlacementChoice {
+            dimension: BalanceDimension::ReadUnits,
+            node_request: true,
+            action: PlacementAction::Leader(_),
+            ..
+        })
+    ));
+}
+
+#[test]
+fn group_traffic_can_improve_after_both_node_axes_are_balanced() {
+    let mut fixture = request_fixture(2, &[&[0], &[0], &[1]]);
+    fixture.groups[0].shards.push(ShardDesc::whole(10, sekas_schema::FIRST_USER_TABLE_ID));
+    fixture.groups[1].shards.clear();
+    fixture.report_traffic(1, 0, 1, (50, 0), false);
+    fixture.report_traffic(2, 0, 1, (0, 0), false);
+    fixture.report_traffic(3, 1, 1, (100, 0), false);
+    let mut options = BalanceConfig::default();
+    let plan = fixture.plan_placement(&options);
+    assert_eq!(plan.requests[&0], Some(100.));
+    assert_eq!(plan.requests[&1], Some(100.));
+    assert!(matches!(plan.choice, Some(PlacementChoice {
+        dimension: BalanceDimension::ReadUnits, priority: crate::root::allocator::PlacementPriority::Imbalance,
+        node_request: false, action: PlacementAction::Shard(movement), ..
+    }) if movement.source_group == 1 && movement.target_group == 2));
+
+    options.set("deadline.read_units", "90").unwrap();
+    assert!(matches!(fixture.plan_placement(&options).choice, Some(PlacementChoice {
+        dimension: BalanceDimension::ReadUnits, priority: crate::root::allocator::PlacementPriority::LoadDeadline,
+        node_request: false, action: PlacementAction::Shard(movement), ..
+    }) if movement.source_group == 1 && movement.target_group == 2));
+}
+
+#[test]
+fn requests_check_resource_deadlines_and_ignore_cpu_changes_within_a_shared_host() {
+    let mut fixture = request_fixture(2, &[&[0, 1], &[0, 1]]);
+    fixture.config.enable_cpu_balance = true;
+    fixture.config.enable_hot_shard_split = false;
+    fixture.report_requests(1, 0, 1, 70, false);
+    fixture.report_requests(2, 0, 1, 60, false);
+    for (node, used) in [(0, 80.), (1, 85.)] {
+        fixture.stats.handle_node_resources(
+            node,
+            Some(NodeResourceUsage {
+                cpu_used: Some(used),
+                cpu_capacity: 100.,
+                process_cpu_used: Some(30.),
+                ..Default::default()
+            }),
+        );
+    }
+    let mut options = BalanceConfig::default();
+    assert!(fixture.plan_placement(&options).choice.is_none());
+    for id in ["0", "1"] {
+        options.resource_domains.insert(
+            id.into(),
+            crate::ResourceDomains { cpu: Some("shared".into()), ..Default::default() },
+        );
+    }
+    assert!(matches!(fixture.plan_placement(&options).choice,
+        Some(PlacementChoice { dimension: BalanceDimension::WriteUnits, node_request: true,
+            action: PlacementAction::Leader(transfer), .. }) if transfer.target_node == 1));
+}
+
+#[test]
+fn requests_split_a_hot_shard_when_whole_moves_cannot_help() {
+    let mut fixture = request_fixture(2, &[&[0, 1], &[0, 1]]);
+    fixture.report_requests(1, 0, 1, 100, false);
+    fixture.report_requests(2, 1, 1, 20, false);
+    let options = BalanceConfig::default();
+    let plan = fixture.plan_placement(&options);
+    assert!(plan.choice.is_none());
+    assert!(plan.hot_split.is_some_and(|split| split.group == 1 && split.shard == 1));
+    fixture.config.enable_hot_shard_split = false;
+    assert!(fixture.plan_placement(&options).hot_split.is_none());
 }
 
 fn group_with_sizes(id: u64, contents: &[(u64, u64)]) -> (GroupDesc, GroupStats) {
