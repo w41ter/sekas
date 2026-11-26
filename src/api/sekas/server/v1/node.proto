@@ -575,6 +575,8 @@ message MoveShardResponse {
 message ForwardRequest {
     uint64 group_id = 1;
     uint64 shard_id = 2;
+    // Destination epoch at AcceptShard, identifying the migration that supplied the history.
+    uint64 dest_group_epoch = 5;
     repeated ValueSet forward_data = 3;
     GroupRequestUnion request = 4;
 }

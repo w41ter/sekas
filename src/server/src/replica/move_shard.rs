@@ -24,54 +24,84 @@ use crate::serverpb::v1::*;
 use crate::{Error, Result};
 
 impl Replica {
-    /// Ingest value set of a key if it not exists before.
-    pub async fn ingest_value_set(&self, shard_id: u64, value_set: &ValueSet) -> Result<()> {
-        self.ingest_value_sets(shard_id, std::slice::from_ref(value_set), &value_set.user_key).await
-    }
-
-    /// Ingest a chunk of value sets and save the ingestion progress in one
-    /// proposal.
-    pub async fn ingest_value_sets(
+    /// Import source history before executing a forwarded request.
+    pub(crate) async fn ingest_forwarded_value_set(
         &self,
         shard_id: u64,
-        value_sets: &[ValueSet],
-        progress_key: &[u8],
+        dest_group_epoch: u64,
+        value_set: &ValueSet,
     ) -> Result<()> {
         let _acl_guard = self.take_read_acl_guard().await;
-        self.check_moving_shard_request_early(shard_id)?;
-
-        let mut wb = WriteBatch::default();
-        let mut has_ingested = false;
-        let mut latch_guards = Vec::with_capacity(value_sets.len());
-        for value_set in value_sets {
-            let latch_guard = self.latch_mgr.acquire(shard_id, &value_set.user_key).await?;
-            has_ingested |=
-                ingest_value_set(&self.group_engine, shard_id, value_set, &mut wb).await?;
-            latch_guards.push(latch_guard);
+        let (term, movement) = self.shard_import_state(shard_id)?;
+        let Some(movement) = movement else { return Ok(()) };
+        if !movement.matches_forward(self.info.group_id, dest_group_epoch) {
+            return Err(Error::EpochNotMatch(self.descriptor()));
+        }
+        if movement.step() == MoveShardStep::Moved {
+            return Ok(());
         }
 
-        let eval_result = EvalResult {
-            batch: if has_ingested {
-                Some(WriteBatchRep { data: wb.data().to_owned() })
-            } else {
-                None
-            },
-            op: Some(SyncOp::ingest(progress_key.to_vec())),
-        };
-        self.raft_group.propose(eval_result, None)?.wait_result().await?;
-        drop(latch_guards);
-
+        let _latch = self.latch_mgr.acquire(shard_id, &value_set.user_key).await?;
+        let mut wb = WriteBatch::default();
+        let desc = movement.get_move_shard_desc();
+        if ingest_value_set(&self.group_engine, desc, value_set, &mut wb)? {
+            wb.mark_migrated_key(desc.dest_group_epoch, &value_set.user_key);
+            self.propose_shard_import(term, wb, None).await?;
+        }
         Ok(())
     }
 
-    /// Save the ingestion progress to support fast recovery.
-    pub async fn save_ingest_progress(&self, shard_id: u64, user_key: &[u8]) -> Result<()> {
+    /// Import a contiguous chunk from the background pull and advance its
+    /// checkpoint in the same proposal.
+    pub(crate) async fn ingest_shard_chunk(
+        &self,
+        desc: &MoveShardDesc,
+        value_sets: &[ValueSet],
+    ) -> Result<()> {
+        let Some(last) = value_sets.last() else { return Ok(()) };
+        let shard_id = desc.get_shard_id();
         let _acl_guard = self.take_read_acl_guard().await;
-        self.check_moving_shard_request_early(shard_id)?;
-        let eval_result =
-            EvalResult { op: Some(SyncOp::ingest(user_key.to_vec())), ..Default::default() };
-        self.raft_group.propose(eval_result, None)?.wait_result().await?;
-        Ok(())
+        let (term, movement) = self.shard_import_state(shard_id)?;
+        if !movement.as_ref().is_some_and(|state| {
+            desc.dest_group_id == self.info.group_id
+                && state.get_move_shard_desc() == desc
+                && state.step() == MoveShardStep::Moving
+        }) {
+            return Err(Error::ShardNotFound(shard_id));
+        }
+
+        let mut wb = WriteBatch::default();
+        let mut latches = Vec::with_capacity(value_sets.len());
+        for value_set in value_sets {
+            latches.push(self.latch_mgr.acquire(shard_id, &value_set.user_key).await?);
+            ingest_value_set(&self.group_engine, desc, value_set, &mut wb)?;
+        }
+
+        self.propose_shard_import(term, wb, Some(SyncOp::ingest(last.user_key.clone()))).await
+    }
+
+    fn shard_import_state(&self, shard_id: u64) -> Result<(u64, Option<MoveShardState>)> {
+        let state = self.lease_state.lock().unwrap();
+        if !state.is_ready_for_serving() {
+            return Err(Error::NotLeader(
+                self.info.group_id,
+                state.applied_term,
+                state.leader_descriptor(),
+            ));
+        }
+        let movement =
+            state.move_shard_state.clone().filter(|state| state.get_shard_id() == shard_id);
+        Ok((state.replica_state.term, movement))
+    }
+
+    async fn propose_shard_import(
+        &self,
+        term: u64,
+        wb: WriteBatch,
+        op: Option<Box<SyncOp>>,
+    ) -> Result<()> {
+        let batch = (!wb.is_empty()).then(|| WriteBatchRep { data: wb.data().to_owned() });
+        self.raft_group.propose(EvalResult { batch, op }, Some(term))?.wait_result().await
     }
 
     pub async fn delete_chunks(&self, shard_id: u64, keys: &[(Vec<u8>, u64)]) -> Result<()> {

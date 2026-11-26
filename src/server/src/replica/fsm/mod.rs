@@ -92,6 +92,9 @@ impl WatchHub {
 
 impl rocksdb::WriteBatchIterator for GroupStateMachine {
     fn put(&mut self, key: Box<[u8]>, value: Box<[u8]>) {
+        if !crate::engine::is_mvcc_key(&key) {
+            return;
+        }
         let entry = MvccEntry::new(key, value);
         let user_key = entry.user_key();
         let version = entry.version();
@@ -315,7 +318,13 @@ impl GroupStateMachine {
                 }
 
                 debug_assert!(state.step == MoveShardStep::Moving as i32);
-                state.last_moved_key = Some(move_shard.last_ingested_key);
+                if state
+                    .last_moved_key
+                    .as_ref()
+                    .is_none_or(|last| *last < move_shard.last_ingested_key)
+                {
+                    state.last_moved_key = Some(move_shard.last_ingested_key);
+                }
 
                 self.plugged_write_states.move_shard_state = Some(state);
             }
@@ -325,6 +334,11 @@ impl GroupStateMachine {
                     state.step == MoveShardStep::Moving as i32
                         || state.step == MoveShardStep::Prepare as i32
                 );
+                let desc = state.get_move_shard_desc();
+                if desc.dest_group_id == group_desc.id {
+                    self.clear_migrated_keys(desc);
+                }
+
                 state.step = MoveShardStep::Moved as i32;
                 self.plugged_write_states.move_shard_state = Some(state);
                 self.move_shard_state_updated = true;
@@ -350,6 +364,7 @@ impl GroupStateMachine {
                 let desc = state.get_move_shard_desc();
                 if desc.dest_group_id == group_desc.id {
                     self.clear_shard_data(desc.get_shard_desc())?;
+                    self.clear_migrated_keys(desc);
                     group_desc.epoch = apply_shard_delta(group_desc.epoch);
                     self.desc_updated = true;
                 }
@@ -360,6 +375,12 @@ impl GroupStateMachine {
             }
         }
         Ok(())
+    }
+
+    fn clear_migrated_keys(&mut self, desc: &MoveShardDesc) {
+        let mut batch = WriteBatch::default();
+        batch.clear_migrated_keys(desc.dest_group_epoch);
+        self.plugged_write_batches.push(batch);
     }
 
     fn apply_moving_shard(

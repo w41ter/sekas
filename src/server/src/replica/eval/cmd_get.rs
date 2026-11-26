@@ -36,8 +36,7 @@ pub(crate) async fn get<T: LatchManager>(
         let shard_id = desc.shard_desc.as_ref().unwrap().id;
         if shard_id == req.shard_id {
             let payload = engine.get_all_versions(shard_id, &req.user_key).await?;
-            let forward_ctx =
-                ForwardCtx { shard_id, dest_group_id: desc.dest_group_id, payloads: vec![payload] };
+            let forward_ctx = ForwardCtx { movement: desc.clone(), payloads: vec![payload] };
             return Err(Error::Forward(forward_ctx));
         }
     }

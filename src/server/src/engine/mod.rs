@@ -26,6 +26,7 @@ use std::sync::Arc;
 use log::info;
 use sekas_rock::fs::create_dir_all_if_not_exists;
 
+pub(crate) use self::group::keys::is_mvcc_key;
 pub(crate) use self::group::{
     GroupEngine, MvccEntry, MvccIterator, PreparedGroupSnapshot, RawIterator, Snapshot,
     SnapshotMode, WriteBatch, WriteStates,

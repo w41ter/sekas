@@ -11,26 +11,25 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-use sekas_api::server::v1::ValueSet;
+use sekas_api::server::v1::{MoveShardDesc, ValueSet};
 
 use crate::Result;
 use crate::engine::{GroupEngine, WriteBatch};
 
-pub async fn ingest_value_set(
+/// Stage source history and report whether this is a key's first import.
+pub fn ingest_value_set(
     engine: &GroupEngine,
-    shard_id: u64,
+    desc: &MoveShardDesc,
     value_set: &ValueSet,
     wb: &mut WriteBatch,
 ) -> Result<bool> {
-    // TODO(walter) assert row lock is hold.
-    if value_set.values.is_empty() {
+    if engine.pull_covers_key(&value_set.user_key)
+        || engine.is_migrated_key(desc.dest_group_epoch, &value_set.user_key)?
+    {
         return Ok(false);
     }
 
-    if engine.get(shard_id, &value_set.user_key).await?.is_some() {
-        return Ok(false);
-    };
-
+    let shard_id = desc.get_shard_id();
     for value in &value_set.values {
         if let Some(content) = value.content.as_ref() {
             engine.put(wb, shard_id, &value_set.user_key, content, value.version)?;
@@ -44,7 +43,7 @@ pub async fn ingest_value_set(
 
 #[cfg(test)]
 mod tests {
-    use sekas_api::server::v1::Value;
+    use sekas_api::server::v1::{ShardDesc, Value};
     use sekas_rock::fn_name;
 
     use super::*;
@@ -54,21 +53,24 @@ mod tests {
     const SHARD_ID: u64 = 1;
 
     #[sekas_macro::test]
-    async fn cmd_ingest_value_set_when_no_former_value_exists() {
+    async fn cmd_ingest_value_set_skips_marked_key() {
         let dir = TempDir::new(fn_name!()).unwrap();
         let engine = create_group_engine(dir.path(), 1, 1, 1).await;
+        let desc =
+            MoveShardDesc { shard_desc: Some(ShardDesc::whole(SHARD_ID, 1)), ..Default::default() };
 
         let value_set = ValueSet { user_key: vec![1, 2, 3, 4], values: vec![Value::tombstone(1)] };
         let mut wb = WriteBatch::default();
-        let ingested = ingest_value_set(&engine, SHARD_ID, &value_set, &mut wb).await.unwrap();
+        let ingested = ingest_value_set(&engine, &desc, &value_set, &mut wb).unwrap();
         assert!(ingested);
+        wb.mark_migrated_key(desc.dest_group_epoch, &value_set.user_key);
         let wb = WriteBatch::new(wb.data());
         engine.commit(wb, WriteStates::default(), false).unwrap();
 
-        // Ignore if the user key already exists.
+        // Ignore a key that has already been imported.
         let value_set = ValueSet { user_key: vec![1, 2, 3, 4], values: vec![Value::tombstone(1)] };
         let mut wb = WriteBatch::default();
-        let ingested = ingest_value_set(&engine, SHARD_ID, &value_set, &mut wb).await.unwrap();
+        let ingested = ingest_value_set(&engine, &desc, &value_set, &mut wb).unwrap();
         assert!(!ingested);
     }
 }

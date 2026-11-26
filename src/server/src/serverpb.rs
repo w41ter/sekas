@@ -78,6 +78,11 @@ pub mod v1 {
 
     impl MoveShardState {
         #[inline]
+        pub(crate) fn matches_forward(&self, group_id: u64, dest_group_epoch: u64) -> bool {
+            let desc = self.get_move_shard_desc();
+            desc.dest_group_id == group_id && desc.dest_group_epoch == dest_group_epoch
+        }
+
         pub fn get_shard_desc(&self) -> &ShardDesc {
             self.get_move_shard_desc().get_shard_desc()
         }

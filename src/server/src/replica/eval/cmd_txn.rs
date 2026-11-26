@@ -112,11 +112,7 @@ async fn write_intent_forward_part(
     Ok(Some(ForwardPart {
         indexes: vec![index],
         request,
-        forward_ctx: ForwardCtx {
-            shard_id,
-            dest_group_id: desc.dest_group_id,
-            payloads: vec![payload],
-        },
+        forward_ctx: ForwardCtx { movement: desc.clone(), payloads: vec![payload] },
     }))
 }
 
@@ -448,11 +444,7 @@ async fn intent_key_forward_part(
     Ok(Some(ForwardPart {
         indexes: vec![index],
         request,
-        forward_ctx: ForwardCtx {
-            shard_id,
-            dest_group_id: desc.dest_group_id,
-            payloads: vec![payload],
-        },
+        forward_ctx: ForwardCtx { movement: desc.clone(), payloads: vec![payload] },
     }))
 }
 

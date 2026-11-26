@@ -549,20 +549,12 @@ impl Node {
         };
 
         let shard_id = request.shard_id;
+        let dest_group_epoch = request.dest_group_epoch;
         let mut ingest_handles = Vec::with_capacity(request.forward_data.len());
         for value_set in request.forward_data {
-            if value_set.values.is_empty() {
-                continue;
-            }
-            let replica_clone = replica.clone();
+            let replica = replica.clone();
             let handle = sekas_runtime::spawn(async move {
-                match replica_clone.ingest_value_set(shard_id, &value_set).await {
-                    Ok(_) | Err(Error::ShardNotFound(_)) => {
-                        // Ingest success or shard is migrated.
-                        Ok(())
-                    }
-                    Err(e) => Err(e),
-                }
+                replica.ingest_forwarded_value_set(shard_id, dest_group_epoch, &value_set).await
             });
             ingest_handles.push(handle);
         }
@@ -578,7 +570,7 @@ impl Node {
             expected_term: None,
         };
 
-        let exec_ctx = ExecCtx::forward(request.shard_id);
+        let exec_ctx = ExecCtx::forward(shard_id, dest_group_epoch);
         let resp = match execute(&replica, &exec_ctx, &group_request).await {
             Err(Error::Forward(_)) => unreachable!(),
             Err(err) => return Err(err),
@@ -1186,6 +1178,120 @@ mod tests {
         assert!(replica.on_leader(fn_name!(), false).await.unwrap().is_some());
         let mut exec_ctx = ExecCtx::with_epoch(replica.epoch());
         replica.execute(&mut exec_ctx, &request).await
+    }
+
+    #[sekas_macro::test]
+    async fn forwarded_shard_history_preserves_pull_checkpoint() {
+        let dir = TempDir::new(fn_name!()).unwrap();
+        let node = bootstrap_node(dir.path()).await;
+        let mut destination = group_descriptor();
+        let shard = destination.shards.pop().unwrap();
+        let replica = create_first_replica_with_desc(&node, destination).await;
+        let accept = AcceptShardRequest {
+            src_group_id: GROUP_ID + 1,
+            src_group_epoch: INITIAL_EPOCH,
+            shard_desc: Some(shard),
+        };
+        execute_on_leader(&replica, Request::AcceptShard(accept)).await;
+        let movement = replica.move_shard_state().unwrap().move_shard.unwrap();
+        replica.enter_pulling_step(&movement).await.unwrap();
+
+        let value = Value::with_value(b"history".to_vec(), 1);
+        let pulled = ValueSet { user_key: b"a".to_vec(), values: vec![value.clone()] };
+        replica.ingest_shard_chunk(&movement, &[pulled]).await.unwrap();
+
+        let forwarded = ValueSet { user_key: b"z".to_vec(), values: vec![value.clone()] };
+        node.forward(ForwardRequest {
+            group_id: GROUP_ID,
+            shard_id: SHARD_ID,
+            forward_data: vec![forwarded],
+            dest_group_epoch: movement.dest_group_epoch,
+            request: Some(GroupRequestUnion { request: Some(build_read_request(b"z", 1)) }),
+        })
+        .await
+        .unwrap();
+
+        let engine = replica.group_engine();
+        assert_eq!(engine.get(SHARD_ID, b"z").await.unwrap(), Some(value));
+        assert_eq!(engine.move_shard_state().unwrap().last_moved_key.as_deref(), Some(&b"a"[..]));
+    }
+
+    #[sekas_macro::test]
+    async fn shard_migration_does_not_restore_cleared_intent() {
+        use prost::Message;
+        use sekas_schema::system::txn::TXN_INTENT_VERSION;
+
+        let dir = TempDir::new(fn_name!()).unwrap();
+        let node = bootstrap_node(dir.path()).await;
+        let mut destination = group_descriptor();
+        let shard = destination.shards.pop().unwrap();
+        let replica = create_first_replica_with_desc(&node, destination).await;
+        execute_on_leader(
+            &replica,
+            Request::AcceptShard(AcceptShardRequest {
+                src_group_id: GROUP_ID + 1,
+                src_group_epoch: INITIAL_EPOCH,
+                shard_desc: Some(shard),
+            }),
+        )
+        .await;
+        let movement = replica.move_shard_state().unwrap().move_shard.unwrap();
+        replica.enter_pulling_step(&movement).await.unwrap();
+
+        let start_version = 42;
+        let key = b"a";
+        let intent = TxnIntent::with_put(start_version, Some(b"value".to_vec()));
+        let old_history = ValueSet {
+            user_key: key.to_vec(),
+            values: vec![Value::with_value(intent.encode_to_vec(), TXN_INTENT_VERSION)],
+        };
+        let next_key = ValueSet { user_key: b"b".to_vec(), values: old_history.values.clone() };
+        let forward = |dest_group_epoch, history, request| ForwardRequest {
+            group_id: GROUP_ID,
+            shard_id: SHARD_ID,
+            dest_group_epoch,
+            forward_data: vec![history],
+            request: Some(GroupRequestUnion { request: Some(request) }),
+        };
+        let epoch = movement.dest_group_epoch;
+        let query = || {
+            Request::QueryIntent(QueryIntentRequest {
+                start_version,
+                shard_keys: vec![ShardKey { shard_id: SHARD_ID, user_key: key.to_vec() }],
+            })
+        };
+
+        let engine = replica.group_engine();
+        let stale = forward(epoch + 1, old_history.clone(), query());
+        assert!(matches!(node.forward(stale).await, Err(Error::EpochNotMatch(_))));
+        assert!(engine.get(SHARD_ID, key).await.unwrap().is_none());
+
+        node.forward(forward(epoch, old_history.clone(), build_abort_request(start_version, key)))
+            .await
+            .unwrap();
+        assert!(engine.get(SHARD_ID, key).await.unwrap().is_none());
+        assert!(engine.is_migrated_key(epoch, key).unwrap());
+
+        node.forward(forward(epoch, old_history.clone(), query())).await.unwrap();
+        assert!(engine.get(SHARD_ID, key).await.unwrap().is_none());
+
+        let chunk = [old_history.clone(), next_key.clone()];
+        replica.ingest_shard_chunk(&movement, &chunk).await.unwrap();
+        assert!(engine.get(SHARD_ID, key).await.unwrap().is_none());
+        assert_eq!(engine.get_all_versions(SHARD_ID, b"b").await.unwrap(), next_key);
+
+        // Pull advances the cursor without writing a per-key marker.
+        node.forward(forward(epoch, next_key.clone(), build_abort_request(start_version, b"b")))
+            .await
+            .unwrap();
+        assert!(!engine.is_migrated_key(epoch, b"b").unwrap());
+        replica.ingest_shard_chunk(&movement, &[next_key]).await.unwrap();
+        assert!(engine.get(SHARD_ID, b"b").await.unwrap().is_none());
+
+        replica.commit_shard_moving(&movement).await.unwrap();
+        assert!(!engine.is_migrated_key(epoch, key).unwrap());
+        node.forward(forward(epoch, old_history, query())).await.unwrap();
+        assert!(engine.get(SHARD_ID, key).await.unwrap().is_none());
     }
 
     async fn execute_read_request(replica: &Replica, key: &[u8]) -> Option<Value> {

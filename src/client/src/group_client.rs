@@ -355,8 +355,9 @@ impl GroupClient {
         group_desc: GroupDesc,
         opt: &InvokeOpt<'_>,
     ) -> Result<()> {
-        // If the exact epoch is required, don't retry if epoch isn't matched.
-        if opt.accurate_epoch {
+        // A forwarded request can report the destination's epoch. Only refresh
+        // this client's routing from a descriptor for the group it addresses.
+        if opt.accurate_epoch || group_desc.id != self.group_id {
             return Err(Error::EpochNotMatch(group_desc));
         }
 

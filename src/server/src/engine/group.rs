@@ -314,6 +314,23 @@ impl GroupEngine {
         Ok(value_set)
     }
 
+    /// Look up a key that was imported ahead of the background pull.
+    pub fn is_migrated_key(&self, epoch: u64, key: &[u8]) -> Result<bool> {
+        let core = self.core.read().unwrap();
+        let cf = self.cf_for(&core.cf);
+        Ok(self.raw_db.get_pinned_cf(&cf, keys::migrated_key(epoch, key))?.is_some())
+    }
+
+    pub fn pull_covers_key(&self, key: &[u8]) -> bool {
+        self.core
+            .read()
+            .unwrap()
+            .move_shard_state
+            .as_ref()
+            .and_then(|state| state.last_moved_key.as_deref())
+            .is_some_and(|cursor| key <= cursor)
+    }
+
     /// Put key value into the corresponding shard.
     pub fn put(
         &self,
@@ -473,29 +490,39 @@ impl GroupEngine {
         let table_id = desc.table_id;
         debug_assert_ne!(table_id, LOCAL_TABLE_ID);
 
-        let opts = ReadOptions::default();
-        let key = match &mode {
+        let (from_key, end_key_opt) = match &mode {
             SnapshotMode::Start { start_key: Some(start_key) } => {
                 debug_assert!(
                     shard::belong_to(desc, start_key),
                     "shard desc {desc:?} start key {start_key:?}"
                 );
-                keys::raw(table_id, start_key)
+                (keys::raw(table_id, start_key), None)
             }
             SnapshotMode::Start { start_key: None } => {
                 // An empty key is equivalent to range start key.
-                keys::raw(table_id, &shard::start_key(desc))
+                let (start, end) = Self::shard_raw_range(desc)?;
+                (start, Some(end))
             }
             SnapshotMode::Key { key } => {
                 debug_assert!(shard::belong_to(desc, key), "shard desc {desc:?} key {key:?}");
-                keys::raw(table_id, key)
+                let from_key = keys::raw(table_id, key);
+                let end_key = if key.is_empty() {
+                    lexical::lexical_next(&from_key)
+                } else {
+                    lexical::lexical_next(&keys::mvcc_min_key(table_id, key))
+                };
+                (from_key, Some(end_key))
             }
             SnapshotMode::Prefix { key } => {
                 debug_assert!(shard::belong_to(desc, key), "shard desc {desc:?} key {key:?}");
-                keys::raw(table_id, key)
+                (keys::raw(table_id, key), None)
             }
         };
-        let inner_mode = IteratorMode::From(&key, Direction::Forward);
+        let mut opts = ReadOptions::default();
+        if let Some(end_key) = end_key_opt {
+            opts.set_iterate_upper_bound(end_key);
+        }
+        let inner_mode = IteratorMode::From(&from_key, Direction::Forward);
         let iter = self.raw_db.iterator_cf_opt(&self.cf_for(&cf), opts, inner_mode);
         Ok(Snapshot::new(table_id, iter, mode, desc, cf))
     }
@@ -975,6 +1002,11 @@ pub(super) mod keys {
         }
     }
 
+    #[inline]
+    pub fn mvcc_min_key(table_id: u64, key: &[u8]) -> Vec<u8> {
+        mvcc_key(table_id, key, u64::MIN)
+    }
+
     /// Generate mvcc key with the memcomparable format.
     pub fn mvcc_key(table_id: u64, key: &[u8], version: u64) -> Vec<u8> {
         use std::io::{Cursor, Read};
@@ -1106,6 +1138,18 @@ pub(super) mod keys {
     }
 
     #[inline]
+    pub fn migrated_key(dest_group_epoch: u64, key: &[u8]) -> Vec<u8> {
+        // Each group has its own CF. Finishing or aborting a migration advances its
+        // epoch.
+        const PREFIX: &[u8] = b"MIGRATED_KEY";
+        let mut marker = Vec::with_capacity(16 + PREFIX.len() + key.len());
+        marker.extend_from_slice(&super::LOCAL_TABLE_ID.to_le_bytes());
+        marker.extend_from_slice(PREFIX);
+        marker.extend_from_slice(&dest_group_epoch.to_be_bytes());
+        marker.extend_from_slice(key);
+        marker
+    }
+
     pub fn move_shard_state() -> Vec<u8> {
         let mut buf = Vec::with_capacity(core::mem::size_of::<u64>() + MIGRATE_STATE.len());
         buf.extend_from_slice(super::LOCAL_TABLE_ID.to_le_bytes().as_slice());
@@ -1150,6 +1194,16 @@ impl WriteBatch {
     #[inline]
     pub fn delete_range(&mut self, start: Vec<u8>, end: Vec<u8>) {
         self.delete_ranges.push((start, end));
+    }
+
+    pub fn mark_migrated_key(&mut self, epoch: u64, key: &[u8]) {
+        self.put(keys::migrated_key(epoch, key), []);
+    }
+
+    pub fn clear_migrated_keys(&mut self, epoch: u64) {
+        let start = keys::migrated_key(epoch, &[]);
+        let end = lexical::lexical_next_boundary(&start);
+        self.delete_range(start, end);
     }
 
     /// Remove pending writes in a shard while preserving all scheduled

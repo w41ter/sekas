@@ -89,19 +89,10 @@ where
     T: LatchManager,
 {
     if !req.allow_scan_moving_shard {
-        if let Some(dest_group_id) = exec_ctx
-            .move_shard_desc
-            .as_ref()
-            .filter(|desc| {
-                desc.get_shard_id() == req.shard_id && desc.src_group_id == exec_ctx.group_id
-            })
-            .map(|desc| desc.dest_group_id)
-        {
-            return Err(Error::Forward(ForwardCtx {
-                shard_id: req.shard_id,
-                dest_group_id,
-                payloads: vec![],
-            }));
+        if let Some(desc) = exec_ctx.move_shard_desc.as_ref().filter(|desc| {
+            desc.get_shard_id() == req.shard_id && desc.src_group_id == exec_ctx.group_id
+        }) {
+            return Err(Error::Forward(ForwardCtx { movement: desc.clone(), payloads: vec![] }));
         }
     }
 

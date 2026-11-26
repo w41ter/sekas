@@ -16,7 +16,7 @@ mod helper;
 
 use std::time::Duration;
 
-use log::{error, info, warn};
+use log::{info, warn};
 use sekas_api::server::v1::group_request_union::Request;
 use sekas_api::server::v1::group_response_union::Response;
 use sekas_api::server::v1::*;
@@ -686,28 +686,24 @@ async fn move_shard_scan_limit_has_more_while_forwarding() {
 #[sekas_macro::test]
 async fn move_shard_abort() {
     let mut ctx = TestContext::new(fn_name!());
+    ctx.disable_all_node_scheduler();
     let nodes = ctx.bootstrap_servers(3).await;
     let node_ids = nodes.keys().cloned().collect::<Vec<_>>();
     let c = ClusterClient::new(nodes).await;
-    let (group_id_1, group_id_2, shard_desc) = create_two_groups(&c, node_ids, 0).await;
-    let shard_id = shard_desc.id;
+    let (source, destination, shard) = create_two_groups(&c, node_ids, 0).await;
 
-    info!("issue accept shard {} request to group {}", shard_id, group_id_2);
+    let stale_source_epoch = c.must_group_epoch(source).await;
+    let destination_epoch = c.must_group_epoch(destination).await;
+    c.group(source).add_learner(123123, 1231231231).await.unwrap();
+    c.assert_large_group_epoch(source, stale_source_epoch).await;
 
-    let src_epoch = c.must_group_epoch(group_id_1).await;
-    c.group(group_id_1).add_learner(123123, 1231231231).await.unwrap();
+    c.group(destination).accept_shard(source, stale_source_epoch, &shard).await.unwrap();
+    c.assert_large_group_epoch(destination, destination_epoch).await;
 
-    let mut group_client = c.group(group_id_2);
-    // It will be reject by service busy?
-    // Ensure issue at least one shard moving.
-    while let Err(e) = group_client.accept_shard(group_id_1, src_epoch, &shard_desc).await {
-        error!("accept shard: {e:?}");
-        ctx.wait_election_timeout().await;
-    }
-    // Ensure the former shard moving is aborted by epoch not match.
-    while group_client.accept_shard(group_id_1, src_epoch, &shard_desc).await.is_err() {
-        ctx.wait_election_timeout().await;
-    }
+    let state = c.group(destination).inspect_group().await.unwrap();
+    assert!(state.shard_migration.is_none());
+    assert!(state.group.unwrap().shard(shard.id).is_none());
+    assert!(c.group_contains_shard(source, shard.id));
 }
 
 #[sekas_macro::test]
@@ -859,12 +855,14 @@ async fn move_shard_receive_forward_request_after_shard_migrated() {
 
     c.assert_group_leader(group_id_1).await;
     c.assert_group_leader(group_id_2).await;
+    let dest_group_epoch = c.must_group_epoch(group_id_2).await;
     move_shard(&c, &shard_desc, group_id_2, group_id_1).await;
 
     let mut group_client = c.group(group_id_2);
     let req = ForwardRequest {
         group_id: group_id_2,
         shard_id,
+        dest_group_epoch,
         forward_data: vec![ValueSet {
             user_key: b"a".to_vec(),
             values: vec![Value { content: Some(b"b".to_vec()), version: 1 }],

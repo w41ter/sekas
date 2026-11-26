@@ -45,7 +45,7 @@ pub(crate) async fn batch_write(
             for put in &req.puts {
                 payloads.push(write_ctx.engine().get_all_versions(req.shard_id, &put.key).await?);
             }
-            let forward_ctx = ForwardCtx { shard_id, dest_group_id: desc.dest_group_id, payloads };
+            let forward_ctx = ForwardCtx { movement: desc.clone(), payloads };
             return Err(Error::Forward(forward_ctx));
         }
     }

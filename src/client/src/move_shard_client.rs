@@ -102,6 +102,7 @@ impl MoveShardClient {
             let mut client = self.group_client();
             match client.forward(req).await {
                 Ok(resp) => return Ok(resp),
+                e @ Err(crate::Error::EpochNotMatch(..)) => return e,
                 Err(err) => {
                     retry_state.retry(err).await?;
                 }

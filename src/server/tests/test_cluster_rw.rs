@@ -205,7 +205,9 @@ async fn cluster_rw_with_leader_transfer() {
 
 #[sekas_macro::test]
 async fn cluster_rw_with_shard_moving() {
+    let barrier = std::sync::Arc::new(sekas_server::TestingBarrier::new());
     let mut ctx = TestContext::new(fn_name!());
+    ctx.mut_replica_testing_knobs().after_moving_shard_setup = Some(barrier.clone());
     ctx.set_num_cpus(3); // Add another group to accept shards.
     ctx.enable_group_balance();
 
@@ -218,9 +220,10 @@ async fn cluster_rw_with_shard_moving() {
     c.assert_table_ready(co.id).await;
 
     let source_state = c.find_router_group_state_by_key(co.id, &[0]).await.unwrap();
-    let prev_group_id = source_state.id;
-    let target_group_id = 2;
+    let target_group_id = if source_state.id == 2 { 1 } else { 2 };
     c.assert_num_group_voters(target_group_id, 3).await;
+    let shard = c.get_shard_desc(co.id, &[0]).await.unwrap();
+    let source_epoch = c.must_group_epoch(source_state.id).await;
 
     for i in 0..100 {
         let k = format!("key-{i}").as_bytes().to_vec();
@@ -230,23 +233,27 @@ async fn cluster_rw_with_shard_moving() {
         let r = r.map(String::from_utf8);
         assert!(matches!(&r, Some(Ok(v)) if v == &format!("value-{i}")), "index {i}: {r:?}");
 
-        if i % 10 == 0 {
-            let source_state = c.find_router_group_state_by_key(co.id, &[0]).await.unwrap();
-            if source_state.id == target_group_id {
-                continue;
-            }
-            let shard_desc = c.get_shard_desc(co.id, &[0]).await.unwrap();
-            let mut client = c.group(target_group_id);
-            spawn(async move {
-                client
-                    .accept_shard(source_state.id, source_state.epoch, &shard_desc)
-                    .await
-                    .unwrap();
-            });
+        if i == 0 {
+            let observed = barrier.arm();
+            c.group(target_group_id)
+                .accept_shard(source_state.id, source_epoch, &shard)
+                .await
+                .unwrap();
+            sekas_runtime::time::timeout(
+                std::time::Duration::from_secs(10),
+                barrier.wait_reached(observed),
+            )
+            .await
+            .expect("destination must start pulling");
         }
     }
-    let source_state = c.find_router_group_state_by_key(co.id, &[0]).await.unwrap();
-    assert_ne!(source_state.id, prev_group_id);
+    barrier.release();
+    c.assert_group_contains_shard(target_group_id, shard.id).await;
+
+    for i in [0, 99] {
+        let value = db.get(co.id, format!("key-{i}").into_bytes()).await.unwrap();
+        assert_eq!(value, Some(format!("value-{i}").into_bytes()));
+    }
 }
 
 #[test]

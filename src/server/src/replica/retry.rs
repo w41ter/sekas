@@ -106,7 +106,7 @@ pub async fn execute(
                 return Err(Error::EpochNotMatch(desc));
             }
             Err(Error::ShardNotFound(shard_id)) => {
-                if exec_ctx.forward_shard_id.is_none() {
+                if exec_ctx.forwarded_shard.is_none() {
                     panic!(
                         "shard {shard_id} is not found in group {} for serving request {request:?} epoch {}",
                         replica.replica_info().group_id,

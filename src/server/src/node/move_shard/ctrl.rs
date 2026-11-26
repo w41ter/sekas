@@ -34,8 +34,7 @@ use crate::{NodeConfig, Result, record_latency};
 
 #[derive(Clone, Debug)]
 pub struct ForwardCtx {
-    pub shard_id: u64,
-    pub dest_group_id: u64,
+    pub movement: MoveShardDesc,
     pub payloads: Vec<ValueSet>,
 }
 
@@ -125,16 +124,12 @@ impl MoveShardController {
         })
     }
 
-    pub async fn forward(
-        &self,
-        mut forward_ctx: ForwardCtx,
-        request: &Request,
-    ) -> Result<Response> {
-        let group_id = forward_ctx.dest_group_id;
+    pub async fn forward(&self, forward_ctx: ForwardCtx, request: &Request) -> Result<Response> {
+        let group_id = forward_ctx.movement.dest_group_id;
         let mut client = self.shared.build_move_shard_client(group_id);
-        forward_ctx.payloads.retain(|f| !f.values.is_empty());
         let req = ForwardRequest {
-            shard_id: forward_ctx.shard_id,
+            shard_id: forward_ctx.movement.get_shard_id(),
+            dest_group_epoch: forward_ctx.movement.dest_group_epoch,
             group_id,
             forward_data: forward_ctx.payloads,
             request: Some(GroupRequestUnion { request: Some(request.clone()) }),
@@ -333,12 +328,10 @@ pub async fn pull_shard(
         let shard_chunk = client.pull_shard_chunk(shard_id, last_key.clone()).await?;
         trace!("pull shard {shard_id} chunk, receive {} value sets", shard_chunk.len());
         if let Some(value_set) = shard_chunk.last() {
+            replica.ingest_shard_chunk(desc, &shard_chunk).await?;
             last_key = Some(value_set.user_key.clone());
         } else {
             finished = true;
-        }
-        if let Some(value_set) = shard_chunk.last() {
-            replica.ingest_value_sets(shard_id, &shard_chunk, &value_set.user_key).await?
         }
         NODE_INGEST_CHUNK_TOTAL.inc();
     }

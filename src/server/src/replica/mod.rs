@@ -99,8 +99,8 @@ pub struct ExecCtx {
     pub group_id: u64,
     pub replica_id: u64,
 
-    /// This is a forward request and here is the migrating shard.
-    pub forward_shard_id: Option<u64>,
+    /// Shard ID and destination migration epoch carried by a forwarded request.
+    forwarded_shard: Option<(u64, u64)>,
     /// The epoch of `GroupDesc` carried in this request.
     pub epoch: u64,
     /// Admission term of a fixed control-plane step, when requested by Root.
@@ -803,7 +803,13 @@ impl Replica {
             Err(Error::ServiceIsBusy(BusyReason::Moving))
         } else if matches!(req, Request::AcceptShard(_)) && lease_state.has_joint_config() {
             Err(Error::ServiceIsBusy(BusyReason::PendingConfigChange))
-        } else if exec_ctx.forward_shard_id.is_some() {
+        } else if let Some((shard_id, dest_group_epoch)) = exec_ctx.forwarded_shard {
+            if lease_state.move_shard_state.as_ref().is_some_and(|state| {
+                state.get_shard_id() == shard_id
+                    && !state.matches_forward(group_id, dest_group_epoch)
+            }) {
+                return Err(Error::EpochNotMatch(lease_state.descriptor.clone()));
+            }
             Ok(())
         } else if exec_ctx.epoch < lease_state.descriptor.epoch {
             trace!(
@@ -905,8 +911,8 @@ impl ExecCtx {
         ExecCtx { epoch, ..Default::default() }
     }
 
-    pub fn forward(shard_id: u64) -> Self {
-        ExecCtx { forward_shard_id: Some(shard_id), ..Default::default() }
+    pub fn forward(shard_id: u64, dest_group_epoch: u64) -> Self {
+        ExecCtx { forwarded_shard: Some((shard_id, dest_group_epoch)), ..Default::default() }
     }
 
     pub fn reset(&mut self) {

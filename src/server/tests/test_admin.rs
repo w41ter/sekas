@@ -220,9 +220,9 @@ async fn admin_show_traffic() {
         }
     }
     let groups = show(&client, "SHOW GROUPS;").await;
-    assert_eq!(show_cell(&groups, group.id, "leader_node_id"), node_id);
+    assert_eq!(show_cell(&groups, group.id, "leader_node"), node_id);
     assert_eq!(show_cell(&groups, group.id, "status"), "NORMAL");
-    assert_eq!(show_cell(&groups, group.id, "status_detail"), "-");
+    assert_eq!(show_cell(&groups, group.id, "detail"), "-");
 }
 
 #[sekas_macro::test]
@@ -268,12 +268,12 @@ async fn admin_configure_balancer() {
                     "status",
                     "addr",
                     "cpu_nums",
-                    "leader_count",
-                    "replica_count",
+                    "leader_cnt",
+                    "replica_cnt",
+                    "bad_replica_cnt",
                     "cpu",
                     "mem",
                     "disk",
-                    "bad_replica_count",
                     "read_qps",
                     "write_qps",
                     "read_bytes/s",
@@ -285,12 +285,12 @@ async fn admin_configure_balancer() {
                 Some((used.parse().ok()?, total.parse().ok()?))
             };
             let node = &nodes.rows[0].values;
-            if let Some(cpu) = node[6].as_str().and_then(parse_usage) {
+            if let Some(cpu) = node[7].as_str().and_then(parse_usage) {
                 let storage = |index: usize| {
                     parse_usage(node[index].as_str().unwrap().strip_suffix(" GiB").unwrap())
                         .unwrap()
                 };
-                for (used, total) in [cpu, storage(7), storage(8)] {
+                for (used, total) in [cpu, storage(8), storage(9)] {
                     assert!(total > 0. && used >= 0. && used <= total);
                 }
                 break;
@@ -431,7 +431,7 @@ async fn admin_show_replica_progress() {
     let groups = show(&client, "show groups").await;
     assert_eq!(show_cell(&groups, 0, "status"), "UNHEALTHY");
     let nodes = show(&client, "show nodes").await;
-    assert!(show_cell(&nodes, 2, "bad_replica_count").as_u64().unwrap() >= 1);
+    assert!(show_cell(&nodes, 2, "bad_replica_cnt").as_u64().unwrap() >= 1);
     assert!(show_cell(&nodes, 2, "read_qps").is_null());
 }
 
