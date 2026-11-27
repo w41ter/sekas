@@ -19,6 +19,7 @@ pub enum Statement {
     CreateDb(CreateDbStatement),
     CreateTable(CreateTableStatement),
     Config(ConfigStatement),
+    Set(SetStatement),
     Debug(DebugStatement),
     Echo(EchoStatement),
     Help(HelpStatement),
@@ -50,6 +51,12 @@ pub struct CreateTableStatement {
 pub struct ConfigStatement {
     pub key: Box<[u8]>,
     pub value: Box<[u8]>,
+}
+
+#[derive(Debug)]
+pub struct SetStatement {
+    pub key: String,
+    pub value: String,
 }
 
 #[derive(Debug)]
@@ -111,6 +118,7 @@ impl HelpStatement {
         match topic {
             "create" | "CREATE" => Self::display_create_topic(),
             "config" | "CONFIG" => Self::display_config_topic(),
+            "set" | "SET" => Self::display_set_topic(),
             "show" | "SHOW" => Self::display_show_topic(),
             "put" | "PUT" => Self::display_put_topic(),
             "delete" | "DELETE" => Self::display_delete_topic(),
@@ -119,6 +127,15 @@ impl HelpStatement {
                 format!("unknown command `{}`. Try `help`?", topic)
             }
         }
+    }
+
+    fn display_set_topic() -> String {
+        r##"
+SET TRACE ON|OFF
+    Print request traces for GET, PUT, and DELETE in this shell session.
+    Defaults to OFF.
+"##
+        .to_owned()
     }
 
     fn display_config_topic() -> String {
@@ -226,6 +243,7 @@ List of commands:
 
 create      create database, table ...
 config      change placement priorities and deadlines
+set         change a shell session setting
 show        show properties, such as databases, tables ...
 put         put value into a table
 delete      delete key from a table

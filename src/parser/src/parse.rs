@@ -41,6 +41,8 @@ impl<'a> Parser<'a> {
             parse_echo_statement(self)?
         } else if self.peek::<Token![config]>() {
             parse_config_stmt(self)?
+        } else if self.peek::<Token![set]>() {
+            parse_set_stmt(self)?
         } else if self.peek::<Token![create]>() {
             parse_create_stmt(self)?
         } else if self.peek::<Token![get]>() {
@@ -88,6 +90,21 @@ fn parse_config_stmt(parser: &mut Parser) -> ParseResult<Statement> {
         key: key.value().to_owned().into(),
         value: value.value().to_owned().into(),
     }))
+}
+
+// SET <key:ident> <value:ident>
+fn parse_set_stmt(parser: &mut Parser) -> ParseResult<Statement> {
+    let command = parser.next::<Token![ident]>()?;
+    if !command.value().eq_ignore_ascii_case("set") {
+        return Err(ParseError::Unexpected(command.coord()));
+    }
+    let key = parser.next::<Token![ident]>()?.value().to_owned();
+    let value = parser.next::<Token![ident]>()?.value().to_owned();
+    parser.next::<Token![;]>()?;
+    if parser.tokenizer.has_more() {
+        return Err(ParseError::Unexpected(parser.tokenizer.coord()));
+    }
+    Ok(Statement::Set(SetStatement { key, value }))
 }
 
 // Syntax:
@@ -208,5 +225,26 @@ fn try_parse_if_not_exists(parser: &mut Parser) -> ParseResult<bool> {
         Ok(true)
     } else {
         Ok(false)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_shell_settings() {
+        for (input, key, value) in
+            [("set trace on", "trace", "on"), (" SET TRACE OFF; ", "TRACE", "OFF")]
+        {
+            let Some(Statement::Set(setting)) = parse(input).unwrap() else {
+                panic!("expected SET statement");
+            };
+            assert_eq!(setting.key, key);
+            assert_eq!(setting.value, value);
+        }
+        for input in ["set trace", "settrace on", "set trace on extra", "set trace on; extra"] {
+            assert!(parse(input).is_err(), "{input}");
+        }
     }
 }

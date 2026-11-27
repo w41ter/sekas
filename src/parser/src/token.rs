@@ -71,6 +71,7 @@ keyword!(if);
 keyword!(into);
 keyword!(not);
 keyword!(put);
+keyword!(set);
 keyword!(show);
 keyword!(table);
 
@@ -264,6 +265,7 @@ macro_rules! Token {
     [into] =>           { $crate::token::Into };
     [not] =>            { $crate::token::Not };
     [put] =>            { $crate::token::Put };
+    [set] =>            { $crate::token::Set };
     [table] =>          { $crate::token::Table };
     [show] =>           { $crate::token::Show };
 

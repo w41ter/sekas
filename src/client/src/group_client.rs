@@ -17,6 +17,8 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::time::{Duration, Instant};
 
+use fastrace::future::FutureExt;
+use fastrace::prelude::Span;
 use futures::StreamExt;
 use log::{debug, trace, warn};
 use sekas_api::server::v1::group_request_union::Request;
@@ -27,6 +29,7 @@ use vaelo::{Status, StatusCode as Code};
 
 use crate::metrics::*;
 use crate::rpc::{NodeClient, RouterGroupState, RpcTimeout};
+use crate::trace::span_name;
 use crate::{Error, Result, SekasClient};
 
 #[derive(Clone, Debug, Default)]
@@ -146,15 +149,19 @@ impl GroupClient {
             trace!("group {group_id} issue rpc request with index {index} to node {node_id}");
             index += 1;
             let ctx = InvokeContext { group_id, epoch: self.epoch, timeout };
+            let span = Span::enter_with_local_parent(span_name::CLIENT_GROUP_RPC_ATTEMPT)
+                .with_property(|| ("group_id", group_id.to_string()))
+                .with_property(|| ("node_id", node_id.to_string()));
+            let call = op(ctx, client).in_span(span);
             let resp = if let Some(timeout) = timeout {
-                match tokio::time::timeout(timeout, op(ctx, client)).await {
+                match tokio::time::timeout(timeout, call).await {
                     Ok(result) => result,
                     Err(_) => Err(Status::deadline_exceeded(format!(
                         "group {group_id} node {node_id} RPC future"
                     ))),
                 }
             } else {
-                op(ctx, client).await
+                call.await
             };
             match resp {
                 Err(status) => self.apply_status(status, &opt)?,

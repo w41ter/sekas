@@ -26,6 +26,7 @@ use crate::error::rpc_status;
 use crate::metrics::record_group_request;
 use crate::record_latency_opt;
 use crate::trace::inject_trace_context;
+use crate::trace::rpc::{receive_trace, request_trace};
 
 #[derive(Debug, Clone)]
 pub struct Client {
@@ -158,12 +159,14 @@ impl Client {
         let (req, timeout) = req.into_timed_request();
         let metrics = record_group_request(req.get_ref());
         record_latency_opt!(metrics.as_ref().and_then(|metrics| metrics.duration));
-        let call = client.unary_group(inject_trace_context(req));
-        let res = match timeout {
-            Some(timeout) => call.timeout(timeout).await,
-            None => call.await,
-        }
-        .map_err(rpc_status)?;
+        let call = client.unary_group(request_trace(req));
+        let res = receive_trace(
+            match timeout {
+                Some(timeout) => call.timeout(timeout).await,
+                None => call.await,
+            }
+            .map_err(rpc_status),
+        )?;
         if let Some(metrics) = metrics {
             metrics.record_response(res.get_ref());
         }
@@ -217,12 +220,14 @@ impl Client {
 
     pub async fn forward(&self, req: ForwardRequest) -> Result<ForwardResponse, Status> {
         let client = self.client.clone();
-        let resp = client
-            .move_shard(MoveShardRequest {
-                request: Some(move_shard_request::Request::Forward(req)),
-            })
-            .await
-            .map_err(rpc_status)?;
+        let resp = receive_trace(
+            client
+                .move_shard(request_trace(MoveShardRequest {
+                    request: Some(move_shard_request::Request::Forward(req)),
+                }))
+                .await
+                .map_err(rpc_status),
+        )?;
         match resp.into_inner().response {
             Some(move_shard_response::Response::Forward(resp)) => Ok(resp),
             _ => Err(Status::internal(

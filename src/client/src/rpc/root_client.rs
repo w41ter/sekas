@@ -37,6 +37,7 @@ use crate::metrics::{
 };
 use crate::rpc::{ConnManager, NodeClient};
 use crate::trace::inject_trace_context;
+use crate::trace::rpc::{receive_trace, request_trace};
 use crate::{Error as ClientError, Result};
 
 macro_rules! extract_admin_response {
@@ -123,7 +124,9 @@ impl Client {
         let res = self
             .invoke(|client| {
                 let req = req.clone();
-                async move { client.admin(inject_trace_context(req)).await.map_err(rpc_status) }
+                async move {
+                    receive_trace(client.admin(request_trace(req)).await.map_err(rpc_status))
+                }
             })
             .await?;
         Ok(res.into_inner())
@@ -222,14 +225,16 @@ impl Client {
         let req = AllocTxnIdRequest { num_required };
         let res = self
             .invoke_with_timeout(timeout, |client| {
-                let req = inject_trace_context(req.clone());
+                let req = request_trace(req.clone());
                 async move {
                     let call = client.alloc_txn_id(req);
-                    match timeout {
-                        Some(timeout) => call.timeout(timeout).await,
-                        None => call.await,
-                    }
-                    .map_err(rpc_status)
+                    receive_trace(
+                        match timeout {
+                            Some(timeout) => call.timeout(timeout).await,
+                            None => call.await,
+                        }
+                        .map_err(rpc_status),
+                    )
                 }
             })
             .await?;

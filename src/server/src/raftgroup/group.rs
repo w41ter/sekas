@@ -36,7 +36,8 @@ pub struct ProposalFuture {
 
 impl ProposalFuture {
     pub async fn wait_result(self) -> Result<()> {
-        take_propose_metrics(self.start_at, self.receiver.await?)
+        let result = self.receiver.in_trace(span_name::RAFTGROUP_PROPOSE_WAIT_RESULT).await?;
+        take_propose_metrics(self.start_at, result)
     }
 }
 
@@ -64,6 +65,7 @@ impl RaftGroup {
     ///
     /// TODO(walter) support return user defined error.
     pub fn propose(&self, eval_result: EvalResult, term: Option<u64>) -> Result<ProposalFuture> {
+        let _span = local_span(span_name::RAFTGROUP_PROPOSE_ENQUEUE);
         let start_at = Instant::now();
         let (sender, receiver) = oneshot::channel();
         self.send(Request::Propose { eval_result, start: start_at, term, sender })?;

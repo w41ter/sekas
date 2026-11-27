@@ -16,11 +16,13 @@ mod helper;
 
 use std::time::Instant;
 
+use fastrace::collector::{Config, TestReporter};
 use futures::StreamExt;
 use log::info;
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
 use sekas_api::server::v1::ReplicaRole;
+use sekas_client::trace::{TraceFutureExt, span_name};
 use sekas_client::{AppError, ClientOptions, RangeRequest, SekasClient, WriteBuilder};
 use sekas_rock::fn_name;
 
@@ -546,15 +548,43 @@ async fn cluster_rw_entire_range() {
     }
     assert_eq!(index, 100);
 
-    let mut limited_stream = db
-        .range(RangeRequest { table_id: co.id, limit: 10, total_limit: 25, ..Default::default() })
-        .await
-        .unwrap();
-    let mut limited_count = 0;
-    while let Some(values) = limited_stream.next().await {
-        limited_count += values.unwrap().len();
+    let (reporter, spans) = TestReporter::new();
+    fastrace::set_reporter(reporter, Config::default());
+    let limited_count = async {
+        let mut stream = db
+            .range(RangeRequest {
+                table_id: co.id,
+                limit: 10,
+                total_limit: 25,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let mut count = 0;
+        while let Some(values) = stream.next().await {
+            count += values.unwrap().len();
+        }
+        count
     }
+    .trace("test.range")
+    .await;
     assert_eq!(limited_count, 25);
+
+    fastrace::flush();
+    let spans = spans.lock();
+    let root = spans.iter().find(|span| span.name == "test.range").unwrap();
+    for name in [
+        span_name::CLIENT_RANGE_SCAN,
+        span_name::CLIENT_GROUP_REQUEST_SCAN,
+        span_name::GRPC_NODE_UNARY_GROUP,
+        span_name::ENGINE_SCAN_MVCC,
+    ] {
+        assert!(
+            spans.iter().any(|span| span.name == name && span.trace_id == root.trace_id),
+            "missing {name} span for trace {}",
+            root.trace_id
+        );
+    }
 }
 
 #[sekas_macro::test]

@@ -17,7 +17,8 @@ use std::pin::Pin;
 
 use log::debug;
 use sekas_api::server::v1::*;
-use sekas_client::trace::{maybe_in_span, span_from_rpc_request, span_name};
+use sekas_client::trace::rpc::RpcTrace;
+use sekas_client::trace::span_name;
 use vaelo::{Request, Response, Status};
 
 use super::metrics::*;
@@ -27,10 +28,14 @@ impl root_server::Root for Server {
     type WatchStream = Pin<Box<dyn futures::Stream<Item = Result<WatchResponse, Status>> + Send>>;
 
     async fn admin(&self, req: Request<AdminRequest>) -> Result<Response<AdminResponse>, Status> {
-        record_latency!(take_admin_request_metrics());
-        let req = req.into_inner();
-        let res = self.handle_admin(req).await?;
-        Ok(Response::new(res))
+        let trace = RpcTrace::new(&req, span_name::GRPC_ROOT_ADMIN);
+        trace
+            .run(async move {
+                record_latency!(take_admin_request_metrics());
+                let res = self.handle_admin(req.into_inner()).await?;
+                Ok(Response::new(res))
+            })
+            .await
     }
 
     async fn watch(
@@ -88,15 +93,16 @@ impl root_server::Root for Server {
         &self,
         request: Request<AllocTxnIdRequest>,
     ) -> Result<Response<AllocTxnIdResponse>, Status> {
-        let span = span_from_rpc_request(&request, span_name::GRPC_ROOT_ALLOC_TXN_ID);
-        maybe_in_span(span, async move {
-            record_latency!(take_alloc_txn_id_request_metrics());
-            let req = request.into_inner();
+        let trace = RpcTrace::new(&request, span_name::GRPC_ROOT_ALLOC_TXN_ID);
+        trace
+            .run(async move {
+                record_latency!(take_alloc_txn_id_request_metrics());
+                let req = request.into_inner();
 
-            let base_txn_id = self.wrap(self.root.alloc_txn_id(req.num_required).await).await?;
-            Ok(Response::new(AllocTxnIdResponse { base_txn_id, num: req.num_required }))
-        })
-        .await
+                let base_txn_id = self.wrap(self.root.alloc_txn_id(req.num_required).await).await?;
+                Ok(Response::new(AllocTxnIdResponse { base_txn_id, num: req.num_required }))
+            })
+            .await
     }
 }
 

@@ -2657,6 +2657,7 @@ dependencies = [
  "bytes",
  "clap",
  "config",
+ "fastrace",
  "log",
  "prometheus",
  "rand 0.10.3",

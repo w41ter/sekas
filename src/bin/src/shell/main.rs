@@ -22,6 +22,7 @@ use clap::Parser;
 use log::error;
 use rustyline::Editor;
 use rustyline::error::ReadlineError;
+use sekas_client::trace::{TraceFutureExt, rpc};
 use sekas_client::{AppError, ClientOptions, Database, SekasClient};
 use sekas_parser::*;
 
@@ -58,6 +59,7 @@ impl Command {
             .with_max_level(self.log_level.unwrap_or(tracing::Level::ERROR))
             .with_ansi(std::io::stderr().is_terminal())
             .init();
+        rpc::init_reporter(None);
 
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -71,6 +73,7 @@ impl Command {
 
 struct Session {
     sekas_client: SekasClient,
+    trace_enabled: bool,
 
     database_cache: HashMap<String, Database>,
     table_cache: HashMap<(String, String), u64>,
@@ -103,15 +106,34 @@ impl Session {
         let result = match statement {
             Statement::Debug(debug) => debug.execute(),
             Statement::Help(help) => help.execute(),
+            Statement::Set(setting) => self.set(setting)?,
             Statement::Echo(echo) => ExecuteResult::Msg(echo.message),
             Statement::CreateDb(create_db) => self.create_database(create_db).await?,
             Statement::CreateTable(create_table) => self.create_table(create_table).await?,
-            Statement::Put(put) => self.put_key_value(put).await?,
-            Statement::Delete(delete) => self.delete_key(delete).await?,
-            Statement::Get(get) => self.get_key(get).await?,
+            Statement::Put(put) => {
+                trace_request(self.trace_enabled, "shell.put", self.put_key_value(put)).await?
+            }
+            Statement::Delete(delete) => {
+                trace_request(self.trace_enabled, "shell.delete", self.delete_key(delete)).await?
+            }
+            Statement::Get(get) => {
+                trace_request(self.trace_enabled, "shell.get", self.get_key(get)).await?
+            }
             Statement::Config(_) | Statement::Show(_) => return Ok(None),
         };
         Ok(Some(result))
+    }
+
+    fn set(&mut self, setting: SetStatement) -> Result<ExecuteResult> {
+        if !setting.key.eq_ignore_ascii_case("trace") {
+            anyhow::bail!("unknown shell setting '{}'", setting.key);
+        }
+        self.trace_enabled = match setting.value.to_ascii_lowercase().as_str() {
+            "on" => true,
+            "off" => false,
+            _ => anyhow::bail!("SET TRACE expects ON or OFF"),
+        };
+        Ok(ExecuteResult::Msg(if self.trace_enabled { "Trace on" } else { "Trace off" }.into()))
     }
 
     /// Execute create db statement.
@@ -221,7 +243,11 @@ impl Session {
             return Ok(db.clone());
         }
 
-        let db = self.sekas_client.open_database(db_name.to_owned()).await?;
+        let db = self
+            .sekas_client
+            .open_database(db_name.to_owned())
+            .in_trace("shell.open_database")
+            .await?;
         self.database_cache.insert(db_name.to_owned(), db.clone());
         Ok(db)
     }
@@ -234,7 +260,7 @@ impl Session {
         }
 
         let db = self.open_database(db_name).await?;
-        let table_desc = db.open_table(table_name.to_owned()).await?;
+        let table_desc = db.open_table(table_name.to_owned()).in_trace("shell.open_table").await?;
         self.table_cache.insert(key, table_desc.id);
         Ok(table_desc.id)
     }
@@ -277,6 +303,15 @@ impl Session {
     }
 }
 
+async fn trace_request<F: Future>(enabled: bool, name: &'static str, request: F) -> F::Output {
+    if !enabled {
+        return request.await;
+    }
+    let (result, spans) = rpc::capture_request(name, request).await;
+    crate::trace::print_traces(spans);
+    result
+}
+
 async fn editor_main(cmd: Command) {
     use rustyline::Config;
     use rustyline::history::MemHistory;
@@ -317,6 +352,7 @@ async fn new_session(cmd: Command) -> Result<Session> {
     let sekas_client = SekasClient::new(opts, cmd.addrs).await?;
     Ok(Session {
         sekas_client,
+        trace_enabled: false,
         database_cache: HashMap::default(),
         table_cache: HashMap::default(),
     })

@@ -16,7 +16,7 @@
 use log::trace;
 use prost::Message;
 use sekas_api::server::v1::*;
-use sekas_client::trace::{local_span, span_name};
+use sekas_client::trace::{TraceFutureExt, local_span, span_name};
 use sekas_schema::system::txn::TXN_INTENT_VERSION;
 
 use super::LatchManager;
@@ -75,6 +75,7 @@ async fn read_key<T: LatchManager>(
                 if intent.start_version <= start_version {
                     if let Some(value) = latch_mgr
                         .resolve_txn(shard_id, key, start_version, intent.start_version)
+                        .in_trace(span_name::REPLICA_RESOLVE_READ_INTENT)
                         .await?
                     {
                         if value.version <= start_version {

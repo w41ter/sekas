@@ -528,14 +528,20 @@ impl Replica {
         let (eval_result_opt, response, forwards, pending_txn_guard_opt) = match &request {
             Request::Write(req) => {
                 let mut write_ctx = self.write_view.context(&self.group_engine, write_metrics);
-                let (eval_result, resp) = eval::batch_write(exec_ctx, &mut write_ctx, req).await?;
+                let (eval_result, resp) = eval::batch_write(exec_ctx, &mut write_ctx, req)
+                    .in_trace(span_name::REPLICA_EVAL_WRITE)
+                    .await?;
                 pending_fences.join(write_ctx.take_dependencies());
                 (eval_result, Response::Write(resp), vec![], None)
             }
             Request::LocalTxnWrite(req) => {
                 let latches_mut =
                     latches.as_mut().expect("local txn write request must hold latches");
-                let pending_txn_guard = self.local_txn_mgr.begin_commit(req.commit_version).await;
+                let pending_txn_guard = self
+                    .local_txn_mgr
+                    .begin_commit(req.commit_version)
+                    .in_trace(span_name::REPLICA_LOCAL_TXN_BEGIN_COMMIT)
+                    .await;
                 let commit_version = pending_txn_guard.commit_version();
                 let mut write_ctx = self.write_view.context(&self.group_engine, write_metrics);
                 let local_txn_result = eval::local_txn_write(
@@ -545,6 +551,7 @@ impl Replica {
                     req,
                     commit_version,
                 )
+                .in_trace(span_name::REPLICA_EVAL_WRITE)
                 .await;
                 pending_fences.join(write_ctx.take_dependencies());
                 match local_txn_result {
@@ -567,7 +574,9 @@ impl Replica {
                 let latches_mut = latches.as_mut().expect("clear intent request must hold latches");
                 let mut write_ctx = self.write_view.context(&self.group_engine, write_metrics);
                 let (eval_result, resp, forwards) =
-                    eval::write_intent(exec_ctx, &mut write_ctx, latches_mut, req).await?;
+                    eval::write_intent(exec_ctx, &mut write_ctx, latches_mut, req)
+                        .in_trace(span_name::REPLICA_EVAL_WRITE)
+                        .await?;
                 pending_fences.join(write_ctx.take_dependencies());
 
                 (eval_result, Response::WriteIntent(resp), forwards, None)
@@ -576,7 +585,9 @@ impl Replica {
                 let latches_mut = latches.as_mut().expect("clear intent request must hold latches");
                 let mut write_ctx = self.write_view.context(&self.group_engine, write_metrics);
                 let (eval_result, resp, forwards) =
-                    eval::commit_intent(exec_ctx, &mut write_ctx, latches_mut, req).await?;
+                    eval::commit_intent(exec_ctx, &mut write_ctx, latches_mut, req)
+                        .in_trace(span_name::REPLICA_EVAL_WRITE)
+                        .await?;
                 pending_fences.join(write_ctx.take_dependencies());
                 (eval_result, Response::CommitIntent(resp), forwards, None)
             }
@@ -584,7 +595,9 @@ impl Replica {
                 let latches_mut = latches.as_mut().expect("clear intent request must hold latches");
                 let mut write_ctx = self.write_view.context(&self.group_engine, write_metrics);
                 let (eval_result, resp, forwards) =
-                    eval::clear_intent(exec_ctx, &mut write_ctx, latches_mut, req).await?;
+                    eval::clear_intent(exec_ctx, &mut write_ctx, latches_mut, req)
+                        .in_trace(span_name::REPLICA_EVAL_WRITE)
+                        .await?;
                 pending_fences.join(write_ctx.take_dependencies());
                 (eval_result, Response::ClearIntent(resp), forwards, None)
             }
@@ -605,9 +618,13 @@ impl Replica {
                 (None, Response::Get(resp), vec![], None)
             }
             Request::Scan(req) => {
-                self.local_txn_mgr.before_read(req.start_version).await;
-                let eval_result =
-                    eval::scan(exec_ctx, &self.group_engine, &self.latch_mgr, req).await?;
+                self.local_txn_mgr
+                    .before_read(req.start_version)
+                    .in_trace(span_name::REPLICA_LOCAL_TXN_BEFORE_READ)
+                    .await;
+                let eval_result = eval::scan(exec_ctx, &self.group_engine, &self.latch_mgr, req)
+                    .in_trace(span_name::REPLICA_EVAL_SCAN)
+                    .await?;
                 (None, Response::Scan(eval_result), vec![], None)
             }
             Request::WatchKey(req) => {
@@ -758,7 +775,10 @@ impl Replica {
             barrier.on_reached().await;
         }
         let submit_future = {
-            let eval_result = eval_result.into_eval_result(&self.group_engine)?;
+            let eval_result = {
+                let _span = local_span(span_name::REPLICA_WRITE_PREPARE_PROPOSAL);
+                eval_result.into_eval_result(&self.group_engine)?
+            };
             let proposal = self.raft_group.propose(eval_result, Some(exec_ctx.current_term))?;
             drop(prepare);
             drop(eval_latches);

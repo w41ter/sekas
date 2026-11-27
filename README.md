@@ -1,6 +1,17 @@
 # Sekas
 
-Sekas is a fault-tolerant, scalable, distributed transactional key-value store, used as a cache, database, and storage engine for other distributed systems.
+Sekas is a distributed transactional key-value store with ordered keys and
+versioned values.
+
+- **Conditional transactions across shards.** Atomically put or delete multiple
+  keys across shards. Writes can check key existence, value, or version. The
+  transaction commits only if all its conditions hold. [Transaction design](docs/txn.md)
+- **Point reads and scans at a chosen version.** Use the same retained snapshot
+  version to look up individual keys and scan key ranges or prefixes across shards,
+  even while concurrent writes change the latest values. [Range API](src/client/src/range.rs)
+- **Versioned key watches.** Subscribe to changes on an individual key from a
+  specified version. The stream replays retained changes from that version and
+  delivers new updates as they occur. [Rust client API](src/client/src/database.rs)
 
 ## Architecture
 
@@ -31,28 +42,13 @@ cargo run -- start --init
 cargo run -- shell
 ```
 
-Run and enjoy it.
-
-## Benchmarks
-
-With Sekas running, load and run a preset from the repository root.
-
-```sh
-workload=conf/workloads/read-heavy-uniform.toml
-cargo run --release -- bench --conf "$workload" --phase load
-cargo run --release -- bench --conf "$workload" --phase run
-```
-
-For the preset list and configuration options, see the [benchmark workload guide](conf/workloads/README.md).
+For shell tracing and benchmarks, see the [usage guide](USAGE.md).
 
 ## Contributing
 
 Thanks for your help in improving the project! We have a [contributing guide](CONTRIBUTING.md) to help you get involved in the Sekas project.
 
-## More information
-
-See [perf-lab](docs/perf-lab.md) for local performance baselines and regression
-checks.
+## Community
 
 For informal discussions, please go to the [forum](https://github.com/w41ter/sekas/discussions).
 

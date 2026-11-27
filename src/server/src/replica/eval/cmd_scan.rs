@@ -15,6 +15,7 @@ use log::trace;
 // limitations under the License.
 use prost::Message;
 use sekas_api::server::v1::*;
+use sekas_client::trace::{TraceFutureExt, local_span, span_name};
 use sekas_schema::system::txn::TXN_INTENT_VERSION;
 
 use super::LatchManager;
@@ -107,8 +108,11 @@ where
         }
         None => SnapshotMode::Start { start_key: req.start_key.as_ref().map(|v| v.as_ref()) },
     };
-    let snapshot = engine.snapshot(req.shard_id, snapshot_mode)?;
-    scan_inner(latch_mgr, snapshot, &req).await
+    let snapshot = {
+        let _span = local_span(span_name::ENGINE_SNAPSHOT_RANGE);
+        engine.snapshot(req.shard_id, snapshot_mode)?
+    };
+    scan_inner(latch_mgr, snapshot, &req).in_trace(span_name::ENGINE_SCAN_MVCC).await
 }
 
 async fn scan_inner<T>(
@@ -236,8 +240,10 @@ async fn resolve_txn<T: LatchManager>(
         return Ok(None);
     }
 
-    let intent_value_opt =
-        latch_mgr.resolve_txn(shard_id, user_key, start_version, intent.start_version).await?;
+    let intent_value_opt = latch_mgr
+        .resolve_txn(shard_id, user_key, start_version, intent.start_version)
+        .in_trace(span_name::REPLICA_RESOLVE_READ_INTENT)
+        .await?;
 
     // skip aborted txn value.
     let Some(intent_value) = intent_value_opt else { return Ok(None) };

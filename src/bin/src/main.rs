@@ -19,6 +19,7 @@ mod bench;
 mod checker;
 mod perf_lab;
 mod shell;
+mod trace;
 
 use std::io::IsTerminal;
 
@@ -73,6 +74,10 @@ struct StartCommand {
     #[clap(long, value_name = "LIMIT")]
     cpu_nums: Option<u32>,
 
+    /// Print timing trees for sampled requests to stderr.
+    #[clap(long)]
+    trace: bool,
+
     /// Dump config as toml file and exit
     #[clap(long, value_name = "FILE")]
     dump: Option<String>,
@@ -109,6 +114,7 @@ impl StartCommand {
 
         info!("{config:#?}");
 
+        sekas_client::trace::rpc::init_reporter(self.trace.then(trace::tree_reporter));
         let notifier = ShutdownNotifier::new();
         let shutdown = notifier.subscribe();
         let owner = ExecutorOwner::with_config(config.cpu_nums as usize, config.executor.clone());
@@ -116,7 +122,11 @@ impl StartCommand {
         let _handle = executor.spawn(async move {
             notifier.ctrl_c().await;
         });
-        sekas_server::run(config, executor, shutdown)
+        let result = sekas_server::run(config, executor, shutdown);
+        if self.trace {
+            sekas_client::trace::flush();
+        }
+        result
     }
 }
 

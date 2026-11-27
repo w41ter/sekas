@@ -16,6 +16,7 @@
 use std::time::{Duration, Instant};
 
 use crate::metrics::record_retry_reason;
+use crate::trace::{TraceFutureExt, span_name};
 use crate::{Error, Result};
 
 const MIN_INTERVAL_MS: u64 = 8;
@@ -101,7 +102,7 @@ impl RetryState {
                 return Err(Error::DeadlineExceeded("timeout".into()));
             }
         }
-        tokio::time::sleep(interval).await;
+        sekas_runtime::time::sleep(interval).in_trace(span_name::CLIENT_RETRY_BACKOFF).await;
         self.interval_ms = std::cmp::min(self.interval_ms * 2, MAX_INTERVAL_MS);
         Ok(())
     }

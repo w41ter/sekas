@@ -30,6 +30,7 @@ use sekas_api::server::v1::group_request_union::Request;
 use sekas_api::server::v1::group_response_union::Response;
 use sekas_api::server::v1::*;
 use sekas_client::ClientOptions;
+use sekas_client::trace::{TraceFutureExt, local_span, span_name};
 use sekas_runtime::TaskGroup;
 
 use self::job::StateChannel;
@@ -484,7 +485,10 @@ impl Node {
         let response = match execute(&replica, exec_ctx, request).await {
             Err(Error::PartialForward(partial)) => {
                 let _forward = metrics.timer(WriteStage::Forward);
-                let resp = self.complete_partial_forward(partial).await?;
+                let resp = self
+                    .complete_partial_forward(partial)
+                    .in_trace(span_name::NODE_FORWARD_REQUEST)
+                    .await?;
                 Ok(GroupResponse::new(resp))
             }
             Err(Error::Forward(forward_ctx)) => {
@@ -494,11 +498,16 @@ impl Node {
                 if let Request::Scan(scan_request) = request {
                     let scan_resp = self
                         .forward_scan_request(replica.clone(), forward_ctx, scan_request)
+                        .in_trace(span_name::NODE_FORWARD_SCAN)
                         .await?;
                     Ok(GroupResponse::new(Response::Scan(scan_resp)))
                 } else {
                     let _forward = metrics.timer(WriteStage::Forward);
-                    let resp = self.move_shard_ctrl.forward(forward_ctx, request).await?;
+                    let resp = self
+                        .move_shard_ctrl
+                        .forward(forward_ctx, request)
+                        .in_trace(span_name::NODE_FORWARD_REQUEST)
+                        .await?;
                     Ok(GroupResponse::new(resp))
                 }
             }
@@ -521,10 +530,13 @@ impl Node {
         let mut handles = Vec::with_capacity(partial.parts.len());
         for part in partial.parts {
             let ctrl = self.move_shard_ctrl.clone();
-            let handle = sekas_runtime::spawn(async move {
-                let result = ctrl.forward(part.forward_ctx, &part.request).await;
-                (part.indexes, result)
-            });
+            let handle = sekas_runtime::spawn(
+                async move {
+                    let result = ctrl.forward(part.forward_ctx, &part.request).await;
+                    (part.indexes, result)
+                }
+                .in_trace(span_name::NODE_FORWARD_REQUEST),
+            );
             handles.push(handle);
         }
 
@@ -769,10 +781,13 @@ impl Node {
         let mut req = scan_request.clone();
         req.allow_scan_moving_shard = true;
         let req_clone = req.clone();
-        let execute_handle = sekas_runtime::spawn(async move {
-            let epoch = replica.descriptor().epoch;
-            replica.execute(&mut ExecCtx::with_epoch(epoch), &Request::Scan(req_clone)).await
-        });
+        let execute_handle = sekas_runtime::spawn(
+            async move {
+                let epoch = replica.descriptor().epoch;
+                replica.execute(&mut ExecCtx::with_epoch(epoch), &Request::Scan(req_clone)).await
+            }
+            .in_trace(span_name::NODE_FORWARD_SCAN_SOURCE),
+        );
         let target_resp =
             match self.move_shard_ctrl.forward(forward_ctx, &Request::Scan(req)).await? {
                 Response::Scan(scan) => scan,
@@ -782,6 +797,7 @@ impl Node {
             Response::Scan(scan) => scan,
             _ => return Err(Error::InvalidData("ShardScanResponse is required".into())),
         };
+        let _span = local_span(span_name::NODE_FORWARD_SCAN_MERGE);
         Ok(merge_scan_response(scan_request, target_resp, source_resp))
     }
 

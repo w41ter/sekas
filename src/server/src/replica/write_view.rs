@@ -14,6 +14,7 @@
 
 use prost::Message;
 use sekas_api::server::v1::{TxnIntent, Value};
+use sekas_client::trace::{TraceFutureExt, local_span, span_name};
 use sekas_schema::system::txn::TXN_INTENT_VERSION;
 
 use super::metrics::{WriteMetrics, WriteStage};
@@ -73,7 +74,8 @@ impl WriteEvalContext<'_> {
 
     pub async fn latest_value(&mut self, shard_id: u64, key: &[u8]) -> Result<Option<Value>> {
         let _read = self.metrics.timer(WriteStage::MvccRead);
-        let committed = self.engine.get(shard_id, key).await?;
+        let committed =
+            self.engine.get(shard_id, key).in_trace(span_name::REPLICA_WRITE_MVCC).await?;
         let pending = self.overlay.entries(shard_id, key);
         Ok(self.merge_latest_value(committed, pending))
     }
@@ -89,7 +91,7 @@ impl WriteEvalContext<'_> {
             return Ok(false);
         }
         let _wait = self.metrics.timer(WriteStage::PendingIntent);
-        entry.fence.wait().await?;
+        entry.fence.wait().in_trace(span_name::REPLICA_WRITE_WAIT_PENDING_INTENT).await?;
         Ok(true)
     }
 
@@ -138,6 +140,7 @@ impl WriteEvalContext<'_> {
 
     fn first_values(&mut self, shard_id: u64, key: &[u8], limit: usize) -> Result<Vec<Value>> {
         let _read = self.metrics.timer(WriteStage::MvccRead);
+        let _span = local_span(span_name::REPLICA_WRITE_MVCC);
         let pending = self.overlay.entries(shard_id, key);
         self.join_pending_fences(&pending);
         let mut pending_values = std::collections::BTreeMap::<u64, Option<Value>>::new();

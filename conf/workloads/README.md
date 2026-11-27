@@ -23,7 +23,7 @@ create the table.
 
 Use the same TOML file for both phases. Load creates the database and table
 if needed, then upserts the initial rows. Run uses that table and picks
-operations by their relative weights. [Quick start](../../README.md#benchmarks)
+operations by their relative weights. [Quick start](../../USAGE.md#benchmarks)
 
 Inserts and updates use unconditional puts. Inserts start at
 `workload.insert_start`, which defaults to `workload.records`. When repeating

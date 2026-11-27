@@ -15,13 +15,17 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::Instant;
 
+use fastrace::future::FutureExt;
+use fastrace::prelude::Span;
 use sekas_api::server::v1::group_request_union::Request;
 use sekas_api::server::v1::group_response_union::Response;
 use sekas_api::server::v1::*;
 use sekas_rock::lexical::lexical_next_boundary;
+use sekas_runtime::JoinHandle;
+use sekas_runtime::sync::mpsc;
 use sekas_schema::system::txn::TXN_MAX_VERSION;
-use tokio::sync::mpsc;
 
+use crate::trace::{TraceFutureExt, local_span, span_name};
 use crate::{GroupClient, RetryState, SekasClient};
 
 /// The range descriptor.
@@ -66,7 +70,7 @@ pub struct RangeRequest {
 }
 
 pub struct RangeStream {
-    fetch_handle: Option<tokio::task::JoinHandle<()>>,
+    _fetch_handle: JoinHandle<()>,
 
     receiver: mpsc::Receiver<crate::Result<Vec<ValueSet>>>,
 }
@@ -133,16 +137,6 @@ impl futures::Stream for RangeStream {
     }
 }
 
-impl Drop for RangeStream {
-    fn drop(&mut self) {
-        if let Some(handle) = self.fetch_handle.take() {
-            if !handle.is_finished() {
-                handle.abort();
-            }
-        }
-    }
-}
-
 impl RangeStream {
     pub fn init(
         client: SekasClient,
@@ -166,11 +160,12 @@ impl RangeStream {
         };
 
         // Spawn a task to fetch value set in background.
-        let handle = tokio::spawn(async move {
+        let span = Span::enter_with_local_parent(span_name::CLIENT_RANGE_SCAN);
+        let fetch_handle = sekas_runtime::spawn(async move {
             let mut scanner = scanner;
-            scanner.scan(deadline).await;
+            scanner.scan(deadline).in_span(span).await;
         });
-        RangeStream { fetch_handle: Some(handle), receiver }
+        RangeStream { _fetch_handle: fetch_handle, receiver }
     }
 }
 
@@ -185,7 +180,10 @@ impl RangeScanner {
         let mut retry_state = RetryState::with_deadline_opt(deadline);
         while self.state == ScannerState::Normal {
             let router = self.client.router();
-            let (group_state, shard_desc) = router.find_shard(self.table_id, &self.cursor_key)?;
+            let (group_state, shard_desc) = {
+                let _span = local_span(span_name::CLIENT_ROUTER_FIND_SHARD);
+                router.find_shard(self.table_id, &self.cursor_key)?
+            };
             let mut group_client = GroupClient::new(group_state, self.client.clone());
             if let Err(err) = self.scan_shard(&mut group_client, &shard_desc, &retry_state).await {
                 retry_state.retry(err).await?;
@@ -232,7 +230,11 @@ impl RangeScanner {
                 ..Default::default()
             };
             group_client.set_timeout_opt(retry_state.timeout());
-            let scan_resp = match group_client.request(&Request::Scan(req)).await? {
+            let scan_resp = match group_client
+                .request(&Request::Scan(req))
+                .in_trace(span_name::CLIENT_GROUP_REQUEST_SCAN)
+                .await?
+            {
                 Response::Scan(resp) => resp,
                 e => {
                     return Err(crate::Error::Internal(

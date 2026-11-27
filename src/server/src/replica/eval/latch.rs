@@ -19,6 +19,7 @@ use sekas_api::server::v1::{
     LocalTxnWriteRequest, ShardKey, ShardWriteRequest, TxnIntent, TxnState, Value,
     WriteIntentRequest,
 };
+use sekas_client::trace::{TraceFutureExt, span_name};
 
 use crate::{Error, Result};
 
@@ -150,12 +151,16 @@ where
     });
     shard_keys.dedup_by(|a, b| a.shard_id == b.shard_id && a.user_key == b.user_key);
 
-    let mut latches = HashMap::with_capacity(shard_keys.len());
-    for shard_key in shard_keys {
-        let latch = latch_mgr.acquire(shard_key.shard_id, &shard_key.user_key).await?;
-        latches.insert(shard_key, latch);
+    async {
+        let mut latches = HashMap::with_capacity(shard_keys.len());
+        for shard_key in shard_keys {
+            let latch = latch_mgr.acquire(shard_key.shard_id, &shard_key.user_key).await?;
+            latches.insert(shard_key, latch);
+        }
+        Ok(Some(DeferSignalLatchGuard { state: None, latches }))
     }
-    Ok(Some(DeferSignalLatchGuard { state: None, latches }))
+    .in_trace(span_name::REPLICA_TAKE_ROW_LATCHES)
+    .await
 }
 
 fn collect_shard_write_keys(req: &ShardWriteRequest) -> Result<Vec<Vec<u8>>> {

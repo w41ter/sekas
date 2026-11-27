@@ -24,6 +24,7 @@ use sekas_api::server::v1::group_request_union::Request as ShardRequest;
 use sekas_api::server::v1::group_response_union::Response as ShardResponse;
 use sekas_api::server::v1::watch_key_response::WatchResult;
 use sekas_api::server::v1::*;
+use sekas_client::trace::rpc::RpcTrace;
 use sekas_client::trace::{maybe_in_span, span_from_rpc_request, span_name};
 use sekas_schema::system::txn::{TXN_INTENT_VERSION, TXN_MAX_VERSION};
 use vaelo::{Request, Response, Status};
@@ -219,18 +220,22 @@ impl node_server::Node for Server {
         &self,
         request: Request<GroupRequest>,
     ) -> Result<Response<GroupResponse>, Status> {
-        let span = span_from_rpc_request(&request, span_name::GRPC_NODE_UNARY_GROUP);
+        let trace = RpcTrace::new(&request, span_name::GRPC_NODE_UNARY_GROUP);
+        if let Some(span) = trace.span() {
+            span.add_property(|| ("group_id", request.get_ref().group_id.to_string()));
+        }
         let request = request.into_inner();
-        maybe_in_span(span, async move {
-            let metrics = record_group_request(&request);
-            let duration = metrics.as_ref().and_then(|metrics| metrics.duration);
-            let response = handle_unary_group_request(self.clone(), request, duration).await;
-            if let Some(metrics) = metrics {
-                metrics.record_response(&response);
-            }
-            Ok(Response::new(response))
-        })
-        .await
+        trace
+            .run(async move {
+                let metrics = record_group_request(&request);
+                let duration = metrics.as_ref().and_then(|metrics| metrics.duration);
+                let response = handle_unary_group_request(self.clone(), request, duration).await;
+                if let Some(metrics) = metrics {
+                    metrics.record_response(&response);
+                }
+                Ok(Response::new(response))
+            })
+            .await
     }
 
     async fn group(
@@ -290,13 +295,19 @@ impl node_server::Node for Server {
         &self,
         request: Request<MoveShardRequest>,
     ) -> Result<Response<MoveShardResponse>, Status> {
+        let trace = RpcTrace::new(&request, span_name::GRPC_NODE_FORWARD);
         let req = request.into_inner();
         let Some(req) = req.request else {
             return Err(Status::invalid_argument("MoveShardRequest::request is empty"));
         };
         let resp = match req {
             move_shard_request::Request::Forward(req) => {
-                move_shard_response::Response::Forward(self.forward(req).await?)
+                return trace
+                    .run(async move {
+                        let resp = move_shard_response::Response::Forward(self.forward(req).await?);
+                        Ok(Response::new(MoveShardResponse { response: Some(resp) }))
+                    })
+                    .await;
             }
             move_shard_request::Request::AcquireShard(req) => {
                 let Some(desc) = req.desc else {

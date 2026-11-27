@@ -463,7 +463,8 @@ impl Txn {
     async fn commit_writes(mut self, payload_bytes: usize) -> AppResult<WriteBatchResponse> {
         self.validate_limits()?;
         if self.start_version.get().is_none()
-            && let Some(resp) = self.try_commit_local_txn().await?
+            && let Some(resp) =
+                self.try_commit_local_txn().in_trace(span_name::CLIENT_TXN_LOCAL_COMMIT).await?
         {
             CLIENT_TXN_COMMITTED_BYTES_TOTAL.local.inc_by(payload_bytes as u64);
             return Ok(resp);
@@ -478,7 +479,7 @@ impl Txn {
             self.deadline,
             self.has_snapshot_read.load(Ordering::Acquire),
         );
-        Ok(ctx.commit().await?)
+        Ok(ctx.commit().in_trace(span_name::CLIENT_TXN_DISTRIBUTED_COMMIT).await?)
     }
 
     fn validate_limits(&self) -> AppResult<()> {
@@ -491,6 +492,7 @@ impl Txn {
         let response = loop {
             let group = {
                 record_latency!(&CLIENT_TXN_LOCAL_PREPARE_GROUP_DURATION_SECONDS);
+                let _span = local_span(span_name::CLIENT_TXN_LOCAL_ROUTE);
                 self.prepare_local_txn_group()
             };
             let Some(mut group) = (match group {
@@ -507,7 +509,12 @@ impl Txn {
             local_timer.get_or_insert_with(|| CLIENT_TXN_DURATION_SECONDS.local.start_timer());
             group.request.commit_version = {
                 record_latency!(&CLIENT_TXN_LOCAL_ALLOC_VERSION_DURATION_SECONDS);
-                self.db.client.root_client().alloc_txn_id(1, retry_state.timeout()).await?
+                self.db
+                    .client
+                    .root_client()
+                    .alloc_txn_id(1, retry_state.timeout())
+                    .in_trace(span_name::CLIENT_TXN_LOCAL_ALLOC_VERSION)
+                    .await?
             };
 
             let mut client = GroupClient::new(group.group_state, self.db.client.clone());
@@ -785,13 +792,16 @@ impl Txn {
         timeout: Option<Duration>,
     ) -> crate::Result<ShardScanResponse> {
         self.has_snapshot_read.store(true, Ordering::Release);
-        request.start_version = self.get_read_version().await?;
-        let router = self.db.client.router();
-        let group_state = router.find_group_by_shard(request.shard_id)?;
+        request.start_version =
+            self.get_read_version().in_trace(span_name::CLIENT_GET_READ_VERSION).await?;
+        let group_state = {
+            let _span = local_span(span_name::CLIENT_ROUTER_FIND_SHARD);
+            self.db.client.router().find_group_by_shard(request.shard_id)?
+        };
         let request = Request::Scan(request.clone());
         let mut group_client = GroupClient::new(group_state, self.db.client.clone());
         group_client.set_timeout_opt(timeout);
-        match group_client.request(&request).await? {
+        match group_client.request(&request).in_trace(span_name::CLIENT_GROUP_REQUEST_SCAN).await? {
             Response::Scan(resp) => Ok(resp),
             _ => Err(crate::Error::Internal("invalid response type, Scan is required".into())),
         }
@@ -804,7 +814,8 @@ impl Txn {
     pub async fn range(&self, mut request: RangeRequest) -> AppResult<RangeStream> {
         self.has_snapshot_read.store(true, Ordering::Release);
         if request.version.is_none() {
-            request.version = Some(self.get_read_version().await?);
+            request.version =
+                Some(self.get_read_version().in_trace(span_name::CLIENT_GET_READ_VERSION).await?);
         }
         Ok(RangeStream::init(self.db.client.clone(), request, self.deadline))
     }

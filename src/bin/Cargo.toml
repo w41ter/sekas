@@ -20,6 +20,7 @@ sekas-rock = { path = "../rock", version = "0.5" }
 sekas-runtime = { path = "../runtime", version = "0.5" }
 
 bytes.workspace = true
+fastrace.workspace = true
 log.workspace = true
 prometheus.workspace = true
 rand.workspace = true
